@@ -67,9 +67,17 @@ Setting up a development environment
       pdm run peat --version
       pdm run peat --help
 
+6. Setup `pre-commit <https://pre-commit.com/>`__ hooks
+
+   .. code-block:: bash
+
+      pdm run pre-commit install
+      pdm run pre-commit run --all-files
+
 Notes
 ^^^^^
 - If you're on Windows, make sure you're using PowerShell.
+- `pre-commit <https://pre-commit.com/>`__ is used to ensure common issues are caught before they're committed and pushed. For example, commit message format (conventional commits), linting or formatting issues, etc.
 - `PDM <https://pdm-project.org>`__ is used for tooling and dependency management
 - Edits to the code (``.py`` files) don't necessitate a reinstall if environment was created with PDM (``pdm install -d``). You only need to install on first setup, or if the dependencies change (these are defined in ``pyproject.toml``).
 - Tests are run using ``pytest``

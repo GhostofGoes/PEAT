@@ -230,10 +230,10 @@ dependencies = [
 peat = "peat.__main__:main"
 
 [project.urls]
-"Repository" = "https://github.com/sandialabs/peat"
-"Documentation" = "https://sandialabs.github.io/peat/"
-"Issue Tracker" = "https://github.com/sandialabs/peat/issues"
-"Changelog" = "https://github.com/sandialabs/peat/blob/main/CHANGELOG.md"
+"Repository" = "https://github.com/sandialabs/PEAT"
+"Documentation" = "https://sandialabs.github.io/PEAT/"
+"Issue Tracker" = "https://github.com/sandialabs/PEAT/issues"
+"Changelog" = "https://github.com/sandialabs/PEAT/blob/main/CHANGELOG.md"
 
 [tool.pdm.dev-dependencies]
 lint = [
@@ -303,6 +303,8 @@ dev = [
     "pipdeptree",
     # Pylint is used for diagram generation
     "pylint",
+    # Used for pre-commit hooks (https://pre-commit.com)
+    "pre-commit",
 ]
 docs = [
     # Sphinx is the primary tool that builds the docs
