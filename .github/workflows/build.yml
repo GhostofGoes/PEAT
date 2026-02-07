@@ -1,10 +1,11 @@
 name: Build
 
 on:
-  release:
   push:
+    branches:  # don't build on tags
   pull_request:
   workflow_dispatch:
+  workflow_call:  # from release.yml
 
 permissions:
   contents: read
@@ -39,8 +40,8 @@ jobs:
       - name: Upload HTML docs artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: html-docs
-          path: _docs_html/*
+          name: peat_docs
+          path: _docs_html/**/*
       - name: Upload manpage artifact
         uses: actions/upload-artifact@v6
         with:
@@ -68,20 +69,21 @@ jobs:
       - name: Install dependencies
         run: pdm sync
       - name: Build Python package
-        run: |
-          pdm build --dest ./peat_python_package
-          ls -lAhS peat_python_package
+        run: pdm build
       - name: Ensure package files exist
         run: |
-          ls peat_python_package | grep py3-none-any.whl
-          ls peat_python_package | grep .tar.gz
+          ls -lAhS dist
+          ls -lA dist | grep py3-none-any.whl
+          ls -lA dist | grep .tar.gz
       - name: List files in wheel
-        run: pdm run python -m zipfile --list ./peat_python_package/*.whl
+        run: pdm run python -m zipfile --list dist/*.whl
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: python-package
-          path: peat_python_package/
+          name: python_package
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
           if-no-files-found: error
 
   linux-build:
@@ -117,42 +119,32 @@ jobs:
           pdm sync -G exe
           pdm run python -m ensurepip
       - name: Build executable
-        run: |
-          pdm run build-linux-exe
-          ls -lAht dist/
-          mkdir -p peat_linux
-          mv dist/peat peat_linux/
-          cp distribution/linux-install-script.sh peat_linux
-          cp examples/peat-config.yaml peat_linux/
-          cp examples/peat-config-simple.yaml peat_linux/
-          ls -lAht peat_linux/
+        run: pdm run build-linux-exe
       - name: List executable contents
         run: pdm run inspect-exe
       - name: Check executable
         run: |
-          peat_linux/peat --help
-          peat_linux/peat --version
-          peat_linux/peat parse --list-modules
-          peat_linux/peat parse -vVV -d AwesomeTool -I examples/example_peat_module/ -- examples/example_peat_module/awesome_output.json
-      - name: Build Sneakypeat executable
-        run: |
-          pdm run build-linux-sneakypeat
           ls -lAht dist/
-          mkdir -p sneakypeat_linux
-          mv dist/sneakypeat sneakypeat_linux/
+          ./dist/peat --help
+          ./dist/peat --version
+          ./dist/peat parse --list-modules
+          ./dist/peat parse -vVV -d AwesomeTool -I examples/example_peat_module/ -- examples/example_peat_module/awesome_output.json
+      - name: Build Sneakypeat executable
+        run: pdm run build-linux-sneakypeat
       - name: List Sneakypeat executable contents
         run: pdm run pyi-archive_viewer --list build/sneakypeat-pyinstaller-pre-staticx
       - name: Check Sneakypeat executable
         run: |
-          sneakypeat_linux/sneakypeat --help
-          sneakypeat_linux/sneakypeat --scan localhost
+          ls -lAht dist/
+          ./dist/sneakypeat --help
+          ./dist/sneakypeat --scan localhost
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: linux-exes
+          name: linux_exe
           path: |
-            peat_linux/
-            sneakypeat_linux/
+            dist/peat
+            dist/sneakypeat
           if-no-files-found: error
 
   windows-build:
@@ -184,28 +176,27 @@ jobs:
           }
           Write-Host "CURRENT_PEAT_VERSION=$CURRENT_PEAT_VERSION"
           pdm run python .\distribution\update_file_version_info.py $CURRENT_PEAT_VERSION
-          pdm run build-exe --dist ./peat_windows
+          pdm run build-exe
       - name: List executable contents
-        run: pdm run pyi-archive_viewer --list ./peat_windows/peat.exe
+        run: pdm run pyi-archive_viewer --list dist/peat.exe
       - name: Check executable
         run: |
-          ./peat_windows/peat.exe --version
-          ./peat_windows/peat.exe --help
-          ./peat_windows/peat.exe parse --list-modules
-          ./peat_windows/peat.exe parse -vVV -d AwesomeTool -I examples/example_peat_module/ -- examples/example_peat_module/awesome_output.json
+          ./dist/peat.exe --version
+          ./dist/peat.exe --help
+          ./dist/peat.exe parse --list-modules
+          ./dist/peat.exe parse -vVV -d AwesomeTool -I examples/example_peat_module/ -- examples/example_peat_module/awesome_output.json
       - name: Build Sneakypeat executable
-        run: |
-          pdm run build-sneakypeat --dist ./sneakypeat_windows
+        run: pdm run build-sneakypeat
       - name: Check Sneakypeat executable
         run: |
-          ./sneakypeat_windows/sneakypeat.exe --version
-          ./sneakypeat_windows/sneakypeat.exe --help
-          ./sneakypeat_windows/sneakypeat.exe --scan -v localhost
+          ./dist/sneakypeat.exe --version
+          ./dist/sneakypeat.exe --help
+          ./dist/sneakypeat.exe --scan -v localhost
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: windows-exe
+          name: windows_exe
           path: |
-            peat_windows/
-            sneakypeat_windows/
+            dist/peat.exe
+            dist/sneakypeat.exe
           if-no-files-found: error
