@@ -6,11 +6,12 @@
 name: Docker Build and Release
 
 on:
-  release:
-    types: [published]  # released and prereleased
   push:
     branches:
       - main
+    tags:
+      - 'v*.*.*'  # tags such as v1.2.3
+      - 'v*.*.*-prerelease'  # tags such as v1.2.3
   workflow_dispatch:
 
 jobs:
@@ -28,7 +29,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-tags: true
           fetch-depth: 0  # checkout full history
       - name: Set Tag and Build Timestamp
         id: tag_ts
