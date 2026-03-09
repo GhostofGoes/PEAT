@@ -39,10 +39,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # hack because it's 2026 and github actions still has no native way to make a variable lowercase...
+      - name: Lowercase repo
+        run: |
+          echo "REPO=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
       - name: Dev Container Build and Run Action
         uses: devcontainers/ci@8bf61b26e9c3a98f69cb6ce2f88d24ff59b785c6 # v0.3.1900000417
         with:
-          imageName: ghcr.io/${{ github.repository }}/peat-devcontainer
-          cacheFrom: ghcr.io/${{ github.repository }}/peat-devcontainer
+          imageName: ghcr.io/${{ env.REPO }}/peat-devcontainer
+          cacheFrom: ghcr.io/${{ env.REPO }}/peat-devcontainer
           push: always
           platform: linux/amd64,linux/arm64
