@@ -2,7 +2,7 @@
     "name": "PEAT Development",
     "image": "ghcr.io/ghostofgoes/peat/peat-devcontainer:latest",
 
-    "postCreateCommand": "pdm install -d && pre-commit install",
+    "onCreateCommand": "bash .devcontainer/setup.sh",
 
     "customizations": {
         "vscode": {
