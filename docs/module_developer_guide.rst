@@ -66,7 +66,7 @@ Walkthrough
 .. note::
    Refer to :ref:`config-state-deepdive` for a detailed explanation and discussion on PEAT's global configuration and state, including how to add new variables
 
-This guide will walk you though the creation of a PEAT device module. You should be relatively proficient in Python and understand classes and inheritance. You will create the module for the fictional tool, "Awesome Tool". Awesome Tool is a command-line program that pulls information from Programmable Logic Controllers (PLCs) over a network. If it existed, you would use it by running  ``awesome-tool``, and get the results of the tool from ``awesome_output.json``. The finished example AwesomeTool module (``awesome_module.py``), an example input file (``awesome_output.json``), and example PEAT output from running the module (``example_peat_results/``) are in ``examples/example_peat_module``.
+This guide will walk you though the creation of a PEAT device module. You should be relatively proficient in Python and understand classes and inheritance. You will create the module for the fictional tool, "Awesome Tool". Awesome Tool is a command-line program that pulls information from Programmable Logic Controllers (PLCs) over a network. If it existed, you would use it by running  ``awesome-tool``, and get the results of the tool from ``awesome_output.json``. The finished example AwesomeTool module (``awesome_module.py``), an example input file (``awesome_output.json``), and the expected PEAT output from running the module (``awesome_output_expected_device-data-*.json``) are in ``examples/example_peat_module``.
 
 Input data the module will process:
 
@@ -150,7 +150,7 @@ Contributing a new module to be included in PEAT's codebase.
       .. code-block:: python
 
          class SELRelay(DeviceModule):
-            default_options = {211
+            default_options = {
                "ymodem": {
                   "baudrate": 57600,
                },
@@ -201,7 +201,7 @@ Then, invoke it:
    pdm run python -i mymodule_testing.py
    >>> dev
    >>> some_other_dev = SELRelay.parse(Path('some_other_file.txt'))
-   >>> import datastore
+   >>> from peat import datastore
    >>> pull_dev = datastore.get("192.0.2.22")
    >>> SELRelay.pull_project(pull_dev)
    >>> pull_dev.firmware.version

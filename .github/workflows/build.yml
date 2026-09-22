@@ -6,9 +6,21 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:  # from release.yml
+    inputs:
+      version:
+        description: "Version to stamp into the built artifacts and docs, e.g. v2026.9.2. Defaults to the version derived from the latest reachable Git tag."
+        required: false
+        type: string
 
 permissions:
   contents: read
+
+env:
+  # The release workflow builds the artifacts *before* it creates the release
+  # tag, so the SCM-derived version would be the previous release. Stamp the
+  # requested version instead. This is empty for normal builds, which
+  # pdm-backend, docs/conf.py, and update_file_version_info.py treat as unset.
+  PDM_BUILD_SCM_VERSION: ${{ inputs.version }}
 
 jobs:
   docs:
@@ -53,8 +65,7 @@ jobs:
           cache: true
       - name: Install dependencies
         run: pdm sync -d --clean
-      - name: Update dependencies doc pages
-        run: pdm run dep-doc
+      # NOTE: this also regenerates docs/dependencies_table.rst ("pdm run dep-doc")
       - name: Build docs (HTML and manpage)
         run: pdm run docs
       - name: Upload HTML docs artifacts

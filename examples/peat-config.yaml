@@ -591,7 +591,9 @@ device_options:
     # Set to true to force a clean recompile when pushing a new program.
     clean_upload: true
     # --- Plugin Status Query ---
-    # Examples: [ethercat, modbus_master, modbus_slave, opcua, s7comm]
+    # Mapping of plugin name to the command to send to it during a pull.
+    # Plugin examples: ethercat, modbus_master, modbus_slave, opcua, s7comm
+    # Example: {ethercat: status}
     plugins_to_query: {}
 
   # Configuration specific to the ControlLogix module

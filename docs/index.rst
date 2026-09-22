@@ -26,7 +26,7 @@ Table of Contents
    install
    configure
    operate
-   module_documents
+   reference_documents
    design_documents
    developer_reference
    glossary

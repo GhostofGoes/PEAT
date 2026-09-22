@@ -427,8 +427,10 @@ shell = """
 pipdeptree --graph-output png --exclude pipdeptree,graphviz,pylint,pytest,flake8,ruff,pyinstaller,staticx,tox,tox-pdm,black,isort,vulture,mypy,check-sdist,codespell,pytest-cov,pytest-mock,pytest-randomly,deepdiff,pytest-xdist,pytest-json-report,xdoctest,requests-mock,Pygments,fire,pdm-backend,check-manifest,pyinstaller-hooks-contrib,virtualenv,types-tzlocal,types-PyYAML,wheel,setuptools,pip,better-exceptions,pyproject-api,packaging,build,pytest-metadata,coverage,mypy-extensions,pyproject_hooks,feedparser,requirements-parser,validate-pyproject,types-pytz,distlib,pluggy,wheel,iniconfig,pathspec,platformdirs,dill,filelock,altgraph,execnet,click,cachetools,exceptiongroup,chardet,tomli,ordered-set,tomlkit,mccabe > package_dependencies.png
 """
 
+# NOTE: docs/dependencies_table.rst is generated (and ignored by Git). The
+# "docs-html" and "docs-man" scripts run this automatically before building.
 [tool.pdm.scripts.dep-doc]
-help = "Update dependencies table in the documentation using 'pip-licenses'"
+help = "Generate the dependencies table for the documentation (docs/dependencies_table.rst) using 'pip-licenses'"
 cmd = "pip-licenses --ignore-packages PEAT --with-description --format=rst --output-file=docs/dependencies_table.rst"
 
 [tool.pdm.scripts.update-manuf-linux]
@@ -518,6 +520,7 @@ rm -rf ./_built_docs/
 rm -rf ./_docs_man/
 rm -rf ./_docs_html/
 rm -rf ./docs/automodapi_tmp/
+rm -f ./docs/dependencies_table.rst
 rm -rf ./docs_doctree/
 find . -name ".doctrees" -exec rm -rf {} +
 """
@@ -545,11 +548,17 @@ composite = [
 
 [tool.pdm.scripts.docs-html]
 help = "Build HTML docs (output: _docs_html/)"
-cmd = "sphinx-build -j 4 -b html docs _docs_html"
+composite = [
+    "dep-doc",
+    "sphinx-build -j 4 -b html docs _docs_html",
+]
 
 [tool.pdm.scripts.docs-man]
 help = "Build man pages (output: _docs_man/peat.1)"
-cmd = "sphinx-build -j 4 -b man docs _docs_man"
+composite = [
+    "dep-doc",
+    "sphinx-build -j 4 -b man docs _docs_man",
+]
 
 # TODO: PDF format (using rinohtype)
 [tool.pdm.scripts.docs]
@@ -572,6 +581,9 @@ docker run --rm \
 [tool.doc8]
 ignore = ["D001"]
 extension = [".rst"]
+# dependencies.rst includes the generated dependencies_table.rst, which only
+# exists after "pdm run dep-doc" (part of the docs build, not the lint group)
+ignore-path = ["docs/dependencies.rst", "docs/dependencies_table.rst"]
 
 
 [tool.codespell]

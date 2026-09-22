@@ -14,7 +14,7 @@ OpenPLC Runtime v4 PEAT Module
 Overview
 ========
 
-This document provides in-depth documentation for the PEAT (PLC Enumeration and Assessment Tool) module designed for **OpenPLC Runtime v4**. The module enables discovery, fingerprinting, data collection, and program deployment on OpenPLC v4 instances via its native REST API.
+This document provides in-depth documentation for the PEAT (Process Extraction and Analysis Tool) module designed for **OpenPLC Runtime v4**. The module enables discovery, fingerprinting, data collection, and program deployment on OpenPLC v4 instances via its native REST API.
 
 For initial setup of the runtime environment, please refer to the official Autonomy Logic documentation:
 
@@ -29,27 +29,46 @@ For initial setup of the runtime environment, please refer to the official Auton
 PEAT Module Configuration
 =========================
 
-The ``openplcv4.py`` module uses the following configuration options within a ``config.yaml`` file.
+The :class:`~peat.modules.openplc.openplcv4.OpenPLCv4` module (``openplcv4.py``) defines the following default options in its ``default_options`` class attribute.
 
 Default Options
 ---------------
 
-.. code-block:: yaml
+.. code-block:: python
 
    default_options = {
        "openplcv4": {
            "username": "",
            "password": "",
            "pull_methods": ["https"],
-           "clean_upload": true,
-           "plugins_to_query": {}
+           "clean_upload": True,
+           "plugins_to_query": {},
+       },
+       "https": {
+           "port": 8443,
+           "ssl": True,
        },
    }
 
 * **username/password**: Credentials for the OpenPLC v4 API. A user must be created on the runtime first.
 * **pull_methods**: The module currently only supports ``https`` for data pulling.
-* **clean_upload**: If ``True``, the module will instruct the runtime to wipe compilation caches before building an uploaded program.
-* **plugins_to_query**: A list of plugins to query for status during a data pull. For example: ``["ethercat"]``.
+* **clean_upload**: If ``true``, the module will instruct the runtime to wipe compilation caches before building an uploaded program.
+* **plugins_to_query**: A mapping of plugin name to the command to send to that plugin during a data pull, for example ``{"ethercat": "status"}``. The output of each command is saved under ``extra.plugin_status``.
+* **https**: Port and TLS settings for the runtime's REST API (the OpenPLC Runtime v4 default is HTTPS on port ``8443``).
+
+These defaults can be overridden in the ``device_options`` section of the PEAT :doc:`YAML configuration file <configure>`, or per-host in the ``hosts`` section. For example:
+
+.. code-block:: yaml
+
+   device_options:
+     openplcv4:
+       username: "openplc"
+       password: "openplc"
+       pull_methods:
+         - https
+       clean_upload: true
+       plugins_to_query:
+         ethercat: status
 
 Module Capabilities
 ===================
@@ -63,7 +82,8 @@ The module identifies OpenPLC v4 instances by sending a GET request to the ``/ap
 
 .. code-block:: http
 
-   GET https://{device_ip}:8443/api/version
+   GET /api/version HTTP/1.1
+   Host: {device_ip}:8443
 
 Refer to this tool to control the OpenPLC Runtime v4 via Python scripts in order to automate deployment and C2; no Editor needed.
 

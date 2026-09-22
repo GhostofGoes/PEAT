@@ -2,6 +2,7 @@
 # http://www.sphinx-doc.org/en/stable/config
 
 # -- Path setup --------------------------------------------------------------
+import os
 import sys
 import subprocess
 from datetime import datetime
@@ -17,16 +18,28 @@ def _clean_read(pth: Path) -> list:
     return [x.strip() for x in pth.read_text().splitlines() if x]
 
 
-def get_git_version():
-    try:
-        # Run the git command to get the latest tag
-        return subprocess.check_output(
-            args=["git", "describe", "--tags", "--abbrev=0"],
-            encoding="utf-8"
-        ).strip()
-    except Exception:
-        # Handle errors (e.g., if git is not available or no tags exist)
-        return "dev"  # Default version if no tags are found
+def get_git_version() -> str:
+    """
+    Determine the version string shown in the docs (e.g. "v2026.9.2").
+
+    The release workflow stamps the version into the environment variable
+    ``PDM_BUILD_SCM_VERSION`` (the same variable pdm-backend uses to override
+    the SCM-derived package version) because it builds the docs *before* the
+    release tag exists. Otherwise, fall back to the latest reachable git tag.
+    """
+    version = os.environ.get("PDM_BUILD_SCM_VERSION", "").strip()
+    if not version:
+        try:
+            # Run the git command to get the latest tag
+            version = subprocess.check_output(
+                args=["git", "describe", "--tags", "--abbrev=0"],
+                encoding="utf-8"
+            ).strip()
+        except Exception:
+            # Handle errors (e.g., if git is not available or no tags exist)
+            return "dev"  # Default version if no tags are found
+    # Tags are "vYYYY.M.D"; ensure the prefix is present regardless of source
+    return version if version.startswith("v") else f"v{version}"
 
 
 # -- Extensions --------------------------------------------------------------

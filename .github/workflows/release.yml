@@ -31,6 +31,10 @@ jobs:
   build:
     name: Build artifacts
     uses: ./.github/workflows/build.yml
+    with:
+      # The tag doesn't exist yet when the artifacts are built, so pass the
+      # version explicitly (executables, Python package, and docs use it)
+      version: ${{ inputs.tag_name }}
 
   check-changelog:
     name: Check ChangeLog
@@ -171,6 +175,7 @@ jobs:
       id-token: write
       contents: write
       discussions: write
+      actions: write  # dispatch the Documentation workflow
     env:
       TAG_NAME: ${{ inputs.tag_name }}
       TARGET_BRANCH: ${{ inputs.target_branch }}
@@ -178,7 +183,7 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: auditxx
+          egress-policy: audit
       - name: Validate tag name
         shell: bash
         run: |
@@ -219,6 +224,16 @@ jobs:
             Triggered-by: ${{ github.actor }}"
             git push origin "refs/tags/$TAG_NAME"
           fi
+      # The tag is pushed with GITHUB_TOKEN, and events caused by GITHUB_TOKEN
+      # never trigger other workflows, so the Documentation workflow (which
+      # publishes to GitHub Pages) is dispatched explicitly. It runs on the
+      # target branch rather than the tag because the github-pages environment
+      # only allows deployments from "main"; the new tag is reachable from it.
+      - name: Publish documentation for the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run documentation.yml --ref "$TARGET_BRANCH"
 
   create-release:
     name: Build and publish GitHub release

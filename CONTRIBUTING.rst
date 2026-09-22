@@ -21,6 +21,9 @@ How to contribute
 PEAT is an open source project, and we welcome contributions from the community.
 Here is how you can get started:
 
+.. note::
+   This file (``CONTRIBUTING.rst`` in the root of the repository) is the single source of truth for the contribution process, and is what GitHub links to when opening issues and pull requests. Pull requests that don't follow this guide may be delayed until they comply.
+
 #. **Track the work**
 
    Submit bug report or feature request via the `issue tracker <https://github.com/sandialabs/PEAT/issues>`__ or `discussions <https://github.com/sandialabs/PEAT/discussions>`__ on GitHub. If the idea is new/complex, we recommend that the idea is discussed before implementation, to avoid wasting time on an idea that may not be accepted due to lack of consensus.
@@ -29,13 +32,26 @@ Here is how you can get started:
 
    All changes will be made on your personal fork (a copy of the repository).
 
-#. **Create a branch**.
+#. **Create a branch**
 
-   Please use a sensible name such as ``fix/slow-model-processing`` or ``feat/my-new-feature``.
+   Name the branch ``<type>/<short-description>``, using the same ``type`` values as for commit messages (listed below), e.g. ``fix/slow-model-processing`` or ``feat/my-new-feature``.
    Commit as you progress (``git add`` and ``git commit``).
    Ensure commits are scoped to a single change, avoid combining multiple changes into a single commit.
 
-   Use descriptive commit messages that adhere to `Conventional Commits <https://www.conventionalcommits.org>`_, e.g. ``feat: my new feature``.
+   Commit messages MUST adhere to `Conventional Commits <https://www.conventionalcommits.org>`_:
+
+   .. code-block:: text
+
+      <type>(<optional scope>): <subject>
+
+      <optional body>
+
+   - ``type`` MUST be one of the types listed below, and MUST be **lowercase** (e.g. ``feat``, not ``Feat`` or ``FEAT``). The Conventional Commits specification allows any case, but PEAT requires lowercase: the pre-commit hook and the CI commit check are case-sensitive and reject other forms.
+   - ``scope`` is optional, and indicates the area of the codebase affected by the change, e.g. ``feat(sel): ...``
+   - ``subject`` is a short description of the change
+   - Add a body, separated from the subject by a blank line, if the change needs a longer explanation
+
+   Examples: ``feat: my new feature``, ``fix(openplc): handle missing plugin status``, ``docs: fix broken links in the operate guide``.
 
    The available types include:
 
@@ -53,6 +69,9 @@ Here is how you can get started:
    - ``deps`` or ``dependencies``: Changes that updates dependencies
    - ``sec`` or ``security``: Changes that impact security of the system
    - ``deprecate``: Changes that deprecate some feature
+   - ``minor`` or ``patch``: Accepted by the tooling, but prefer one of the more specific types above
+
+   All contributions (code, comments, documentation, and commit messages) MUST be in English.
 
 
 #. **Lint and format**
@@ -76,8 +95,8 @@ Here is how you can get started:
    - **Flexible configuration**: Fragment types can be customized in ``pyproject.toml``
 
    Instead of manually editing CHANGELOG.rst, you need to create at least one "news fragment" file in the ``newsfragments/`` directory.
-   You can manually create these files manually or use `pdm run towncrier create`. *Note that you must provide the Pull Request number 
-   when towncrier asks for an issue number in the prompt.* You can skip the prompt by running something like `pdm run towncrier create 1234.feature`.
+   You can create these files manually or use ``pdm run towncrier create``. *Note that you must provide the Pull Request number
+   when towncrier asks for an issue number in the prompt.* You can skip the prompt by running something like ``pdm run towncrier create 1234.feature``.
 
    **News Fragment Format:**
 
@@ -85,7 +104,7 @@ Here is how you can get started:
    - Where ``<PR_NUMBER>`` is your Pull Request number
    - Where ``<TYPE>`` is one of: ``feature``, ``bugfix``, ``doc``, ``removal``, or ``misc``
 
-   **Example:** ``newsfragments/1234.feature.rst``
+   **Example:** ``newsfragments/1234.feature`` (no file extension, as configured by ``create_add_extension`` in ``pyproject.toml``)
 
    **Valid Fragment Types:**
 
@@ -107,22 +126,13 @@ Here is how you can get started:
 
       This includes parsing of device configuration and status information.
 
-   **Pre-commit Validation:**
+   **Pre-commit and CI Validation:**
 
-   The pre-commit hooks will automatically validate your news fragments when you add or modify files in the ``newsfragments/`` directory. This ensures:
+   The pre-commit hooks run ``towncrier check`` when you add or modify files in the ``newsfragments/`` directory, which verifies that the fragments are recognized by Towncrier. CI additionally requires every pull request to add at least one fragment named after the PR number, and verifies that the changelog can be built from the accumulated fragments.
 
-   - Fragment filenames follow the correct format
-   - Fragment content is valid reStructuredText
-   - Fragment types are recognized
-   - No duplicate fragments exist
+   **Release Process:**
 
-   **Validation and Release Process:**
-
-   During the release process, GitHub Actions will automatically build the changelog from all accumulated news fragments when a new tag is pushed. The workflow validates that:
-
-   - All news fragments are properly formatted
-   - The changelog can be successfully generated
-   - Issue references are correctly formatted
+   When a maintainer runs the Release workflow (refer to :ref:`release-process`), GitHub Actions builds the changelog from all accumulated news fragments and commits the updated ``CHANGELOG.rst`` before creating the release tag.
 
    **Manual Changelog Building (Optional):**
 
@@ -146,19 +156,36 @@ Here is how you can get started:
 
 #. **Squash and rebase**
 
-   Ensure all changes are squashed into one or several well-formed commits, and rebase from the ``main`` branch.
+   Ensure all changes are squashed into one or several well-formed commits, and rebase onto the upstream ``main`` branch to keep the history linear. Resolve any conflicts that arise during the rebase.
+
+   .. code-block:: bash
+
+      git fetch upstream
+      git rebase upstream/main
+
+      # (Optional) squash multiple commits into one. In the editor, change "pick"
+      # to "squash" (or "s") for every commit after the first, then write a single
+      # commit message that summarizes all of the changes.
+      git rebase -i upstream/main
+
+      # A rebase rewrites history, so a force push to your fork is required
+      git push --force-with-lease origin <branch-name>
 
 #. **Submit a Pull Request (PR) to the main branch**
 
-   Follow the template provided when opening a request and complete all sections. If your code is not ready to merge, but you want to get feedback, please open the PR as a "Draft". This enables discussion of the changes, and also raises awareness for others who may be working on the same or similar feature. When the PR is ready to merge, remove the "Draft" marking.
+   Open the pull request against the ``main`` branch of `sandialabs/PEAT <https://github.com/sandialabs/PEAT/pulls>`__. Follow the template provided when opening a request and complete all sections, and reference any related issues (e.g. ``Closes #123``).
+
+   The PR title MUST follow the same Conventional Commits format as commit messages (**lowercase** ``type``, optional scope, short subject), e.g. ``docs: fix broken links in the operate guide``. PRs are usually squash-merged, so the PR title becomes the commit message on ``main``.
+
+   If your code is not ready to merge, but you want to get feedback, please open the PR as a "Draft". This enables discussion of the changes, and also raises awareness for others who may be working on the same or similar feature. When the PR is ready to merge, remove the "Draft" marking.
 
 #. **Wait for review**
 
-   When a pull request is made, a reviewer will assess the code and write comments on your PR. Due to project restrictions, you may not be able to request specific reviewers to look at your code via the UI, but you can mention them in a command, e.g. ``@username1 @username2 Requesting review on this PR because you are SMEs on Device X``.
+   When a pull request is made, a reviewer will assess the code and write comments on your PR. All pull requests must be approved by at least one maintainer. If you know which maintainers would best understand your contribution, request their review using "Reviewers" on the right side of the PR page. Due to project restrictions, you may not be able to request specific reviewers via the UI, in which case mention them in a comment, e.g. ``@username1 @username2 Requesting review on this PR because you are SMEs on Device X``.
 
    Every single developer working on the project has their code reviewed, and we've come to see it as friendly conversation from which we all learn and the overall code quality benefits. Therefore, please don't let the review discourage you from contributing: its only aim is to improve the quality of project, not to criticize. Once the code has been reviewed and all comments have been addressed, the reviewer will authorize the patch.
 
-   After approval, any maintainer may merge (rebase) the PR into ``main``.
+   After approval, any maintainer may merge (squash or rebase) the PR into ``main``.
 
 #. **Update fork**
 
@@ -243,6 +270,7 @@ Manual Setup
 
 #. Create a fork of the `PEAT GitHub repository <https://github.com/sandialabs/PEAT>`__
 #. Ensure Python 3.11 or newer is installed. The versions of Python supported by PEAT are currently 3.11 - 3.13.
+
    - Ubuntu 22.04: ``sudo apt install -y python3.11 python3.11-dev python3.11-pip``
    - Ubuntu 24.04: ``sudo apt install -y python3 python3-dev python3-pip`` (this is Python 3.12)
    - Windows: download from `python.org <https://www.python.org/downloads/windows/>`__
@@ -387,17 +415,32 @@ Requirements
    - Tests on closed-source datasets
    - Tests on the PEAT device rack (live devices)
 
+.. _release-process:
+
 Release process
 ^^^^^^^^^^^^^^^
+Releases are created by the ``Create Release`` GitHub Actions workflow (``.github/workflows/release.yml``). Do **not** create the release tag manually, the workflow creates it.
 
-#. Create a Git tag with the calendar version, e.g. if the date is April 2 2026, the tag should be ``v2026.4.2``. The tag **should NOT** have a description. The tag can be created from the GitHub web interface, or from the command line with ``git tag``.
-#. Wait for the Release workflow to finish in GitHub Actions
-#. Verify the release in `Releases <https://github.com/sandialabs/PEAT/releases>`__:
+#. Open `Actions > Create Release <https://github.com/sandialabs/PEAT/actions/workflows/release.yml>`__, click "Run workflow", and fill in:
+
+   - ``tag_name``: the calendar version for the release prefixed with ``v``, e.g. ``v2026.4.2`` if the date is April 2 2026. Append ``-prerelease`` (e.g. ``v2026.4.2-prerelease``) to mark the release as a pre-release.
+   - ``target_branch``: the branch to release from (normally ``main``)
+
+#. Wait for the workflow to finish. It will:
+
+   - Run the tests and build all of the artifacts (Linux and Windows executables, Python package, HTML docs, man page, sneakypeat), stamped with the release version
+   - Build the :doc:`changelog` from the accumulated news fragments using Towncrier and commit the updated ``CHANGELOG.rst`` to the target branch (skipped if the changelog already has an entry for the tag)
+   - Create the annotated Git tag
+   - Dispatch the Documentation workflow, which rebuilds the documentation for the release and deploys it to `GitHub Pages <https://sandialabs.github.io/PEAT/>`__
+   - Create a **draft** GitHub release with the artifacts attached
+
+#. Verify the draft release in `Releases <https://github.com/sandialabs/PEAT/releases>`__:
 
    - Ensure the change list is correct
-   - Ensure all expected artifacts are included: Linux EXE, Windows EXE, Python package (source dist and wheel), docs, sneakypeat
+   - Ensure all expected artifacts are included: Linux EXE, Windows EXE, Python package (source dist and wheel), docs, man page, sneakypeat
    - Download artifacts and verify they work as expected. The artifacts are tested in CI, but it's good to be sure.
 
+#. Publish the release
 #. Share the release with all relevant stakeholders
 #. Congratulations on a successful release!
 
@@ -405,7 +448,7 @@ Logging and printing
 --------------------
 The `Loguru <https://loguru.readthedocs.io/en/stable/>`__ library is used module is used for *all* logging messages (in other words, messages intended to be read by by a human user). Log messages are configured to write to stderr (not stdout), a log file, and Elasticsearch (if configured). The writing to stderr is intentional, enabling users to easily filter output from commands from the logging messages.
 
-The use of :func:`print` and :func:`~pprint.pprint` is forbidden for user messages, and should only be used for printing final results (e.g. scan result summary for a scan). In these cases, add ``# noqa: T001`` to exclude it from linting (and ``# noqa: T002`` for :func:`~pprint.pprint`).
+The use of :func:`print` and :func:`~pprint.pprint` is forbidden for user messages, and should only be used for printing final results (e.g. scan result summary for a scan). In these cases, add ``# noqa: T201`` to exclude it from linting (and ``# noqa: T203`` for :func:`~pprint.pprint`).
 
 Logging levels
 ^^^^^^^^^^^^^^
@@ -454,7 +497,7 @@ Guidelines and policies
 
 Code style
 ^^^^^^^^^^
-- `PEP8 <https://www.python.org/dev/peps/pep-0008/>`__ should be adhered to, with the exception of line length can go up to 88 characters, and certain lines can be excluded with ``# noqa: E501``.
+- `PEP8 <https://www.python.org/dev/peps/pep-0008/>`__ should be adhered to, with the exception of line length can go up to 99 characters (``line-length`` in the ``[tool.ruff]`` section of ``pyproject.toml``), and certain lines can be excluded with ``# noqa: E501``.
 - Run ``pdm run format`` to format your code before pushing. There's no longer a need to worry about formatting, it's all handled for you. Under the hood, `the Ruff formatter <https://docs.astral.sh/ruff/formatter/>`__ is used for formatting and `Ruff's isort check <https://docs.astral.sh/ruff/formatter/#sorting-imports>`__ is used for import sorting.
 - Docstrings should follow `PEP-257 <https://www.python.org/dev/peps/pep-0257/>`__.
 - Argument and Returns in function docstrings should follow the `Googleformat <http://google.github.io/styleguide/pyguide.html>`_ (`Examples <https://www.sphinx-doc.org/en/1.8/usage/extensions/example_google.html>`_).
@@ -462,9 +505,10 @@ Code style
 
 Git
 ^^^
-- All changes to PEAT should be worked on in a Git branch. Changes directly to the main branch (``develop``) will be rejected.
+- All changes to PEAT should be worked on in a Git branch. Changes pushed directly to the ``main`` branch will be rejected.
 - All branches are merged using a GitHub Pull Request (PR).
-- When work is nearing completion, create a Pull Request, and prefix the title with ``"Draft: "``. This increases visibility in advance of the reviewing phase, and enables discussion.
+- Commit messages and PR titles MUST follow Conventional Commits with a lowercase ``type`` (refer to :ref:`contributor_guide`).
+- When work is nearing completion, open a *Draft* Pull Request. This increases visibility in advance of the reviewing phase, and enables discussion.
 - All Pull Requests should have a code review by another PEAT developer. Reviewers should check that the change is reasonable and complete, check for potential issues or edge cases, and look for anything that jumps out at them or seems "fishy".
 - Requirements before *merging* an PR:
 
@@ -476,7 +520,9 @@ Git
 
 Versioning
 ^^^^^^^^^^
-Versions are manually tagged with a calendar version, e.g. ``2024.5.6`` for a tag on May 6th, 2024. The version used for the package internally will be a automatically generated version, e.g. ``2024.5.6.dev801+gf79832d6.d20240506``.
+Releases are tagged with a calendar version prefixed with ``v``, e.g. ``v2024.5.6`` for a release on May 6th, 2024. The tag is created by the Release workflow (refer to :ref:`release-process`), not manually.
+
+The version of the Python package (``peat --version``) is derived from the Git tags by ``pdm-backend`` when PEAT is installed or built. For development builds, this is an automatically generated version such as ``2024.5.6.dev801+gf79832d6.d20240506``. The Release workflow builds the artifacts before the tag exists, so it sets the ``PDM_BUILD_SCM_VERSION`` environment variable to stamp the release version into the executables, Python package, and documentation.
 
 Type annotations
 ^^^^^^^^^^^^^^^^
@@ -514,6 +560,10 @@ Other conventions
   - Convert from :class:`str` to :class:`bytes` using :meth:`str.encode`, and vice-versa using :class:`bytes.decode`
   - :class:`str` objects should be ``"utf-8"``
   - `Refer to this guide <https://stackoverflow.com/a/36149089>`__ for converting escaped hex to hex, and vice-versa
+
+License
+^^^^^^^
+By contributing to this project, you agree that your contributions will be licensed under the `GNU General Public License v3.0 <https://github.com/sandialabs/PEAT/blob/main/LICENSE>`__ that covers the project.
 
 Project structure
 -----------------
@@ -629,7 +679,7 @@ The data types of values are automatically checked and converted when loaded fro
 
 Configuration changes from command line arguments
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-**Command line arguments with a name matching the value's name are automatically loaded into the configuration** and assigned as **runtime changes**. For example, a command line argument with the name ``--print-results`` will modify the value for :attr:`config.PRINT_RESULTS <peat.settings.Configuration.PRINT_RESULTS>`. Note that only the configuration is automatically modified by command line arguments, the state cannot be changed via the CLI by default. This automatic loading occurs in :func:`peat.init.initialize_peat`, with the `conf` argument containing a dictionary of the CLI arguments passed from :func:`peat.cli_main.run_peat`
+**Command line arguments with a name matching the value's name are automatically loaded into the configuration** and assigned as **runtime changes**. For example, a command line argument with the name ``--print-results`` will modify the value for :attr:`config.PRINT_RESULTS <peat.settings.Configuration.PRINT_RESULTS>`. Note that only the configuration is automatically modified by command line arguments, the state cannot be changed via the CLI by default. This automatic loading occurs in :func:`peat.init.initialize_peat`, with the ``conf`` argument containing a dictionary of the CLI arguments passed from :func:`peat.cli_main.run_peat`
 
 Adding a attribute to the configuration or state
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -677,7 +727,7 @@ Areas of note:
 - ``peat/settings.py`` : :mod:`~peat.settings` **absolutely cannot** import or rely on other ``peat`` Python modules, since it is imported by practically everything else (``state`` and ``config``). There is a heavy amount of advanced Python hackery happening here, some of which is explained with comments. The only changes most developers will need to make in here are adding/changing configuration or state variables.
 - ``peat/consts.py`` : must be mostly static at runtime and **absolutely cannot** import other Python modules from ``peat``, since it contains values that are imported and used across the codebase. Use this for anything that is determined at runtime or never changes. Several examples are string formats and platform information (e.g. the OS PEAT is running on).
 - ``peat/init.py`` : :func:`~peat.init.initialize_peat` is a workaround for the fact we support multiple independent ways of using PEAT (the CLI, the HTTP server, and as a Python package).
-- Multiple classes use the Python ``@property`` feature, read the official documentation for details: `Python docs - Property <docs.python.org/3/library/functions.html#property>`__
+- Multiple classes use the Python ``@property`` feature, read the official documentation for details: `Python docs - Property <https://docs.python.org/3/library/functions.html#property>`__
 - Multiple classes implement Python built-in methods, commonly known as "magic" or "dunder" methods. These include ``__str__``, ``__repr__``, and others. Check the Python documentation for more details and a full listing: `Python docs - Data Model <https://docs.python.org/3/reference/datamodel.html>`__
 - ``peat/data/*`` : the data models use Pydantic to provide a nice interface for working with data from devices. They process, store and manage device data and provide the structure/schema and associated documentation for said data. **Changes here have the potential to affect every module in PEAT**. Therefore, as with anything critical, think twice, write tests, and ask questions.
 

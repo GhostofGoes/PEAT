@@ -56,14 +56,14 @@ The file starts with a ``metadata`` section. This is metadata about the config f
      updated: ""
 
 
-Most of the top-level keys are standard config options, and most can be specified via command line args or environment variables, with a few exceptions (notable example are a lot of the elastic options aren't CLI-configurable to reduce complexity and size of ``--help``). Examples include ``resolve_ip``, ``no_print_results``, ``elastic_server``, ``debug``, and others.
+Most of the top-level keys are standard config options, and most can be specified via command line args or environment variables, with a few exceptions (notable example are a lot of the elastic options aren't CLI-configurable to reduce complexity and size of ``--help``). Examples include ``resolve_ip``, ``print_results``, ``elastic_server``, ``debug``, and others.
 
 .. code-block:: yaml
    :caption: Examples of standard config options
 
    verbose: false
    quiet: false
-   no_print_results: false
+   print_results: false
    no_color: false
    no_logo: false
    assume_online: false
@@ -79,8 +79,8 @@ The ``device_options`` section are settings for modules or protocols that are ap
    :caption: Simple example forcing ``telnet`` to be used for pulls from any SEL devices.
 
    device_options:
-   sel:
-      pull_methods:
+     sel:
+       pull_methods:
          - telnet
 
 

@@ -287,7 +287,7 @@ Windows
 
 WindowsCE
 ---------
-.. automodule:: peat.modules.windows.WindowsCE
+.. automodule:: peat.modules.windows.wince
    :members:
    :no-undoc-members:
 

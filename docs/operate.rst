@@ -9,6 +9,9 @@ PEAT's primary interface is a command-line program with sub-commands for each fu
 - ``push``: push firmware, logic, or configuration to a device
 - ``pillage``: search for :term:`OT` device-specific configuration and project files on a host machine
 - ``heat``: extract and parse device artifacts from network traffic captures (PCAPs)
+- ``config-builder``: interactively build a PEAT configuration file
+- ``encrypt-config``: encrypt a PEAT configuration file
+- ``decrypt-config``: decrypt an encrypted PEAT configuration file
 - ``encrypt-results``: encrypt a PEAT results directory into a password-protected zip archive
 - ``decrypt-results``: decrypt a PEAT encrypted results archive into a results directory
 
@@ -18,7 +21,7 @@ Basics
    Refer to the :doc:`system requirements <system_requirements>` and :doc:`installation documentation <install>` for details on setup and installation
 
 .. note::
-   Refer to :doc:`reference_documents` for documentation of the available command line arguments
+   Refer to the :ref:`cli-reference` for documentation of the available command line arguments
 
 .. code-block:: bash
 
@@ -113,7 +116,7 @@ Examples:
 - ``peat scan --run-name example_run -i 127.0.0.1`` results in ``./peat_results/example_run/``
 - ``peat pull -c ./examples/peat-config-sceptre-testing.yaml -i 127.0.0.1`` results in ``./peat_results/pull_sceptre-test-config_2022-06-17_165532013980/``
 - ``peat scan -i 127.0.0.1`` results in ``./peat_results/scan_default-config_2022-09-27_165532013980/``
-- ``peat scan --rundir example_run_dir -i 127.0.0.1`` results in ``./example_run_dir/``
+- ``peat scan --run-dir example_run_dir -i 127.0.0.1`` results in ``./example_run_dir/``
 
 
 Directory structure
@@ -331,7 +334,7 @@ Running as container
 
 Examples
 ^^^^^^^^
-.. code-block:: python
+.. code-block:: bash
 
    # Discover devices on a network using IP broadcasts
    peat scan -b 192.0.2.0/24
@@ -393,7 +396,7 @@ The output of several commands is in a structure known as a "summary". This can 
 
 Scan summary
 ------------
-The scan summary represents the results of device discovery and verification, such as during a scan, pull, push, or other related network operations. Scan summaries are stored as :term:`JSON` in the directory configured in the :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>` :doc:`configuration option <configure>` (defaults to ``peat_results/summaries/``), printed to the terminal (``stdout``) as :term:`JSON` when running a scan using ``peat scan``, or returned as a :class:`dict` when calling :func:`peat.api.scan_api.scan`.
+The scan summary represents the results of device discovery and verification, such as during a scan, pull, push, or other related network operations. Scan summaries are stored as :term:`JSON` in the directory configured in the :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>` :doc:`configuration option <configure>` (defaults to ``peat_results/<run-dir>/summaries/``), printed to the terminal (``stdout``) as :term:`JSON` when running a scan using ``peat scan``, or returned as a :class:`dict` when calling :func:`peat.api.scan_api.scan`.
 
 .. csv-table:: Scan summary fields
    :escape: \
@@ -413,7 +416,7 @@ Example
 
 Pull summary
 ------------
-The pull summary is a summary of device pulls. Pull summaries are stored as :term:`JSON` in the directory configured in the :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>` :doc:`configuration option <configure>` (defaults to ``peat_results/summaries/``) or returned as a :class:`dict` when calling :func:`peat.api.pull_api.pull`. Only the results of the pull (list of device data) is printed to the terminal (``stdout``) as :term:`JSON` when running a scan using ``peat pull``.
+The pull summary is a summary of device pulls. Pull summaries are stored as :term:`JSON` in the directory configured in the :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>` :doc:`configuration option <configure>` (defaults to ``peat_results/<run-dir>/summaries/``) or returned as a :class:`dict` when calling :func:`peat.api.pull_api.pull`. Only the results of the pull (list of device data) is printed to the terminal (``stdout``) as :term:`JSON` when running a scan using ``peat pull``.
 
 .. csv-table:: Pull summary fields
    :escape: \
@@ -433,7 +436,7 @@ Example
 
 Parse summary
 -------------
-The parse summary represents the results of parsing device artifacts using ``peat parse``. Parse summaries are stored as :term:`JSON` in the directory configured in the :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>` :doc:`configuration option <configure>` (defaults to ``peat_results/summaries/``), printed to the terminal (``stdout``) as :term:`JSON` when running a parse using ``peat parse``, or returned as a :class:`dict` when calling :func:`peat.api.parse_api.parse`.
+The parse summary represents the results of parsing device artifacts using ``peat parse``. Parse summaries are stored as :term:`JSON` in the directory configured in the :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>` :doc:`configuration option <configure>` (defaults to ``peat_results/<run-dir>/summaries/``), printed to the terminal (``stdout``) as :term:`JSON` when running a parse using ``peat parse``, or returned as a :class:`dict` when calling :func:`peat.api.parse_api.parse`.
 
 .. csv-table:: Parse summary fields
    :escape: \
@@ -533,7 +536,7 @@ To parse data from a directory, mount it as a volume
    docker run --rm -v $(pwd)/peat_results:/peat_results --network "host" -i ghcr.io/sandialabs/peat parse -e -v -d selrelay -- "/peat_results/*/devices/"
 
    # Another concrete example of parsing a directory. Note the absolute path to /examples.
-   docker run --rm -v "$(pwd)/examples":"/examples" -v $(pwd)/peat_results:/peat_results --network "host" -i --privileged ghcr.io/sandialabs/peat -VV -e http://localhost:9200 -d selrelay /examples/devices/sel/*/*.rdb
+   docker run --rm -v "$(pwd)/examples":"/examples" -v $(pwd)/peat_results:/peat_results --network "host" -i --privileged ghcr.io/sandialabs/peat parse -VV -e http://localhost:9200 -d selrelay /examples/devices/sel/*/*.rdb
 
 Pulling data from devices
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -672,11 +675,10 @@ Requirements
 - Must be run as ``root``.  This is specifically needed if mounting an image.
 - ``qemu-nbd``, a part of the ``qemu-utils`` package. Installation: ``sudo apt install qemu-utils``
 - ``kmodpy`` Python package. This should be automatically installed with PEAT.
-- If pillaging a raw disk image, the host system must support the filesystem. The filesystems supported by the host can be found through the following commands:
-  .. code-block::
+- If pillaging a raw disk image, the host system must support the filesystem. The filesystems supported by the host can be found by:
 
-     - Opening the file `/proc/filesystems` on the host system
-     - Running `ls -1 /lib/modules/$(uname -r)/kernel/fs` on the host system
+  - Opening the file ``/proc/filesystems`` on the host system
+  - Running ``ls -1 /lib/modules/$(uname -r)/kernel/fs`` on the host system
 
 Running Pillage
 ---------------
@@ -783,7 +785,7 @@ Network traffic either must be parsed by ``ingest-tshark`` and available in Elas
 
 HEAT FTP Extractor
 ^^^^^^^^^^^^^^^^^^
-The ``FTPExtractor`` plug-in for HEAT uses the Zeek network monitoring tool to parse pcap files. A ``.pcap`` file must be present locally to use this plugin. The location of the pcap file can be specified using the ``--pcap`` argument when calling HEAT.
+The ``FTPExtractor`` plug-in for HEAT uses the Zeek network monitoring tool to parse pcap files. A ``.pcap`` file must be present locally to use this plugin. The location of the pcap file can be specified using the ``--pcaps`` argument when calling HEAT.
 
 It's **strongly** recommended to use the Docker container version of PEAT, as it bundles the correct version of Zeek (6.0) and it's dependencies. If you are unable to use the container, then ensure you have Zeek 6.0 installed on your host and in the system PATH variable (or in ``/opt/zeek/``).
 

@@ -42,7 +42,7 @@ The Windows version of PEAT that's distributed to end users is a bundled executa
 
 - ``peat.spec``: Describes the install configuration for PyInstaller
 - ``file_version_info.txt``: File metadata for the resulting ``.exe``
-- ``peat_logo.ico``: Icon for the resulting ``.exe``
+- ``peat_icon.ico``: Icon for the resulting ``.exe``
 
 Building the Windows EXE on a Windows system
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -62,10 +62,10 @@ Setting up a Windows development environment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 How to setup a local Python environment if you will be developing PEAT and need to edit and test the code.
 
-#. Install Python 3.11 or newer (download from `python.org <https://www.python.org/>`__). During install, ensure the option "Add Python to environment variables" or "Add Python to system PATH" is checked (you may need to click "Next" to see this option).
+#. Install a version of Python supported by PEAT, currently 3.11 - 3.13 (download from `python.org <https://www.python.org/>`__). During install, ensure the option "Add Python to environment variables" or "Add Python to system PATH" is checked (you may need to click "Next" to see this option).
 #. Install `Npcap <https://nmap.org/npcap/>`_ 0.99 or newer (Skip this step if Wireshark, Nmap, or Winpcap is already installed)
 #. Open a PowerShell or Command Prompt window
-#. Run ``py -3 -V``, and verify it is 3.11 or newer.
+#. Run ``py -3 -V``, and verify it is a supported version (3.11 - 3.13).
 #. Install `PDM <https://pdm-project.org/en/stable/>`__
 #. Run the following commands to setup a development environment:
 
@@ -80,7 +80,7 @@ How to setup a local Python environment if you will be developing PEAT and need 
 
 Docker
 ------
-NOTE: the GitHub Actions CI pipeline automatically builds and pushes containers if all the tests pass in the ``main`` branch. Build locally to test changes, but you cannot push to GitHub.
+NOTE: the GitHub Actions Docker workflow automatically builds and pushes containers on every push to the ``main`` branch. Build locally to test changes, but you cannot push to GitHub.
 
 .. code-block:: bash
 
@@ -137,7 +137,7 @@ There are three forms of testing:
 
 - Quality: linting and code quality checks
 - Unit tests: uses ``pytest`` to test the CLI interface and individual functions and methods in the code. There are also unit tests that only run against live devices in CI, these are marked with ``@pytest.mark.gitlab_ci_only``.
-- Live tests: run the PEAT executable against live devices and Elasticsearch server in the GitLab Continuous Integration (CI) pipeline. This validates the "end to end" user experience. However, it won't catch logic failures (e.g. bad output or missing files) and failures are more time consuming to debug than with unit tests. **NOTE: these tests are not run on GitHub**.
+- Live tests: run the PEAT executable against live devices and Elasticsearch server in the :term:`SNL`-internal GitLab Continuous Integration (CI) pipeline (not part of this repository). This validates the "end to end" user experience. However, it won't catch logic failures (e.g. bad output or missing files) and failures are more time consuming to debug than with unit tests. **NOTE: these tests are not run on GitHub**.
 
 Running the tests
 -----------------

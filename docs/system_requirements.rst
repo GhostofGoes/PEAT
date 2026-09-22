@@ -13,7 +13,7 @@ Supported platforms
 - Linux
    - Ubuntu
       - Ubuntu 14.04+ : ``peat`` executable
-      - Ubuntu 20.04+ is required for PEAT development or using the Python API
+      - Ubuntu 22.04+ is required for PEAT development or using the Python API (PEAT requires Python 3.11 - 3.13)
    - Red Hat Enterprise Linux (:term:`RHEL`)
       - RHEL 6: Works with the pre-built executable or ``podman`` and the PEAT container image
    - `Kali Linux <https://www.kali.org/>`__
