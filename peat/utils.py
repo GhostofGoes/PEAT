@@ -306,7 +306,8 @@ def get_resource(package: str, file: str) -> str:
     """
     file_manager = ExitStack()
     atexit.register(file_manager.close)
-    path = str(file_manager.enter_context(importlib.resources.path(package, file)))
+    resource = importlib.resources.files(package) / file
+    path = str(file_manager.enter_context(importlib.resources.as_file(resource)))
 
     if not os.path.exists(path):
         state.error = True
