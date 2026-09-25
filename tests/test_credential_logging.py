@@ -18,9 +18,8 @@ There are two kinds of checks here:
   options (which include the credentials).
 
 Usernames are allowed in log messages (e.g. "Logging in as user 'admin'"),
-since they're useful for troubleshooting failed logins. They're still
-included in the runtime check, since dumps of the configuration and options
-shouldn't include them.
+since they're useful for troubleshooting failed logins. The runtime check
+still makes sure they're not in the configuration dump in ``debug-info.txt``.
 """
 
 import ast
@@ -73,6 +72,10 @@ def _credential_sections(options: dict) -> set[str]:
     }
 
 
+# Usernames are allowed in individual log messages (e.g. "Logging in as 'admin'")
+USERNAME_KEYS = {"user", "users", "username", "usernames"}
+
+
 class CanaryConfig:
     """
     Generates options with every credential replaced by a unique canary value.
@@ -83,11 +86,14 @@ class CanaryConfig:
     def __init__(self) -> None:
         self._counter = itertools.count()
         self.canaries: set[str] = set()
+        self.usernames: set[str] = set()  # subset of canaries that are usernames
 
     def new(self, label: str) -> str:
         # Alphanumeric only, so the value isn't altered by URL encoding, quoting, etc.
         canary = f"{self.PREFIX}{re.sub(r'[^a-z0-9]', '', label.lower())}{next(self._counter)}"
         self.canaries.add(canary)
+        if label.lower() in USERNAME_KEYS:
+            self.usernames.add(canary)
         return canary
 
     def _poison(self, value, label: str):
@@ -112,13 +118,14 @@ class CanaryConfig:
                 result[key] = sub
         return result
 
-    def find(self, text: str) -> set[str]:
+    def find(self, text: str, include_usernames: bool = True) -> set[str]:
         """
         Canaries present in the text (case-insensitive, since some
         protocols upper-case the passwords).
         """
         lowered = text.lower()
-        return {c for c in self.canaries if c in lowered}
+        to_find = self.canaries if include_usernames else self.canaries - self.usernames
+        return {c for c in to_find if c in lowered}
 
 
 @pytest.fixture
@@ -178,7 +185,8 @@ def _assert_no_canaries(result, run_dir: Path, canary: CanaryConfig) -> None:
 
     leaks = {}
     for name, text in outputs.items():
-        if found := canary.find(text):
+        # Usernames can be in log messages, but not in the config dump
+        if found := canary.find(text, include_usernames=(name == "debug-info.txt")):
             leaks[name] = sorted(found)
 
     assert not leaks, f"Credentials found in log output: {leaks}"
