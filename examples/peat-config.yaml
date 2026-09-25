@@ -59,9 +59,6 @@ verbose: false
 # Don't write log messages to the terminal
 quiet: false
 
-# DEPRECATED. Setting this no longer has any effect, as it's now the default behavior.
-no_print_results: false
-
 # Print JSON-formatted results from the operation to
 # the terminal (stdout). Note that log messages will still
 # be printed unless 'quiet' is true.

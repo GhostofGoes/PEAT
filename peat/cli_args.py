@@ -690,15 +690,6 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
             default=None,
             help="Do not output logging messages to the terminal (stdout)",
         )
-        # TODO: delete in a future release (probably in 2025)
-        group.add_argument(
-            "-Q",
-            "--no-print-results",
-            action="store_true",
-            default=None,
-            help="DEPRECATED. Setting this no longer has any effect, "
-            "as it's now the default behavior.",
-        )
         group.add_argument(
             "-E",
             "--print-results",

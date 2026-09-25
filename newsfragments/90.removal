@@ -1,0 +1,1 @@
+Removed the deprecated ``-Q``/``--no-print-results`` command line argument and the ``no_print_results`` (``NO_PRINT_RESULTS``) configuration option. Results have not been printed by default since the option was deprecated; use ``-E``/``--print-results`` to print them.

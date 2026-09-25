@@ -2,6 +2,7 @@
 # http://www.sphinx-doc.org/en/stable/config
 
 # -- Path setup --------------------------------------------------------------
+import importlib.metadata
 import os
 import sys
 import subprocess
@@ -25,7 +26,12 @@ def get_git_version() -> str:
     The release workflow stamps the version into the environment variable
     ``PDM_BUILD_SCM_VERSION`` (the same variable pdm-backend uses to override
     the SCM-derived package version) because it builds the docs *before* the
-    release tag exists. Otherwise, fall back to the latest reachable git tag.
+    release tag exists. Otherwise, fall back to the latest reachable git tag,
+    then to the version of the installed PEAT package (e.g. when building from
+    a source distribution without Git history).
+
+    This string is only used by Sphinx for display (|version| and |release|),
+    it is not validated against PEP 440, so the final "dev" fallback is safe.
     """
     version = os.environ.get("PDM_BUILD_SCM_VERSION", "").strip()
     if not version:
@@ -33,11 +39,17 @@ def get_git_version() -> str:
             # Run the git command to get the latest tag
             version = subprocess.check_output(
                 args=["git", "describe", "--tags", "--abbrev=0"],
-                encoding="utf-8"
+                encoding="utf-8",
+                stderr=subprocess.DEVNULL,
             ).strip()
         except Exception:
-            # Handle errors (e.g., if git is not available or no tags exist)
-            return "dev"  # Default version if no tags are found
+            # Git is not available or no tags exist
+            version = ""
+    if not version:
+        try:
+            version = importlib.metadata.version("PEAT").split(".dev")[0]
+        except Exception:
+            return "dev"  # PEAT isn't installed either
     # Tags are "vYYYY.M.D"; ensure the prefix is present regardless of source
     return version if version.startswith("v") else f"v{version}"
 

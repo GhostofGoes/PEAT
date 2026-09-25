@@ -137,7 +137,7 @@ There are three forms of testing:
 
 - Quality: linting and code quality checks
 - Unit tests: uses ``pytest`` to test the CLI interface and individual functions and methods in the code. There are also unit tests that only run against live devices in CI, these are marked with ``@pytest.mark.gitlab_ci_only``.
-- Live tests: run the PEAT executable against live devices and Elasticsearch server in the :term:`SNL`-internal GitLab Continuous Integration (CI) pipeline (not part of this repository). This validates the "end to end" user experience. However, it won't catch logic failures (e.g. bad output or missing files) and failures are more time consuming to debug than with unit tests. **NOTE: these tests are not run on GitHub**.
+- Live tests: run the PEAT executable against live devices and an Elasticsearch server in a separate repository's CI pipeline. This validates the "end to end" user experience. However, it won't catch logic failures (e.g. bad output or missing files) and failures are more time consuming to debug than with unit tests. **NOTE: these tests are not run on GitHub**.
 
 Running the tests
 -----------------

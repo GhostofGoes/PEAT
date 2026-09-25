@@ -56,13 +56,6 @@ class Configuration(SettingsManager):
     Don't write log messages to the :term:`CLI` terminal.
     """
 
-    # TODO: delete in a future release (probably in 2025)
-    NO_PRINT_RESULTS: bool = False
-    """
-    DEPRECATED. Setting this no longer has any effect,
-    as it's now the default behavior.
-    """
-
     PRINT_RESULTS: bool = False
     """
     Print JSON-formatted results from the operation to
