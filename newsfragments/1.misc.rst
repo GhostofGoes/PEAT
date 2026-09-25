@@ -1,0 +1,1 @@
+Replaced the legacy ``importlib.resources.path()`` call in ``peat.utils.get_resource()`` with ``importlib.resources.files()`` and ``as_file()``.
