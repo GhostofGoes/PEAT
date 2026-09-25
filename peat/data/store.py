@@ -1,3 +1,4 @@
+import ipaddress
 from typing import Any
 
 from peat import log
@@ -133,7 +134,15 @@ class Datastore:
         """
         Cleanup duplicate devices in the datastore.
 
-        Duplicates are only merged if they have the same IP, MAC or serial port.
+        Duplicates are only merged if they have the same IP, MAC or serial port,
+        or if they're communication modules in the same ControlLogix chassis
+        (same CPU serial number).
+
+        If the duplicates have different IPs (multiple communication modules
+        on one device), then the one with the lowest IP address is used as the
+        primary, and each module's IP, MAC, interfaces, and services are
+        stored in the matching entry in ``module``. Otherwise, the first
+        duplicate in the datastore is used as the primary.
 
         Any duplicates found are merged into a single
         :class:`~peat.data.models.DeviceData` object,
@@ -160,41 +169,108 @@ class Datastore:
             obj.purge_duplicates()
 
         deduped = []  # type: list[DeviceData]
-        removed = set()  # type: set[int]
+        grouped = set()  # type: set[int]
+        num_removed = 0
 
         for obj in self.objects:
-            # Object was removed as a duplicate
-            if id(obj) in removed:
+            # Object was already merged into another object
+            if id(obj) in grouped:
                 continue
 
-            # Compare anything that isn't the object
-            # and wasn't already removed as a duplicate
-            for comp in self.objects:
-                if id(comp) in removed or comp is obj:
-                    continue
+            group = self._find_duplicates(obj, grouped)
+            if len(group) == 1:
+                deduped.append(obj)
+                continue
 
-                if obj.is_duplicate(comp):
-                    log.info(f"Merging duplicate {comp.get_id()} into {obj.get_id()}")
+            # When the duplicates have different IPs, they're different
+            # communication modules on the same device (e.g. a ControlLogix
+            # with a EWEB and a EN2TR). The order of objects depends on the
+            # order devices responded, so sort to make the result deterministic.
+            multi_module = len({d.ip for d in group if d.ip}) > 1
+            if multi_module:
+                group = sorted(group, key=_primary_sort_key)
+            primary = group[0]
 
-                    # TODO: copy/merge stuff other than the data, e.g. options?
-                    # TODO: delete duplicate timeseries document from Elasticsearch
-                    # Merge in data from the duplicate
-                    merge_models(obj, comp)
-                    obj._is_deduplicated = False
+            for comp in group[1:]:
+                log.info(f"Merging duplicate {comp.get_id()} into {primary.get_id()}")
 
-                    # Purge any new duplicates from the now-merged object
-                    obj.purge_duplicates()
+                if multi_module:
+                    self._merge_comm_module(primary, comp)
 
-                    # Add duplicate to exclusion list
-                    removed.add(id(comp))
+                # TODO: copy/merge stuff other than the data, e.g. options?
+                # TODO: delete duplicate timeseries document from Elasticsearch
+                # Merge in data from the duplicate
+                merge_models(primary, comp)
+                primary._is_deduplicated = False
 
-            deduped.append(obj)
+                # Purge any new duplicates from the now-merged object
+                primary.purge_duplicates()
+                num_removed += 1
+
+            deduped.append(primary)
 
         self.objects = deduped  # Replace objects list with de-duped objects
 
         log.debug(
-            f"Finished deduplicating objects, {len(removed)} duplicates were merged and removed"
+            f"Finished deduplicating objects, {num_removed} duplicates were merged and removed"
         )
+
+    def _find_duplicates(self, obj: DeviceData, grouped: set[int]) -> list[DeviceData]:
+        """
+        Find all objects that are duplicates of ``obj``, including duplicates
+        of those duplicates (e.g. a match by IP, then another match by MAC).
+
+        Returns:
+            ``obj`` and its duplicates, in datastore order. The IDs of all
+            objects in the group are added to ``grouped``.
+        """
+        group = [obj]
+        grouped.add(id(obj))
+
+        i = 0
+        while i < len(group):
+            for comp in self.objects:
+                if id(comp) not in grouped and group[i].is_duplicate(comp):
+                    group.append(comp)
+                    grouped.add(id(comp))
+            i += 1
+
+        # Keep datastore order, so the first object seen remains the primary
+        # when all of the duplicates share the same IP.
+        order = {id(o): i for i, o in enumerate(self.objects)}
+        group.sort(key=lambda o: order[id(o)])
+
+        return group
+
+    @staticmethod
+    def _merge_comm_module(primary: DeviceData, secondary: DeviceData) -> None:
+        """
+        Prepare to merge data from a device's secondary communication module.
+
+        The network identity of each communication module (IP, MAC, interfaces,
+        services, HTTP and FTP data) is added to that module's entry in
+        ``module``, and removed from the top level of ``secondary``, so it isn't
+        mixed in with the data of the primary communication module.
+        """
+        primary.annotate_comm_module()
+        secondary_mod = secondary.annotate_comm_module()
+        if not secondary_mod:
+            return
+
+        if secondary.ip:
+            primary.related.ip.add(secondary.ip)
+        if secondary.mac:
+            primary.related.mac.add(secondary.mac)
+
+        for key in list(secondary.extra.keys()):
+            if key.startswith(("http_", "ftp_")):
+                secondary_mod.extra[key] = secondary.extra.pop(key)
+        secondary.extra.pop("comm_module_serial", None)
+
+        secondary.ip = ""
+        secondary.mac = ""
+        secondary.mac_vendor = ""
+        secondary.service = []
 
     @property
     def verified(self) -> list[DeviceData]:
@@ -212,6 +288,20 @@ class Datastore:
             self._data_obj = DeviceData()
 
         return self._data_obj._options
+
+
+def _primary_sort_key(dev: DeviceData) -> tuple:
+    """
+    Sort key for picking the primary device when merging communication
+    modules, which is the one with the lowest IP address.
+    """
+    if not dev.ip:
+        return (2, 0, 0, "")
+    try:
+        addr = ipaddress.ip_address(dev.ip)
+    except ValueError:
+        return (1, 0, 0, dev.ip)
+    return (0, addr.version, int(addr), dev.ip)
 
 
 #: Global singleton for managing :class:`~peat.data.models.DeviceData`

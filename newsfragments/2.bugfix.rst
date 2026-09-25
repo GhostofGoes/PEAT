@@ -1,0 +1,1 @@
+ControlLogix: data from multiple communication modules on the same PLC (e.g. a EWEB and a EN2TR) is now merged into a single device, the module with the lowest IP address is always used as the primary, and each module's IP, MAC, interfaces, and services are stored in its entry in ``host.module``.
