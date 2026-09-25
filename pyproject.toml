@@ -266,7 +266,7 @@ lint = [
 test = [
     # Handles most of the testing work, including execution
     # Docs: https://docs.pytest.org/en/stable/contents.html
-    "pytest~=8.2",
+    "pytest~=9.0",
 
     # "Coverage" is how much of the code is actually run (it's "coverage")
     # Generates coverage reports from test suite runs
@@ -721,8 +721,10 @@ exclude = [
 
 
 # Configuration for pytest
-# https://docs.pytest.org/en/latest/reference/customize.html#pyproject-toml
-[tool.pytest.ini_options]
+# Uses the native TOML configuration added in pytest 9
+# https://docs.pytest.org/en/stable/reference/customize.html#pyproject-toml
+[tool.pytest]
+minversion = "9.0"
 # verbosity_assertions = 2
 testpaths = ["tests"]
 norecursedirs = [
@@ -742,7 +744,7 @@ markers = [
 ]
 # This is apparently the only straightforward to exclude a file from collection in pytest in 2025...sigh
 # The other option is to add a hook to conftest.py...
-addopts = "--ignore-glob='*forked_telnetlib.py'"
+addopts = ["--ignore-glob=*forked_telnetlib.py"]
 
 
 # Configuration for coverage.py
