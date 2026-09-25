@@ -1,10 +1,12 @@
 import getpass
 import os
 import platform
+import re
 import shutil
 import sys
 import warnings
 from base64 import b64encode
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from random import randint
@@ -200,6 +202,102 @@ def convert(value: Any) -> str | bool | int | float | list | dict | None:
         return str(value)
 
 
+#: Names of options and fields that hold login credentials, such as usernames,
+#: passwords, and SNMP community strings. Matching is case-insensitive, and
+#: dashes are treated as underscores (e.g. "user-password").
+CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "user",
+        "users",
+        "username",
+        "usernames",
+        "pass",
+        "passwd",
+        "password",
+        "passwords",
+        "passphrase",
+        "meter_pass",
+        "user_password",
+        "community",
+        "communities",
+        "creds",
+        "credentials",
+        "secret",
+        "api_key",
+    }
+)
+
+#: Command line arguments whose value is a credential
+CREDENTIAL_CLI_FLAGS: Final[frozenset[str]] = frozenset({"-p", "--password"})
+
+#: Value used in place of a redacted credential
+REDACTED: Final[str] = "<REDACTED>"
+
+# Matches the "user:pass@" portion of a URL, e.g. "https://user:pass@localhost/"
+_URL_USERINFO_RE = re.compile(r"(\b[a-z][a-z0-9+.\-]*://)[^\s/@]+@", re.IGNORECASE)
+
+
+def is_credential_key(key: Any) -> bool:
+    """
+    If a option or field name is one that holds credentials (:data:`CREDENTIAL_KEYS`).
+    """
+    return isinstance(key, str) and key.lower().replace("-", "_") in CREDENTIAL_KEYS
+
+
+def redact_credentials(value: Any) -> Any:
+    """
+    Recursively copy a value with any credentials replaced by :data:`REDACTED`.
+
+    Use this before logging or dumping anything that may contain values from
+    the PEAT configuration, such as ``device_options``, ``hosts``, or
+    ``elastic_server``.
+
+    - Values of mappings keyed by a name in :data:`CREDENTIAL_KEYS` are redacted
+    - Login info in URLs is redacted, e.g. ``https://user:pass@host/``
+      becomes ``https://<REDACTED>@host/``
+
+    Args:
+        value: Value to redact. It is not modified.
+
+    Returns:
+        Copy of the value with credentials redacted. Mappings (including
+        :class:`~collections.ChainMap`) are returned as :class:`dict`.
+    """
+    if isinstance(value, str):
+        return _URL_USERINFO_RE.sub(rf"\1{REDACTED}@", value)
+    elif isinstance(value, Mapping):
+        return {
+            k: REDACTED if is_credential_key(k) else redact_credentials(v)
+            for k, v in value.items()
+        }
+    elif isinstance(value, (list, tuple, set)):
+        return type(value)(redact_credentials(v) for v in value)
+    return value
+
+
+def redact_argv(argv: list[str]) -> list[str]:
+    """
+    Copy of command line arguments with credentials replaced by :data:`REDACTED`.
+
+    This covers the values of :data:`CREDENTIAL_CLI_FLAGS` (e.g. ``--password``)
+    and login info in URLs (e.g. ``-e https://user:pass@localhost:9200``).
+    """
+    redacted = []
+    redact_next = False
+
+    for arg in argv:
+        flag, sep, _ = arg.partition("=")
+        if redact_next:
+            redacted.append(REDACTED)
+        elif sep and flag in CREDENTIAL_CLI_FLAGS:
+            redacted.append(f"{flag}={REDACTED}")
+        else:
+            redacted.append(redact_credentials(arg))
+        redact_next = arg in CREDENTIAL_CLI_FLAGS
+
+    return redacted
+
+
 def get_platform_info() -> dict[str, str | int | bool]:
     """
     Collect information about the system PEAT is running on.
@@ -232,7 +330,7 @@ def get_platform_info() -> dict[str, str | int | bool]:
 
     if len(sys.argv) > 1:
         info["cli_exe"] = sys.argv[0]
-        info["cli_arguments"] = " ".join(sys.argv[1:])
+        info["cli_arguments"] = " ".join(redact_argv(sys.argv[1:]))
 
     if LINUX:
         try:

@@ -1334,8 +1334,9 @@ class SELRelay(DeviceModule):
             attempts += 1
             try:
                 with FTP(dev.ip, port, timeout) as relay:
-                    if not relay.login(creds[0], creds[1]):
-                        cls.log.trace(f"FTP login creds {creds} failed for {dev.ip}")
+                    username = creds[0]
+                    if not relay.login(username, creds[1]):
+                        cls.log.trace(f"FTP login as user '{username}' failed for {dev.ip}")
                         continue
 
                     cls.log.trace(

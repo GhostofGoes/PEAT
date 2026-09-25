@@ -1,0 +1,1 @@
+Added automated tests that check usernames and passwords from defaults, the config file, and the command line don't show up in terminal output or log files, and fixed the places where they did (the ``debug-info.txt`` config dump, device option and CLI argument debug dumps, JSON log command lines, and a few module login messages).
