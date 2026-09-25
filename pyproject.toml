@@ -634,6 +634,7 @@ select = [
     "Q",    # flake8-quotes
     "UP",   # pyupgrade
     "I",    # isort
+    "S",    # flake8-bandit
 
     # ** Things to potentially enable in the future **
     # DTZ requires all usage of datetime module to have timezone-aware
@@ -642,7 +643,6 @@ select = [
     # "PTH",  # flake8-use-pathlib
     # "SIM",  # flake8-simplify
     # "ANN",  # flake8-annotations
-    # "S",    # flake8-bandit
 
 ]
 
@@ -673,11 +673,21 @@ ignore = [
     "PLR0912",
     "PLR0913",
     "PLR0915",
+    # flake8-bandit (S) rules that flag swallowed exceptions. PEAT uses these on purpose
+    # for best-effort cleanup and optional parsing, and they aren't security issues here.
+    "S110",    # try-except-pass
+    "S112",    # try-except-continue
 ]
 
 # Linting error codes to ignore on a per-file basis
 [tool.ruff.lint.per-file-ignores]
-"distribution/sneakypeat.py" = ["T201", "T203"]
+"distribution/sneakypeat.py" = ["T201", "T203", "S101"]
+"tests/**/*.py" = [
+    "S101",  # assert is how pytest works
+    "S104",  # tests use "0.0.0.0" as a sample address
+    "S105",  # dummy test credentials
+    "S106",  # dummy test credentials
+]
 "tests/conftest.py" = ["RET503"]
 "tests/generate_test_data_files.py" = ["T201", "T203"]
 "__init__.py" = ["F401"]
@@ -685,6 +695,8 @@ ignore = [
 "peat/cli_args.py" = ["E501"]
 "peat/data/models.py" = ["E501", "I001"]
 "peat/modules/woodward/easygen_svl.py" = ["E501"]
+# Parses XML config files pulled from devices or supplied by the user (not remote input)
+"peat/modules/schneider/sage/sage_parse.py" = ["S314"]
 "peat/modules/rockwell/clx_relay_ladder_parser.py" = ["ARG001"]
 # if ruff messes up import order then re-add these
 # "peat/protocols/ftp.py" = ["I001"]
