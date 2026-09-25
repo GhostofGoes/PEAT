@@ -366,21 +366,21 @@ run = ["--quiet"]  # suppress output from "pdm run" to facilitate testing
 [tool.pdm.scripts.format]
 help = "Auto-format code using Ruff"
 composite = [
-    "ruff check --select I --fix peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py",
-    "ruff format peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py",
+    "ruff check --select I --fix peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py scripts/check_module.py",
+    "ruff format peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py scripts/check_module.py",
 ]
 
 [tool.pdm.scripts.unused]
 help = "Check for unused code with vulture"
-cmd = "vulture --min-confidence 100 peat distribution distribution/sneakypeat.py examples/example_peat_module/awesome_module.py"
+cmd = "vulture --min-confidence 100 peat distribution distribution/sneakypeat.py examples/example_peat_module/awesome_module.py scripts/check_module.py"
 
 [tool.pdm.scripts.check]
 help = "Run ruff on code in check mode (no auto-fix)"
-cmd = "ruff check peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py"
+cmd = "ruff check peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py scripts/check_module.py"
 
 [tool.pdm.scripts.fix]
 help = "Run ruff and automatically fix errors it can safely fix"
-cmd = "ruff check --fix peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py"
+cmd = "ruff check --fix peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py scripts/check_module.py"
 
 [tool.pdm.scripts.spelling]
 help = "Spelling checks on all relevant files"
@@ -395,9 +395,9 @@ help = "Run all linting checks: unused, spelling, ruff, and formatting"
 composite = [
     "unused",
     "spelling",
-    "ruff check peat tests",
-    "ruff check --select I peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py",
-    "ruff format --check peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py",
+    "ruff check peat tests scripts/check_module.py",
+    "ruff check --select I peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py scripts/check_module.py",
+    "ruff format --check peat tests distribution/sneakypeat.py examples/example_peat_module/awesome_module.py scripts/check_module.py",
     "doc8 -q docs/",  # Check RST files
 ]
 
@@ -680,6 +680,8 @@ ignore = [
 "distribution/sneakypeat.py" = ["T201", "T203"]
 "tests/conftest.py" = ["RET503"]
 "tests/generate_test_data_files.py" = ["T201", "T203"]
+"tests/test_check_module.py" = ["ARG001", "ARG002", "ARG003", "ARG005"]
+"scripts/check_module.py" = ["T201"]
 "__init__.py" = ["F401"]
 "peat/__init__.py" = ["E402", "I001"]
 "peat/cli_args.py" = ["E501"]

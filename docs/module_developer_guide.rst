@@ -117,6 +117,34 @@ The results are in ``device-data-full.json``:
    :language: json
 
 
+Verifying a module
+==================
+``scripts/check_module.py`` checks that a module is implemented correctly and follows current conventions. It's useful when writing a new module, and when updating an older module to the current API. Findings are reported as errors (the module is broken or won't work as intended), warnings (something is likely wrong), or suggestions (improvements).
+
+.. code-block:: bash
+
+   # Check a module in a Python file (same as the "-I" argument to PEAT)
+   pdm run python scripts/check_module.py examples/example_peat_module/awesome_module.py
+
+   # Check a module included with PEAT, by name or alias
+   pdm run python scripts/check_module.py SELRelay
+
+   # Check all modules included with PEAT, only showing errors and warnings
+   pdm run python scripts/check_module.py --all --level warning
+
+   # Exit with an error code if there are any warnings (e.g. for CI)
+   pdm run python scripts/check_module.py --strict ./my_module.py
+
+The checks include:
+
+- Methods: ``_pull()``, ``_push()``, and ``_parse()`` are classmethods with signatures compatible with how PEAT calls them, and the ``pull()``, ``push()``, and ``parse()`` wrappers aren't overridden
+- Identification: ``ip_methods`` and ``serial_methods`` contain :class:`~peat.api.identify_methods.IPMethod` and :class:`~peat.api.identify_methods.SerialMethod` objects with usable identify functions
+- Attributes: types of class attributes, vendor and device type information, consistency with other modules (e.g. the same ``vendor_id`` with a different ``vendor_name``), and that ``filename_patterns`` and ``can_parse_dir`` match whether ``_parse()`` is implemented
+- ``annotate_fields`` keys are valid :class:`~peat.data.models.DeviceData` fields, and ``default_options`` are structured correctly
+- Aliases don't conflict with the names of other modules
+- For modules included with PEAT: the module is imported in ``peat/modules/__init__.py``, and has tests, CLI examples, and documentation (see the steps below)
+
+
 Adding a module to PEAT
 =======================
 Contributing a new module to be included in PEAT's codebase.
@@ -168,6 +196,7 @@ Contributing a new module to be included in PEAT's codebase.
 
 #. Add the device information (vendor, model, known tested, firmware, etc.) to the table of supported devices in Introduction section of the PEAT documentation
 #. Write a basic set of tests for your module (refer to the existing tests as well as the :ref:`test-docs`)
+#. Run ``pdm run python scripts/check_module.py <ModuleName>`` and fix any errors or warnings it reports
 #. (Optional) Create a dedicated documentation page with details on the device in the documentation. A few examples of this are ``sel.rst`` and ``siemens.rst``.
 
 
