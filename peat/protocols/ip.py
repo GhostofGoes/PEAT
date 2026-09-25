@@ -3,7 +3,6 @@ import os
 import socket
 import struct
 from collections.abc import Callable
-from pprint import pformat
 from socket import AF_INET, SOCK_DGRAM, SOCK_STREAM
 
 from peat import config, consts, log
@@ -143,7 +142,7 @@ def check_udp_service(
 
         log.trace2(
             f"SNMP service check failed for {ip}\nCommunity "
-            f"strings attempted: {pformat(snmp_communities)}"
+            f"strings attempted: {len(snmp_communities)}"
             f"\tPort: {port}\tTimeout: {timeout:.2f}"
         )
         return False
