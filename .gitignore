@@ -16,6 +16,7 @@ _build
 _built_docs
 _docs_html
 _docs_man
+_docs_pdf
 _docs
 .doctrees
 

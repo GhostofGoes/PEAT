@@ -516,6 +516,7 @@ help = "Delete documentation build outputs and caches"
 shell = """
 rm -rf ./_built_docs/
 rm -rf ./_docs_man/
+rm -rf ./_docs_pdf/
 rm -rf ./_docs_html/
 rm -rf ./docs/automodapi_tmp/
 rm -rf ./docs_doctree/
@@ -551,12 +552,16 @@ cmd = "sphinx-build -j 4 -b html docs _docs_html"
 help = "Build man pages (output: _docs_man/peat.1)"
 cmd = "sphinx-build -j 4 -b man docs _docs_man"
 
-# TODO: PDF format (using rinohtype)
+[tool.pdm.scripts.docs-pdf]
+help = "Build PDF of the user docs (output: _docs_pdf/peat.pdf)"
+cmd = "sphinx-build -j 4 -b rinoh docs _docs_pdf"
+
 [tool.pdm.scripts.docs]
 help = "Build all doc formats"
 composite = [
     "docs-html",
     "docs-man",
+    "docs-pdf",
 ]
 
 [tool.pdm.scripts.update-actions]
@@ -581,7 +586,7 @@ extension = [".rst"]
 check-filenames = ""
 # NOTE: the ignore words for codespell must be lowercase
 ignore-words-list = "astroid,datas,bre,heros,ser,mot,ot,aci,noe,optin,ro,inh,ardvark,hart,tru,nd,carmel"
-skip = "forked_telnetlib.py,manuf,data_files,htmlcov,.doctrees,_docs_html,_docs_man,built_docs,plc_open,mibs,enip,cip,clx_relay_ladder_parser.py,*.pyc,*.class,*.xsd,*.xml,*.ico,*.apx,*.dmk,*.out,*.stu,*.sta,*.ztx,*.PNG,*.inv,*.png,*.jpg,*.dot,*.ai"
+skip = "forked_telnetlib.py,manuf,data_files,htmlcov,.doctrees,_docs_html,_docs_man,_docs_pdf,built_docs,plc_open,mibs,enip,cip,clx_relay_ladder_parser.py,*.pyc,*.class,*.xsd,*.xml,*.ico,*.apx,*.dmk,*.out,*.stu,*.sta,*.ztx,*.PNG,*.inv,*.png,*.jpg,*.dot,*.ai"
 
 
 [tool.ruff]

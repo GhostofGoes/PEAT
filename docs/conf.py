@@ -180,10 +180,17 @@ man_pages = [
 man_show_urls = True
 
 
-# TODO: build PDF using rinohtype (https://github.com/brechtm/rinohtype)
+# Build a PDF of the user-facing docs using rinohtype
 # https://www.mos6581.org/rinohtype/master/sphinx.html#sphinx-builder
-# rinoh_documents = [{
-#     "doc": "index",
-#     "target": "peat",  # PDF filename
-#     # TODO: add logo in PDF
-# }]
+# NOTE: pdf_index.rst is the root, so API and reference docs are excluded
+rinoh_documents = [
+    {
+        "doc": "pdf_index",
+        "target": "peat",  # PDF filename (peat.pdf)
+        "title": "PEAT Documentation",
+        "subtitle": f"Version {version}",
+        "author": author,
+        "logo": "PEAT_Logo.png",
+        "toctree_only": True,
+    }
+]
