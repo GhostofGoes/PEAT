@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   docs:
-    name: Build Documentation (HTML and manpage)
+    name: Build Documentation (HTML, manpage, and PDF)
     runs-on: ubuntu-24.04
     steps:
       # This will block outbound connections that aren't explicitly allowed
@@ -55,7 +55,7 @@ jobs:
         run: pdm sync -d --clean
       - name: Update dependencies doc pages
         run: pdm run dep-doc
-      - name: Build docs (HTML and manpage)
+      - name: Build docs (HTML, manpage, and PDF)
         run: pdm run docs
       - name: Upload HTML docs artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -67,6 +67,12 @@ jobs:
         with:
           name: manpage
           path: _docs_man/peat.1
+      - name: Upload PDF docs artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pdf_docs
+          path: _docs_pdf/peat.pdf
+          if-no-files-found: error
 
   python-build:
     name: Build Python package

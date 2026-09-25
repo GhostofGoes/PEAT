@@ -18,7 +18,7 @@ Basics
    Refer to the :doc:`system requirements <system_requirements>` and :doc:`installation documentation <install>` for details on setup and installation
 
 .. note::
-   Refer to :doc:`reference_documents` for documentation of the available command line arguments
+   Refer to :doc:`module_documents` for documentation of the available command line arguments
 
 .. code-block:: bash
 

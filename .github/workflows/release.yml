@@ -278,6 +278,7 @@ jobs:
           ls -lAht ./windows_exe
           ls -lAht ./peat_docs
           ls -lAht ./manpage
+          ls -lAht ./pdf_docs
           ls -lAht ./python_package
       - name: Mark files executable
         run: |
@@ -304,6 +305,7 @@ jobs:
       - name: Zip up HTML docs
         run: |
           cp manpage/peat.1 peat_docs/
+          cp pdf_docs/peat.pdf peat_docs/
           zip -r peat_docs.zip peat_docs/
       - name: Verify release files exist
         shell: bash
@@ -321,6 +323,7 @@ jobs:
           test -f "peat_linux_${TAG_NAME}.tgz"
           test -f "peat_windows_${TAG_NAME}.zip"
           test -f "peat_docs.zip"
+          test -f "pdf_docs/peat.pdf"
           test -f "linux_exe/peat"
           test -f "windows_exe/peat.exe"
       # NOTE: This will trigger the Docker workflow
@@ -340,6 +343,7 @@ jobs:
             peat_windows_${{ env.TAG_NAME }}.zip
             peat_docs.zip
             manpage/peat.1
+            pdf_docs/peat.pdf
             python_package/*.whl
             python_package/*.tar.gz
             linux_exe/sneakypeat
