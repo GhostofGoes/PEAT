@@ -1,0 +1,1 @@
+Added ``scripts/check_module.py``, a tool to verify that PEAT device modules are implemented correctly and follow current conventions. Refer to "Verifying a module" in the module developer guide.
