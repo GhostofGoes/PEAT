@@ -1004,7 +1004,7 @@ class Sage(DeviceModule):
                 )
 
                 with tarfile.open(name=file, mode="r:gz", encoding="utf-8") as tar:
-                    tar.extractall(path=t_path)
+                    tar.extractall(path=t_path)  # noqa: S202 - archive pulled from device
             except Exception as ex:
                 cls.log.debug(f"Failed to extract raw files from {file.name}: {ex}")
 

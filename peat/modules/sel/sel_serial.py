@@ -341,7 +341,7 @@ class SELSerial(SELAscii):
         # shell out to rz command for YMODEM file retrieval
         cmd = f"{self.rz_path} --ymodem --quiet > {self.address} < {self.address}"
         self.log.debug(f"Starting 'rz' subprocess: {cmd}")
-        proc = subprocess.run(cmd, shell=True, cwd=out_dir, stderr=subprocess.PIPE, check=False)
+        proc = subprocess.run(cmd, shell=True, cwd=out_dir, stderr=subprocess.PIPE, check=False)  # noqa: S602 - shell redirection to serial port
         self.log.debug("Finished executing 'rz'")
 
         # rz writes files lowercase
@@ -417,7 +417,7 @@ class SELSerial(SELAscii):
             self.write(f"file write {conf_file}")
             sleep(1.5)
 
-            proc = subprocess.run(
+            proc = subprocess.run(  # noqa: S602 - shell redirection to serial port
                 f"{self.sz_path} --ymodem -vv -b {conf_file} > {self.address} < {self.address}",
                 shell=True,
                 cwd=configs_dir,
@@ -428,7 +428,7 @@ class SELSerial(SELAscii):
                 return False
 
             # TODO: why do we call sz twice?
-            subprocess.run(
+            subprocess.run(  # noqa: S602 - shell redirection to serial port
                 f"{self.sz_path} --ymodem -vv -b {conf_file} > {self.address} < {self.address}",
                 shell=True,
                 cwd=configs_dir,
