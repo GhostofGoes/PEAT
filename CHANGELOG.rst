@@ -12,7 +12,6 @@ Known Issues
 ============
 
 - ``peat parse`` may have odd results when run with empty files (0 bytes)
-- ControlLogix: IP, MAC, services, and other data from multiple communication modules on a single ControlLogix PLC aren't being added to ``host.module`` properly when de-duplication and merging occurs. Additionally, the module that gets selected as the "primary" to represent the device isn't fully deterministic and relies on whatever gets checked first. This issue occurs if a device has 2 or more communication modules *that are queried by PEAT*. For example, if a device has a EWEB at ``192.168.0.10`` and a EN2TR at ``192.168.0.11`` and both are interrogated by PEAT, then some data from the two modules may not be merged properly during the de-duplication process.
 
 Resolved issues
 ---------------

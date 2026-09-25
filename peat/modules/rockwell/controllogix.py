@@ -212,6 +212,14 @@ class ControlLogix(DeviceModule):
         # Copy module data if the device has multiple modules
         # and assume module 0 is the CPU module.
         if result.get("modules"):
+            # The top-level result is the identity of the communication module
+            # PEAT is talking to. Save the serial number so the module can be
+            # found later, e.g. when merging data from multiple comm modules.
+            if result.get("serial_number"):
+                dev.extra["comm_module_serial"] = str(result["serial_number"])
+            # Used to identify comm modules in the same chassis during de-duplication
+            if result.get("cpu_serial"):
+                dev.extra["cpu_serial"] = result["cpu_serial"]
             cls._annotate_clx_values(dev, result["modules"][0])
             for slot_id, mod_values in result["modules"].items():
                 mod = DeviceData()

@@ -2782,14 +2782,16 @@ class DeviceData(BaseModel):
     """
     :term:`IP` address of the device. In the case of a device with multiple
     communication modules, this is the IP address of the module PEAT
-    primarily uses to communicate (or first discovered).
+    primarily uses to communicate. If PEAT talked to more than one of the
+    modules, then this is the lowest IP address of those modules, and the
+    other IPs can be found in :attr:`~peat.data.models.DeviceData.module`.
     """
 
     mac: str = ""
     """
     :term:`MAC` address of the device. In the case of a device with
     multiple communication modules, this is the :term:`MAC` address of the
-    module PEAT primarily uses to communicate (or first discovered).
+    module used for :attr:`~peat.data.models.DeviceData.ip`.
     """
 
     mac_vendor: str = Field(default="", elastic_type=KEYWORD_AND_TEXT)
@@ -4296,6 +4298,14 @@ class DeviceData(BaseModel):
                 if this_val and other_val and this_val != other_val:
                     return False
 
+        # NOTE: a ControlLogix chassis can have multiple communication modules
+        # (e.g. a EWEB and a EN2TR), each with their own IP and MAC. If PEAT
+        # talks to more than one of them, they all report the same CPU serial
+        # number via CIP, since they're all part of the same physical device.
+        this_cpu = self.extra.get("cpu_serial")
+        if this_cpu and this_cpu == other.extra.get("cpu_serial"):
+            return True
+
         for attr in ["label", "ip", "mac", "serial_port"]:
             this_val = getattr(self, attr, None)
             other_val = getattr(other, attr, None)
@@ -4307,6 +4317,47 @@ class DeviceData(BaseModel):
                 return True
 
         return False
+
+    def annotate_comm_module(self) -> DeviceData | None:
+        """
+        Copy the network identity of this device (IP, MAC, interfaces and
+        services) to the entry in :attr:`~peat.data.models.DeviceData.module`
+        for the communication module PEAT talked to.
+
+        The communication module is identified by the serial number in
+        ``extra["comm_module_serial"]``. If the module isn't in the list of
+        modules (e.g. it wasn't enumerated), then a new entry is added for it.
+
+        Returns:
+            The module that was annotated, or :obj:`None` if this device
+            doesn't have a known communication module.
+        """
+        serial = self.extra.get("comm_module_serial")
+        if not serial:
+            return None
+
+        for mod in self.module:
+            if mod.serial_number == serial:
+                break
+        else:
+            mod = DeviceData(serial_number=serial)
+            self.module.append(mod)
+
+        if self.ip and not mod.ip:
+            mod.ip = self.ip
+        if self.mac and not mod.mac:
+            mod.mac = self.mac
+
+        for attr in ["interface", "service"]:
+            mod_values = getattr(mod, attr)
+            for value in getattr(self, attr):
+                if value not in mod_values:
+                    mod_values.append(copy.deepcopy(value))
+
+        if not self.slot and mod.slot and mod.ip == self.ip:
+            self.slot = mod.slot
+
+        return mod
 
     def purge_duplicates(self, force: bool = False) -> None:
         """
