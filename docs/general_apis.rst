@@ -167,6 +167,11 @@ cli_args
 .. automodule:: peat.cli_args
    :members:
 
+cli_completion
+^^^^^^^^^^^^^^
+.. automodule:: peat.cli_completion
+   :members:
+
 
 Command Parsers
 ---------------

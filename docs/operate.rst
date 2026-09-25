@@ -11,6 +11,7 @@ PEAT's primary interface is a command-line program with sub-commands for each fu
 - ``heat``: extract and parse device artifacts from network traffic captures (PCAPs)
 - ``encrypt-results``: encrypt a PEAT results directory into a password-protected zip archive
 - ``decrypt-results``: decrypt a PEAT encrypted results archive into a results directory
+- ``completion``: print a shell tab completion script (see :ref:`tab-completion`)
 
 Basics
 ======

@@ -1242,6 +1242,28 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
     )
     add_list_module_args(decrypt_results_parser)  # Hack to add "--list-*" commands
 
+    # Completion command
+    # NOTE: this is added after the "general arguments" loop above,
+    # since none of those arguments apply to generating completions.
+    completion_description = (
+        "Print a shell tab completion script for PEAT to stdout. "
+        "The script is pre-generated from PEAT's arguments, so pressing "
+        "tab does not run PEAT. Refer to the PEAT documentation for how "
+        "to install the script for your shell."
+    )
+    completion_parser = subparsers.add_parser(
+        name="completion",
+        help="Print a shell tab completion script (bash, zsh, fish, or powershell)",
+        description=completion_description,
+    )
+    completion_parser.set_defaults(func="completion")
+    completion_parser.add_argument(
+        "shell",
+        type=str,
+        choices=["bash", "zsh", "fish", "powershell"],
+        help="Shell to generate the completion script for",
+    )
+
     return parser
 
 

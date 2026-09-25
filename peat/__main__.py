@@ -14,6 +14,17 @@ def main():
     try:
         args = cli_args.parse_peat_arguments(__version__)
         args_dict: dict = vars(args)  # Convert argparse Namespace object to a dict
+
+        # Print shell completion script and exit, without initializing PEAT
+        if args_dict.get("func") == "completion":
+            from peat.cli_completion import generate_completion
+
+            parser = cli_args.build_argument_parser(version=__version__)
+            print(  # noqa: T201
+                generate_completion(args.shell, parser, __version__), end="", flush=True
+            )
+            return
+
         cli_main.run_peat(args_dict, START_TIME)
     except KeyboardInterrupt:
         print(  # noqa: T201

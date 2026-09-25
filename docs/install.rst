@@ -58,6 +58,10 @@ These steps are intended for use in environments where there is no Internet acce
    # Verify manual page
    man peat
 
+   # (Optional) Install tab completion, see "Tab completion" below for other shells
+   sudo mkdir -p /usr/local/share/bash-completion/completions
+   peat completion bash | sudo tee /usr/local/share/bash-completion/completions/peat > /dev/null
+
 
 Usage without installation
 ++++++++++++++++++++++++++
@@ -94,6 +98,39 @@ Usage without installation
 
    .\peat.exe --version
    .\peat.exe --help
+
+.. _tab-completion:
+
+Tab completion
+^^^^^^^^^^^^^^
+PEAT can complete sub-commands, arguments, and file paths when you press :kbd:`Tab` in bash, zsh, fish, and PowerShell. The installation scripts above set this up automatically. To set it up manually, generate the completion script for your shell with ``peat completion <shell>``.
+
+The completion scripts are generated from PEAT's command line arguments, so they always match the version of PEAT that generated them. Regenerate the script after upgrading PEAT. The scripts don't run PEAT when you press :kbd:`Tab`, so completion is instant.
+
+.. code-block:: bash
+
+   # bash: system-wide (requires the "bash-completion" package)
+   sudo mkdir -p /usr/local/share/bash-completion/completions
+   peat completion bash | sudo tee /usr/local/share/bash-completion/completions/peat > /dev/null
+
+   # bash: current user only, add this line to ~/.bashrc
+   eval "$(peat completion bash)"
+
+   # zsh: save to a directory in $fpath
+   sudo mkdir -p /usr/local/share/zsh/site-functions
+   peat completion zsh | sudo tee /usr/local/share/zsh/site-functions/_peat > /dev/null
+
+   # fish
+   peat completion fish > ~/.config/fish/completions/peat.fish
+
+.. code-block:: powershell
+
+   # PowerShell: current session only
+   peat completion powershell | Out-String | Invoke-Expression
+
+   # PowerShell: permanently, by loading the script from your profile
+   peat completion powershell > "$HOME\peat_completion.ps1"
+   Add-Content $PROFILE ". `"$HOME\peat_completion.ps1`""
 
 Container
 ^^^^^^^^^
