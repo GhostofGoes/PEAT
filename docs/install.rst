@@ -18,7 +18,7 @@ Scripted installation
 .. code-block:: bash
 
    # Download script
-   curl -fL https://raw.githubusercontent.com/sandialabs/PEAT/refs/heads/main/scripts/install_peat.sh
+   curl -fLO https://raw.githubusercontent.com/sandialabs/PEAT/refs/heads/main/scripts/install_peat.sh
 
    # Verify script contents to ensure they are trusted
    less install_peat.sh
@@ -63,7 +63,7 @@ Usage without installation
 ++++++++++++++++++++++++++
 
 .. warning::
-   This assumes the file ``peat.exe`` in the current working directory.
+   This assumes the file ``peat`` is in the current working directory.
 
 .. code-block:: bash
 
@@ -78,7 +78,7 @@ Windows
 ^^^^^^^
 The Windows distribution does not require any special installation steps and is usually run from wherever the executable is copied to. However, there is a install script that will place it in Local AppData and add to user's PATH for a more persistent installation.
 
- We recommend verifying that the executable works before using it in a deployed environment. There are some special considorations regarding usage, refer to :ref:`windows-usage` for further details.
+We recommend verifying that the executable works before using it in a deployed environment. There are some special considerations regarding usage, refer to :ref:`windows-usage` for further details.
 
 Scripted installation
 +++++++++++++++++++++
@@ -126,9 +126,13 @@ The container image can be used on isolated or Internet-restricted networks by d
 
 1. On the Internet-connected system, pull the PEAT container image
 
+   .. code-block:: bash
+
       docker pull ghcr.io/sandialabs/peat:latest
 
 2. Save the image to a tar file for transfer
+
+   .. code-block:: bash
 
       docker save -o peat_docker_image.tar ghcr.io/sandialabs/peat:latest
 
@@ -136,9 +140,13 @@ The container image can be used on isolated or Internet-restricted networks by d
 
 4. On the isolated system, load the image from the tar file
 
+   .. code-block:: bash
+
       docker load -i peat_docker_image.tar
 
 5. Verify the container runs and reports its version
+
+   .. code-block:: bash
 
       docker run -i ghcr.io/sandialabs/peat:latest --version
 

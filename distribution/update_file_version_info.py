@@ -6,6 +6,7 @@ This information is used by PyInstaller to set the Windows executable metadata.
 Reference: https://pyinstaller.org/en/stable/usage.html#capturing-windows-version-data
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -14,7 +15,11 @@ from pathlib import Path
 
 INFO_PATH = Path(Path(__file__).parent, "file_version_info.txt")
 if len(sys.argv) > 1:
-    NEW_VERSION = sys.argv[1]
+    NEW_VERSION = sys.argv[1].strip("v")
+elif os.environ.get("PDM_BUILD_SCM_VERSION", "").strip():
+    # Set by the release workflow, which builds before the release tag exists.
+    # This is the same variable pdm-backend uses to override the package version.
+    NEW_VERSION = os.environ["PDM_BUILD_SCM_VERSION"].strip().strip("v")
 else:
     try:
         # Attempt to grab the latest release tag
