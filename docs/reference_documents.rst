@@ -2,13 +2,20 @@
 Reference Documents
 *******************
 
-.. toctree::
-   :maxdepth: 1
-   :hidden:
+.. NOTE: the sphinx_argparse_cli directive below creates its own section
+   heading, so it must come *before* the first regular section of this page,
+   otherwise the generated section is nested inside that section. Don't add a
+   manual heading above it either: with an empty ":title:" the generated
+   sub-command sections end up outside of the table of contents and lose
+   their numbering.
 
-   sel
-   siemens
-   openplc
+.. _cli-reference:
+
+.. sphinx_argparse_cli::
+   :module: peat.cli_args
+   :func: build_argument_parser
+   :prog: peat
+   :title: Command Line Interface (CLI) usage reference
 
 .. _peat-index-reference:
 
@@ -34,16 +41,21 @@ PEAT Elasticsearch indices reference
    "``ot-device-events``", "Logging and other event history as extracted from devices. Examples include access logs, system logs, or protection history.", ":attr:`ELASTIC_EVENTS_INDEX <peat.settings.Configuration.ELASTIC_EVENTS_INDEX>`"
    "``ot-device-memory``", "Memory reads from devices, including address in memory, the value read, and information about where it came from and when the read occurred.", ":attr:`ELASTIC_MEMORY_INDEX <peat.settings.Configuration.ELASTIC_MEMORY_INDEX>`"
 
-Command Line Interface (CLI) usage reference
-============================================
-.. sphinx_argparse_cli::
-   :module: peat.cli_args
-   :func: build_argument_parser
-   :prog: peat
-   :title:
-
 PEAT configuration reference
 ============================
 .. literalinclude:: ../examples/peat-config.yaml
    :name: PEAT configuration reference
    :language: yaml
+
+.. _device-module-documents:
+
+Device module documents
+=======================
+In-depth documentation for specific PEAT device modules. Refer to :doc:`device_modules` for the code documentation of all modules included with PEAT.
+
+.. toctree::
+   :maxdepth: 1
+
+   sel
+   siemens
+   openplc

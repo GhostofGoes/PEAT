@@ -74,6 +74,7 @@ Use cases
 - Health monitoring. Ensure the system is healthy and no errors are in the logs. PEAT can help fill the gaps where vendor capabilities are lacking.
 - Recovery. PEAT push can upload configs or firmware to bring a device back to a known-good state (if it exists).
 - Red Team tool
+
     - Sneakypeat is a lighter weight PEAT designed to be used for red team exercises.
     - PEAT can be used as a reconnisance tool during red team exercises or engagements.
 
@@ -92,6 +93,7 @@ Why use PEAT instead of Vendor software or other tools?
 - Performance. PEAT is often faster.
 - System load. Few or no ways to limit what data is pulled, it could pull a little or a ton of data, depending on the software, causing undesirable load on the device. PEAT also causes load, but you can configure it to just pull what's needed.
 - Standardized output. PEAT standardizes the data so downstream tools and :term:`SIEM` platforms can ingest the data.
+
   - There is Consistency across vendors by using PEAT
   - The power of a defined data model and standardized schema
 - Integration. PEAT has a variety of output formats that are both machine-parsable by other tools, and readable by humans. Additionally, it integrates with Elasticsearch.

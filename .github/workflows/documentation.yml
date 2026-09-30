@@ -6,6 +6,12 @@ on:
   push:
     branches:
       - main
+  # Also dispatched by release.yml right after it creates the release tag, so
+  # GitHub Pages picks up the new version. That has to be an explicit dispatch:
+  # the tag is pushed with GITHUB_TOKEN, and events caused by GITHUB_TOKEN never
+  # trigger other workflows. A "release: published" trigger would not work
+  # either, because the github-pages environment only allows deployments from
+  # the main branch, not from tags.
   workflow_dispatch:
 
 permissions:
@@ -60,8 +66,7 @@ jobs:
           cache: true
       - name: Install dependencies
         run: pdm sync -d --clean
-      - name: Update dependencies doc pages
-        run: pdm run dep-doc
+      # NOTE: this also regenerates docs/dependencies_table.rst ("pdm run dep-doc")
       - name: Build docs
         run: pdm run docs-html
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5

@@ -59,9 +59,6 @@ verbose: false
 # Don't write log messages to the terminal
 quiet: false
 
-# DEPRECATED. Setting this no longer has any effect, as it's now the default behavior.
-no_print_results: false
-
 # Print JSON-formatted results from the operation to
 # the terminal (stdout). Note that log messages will still
 # be printed unless 'quiet' is true.
@@ -591,7 +588,9 @@ device_options:
     # Set to true to force a clean recompile when pushing a new program.
     clean_upload: true
     # --- Plugin Status Query ---
-    # Examples: [ethercat, modbus_master, modbus_slave, opcua, s7comm]
+    # Mapping of plugin name to the command to send to it during a pull.
+    # Plugin examples: ethercat, modbus_master, modbus_slave, opcua, s7comm
+    # Example: {ethercat: status}
     plugins_to_query: {}
 
   # Configuration specific to the ControlLogix module

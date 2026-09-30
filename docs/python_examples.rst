@@ -19,7 +19,7 @@ Pull from a M340 PLC
    dev = datastore.get("192.0.2.230")
    pull_succeeded = M340.pull(dev)
    print(pull_succeeded)  # bool, true if pull was successful
-   pprint(device.export())  # print the data
+   pprint(dev.export())  # print the data
 
 Push firmware to a ControlLogix PLC
 -----------------------------------

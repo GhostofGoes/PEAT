@@ -14,7 +14,6 @@ hash_algorithms:
 - sha512
 verbose: false
 quiet: false
-no_print_results: false
 print_results: false
 no_color: false
 no_logo: false
