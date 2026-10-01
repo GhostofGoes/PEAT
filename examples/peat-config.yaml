@@ -85,6 +85,9 @@ assume_online: false
 # Maximum number of threads for any concurrent operations (scanning, etc.)
 max_threads: 260
 
+# Override default max threads for file discovery during `peat parse` on a directory
+override_max_file_discovery_threads: 0
+
 # Default timeout for sockets and potentially other things
 default_timeout: 5.0
 

@@ -94,6 +94,18 @@ class Configuration(SettingsManager):
     Maximum number of threads for any concurrent operations (scanning, etc.).
     """
 
+    OVERRIDE_MAX_FILE_DISCOVERY_THREADS: int = 0
+    """
+    Overrides the default max thread count of the file discovery phase of ``peat parse`` when
+    pointed at a directory. Invalid values (<1) equate to unset (as in use the default). The
+    default is defined by :class:`concurrent.futures.ThreadPoolExecutor` (and varies between
+    Python versions).
+
+    .. note::
+        This is bound (upper limit) by :attr:`~peat.settings.Configuration.MAX_THREADS`. An invalid
+        (<1) value will cause this value to stay as default; regardless of what is set.
+    """
+
     DEFAULT_TIMEOUT: float = 5.0
     """
     Default timeout for sockets and potentially other things.
@@ -305,7 +317,7 @@ class Configuration(SettingsManager):
     Directory where Zeek logs will be saved. Also contains Zeek artifacts.
     """
 
-    ELASTIC_SERVER: str = None
+    ELASTIC_SERVER: str | None = None
     """
     URL of the Elasticsearch server.
     """
@@ -463,7 +475,7 @@ class Configuration(SettingsManager):
     """
     Base name of elasticsearch index to use for :class:`peat.data.models.UEFIHash`
     """
-    HEAT_ELASTIC_SERVER: str = None
+    HEAT_ELASTIC_SERVER: str | None = None
     """
     Elasticsearch server to pull :term:`HEAT` data from.
     """
@@ -474,7 +486,7 @@ class Configuration(SettingsManager):
     data for :term:`HEAT`.
     """
 
-    HEAT_DATE_RANGE: str = None
+    HEAT_DATE_RANGE: str | None = None
     """
     Date range to filter :term:`HEAT` extraction to.
     """

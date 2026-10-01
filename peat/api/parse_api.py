@@ -1,5 +1,6 @@
 import sys
 import timeit
+from concurrent.futures import ThreadPoolExecutor
 from fnmatch import fnmatchcase
 from operator import itemgetter
 from pathlib import Path
@@ -61,7 +62,7 @@ def parse(
     )
     resolved_types = []
     for mod in mods:
-        if mod.filename_patterns:
+        if mod.filename_patterns or mod.file_signatures:
             resolved_types.append(mod)
         # elif to prevent module being added twice
         elif mod.can_parse_dir:
@@ -143,16 +144,16 @@ def parse(
             #      -> make this behavior configurable, like a --only-fingerprints option
 
             # TODO: fingerprint to detect if directory of files matches, then parse the whole
-            #   directory as one device.
+            #   directory as one device.  file signatures may help, but not sufficient.
+            # TODO: add something to API to specify a group of files should be passed?  similar
+            #   to directory, though more targeted; possibly useful for data aggregation needs
+            # TODO: during a pass of multiple files, group files by module
+            #   pass the same dev object to multiple parses?
+            #   or update devices' parse logic to do smarter lookups?
 
             all_files = sorted(utils.collect_files(Path(path), sub_dirs))
 
             for dev_cls in resolved_types:
-                # TODO: during a pass of multiple files, group files by module
-                # pass the same dev object to multiple parses? or update devices'
-                # parse logic to do smarter lookups?
-                # TODO: Add something to API to specify a group of files
-                #   should be passed? (from ion.py TODOs)
                 for file_path in find_parsable_files(all_files, dev_cls):
                     dev = parse_data(file_path, dev_cls)
 
@@ -255,19 +256,26 @@ def find_parsable_files(files: list[str], dev_cls: type[DeviceModule]) -> list[P
     parsable_files = set()  # Prevent conflicts
     log.debug(f"Searching {len(files)} files for {dev_cls.__name__} files")
 
-    # Should the fingerprinting happen separately from filename matching?
-    # Should it happen after it? Or in parallel?
+    def is_parsable(filename: str) -> None | str:
+        # Favor fast matching first to limit overall delay and resource consumption
+        if parsable_file_by_pattern(filename, dev_cls) or parsable_file_by_signature(
+            filename, dev_cls
+        ):
+            return filename
+        return None
 
-    # TODO: can this step be threaded?
+    # Get configurable worker thread count
+    max_workers: int | None = config.OVERRIDE_MAX_FILE_DISCOVERY_THREADS
+    if max_workers is not None and max_workers > 0 and config.MAX_THREADS > 0:
+        max_workers = min(max_workers, config.MAX_THREADS)  # maintains upper bound
+    else:
+        max_workers = None  # defaults ThreadPoolExecutor
 
-    for pattern in dev_cls.filename_patterns:
-        if pattern[0] != "*":
-            pattern = f"*{pattern}"
-
-        log.trace3(f"Checking pattern '{pattern}' for {dev_cls.__name__}")
-        for filename in files:
-            if fnmatchcase(filename.lower(), pattern.lower()):
-                parsable_files.add(filename)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = executor.map(is_parsable, files)
+        for result in results:
+            if result is not None:
+                parsable_files.add(result)
 
     if not parsable_files:
         log.debug(f"No parsable files found for {dev_cls.__name__}")
@@ -277,6 +285,29 @@ def find_parsable_files(files: list[str], dev_cls: type[DeviceModule]) -> list[P
     log.trace2(f"Parsable files for {dev_cls.__name__}: {sorted_files}")
     sorted_paths = [Path(file).resolve() for file in sorted_files]
     return sorted_paths
+
+
+def parsable_file_by_pattern(filename: str, dev_cls: type[DeviceModule]) -> bool:
+    """Determine if file matches device type filename patterns."""
+    for pattern in dev_cls.filename_patterns:
+        if pattern[0] != "*":
+            pattern = f"*{pattern}"
+
+        log.trace3(f"Checking {dev_cls.__name__}'s pattern '{pattern}' against {filename}")
+        if fnmatchcase(filename.lower(), pattern.lower()):
+            log.debug(f"Pattern match ({pattern}) on {filename}")
+            return True
+    return False
+
+
+def parsable_file_by_signature(filename: str, dev_cls: type[DeviceModule]) -> bool:
+    """Determine if file matches device type file signatures."""
+    for sig in dev_cls.file_signatures:
+        log.trace3(f"Checking {dev_cls.__name__}'s signature '{sig}' against {filename}")
+        if sig.matches(filename):
+            log.debug(f"Signature match ({sig}) on {filename}")
+            return True
+    return False
 
 
 __all__ = ["parse"]

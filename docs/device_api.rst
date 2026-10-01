@@ -95,3 +95,9 @@ Module manager
 --------------
 .. automodule:: peat.module_manager
    :members:
+
+FileSignature class
+-------------------
+.. automodule:: peat.file_signature
+  :members:
+  :undoc-members:

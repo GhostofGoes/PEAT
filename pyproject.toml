@@ -540,7 +540,7 @@ composite = [
     "rm -rf .docenv/",
     "rm -rf *.egg-info",
     "rm -rf elastic_index_export/",
-    "find . -name '*.cpython*.so' -exec rm -f {} +",
+    "find . -path './.venv' -prune -o -name '*.cpython*.so' -exec rm -f {} +",
     "find . -name '.doctrees' -exec rm -rf {} +",
     "rm -f ./classes_*.png",
     "rm -f ./packages_*.png",
