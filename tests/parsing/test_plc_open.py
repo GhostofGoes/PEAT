@@ -146,3 +146,14 @@ def test_tc6_generate_st_sceptre_task():
     st = _make_tc6_with_st(sceptre=True)
     assert "TASK TaskMain(INTERVAL := T#50ms,PRIORITY := 0);" in st
     assert "PROGRAM MainProgram WITH TaskMain : main;" in st
+
+
+def test_uri_model_no_catastrophic_backtracking():
+    from peat.parsing.plc_open.xml_modules.xmlclass import URI_model
+
+    assert URI_model.match("http://www.plcopen.org/xml/tc6_0201")
+    assert URI_model.match("https://www.w3.org/1999/xhtml")
+    assert URI_model.match("/relative/path-1.0/")
+    assert not URI_model.match("not a uri")
+    # Would hang with upstream's original nested-quantifier pattern
+    assert not URI_model.match("-" * 50_000 + "!")

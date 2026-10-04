@@ -52,6 +52,9 @@ marked with a ``# PEAT:`` comment. Search for ``PEAT:`` to find them all.
   ``util.paths``, so they are found in PyInstaller builds.
 - ``NoTranslate`` is imported from ``_compat`` instead of
   ``util.TranslationCatalogs``.
+- ``URI_model`` in ``xml_modules/xmlclass.py`` is rewritten to an equivalent
+  regular expression without nested quantifiers, which could backtrack
+  exponentially (flagged by CodeQL).
 - Beremiz installs gettext's ``_`` as a builtin at startup. PEAT doesn't,
   so modules that use ``_`` at runtime import ``NoTranslate as _``.
 
