@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from peat.consts import PeatError
@@ -21,6 +23,7 @@ from peat.data.models import (
     Memory,
     Register,
     Service,
+    Tag,
     Vendor,
 )
 
@@ -242,6 +245,63 @@ def test_dedupe_model_list():
 
     iface.services = dedupe_model_list(iface.services)
     assert iface.services == [Service(port=80, protocol="http")]
+
+
+def test_dedupe_model_list_subsets_and_order():
+    # Models are merged into the first model in the list that's equal
+    # to or a superset of it, and the order of the list is preserved.
+    registers = [
+        Register(protocol="modbus"),
+        Register(address="1", protocol="modbus", name="a"),
+        Register(address="2", protocol="modbus"),
+        Register(address="1", protocol="modbus"),
+        Register(address="2", protocol="modbus", extra={"x": [1, 2]}),
+        Register(address="2", protocol="modbus", extra={"x": [1, 2]}),
+        Register(),
+        Register(address="3", protocol="dnp3"),
+    ]
+    assert dedupe_model_list(registers) == [
+        Register(address="1", protocol="modbus", name="a"),
+        Register(address="2", protocol="modbus", extra={"x": [1, 2]}),
+        Register(address="3", protocol="dnp3"),
+    ]
+
+    # Values that differ aren't merged
+    tags = [Tag(name="a", type="binary"), Tag(name="a", type="analog"), Tag(name="a")]
+    assert dedupe_model_list(tags) == [
+        Tag(name="a", type="binary"),
+        Tag(name="a", type="analog"),
+    ]
+
+
+def test_dedupe_model_list_large():
+    # Regression test for sandialabs/PEAT#20, this used to take minutes
+    registers = [
+        Register(address=str(i), name=f"MOD_{i}", protocol="modbus", group="M")
+        for i in range(20000)
+    ]
+    expected = list(registers)
+    registers.extend(Register(address=str(i), protocol="modbus") for i in range(0, 20000, 2))
+    registers.extend(Register(protocol="modbus", group="M") for _ in range(1000))
+
+    start = time.perf_counter()
+    deduped = dedupe_model_list(registers)
+    assert time.perf_counter() - start < 30
+
+    assert len(deduped) == len(expected)
+    assert all(a is b for a, b in zip(deduped, expected, strict=True))
+
+
+def test_merge_models_dedupes_lists():
+    dest = DeviceData(registers=[Register(address="1"), Register(address="2")])
+    src = DeviceData(registers=[Register(address="2"), Register(address="3")])
+
+    merge_models(dest, src)
+    assert dest.registers == [
+        Register(address="1"),
+        Register(address="2"),
+        Register(address="3"),
+    ]
 
 
 def test_merge_models():
