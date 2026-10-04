@@ -428,7 +428,7 @@ pipdeptree --graph-output png --exclude pipdeptree,graphviz,pylint,pytest,flake8
 """
 
 # NOTE: docs/dependencies_table.rst is generated (and ignored by Git). The
-# "docs-html" and "docs-man" scripts run this automatically before building.
+# "docs-html", "docs-man" and "docs-pdf" scripts run this automatically before building.
 [tool.pdm.scripts.dep-doc]
 help = "Generate the dependencies table for the documentation (docs/dependencies_table.rst) using 'pip-licenses'"
 cmd = "pip-licenses --ignore-packages PEAT --with-description --format=rst --output-file=docs/dependencies_table.rst"
@@ -518,6 +518,7 @@ help = "Delete documentation build outputs and caches"
 shell = """
 rm -rf ./_built_docs/
 rm -rf ./_docs_man/
+rm -rf ./_docs_pdf/
 rm -rf ./_docs_html/
 rm -rf ./docs/automodapi_tmp/
 rm -f ./docs/dependencies_table.rst
@@ -560,12 +561,19 @@ composite = [
     "sphinx-build -j 4 -b man docs _docs_man",
 ]
 
-# TODO: PDF format (using rinohtype)
+[tool.pdm.scripts.docs-pdf]
+help = "Build PDF of the user docs (output: _docs_pdf/peat.pdf)"
+composite = [
+    "dep-doc",
+    "sphinx-build -j 4 -b rinoh docs _docs_pdf",
+]
+
 [tool.pdm.scripts.docs]
 help = "Build all doc formats"
 composite = [
     "docs-html",
     "docs-man",
+    "docs-pdf",
 ]
 
 [tool.pdm.scripts.update-actions]
@@ -593,7 +601,7 @@ ignore-path = ["docs/dependencies.rst", "docs/dependencies_table.rst"]
 check-filenames = ""
 # NOTE: the ignore words for codespell must be lowercase
 ignore-words-list = "astroid,datas,bre,heros,ser,mot,ot,aci,noe,optin,ro,inh,ardvark,hart,tru,nd,carmel"
-skip = "forked_telnetlib.py,manuf,data_files,htmlcov,.doctrees,_docs_html,_docs_man,built_docs,plc_open,mibs,enip,cip,clx_relay_ladder_parser.py,*.pyc,*.class,*.xsd,*.xml,*.ico,*.apx,*.dmk,*.out,*.stu,*.sta,*.ztx,*.PNG,*.inv,*.png,*.jpg,*.dot,*.ai"
+skip = "forked_telnetlib.py,manuf,data_files,htmlcov,.doctrees,_docs_html,_docs_man,_docs_pdf,built_docs,plc_open,mibs,enip,cip,clx_relay_ladder_parser.py,*.pyc,*.class,*.xsd,*.xml,*.ico,*.apx,*.dmk,*.out,*.stu,*.sta,*.ztx,*.PNG,*.inv,*.png,*.jpg,*.dot,*.ai"
 
 
 [tool.ruff]
