@@ -181,13 +181,17 @@ def test_process_types_special_cases():
     assert ControlLogix in ip_mods
     assert WDW2301E not in ip_mods
 
-    file_mods = module_api.lookup_types(module_api.classes, "filename_patterns")
     parse_mods = module_api.lookup_types(module_api.classes, subclass_method="_parse")
-    assert set(file_mods) <= set(parse_mods)
 
+    file_mods = module_api.lookup_types(module_api.classes, "filename_patterns")
+    assert set(file_mods) <= set(parse_mods)
+    sig_mods = module_api.lookup_types(module_api.classes, "file_signatures")
+    assert set(sig_mods) <= set(parse_mods)
     # NOTE: GERelay has _parse() implemented but not filename_patterns
     dir_mods = module_api.lookup_types(module_api.classes, "can_parse_dir")
-    assert set(file_mods + dir_mods) == set(parse_mods)
+    assert set(dir_mods) <= set(parse_mods)
+
+    assert set(file_mods + sig_mods + dir_mods) == set(parse_mods)
 
 
 def test_alias_to_names():

@@ -16,13 +16,13 @@ hash_algorithms:
 
 verbose: false
 quiet: false
-no_print_results: false
 print_results: false
 no_color: false
 no_logo: false
 dry_run: false
 assume_online: false
 max_threads: 260
+override_max_file_discovery_threads: 0
 default_timeout: 5.0
 
 resolve_ip: true

@@ -1,5 +1,3 @@
-import pytest
-
 from peat import __version__, config, datastore
 from peat.api.parse_api import parse
 
@@ -54,9 +52,7 @@ def test_parse_api_parse_failures(top_datapath, tmp_path, mocker, assert_glob_pa
     assert_glob_path(parse_path, "parse-summary.json")
 
 
-# TODO: Re-add bennu tests from open-source sceptre-bennu after open sourcing
-# https://github.com/sandialabs/sceptre-bennu/tree/main/data/configs
-@pytest.mark.skip("Re-add bennu tests from open-source sceptre-bennu after open sourcing")
+# Data from: https://github.com/sandialabs/sceptre-bennu/tree/main/data/configs
 def test_parse_api_multiple_files(test_dir, tmp_path, mocker, assert_glob_path, assert_no_errors):
     parse_path = tmp_path / "summaries"
     mocker.patch.dict(
@@ -73,9 +69,9 @@ def test_parse_api_multiple_files(test_dir, tmp_path, mocker, assert_glob_path, 
 
     datafiles_path = test_dir / "modules" / "sandia" / "data_files"
     paths = [
-        datafiles_path / "bp-dnp3-client.xml",
-        datafiles_path / "ep-bacnet-client.xml",
-        datafiles_path / "ep-sunspec-server.xml",
+        datafiles_path / "bp" / "dnp3-client.xml",
+        datafiles_path / "ep" / "bacnet-client.xml",
+        datafiles_path / "ep" / "sunspec-server.xml",
     ]
     modules = ["SCEPTRE", "SELRelay"]
 

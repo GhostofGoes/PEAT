@@ -110,6 +110,7 @@ from peat import (
     state,
     utils,
 )
+from peat.file_signature import FileSignature
 from peat.protocols import FTP, check_tcp_port
 
 from .relay_parse import (
@@ -189,6 +190,43 @@ class SELRelay(DeviceModule):
         # *.CID (e.g. SET_61850.CID)
         "*.CID",
         "*.cid",
+    ]
+
+    # Targeted function for file_signatures custom_check usage
+    def is_cid(data):
+        """
+        Take zlib compressed data and test if contains expected CID data
+        """
+        import zlib
+
+        try:
+            decompressed_bytes = zlib.decompress(data.read())
+            sig = FileSignature(
+                default_filename="",
+                xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
+                substrings=("IEC 61850",),
+            )
+            return sig.matches(decompressed_bytes)
+        except zlib.error:
+            return False
+
+    file_signatures = [
+        FileSignature(
+            default_filename="sel_relay.rdb",
+            magic_number=olefile.MAGIC.hex(),  # "d0cf11e0a1b11ae1"
+        ),
+        FileSignature(
+            default_filename="cfg.txt",
+            substrings=(
+                "[INFO]",
+                "FID",
+            ),
+        ),
+        FileSignature(
+            default_filename="SET_61850.CID",
+            magic_number="7801",  # zlib---no compression, no preset dictionary
+            custom_check=is_cid,  # examine decompressed content
+        ),
     ]
 
     # These are what's known to work. Others may work as well

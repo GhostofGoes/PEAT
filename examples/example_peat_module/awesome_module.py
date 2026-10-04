@@ -24,6 +24,7 @@ from peat import (
     datastore,
     utils,
 )
+from peat.file_signature import FileSignature
 from peat.protocols import HTTP
 
 
@@ -51,6 +52,21 @@ class AwesomeTool(DeviceModule):
     # Standard file globs are accepted, e.g. "*.txt" or "*awesome*.json",
     # as well as literal strings ("awesome_output.json").
     filename_patterns = ["awesome_output.json"]
+
+    # A list of signatures to match a data stream this module is likely able to parse.
+    # Multiple signatures can be defined, with single or multiple checks.
+    # A matched string will be saved to a file, as defined by "default_filename"
+    file_signatures = [
+        FileSignature(
+            default_filename="awesome_output.json",
+            magic_number="7b",  # Hex byte for "{" which starts JSON
+            substrings=(  # Ordered, expected strings to help uniquely identify the JSON
+                "hostIp",
+                "hostName",
+            ),
+            # Could add "custom_check" to validate JSON as well
+        ),
+    ]
 
     # "aliases" makes the module usable with different device arguments, e.g.
     # "-d middleware" to refer to this module and any others with an alias

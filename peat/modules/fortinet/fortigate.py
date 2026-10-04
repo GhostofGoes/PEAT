@@ -21,6 +21,7 @@ from scp import SCPClient
 
 from peat import DeviceData, DeviceModule, datastore, exit_handler
 from peat.api.identify_methods import IPMethod
+from peat.file_signature import FileSignature
 from peat.protocols import HTTP, SSH
 
 from .fortigate_conf import fg_conf_to_dict, process_fg_conf
@@ -38,7 +39,6 @@ class Fortigate(DeviceModule):
     vendor_id = "Fortinet"
     vendor_name = "Fortinet, Inc."
     brand = "FortiGate"
-    # TODO: file fingerprinting by reading contents of text file
     filename_patterns = [
         "*Fortigate*.conf",
         "*ortigate*.conf",
@@ -46,6 +46,34 @@ class Fortigate(DeviceModule):
         "fortianalyzer-event*.log",
         "memory-event-*.log",
         "sys_config",
+    ]
+    file_signatures = [
+        FileSignature(
+            default_filename="fortigate.conf",
+            substrings=(
+                "config-version=",
+                "config system global",
+                "vdom",
+            ),
+        ),
+        FileSignature(
+            default_filename="debug.log",
+            substrings=(
+                "FortiGate",
+                "Diagnose output",
+            ),
+        ),
+        FileSignature(
+            default_filename="event.log",
+            substrings=(
+                "date=",
+                "time=",
+                "eventtime=",
+                "tz=",
+                "logid=",
+                "vd=",
+            ),
+        ),
     ]
     can_parse_dir: bool = True
     module_aliases = ["fg100", "fg"]

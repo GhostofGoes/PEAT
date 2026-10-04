@@ -333,17 +333,6 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
                 "do more serial stuff. Just a friendly heads up :)"
             )
 
-        if config.NO_PRINT_RESULTS:
-            log.error(
-                "The '-Q' argument (--no-print-results) and 'no_print_results' setting "
-                "is deprecated, and will be "
-                "removed in a future version of PEAT. It's old behavior is now the "
-                "default, results are no longer printed by default. If you need to "
-                "explicitly enable output, use --print-results. This is not an error, "
-                "but leaving the arg enabled will cause your commands to no longer "
-                "work in a future release (probably in 2025)."
-            )
-
     # Log the arguments for debugging
     log.trace4(f"initialize_peat conf\n{pformat(conf, indent=4)}\n")
     log.trace2(f"global_options\n{pformat(datastore.global_options, indent=4)}")
