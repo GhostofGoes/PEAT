@@ -27,9 +27,11 @@ from functools import cmp_to_key
 import re
 from functools import reduce
 
-from plcopen import PLCOpenParser
-from plcopen.structures import *
-from plcopen.types_enums import *
+# PEAT: imports changed to match PEAT's package layout
+from .core_modules.plcopen import PLCOpenParser
+from .core_modules.structures import *
+from .core_modules.types_enums import *
+from .core_modules._compat import NoTranslate as _  # PEAT: Beremiz installs gettext's _ as a builtin
 
 
 # Dictionary associating PLCOpen variable categories to the corresponding

@@ -4,7 +4,8 @@
 # See COPYING file for copyrights details.
 
 
-from util.TranslationCatalogs import NoTranslate
+# PEAT: NoTranslate comes from the local _compat module instead of util.TranslationCatalogs
+from ._compat import NoTranslate
 _ = NoTranslate
 
 ITEMS_EDITABLE = [

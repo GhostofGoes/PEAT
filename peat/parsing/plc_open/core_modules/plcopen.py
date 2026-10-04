@@ -29,8 +29,11 @@ from collections import OrderedDict
 
 from lxml import etree
 
-from xmlclass import *
-import util.paths as paths
+# PEAT: imports changed to match PEAT's package layout,
+# and resources are located with peat.utils.get_resource() instead of util.paths
+from peat.utils import get_resource
+from ..xml_modules import *
+from ._compat import NoTranslate as _  # PEAT: Beremiz installs gettext's _ as a builtin
 
 
 #: Dictionary that makes the relation between var names
@@ -164,7 +167,8 @@ def TextMatched(str1, str2):
     return str1 and str2 and (str1.upper() == str2.upper())
 
 
-PLCOpenParser = GenerateParserFromXSD(paths.AbsNeighbourFile(__file__, "tc6_xml_v201.xsd"))
+# PEAT: get_resource() instead of paths.AbsNeighbourFile()
+PLCOpenParser = GenerateParserFromXSD(get_resource(__package__, "tc6_xml_v201.xsd"))
 
 
 def PLCOpen_XPath(xpath):
@@ -205,7 +209,8 @@ def LOAD_POU_INSTANCES_PROJECT_TEMPLATE(body_type):
 </pou>""" % locals()
 
 
-PLCOpen_v1_file = open(paths.AbsNeighbourFile(__file__, "TC6_XML_V10_B.xsd"))
+# PEAT: get_resource() instead of paths.AbsNeighbourFile()
+PLCOpen_v1_file = open(get_resource(__package__, "TC6_XML_V10_B.xsd"))
 PLCOpen_v1_xml = PLCOpen_v1_file.read()
 PLCOpen_v1_file.close()
 PLCOpen_v1_xml = PLCOpen_v1_xml.replace(

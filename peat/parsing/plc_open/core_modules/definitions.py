@@ -25,10 +25,10 @@
 
 
 
-from os.path import join
-import util.paths as paths
-from util.TranslationCatalogs import NoTranslate
-sd = paths.AbsDir(__file__)
+# PEAT: resources are located with peat.utils.get_resource() instead of util.paths,
+# and NoTranslate comes from the local _compat module instead of util.TranslationCatalogs
+from peat.utils import get_resource
+from ._compat import NoTranslate
 
 # Override gettext _ in this module
 # since we just want string to be added to dictionnary
@@ -47,10 +47,11 @@ LOCATIONDATATYPES = {"X": ["BOOL"],
 #                        Function Block Types definitions
 # -------------------------------------------------------------------------------
 
-StdTC6Libs = [(_("Standard function blocks"),   join(sd, "Standard_Function_Blocks.xml")),
-              (_("Additional function blocks"), join(sd, "Additional_Function_Blocks.xml"))]
+# PEAT: get_resource() instead of join(sd, ...)
+StdTC6Libs = [(_("Standard function blocks"),   get_resource(__package__, "Standard_Function_Blocks.xml")),
+              (_("Additional function blocks"), get_resource(__package__, "Additional_Function_Blocks.xml"))]
 
-StdFuncsCSV = join(sd, "iec_std.csv")
+StdFuncsCSV = get_resource(__package__, "iec_std.csv")
 
 
 def GetBlockInfos(pou):

@@ -29,7 +29,8 @@ import datetime
 from types import FunctionType
 from xml.dom import minidom
 
-from xmlclass.xmlclass import *
+# PEAT: import changed to match PEAT's package layout
+from .xmlclass import *
 
 
 def GenerateDictFacets(facets):
