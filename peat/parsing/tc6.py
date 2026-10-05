@@ -1,4 +1,3 @@
-import copy
 import io
 from xml.dom import minidom
 from xml.etree.ElementTree import Element, ElementTree, SubElement, tostring
@@ -99,7 +98,7 @@ class TC6:
         self.configs = SubElement(self.instances, "configurations")
 
     def __str__(self) -> str:
-        return self.generate_st(sceptre=False)
+        return self.generate_st()
 
     def __repr__(self) -> str:
         str_file = io.BytesIO()
@@ -161,12 +160,9 @@ class TC6:
         """
         self.pous.append(pou)
 
-    def generate_xml_string(self, sceptre: bool = False) -> str:
+    def generate_xml_string(self) -> str:
         """
         Generates TC6-XML compliant XML-formatted text from the tree.
-
-        Args:
-            sceptre: Ensure the XML is compatible with the SCEPTRE PLC (OpenPLC)
 
         Returns:
             XML-formatted text string of the tree
@@ -174,55 +170,13 @@ class TC6:
         log.info("Generating string with formatted TC6 XML")
         root = self.root
 
-        if sceptre:
-            log.info("The generated ST will be compatible with the SCEPTRE PLC (OpenPLC)")
-
-            # We don't want to contaminate the tree with modifications made for OpenPLC
-            # This enables pure logic to still be generated separately,
-            # with only a minor hit to performance
-            log.debug(
-                "Copying tree to prevent contamination by SCEPTRE compatibility modifications"
-            )
-
-            sceptre_root = copy.deepcopy(self.root)
-            log.debug("Finished copying tree")
-            configs = sceptre_root.find(".//configurations")
-            if configs is not None:
-                config_element = SubElement(configs, "configuration", {"name": "Config0"})
-                resource = SubElement(config_element, "resource", {"name": "Res0"})
-                task = SubElement(
-                    resource,
-                    "task",
-                    {"name": "TaskMain", "priority": "0", "interval": "T#50ms"},
-                )
-                prog_name = None
-                for pou in sceptre_root.find(".//pous"):
-                    name = pou.get("name")
-                    if name == self.main_name:
-                        prog_name = name
-                        break
-                if prog_name is not None:
-                    SubElement(
-                        task,
-                        "pouInstance",
-                        {"name": "MainProgram", "typeName": prog_name},
-                    )
-                    root = sceptre_root
-                else:
-                    log.error("Could not find main program POU")
-            else:
-                log.error(
-                    'Could not find the "configurations" element in '
-                    "the tree. The ST will not be SCEPTRE-compatible."
-                )
-
         # Convert XML to text and format it
         generated_xml = self.prettify_xml(root)
 
         log.debug("Finished generating formatted TC6 XML")
         return generated_xml
 
-    def generate_st(self, generated_xml: str | None = None, sceptre: bool = False) -> str:
+    def generate_st(self, generated_xml: str | None = None) -> str:
         """
         Generates IEC 61131-3 compliant Structured Text logic.
 
@@ -231,7 +185,6 @@ class TC6:
 
         Args:
             generated_xml: Generated TC6 XMl string
-            sceptre: Make the resulting logic compatible with the SCEPTRE PLC (OpenPLC)
 
         Returns:
             The generated Structured Text
@@ -239,7 +192,7 @@ class TC6:
         log.info("Generating Structured Text")
 
         if generated_xml is None:
-            generated_xml = self.generate_xml_string(sceptre=sceptre)
+            generated_xml = self.generate_xml_string()
 
         # Convert to ST
         try:
