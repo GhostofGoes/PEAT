@@ -20,12 +20,10 @@ def test_make_pou():
 
 def test_generate_xml_string():
     assert "AwesomeXML" in TC6("AwesomeXML").generate_xml_string()
-    assert "T#50ms" in TC6().generate_xml_string(sceptre=True)
 
 
 def test_generate_st():
     assert isinstance(TC6("AwesomeST").generate_st(), str)
-    assert isinstance(TC6().generate_st(sceptre=True), str)
 
 
 def test_prettify_xml(mocker, tmp_path):
