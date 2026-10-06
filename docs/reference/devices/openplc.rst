@@ -8,9 +8,6 @@ OpenPLC Runtime v4 PEAT Module
 :Version: 1.0
 :Date: 2026-07-10
 
-.. contents::
-   :local:
-
 Overview
 ========
 

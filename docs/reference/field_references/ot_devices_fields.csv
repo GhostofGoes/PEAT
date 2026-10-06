@@ -222,7 +222,7 @@ host.service.port, long, 502, "Port the service is listening on (for TCP/IP tran
 host.service.protocol, keyword, "modbus_tcp", "Protocol of the service. Lowercase, underscore separators."
 host.service.protocol_id, keyword, 10, "Unique protocol identifier for the device, e.g. BACnet device identifier ('BACnet ID') or Modbus slave ID."
 host.service.role, keyword, "dnp3_master", "The operational role of the device for a given protocol."
-host.service.status, keyword, verified, "State of the service. Valid values: ``open``, ``closed``, ``verified``, and ``""``. ``verified``: service was used to positiviely identify the device (e.g. this is a SEL 351S) and the service. ``open``: something is listening, though it may not be the named service. ``closed``: port is not able to be accessed. NOTE: verified means verified over the a live connection, not just read from a configuration file. Instead, the enabled field should be used to store the configuration."
+host.service.status, keyword, verified, "State of the service. Valid values: ``open``, ``closed``, ``verified``, and ``\"\"``. ``verified``: service was used to positiviely identify the device (e.g. this is a SEL 351S) and the service. ``open``: something is listening, though it may not be the named service. ``closed``: port is not able to be accessed. NOTE: verified means verified over the a live connection, not just read from a configuration file. Instead, the enabled field should be used to store the configuration."
 host.service.transport, keyword, udp, "OSI Layer 4 transport protocol. Typical possible values: udp, tcp"
 
 

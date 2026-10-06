@@ -147,7 +147,7 @@ Differences from Elasticsearch
    :header-rows: 1
    :widths: 30 35 35
 
-   * -
+   * - Aspect
      - Elasticsearch
      - OpenSearch
    * - Client library
