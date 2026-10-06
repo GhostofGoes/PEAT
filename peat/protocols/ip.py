@@ -35,7 +35,7 @@ def check_tcp_port(
     Further reading
 
     - nmap connect scan: https://nmap.org/book/scan-methods-connect-scan.html
-    - SO_LINGER: https://web.archive.org/web/2023/https://www.nybek.com/blog/2015/03/05/cross-platform-testing-of-so_linger/
+    - SO_LINGER: https://man7.org/linux/man-pages/man7/socket.7.html
     - SO_LINGER Python: https://stackoverflow.com/a/6440364
     - FIN vs RST: https://stackoverflow.com/a/13050021
 
