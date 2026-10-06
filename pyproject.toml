@@ -575,10 +575,8 @@ cmd = "pdm lock --lockfile pdm.docs.lock --python '>=3.12,<3.14' --override docs
 
 [tool.pdm.scripts.docs-venv]
 help = "Create or update the 'docs' virtualenv from pdm.docs.lock (requires Python 3.12+)"
-shell = """
-pdm venv list | grep -q ' docs: ' || pdm venv create --name docs 3.12
-pdm sync --venv docs --lockfile pdm.docs.lock -G docs --clean
-"""
+# A Python helper rather than a shell script so it also works on Windows (cmd.exe)
+cmd = "python scripts/docs_venv.py"
 
 [tool.pdm.scripts.docs-html]
 help = "Build HTML docs (output: _docs_html/). Warnings are errors."

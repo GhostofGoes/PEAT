@@ -60,7 +60,7 @@ override is in ``docs/overrides.txt`` and applies only to ``pdm.docs.lock``.
 
    # Build the HTML docs into _docs_html/ (warnings are errors)
    pdm run docs-html
-   python -m http.server --directory _docs_html 8000   # then open http://localhost:8000
+   pdm run docs-serve          # then open http://localhost:8000/
 
    # The man page into _docs_man/peat.1
    pdm run docs-man
@@ -75,10 +75,13 @@ override is in ``docs/overrides.txt`` and applies only to ``pdm.docs.lock``.
    pdm run docs-lock
    pdm run docs-venv
 
-If ``pdm run docs-venv`` complains that no suitable Python was found, create the
-environment with an explicit interpreter: ``pdm venv create --name docs 3.12`` and run
-``pdm run docs-venv`` again. Graphviz (``dot``) must be installed for the class diagrams
-(``sudo apt install graphviz``).
+The commands work the same on Windows (PowerShell or ``cmd``); ``pdm run docs-venv`` is
+a small Python helper (``scripts/docs_venv.py``) rather than a shell script for that
+reason. If it complains that no suitable Python was found, create the environment with
+an explicit interpreter, ``pdm venv create --name docs 3.12``, and run it again (PDM can
+also install Python 3.12 for you: ``pdm python install 3.12``). Graphviz (``dot``) must
+be installed for the class diagrams: ``sudo apt install graphviz`` on Debian/Ubuntu,
+``winget install Graphviz.Graphviz`` on Windows, ``brew install graphviz`` on macOS.
 
 The build runs ``sphinx-build -W --keep-going``: **every warning fails the build**, in CI
 and locally, so broken references, missing files, malformed tables, and autodoc problems
