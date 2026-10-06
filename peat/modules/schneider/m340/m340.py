@@ -817,7 +817,7 @@ class M340(DeviceModule):
             plc.xml
 
         - https://github.com/thiagoralves/OpenPLC_Editor
-        - https://www.openplcproject.com/plcopen-editor/
+        - https://github.com/Autonomy-Logic/openplc-editor
         """
         if not dev.options["m340"]["generate_openplc_project"]:
             cls.log.warning(

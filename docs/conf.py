@@ -237,6 +237,10 @@ linkcheck_retries = 2
 linkcheck_workers = 8
 linkcheck_anchors = False  # Many sites render anchors with JavaScript
 linkcheck_ignore = [
+    # Links to PEAT's own published documentation (CONTRIBUTING.rst, README): pages added
+    # by a pull request don't exist on the live site until it is merged and deployed, and
+    # Sphinx already checks the internal references.
+    r"https://sandialabs\.github\.io/PEAT/.*",
     # Placeholder URLs in examples
     r"https?://localhost.*",
     r"https?://127\.0\.0\.1.*",

@@ -149,7 +149,6 @@ jobs:
     name: Check external links (non-blocking)
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
-    continue-on-error: true
     steps:
       # The link checker contacts arbitrary external sites, so the egress policy is "audit"
       - name: Harden Runner
@@ -170,7 +169,10 @@ jobs:
           cache-dependency-path: pdm.docs.lock
       - name: Install dependencies
         run: pdm run docs-venv
+      # Non-blocking: broken external links show up as a warning on this step (and in the
+      # uploaded results), not as a failed check on the pull request
       - name: Check links
+        continue-on-error: true
         run: pdm run docs-linkcheck
       - name: Upload link check results
         if: always()

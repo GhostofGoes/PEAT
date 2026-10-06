@@ -26,8 +26,7 @@ spec file that's used to build the PEAT executable, in ``distribution/peat.spec`
 References/further reading:
 
 - https://github.com/lextudio/pysnmp
-- https://www.pysnmp.com/
-- https://github.com/etingof/pysnmp/docs/pysnmp-hlapi-tutorial.rst
+- https://docs.lextudio.com/snmp/
 
 Authors:
 

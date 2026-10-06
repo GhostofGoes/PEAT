@@ -137,7 +137,7 @@ use go through it.
 
 Logging
 -------
-PEAT uses `Loguru <https://loguru.readthedocs.io/>`__ (``from peat import log``) with
+PEAT uses `Loguru <https://loguru.readthedocs.io/en/stable/>`__ (``from peat import log``) with
 custom ``TRACE2``-``TRACE4`` levels for the ``-VV`` to ``-VVVV`` debugging levels.
 :mod:`peat.log_utils` configures the sinks: the terminal (standard error), ``peat.log``,
 ``json-log.jsonl``, protocol transcript files, and an Elasticsearch sink for the

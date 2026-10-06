@@ -13,7 +13,7 @@ PEAT supports both unauthenticated fingerprinting (via the TCP greeting packet) 
 
    `MySQL Documentation <https://dev.mysql.com/doc/>`__
 
-   `MariaDB Documentation <https://mariadb.com/kb/en/documentation/>`__
+   `MariaDB Documentation <https://mariadb.com/docs/>`__
 
    `PyMySQL <https://pymysql.readthedocs.io/en/latest/>`__
       The underlying Python library used for authenticated connections
