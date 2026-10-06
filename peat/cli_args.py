@@ -419,7 +419,7 @@ decrypt_results_examples = """
 # See the "Decrypting results" section in the PEAT documentation
 
 # Decrypt the files in the -f directory with the user password and store the results in the -w directory
-peat encrypt-results -f '~/peat/encrypted_results' -p secret -w '~/peat/results'
+peat decrypt-results -f '~/peat/encrypted_results/encrypted_results.zip' -p secret -w '~/peat/results'
 """  # End decrypt-results examples
 
 encrypt_config_examples = """
@@ -582,7 +582,7 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
     # Encrypt results command
     encrypt_results_description = (
         "Encrypt the results directory using PEAT's built in encryption capability. Must specify the directory path if not using the default location using -f flag. "
-        "The encrypted zip file will be saved to the same directory you are running from"
+        "The encrypted zip file will be saved to the same directory you are running from. "
         "The new file will be named the same as the unencrypted file, but will have 'encrypted_' added to the beginning of the filename. "
         "WARNING: PEAT will not save the encrypted archive's password for you, it is up to you to remember it"
     )
@@ -596,8 +596,8 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
     encrypt_results_parser.set_defaults(func="encrypt_results")
 
     decrypt_results_description = (
-        "Decrypt the results zip file using PEAT's built in decryption capability. Must specify the file path to the zip file "
-        "The decrypted directory will be saved to the directory you run from"
+        "Decrypt the results zip file using PEAT's built in decryption capability. Must specify the file path to the zip file. "
+        "The decrypted directory will be saved to the directory you run from. "
         "IMPORTANT: PEAT will only decrypt zips that have previously been encrypted by PEAT, and upon receiving the correct password"
     )
     decrypt_results_parser = subparsers.add_parser(

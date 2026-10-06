@@ -18,9 +18,9 @@
 - Other distributions: Debian, Debian-based distributions, and RHEL-based distributions (e.g. Fedora and CentOS) should work with the peat executable, but are not regularly tested. It has been known to work under Debian 9.
 
 **Windows**
-- Windows 7 SP2 and newer: While Windows 7 has been tested; it’s not regularly tested and support is not maintained. Your Mileage May Vary.
-- Windows 10 version 1809 and newer/Windows Server 2019+ (build 17763): fully supported and regularly tested on Windows desktop and server build 17763 and newer. 1703+ may work, but hasn’t been tested in a while.
-- Windows 11: fully supported and regularly tested
+- Windows 10 version 1809 and newer/Windows Server 2019+ (build 17763): fully supported and regularly tested (CI runs the unit tests on Windows Server 2022 and the current GitHub-hosted Windows image).
+- Windows 11: supported; builds and tests run on current Windows images in CI.
+- Windows 7, 8, and 8.1: not supported. PEAT's Python runtime (3.11+) requires Windows 10 or newer.
 
 **MacOS/OSX**
 - OSX is supported on a best-effort basis. There are known issues with some networking components when running on OSX, but the majority of functionality should work.

@@ -1,0 +1,1 @@
+Command line fixes: the ``decrypt-results`` examples (``peat decrypt-results --examples``) showed ``encrypt-results`` commands, the ``encrypt-results`` and ``decrypt-results`` descriptions were missing spaces between sentences, and ``peat decrypt-config`` logged "Encrypted config saved" for the decrypted file.

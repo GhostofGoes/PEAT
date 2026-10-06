@@ -63,13 +63,13 @@ def decrypt_config_api(
         with open(new_file_location, "w") as file:
             yaml_data = yaml.safe_load(decrypted_str)
             yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
-            log.info(f"Encrypted config saved to {new_file_location}")
+            log.info(f"Decrypted config saved to {new_file_location}")
             return True
     else:
         with open(new_filename, "w") as file:
             yaml_data = yaml.safe_load(decrypted_str)
             yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
-            log.info(f"Encrypted config saved to current directory as {new_filename}")
+            log.info(f"Decrypted config saved to current directory as {new_filename}")
             return True
 
 
