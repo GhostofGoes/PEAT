@@ -1,0 +1,140 @@
+<figure class="peat-diagram" id="peat-high-level-flow">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" role="img" aria-labelledby="hlf-title hlf-desc">
+  <title id="hlf-title">PEAT high-level flow</title>
+  <desc id="hlf-desc">Inputs on the left (network targets, serial ports, files and project files, disk images, packet captures, and a YAML configuration) feed the PEAT commands in the middle (scan, pull, parse, push, pillage, heat). Scan results feed pull; files found by pull, pillage, and heat feed parse. All commands populate the device data model, which is written to the outputs on the right: the run directory of JSON results, artifacts, and logs; JSON on the terminal; and Elasticsearch or OpenSearch. Push writes configuration or firmware back to the device.</desc>
+  <defs>
+    <marker id="hlf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+  </defs>
+  <style>
+    .hlf-text { font-size: 14px; fill: var(--color-foreground-primary); }
+    .hlf-small { font-size: 12px; fill: var(--color-foreground-secondary); }
+    .hlf-halo { paint-order: stroke fill; stroke: var(--color-background-primary); stroke-width: 5px; stroke-linejoin: round; }
+    .hlf-head { font-size: 15px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .hlf-box { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.2; }
+    .hlf-cmd { fill: var(--color-brand-primary); stroke: none; }
+    .hlf-cmd-text { font-size: 15px; font-weight: 600; fill: var(--color-background-primary); }
+    .hlf-model { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 2; }
+    .hlf-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#hlf-arrow); }
+    .hlf-dashed { stroke-dasharray: 6 4; }
+  </style>
+
+  <!-- Column headers -->
+  <text x="120" y="30" text-anchor="middle" class="hlf-head">Inputs</text>
+  <text x="420" y="30" text-anchor="middle" class="hlf-head">PEAT commands</text>
+  <text x="700" y="30" text-anchor="middle" class="hlf-head">Device data model</text>
+  <text x="895" y="30" text-anchor="middle" class="hlf-head">Outputs</text>
+
+  <!-- Inputs -->
+  <rect x="20" y="60" width="200" height="48" rx="6" class="hlf-box"/>
+  <text x="120" y="80" text-anchor="middle" class="hlf-text">Network targets</text>
+  <text x="120" y="98" text-anchor="middle" class="hlf-small">IPs, subnets, broadcast</text>
+
+  <rect x="20" y="124" width="200" height="48" rx="6" class="hlf-box"/>
+  <text x="120" y="144" text-anchor="middle" class="hlf-text">Serial ports</text>
+  <text x="120" y="162" text-anchor="middle" class="hlf-small">RS-232, USB adapters</text>
+
+  <rect x="20" y="206" width="200" height="48" rx="6" class="hlf-box"/>
+  <text x="120" y="226" text-anchor="middle" class="hlf-text">Device &amp; project files</text>
+  <text x="120" y="244" text-anchor="middle" class="hlf-small">SET_ALL.TXT, .rdb, .apx, .L5X</text>
+
+  <rect x="20" y="292" width="200" height="48" rx="6" class="hlf-box"/>
+  <text x="120" y="312" text-anchor="middle" class="hlf-text">Config/firmware to upload</text>
+  <text x="120" y="330" text-anchor="middle" class="hlf-small">known-good files</text>
+
+  <rect x="20" y="378" width="200" height="48" rx="6" class="hlf-box"/>
+  <text x="120" y="398" text-anchor="middle" class="hlf-text">Disk images &amp; directories</text>
+  <text x="120" y="416" text-anchor="middle" class="hlf-small">engineering workstations</text>
+
+  <rect x="20" y="464" width="200" height="48" rx="6" class="hlf-box"/>
+  <text x="120" y="484" text-anchor="middle" class="hlf-text">Network traffic captures</text>
+  <text x="120" y="502" text-anchor="middle" class="hlf-small">PCAP files, Elasticsearch</text>
+
+  <!-- YAML config applies to every command -->
+  <rect x="295" y="520" width="250" height="30" rx="6" class="hlf-box"/>
+  <text x="420" y="540" text-anchor="middle" class="hlf-small">YAML configuration, credentials, hosts</text>
+  <path d="M 420 520 L 420 512" class="hlf-arrow"/>
+
+  <!-- push -> device: drawn first so the data model box covers the middle of the route -->
+  <path d="M 500 322 L 798 322" class="hlf-arrow"/>
+
+  <!-- Commands -->
+  <rect x="340" y="60" width="160" height="40" rx="8" class="hlf-cmd"/>
+  <text x="420" y="86" text-anchor="middle" class="hlf-cmd-text">scan</text>
+
+  <rect x="340" y="132" width="160" height="40" rx="8" class="hlf-cmd"/>
+  <text x="420" y="158" text-anchor="middle" class="hlf-cmd-text">pull</text>
+
+  <rect x="340" y="210" width="160" height="40" rx="8" class="hlf-cmd"/>
+  <text x="420" y="236" text-anchor="middle" class="hlf-cmd-text">parse</text>
+
+  <rect x="340" y="296" width="160" height="40" rx="8" class="hlf-cmd"/>
+  <text x="420" y="322" text-anchor="middle" class="hlf-cmd-text">push</text>
+
+  <rect x="340" y="382" width="160" height="40" rx="8" class="hlf-cmd"/>
+  <text x="420" y="408" text-anchor="middle" class="hlf-cmd-text">pillage</text>
+
+  <rect x="340" y="468" width="160" height="40" rx="8" class="hlf-cmd"/>
+  <text x="420" y="494" text-anchor="middle" class="hlf-cmd-text">heat</text>
+
+  <!-- Input -> command arrows -->
+  <path d="M 220 84 L 338 80" class="hlf-arrow"/>
+  <path d="M 220 148 L 338 152" class="hlf-arrow"/>
+  <path d="M 220 100 C 270 100, 290 150, 338 150" class="hlf-arrow"/>
+  <path d="M 220 230 L 338 230" class="hlf-arrow"/>
+  <path d="M 220 316 L 338 316" class="hlf-arrow"/>
+  <path d="M 220 402 L 338 402" class="hlf-arrow"/>
+  <path d="M 220 488 L 338 488" class="hlf-arrow"/>
+
+  <!-- Command -> command arrows (implicit flows) -->
+  <path d="M 420 100 L 420 130" class="hlf-arrow"/>
+  <text x="432" y="120" class="hlf-small">pull scans first</text>
+  <path d="M 500 152 C 555 152, 555 230, 502 230" class="hlf-arrow hlf-dashed"/>
+  <path d="M 500 402 C 570 402, 570 236, 502 236" class="hlf-arrow hlf-dashed"/>
+  <path d="M 500 488 C 590 488, 590 242, 502 242" class="hlf-arrow hlf-dashed"/>
+  <text x="542" y="195" text-anchor="middle" class="hlf-small hlf-halo">pulled files</text>
+  <text x="553" y="334" text-anchor="middle" class="hlf-small hlf-halo">found files</text>
+  <text x="568" y="471" text-anchor="middle" class="hlf-small hlf-halo">extracted files</text>
+
+  <!-- Data model -->
+  <rect x="630" y="60" width="140" height="448" rx="10" class="hlf-model"/>
+  <text x="700" y="250" text-anchor="middle" class="hlf-text">DeviceData</text>
+  <text x="700" y="272" text-anchor="middle" class="hlf-small">vendor, model,</text>
+  <text x="700" y="288" text-anchor="middle" class="hlf-small">firmware, logic,</text>
+  <text x="700" y="304" text-anchor="middle" class="hlf-small">config, services,</text>
+  <text x="700" y="320" text-anchor="middle" class="hlf-small">files, events, ...</text>
+
+  <!-- Commands -> data model -->
+  <path d="M 500 80 L 628 80" class="hlf-arrow"/>
+  <path d="M 500 158 L 628 158" class="hlf-arrow"/>
+  <path d="M 500 230 L 628 230" class="hlf-arrow"/>
+  <path d="M 500 402 L 628 402" class="hlf-arrow"/>
+  <path d="M 500 488 L 628 488" class="hlf-arrow"/>
+
+  <!-- Outputs -->
+  <rect x="800" y="60" width="190" height="92" rx="6" class="hlf-box"/>
+  <text x="895" y="82" text-anchor="middle" class="hlf-text">Run directory</text>
+  <text x="895" y="100" text-anchor="middle" class="hlf-small">device-data JSON, summaries,</text>
+  <text x="895" y="116" text-anchor="middle" class="hlf-small">pulled artifacts, logs,</text>
+  <text x="895" y="132" text-anchor="middle" class="hlf-small">parsed logic, metadata</text>
+
+  <rect x="800" y="176" width="190" height="48" rx="6" class="hlf-box"/>
+  <text x="895" y="196" text-anchor="middle" class="hlf-text">Terminal</text>
+  <text x="895" y="214" text-anchor="middle" class="hlf-small">JSON results (--print-results)</text>
+
+  <rect x="800" y="248" width="190" height="48" rx="6" class="hlf-box"/>
+  <text x="895" y="268" text-anchor="middle" class="hlf-text">Elasticsearch/OpenSearch</text>
+  <text x="895" y="286" text-anchor="middle" class="hlf-small">dashboards, analytics (-e)</text>
+
+  <rect x="800" y="304" width="190" height="48" rx="6" class="hlf-box"/>
+  <text x="895" y="324" text-anchor="middle" class="hlf-text">Device</text>
+  <text x="895" y="342" text-anchor="middle" class="hlf-small">updated config or firmware</text>
+
+  <!-- Data model -> outputs -->
+  <path d="M 770 106 L 798 106" class="hlf-arrow"/>
+  <path d="M 770 200 L 798 200" class="hlf-arrow"/>
+  <path d="M 770 272 L 798 272" class="hlf-arrow"/>
+</svg>
+<figcaption class="peat-dg-caption">PEAT's high-level flow: inputs are processed by the commands into the device data model, which is written to files, the terminal, and (optionally) a search database. Push sends files to the device.</figcaption>
+</figure>

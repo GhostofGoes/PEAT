@@ -4,8 +4,8 @@
 [metadata]
 groups = ["default", "dev", "docs", "exe", "lint", "test"]
 strategy = []
-lock_version = "4.5.0"
-content_hash = "sha256:6f6962681be193db32aa6af1c9e02449931741863f7ffe65d3603ab1efe7f169"
+lock_version = "4.5.1"
+content_hash = "sha256:cce7f787dd3dc56847c0cb57548ea19f62f8be1d884c39dd04ae3580e8374db7"
 
 [[metadata.targets]]
 requires_python = ">=3.11,<3.14"
@@ -76,6 +76,19 @@ dependencies = [
 files = [
     {file = "autodoc_pydantic-1.9.1-py3-none-any.whl", hash = "sha256:7b7c68ce3720f099ec85b7b8b9bd91414b8873704aa60f75489c2bcfe2d57bb5"},
     {file = "autodoc_pydantic-1.9.1.tar.gz", hash = "sha256:0443987f1cc2516c8186e85d05a1816a314a19e1433b69a0a4b154f4acca3f9b"},
+]
+
+[[package]]
+name = "axe-playwright-python"
+version = "0.1.8"
+requires_python = ">=3.8"
+summary = "Automated web accessibility testing using axe-core engine and Playwright."
+dependencies = [
+    "playwright>=1.36.0",
+]
+files = [
+    {file = "axe_playwright_python-0.1.8-py3-none-any.whl", hash = "sha256:fdd263c998388f1a8e67cad02677e612d946248bd44d163be5e8650ea31f95f8"},
+    {file = "axe_playwright_python-0.1.8.tar.gz", hash = "sha256:97de160210fd5ce51e552d21d3b0a1cabb850235942737643ee3b9398de81a47"},
 ]
 
 [[package]]
@@ -689,6 +702,45 @@ summary = "Simple Python interface for Graphviz"
 files = [
     {file = "graphviz-0.21-py3-none-any.whl", hash = "sha256:54f33de9f4f911d7e84e4191749cac8cc5653f815b06738c54db9a15ab8b1e42"},
     {file = "graphviz-0.21.tar.gz", hash = "sha256:20743e7183be82aaaa8ad6c93f8893c923bd6658a04c32ee115edb3c8a835f78"},
+]
+
+[[package]]
+name = "greenlet"
+version = "3.5.6"
+requires_python = ">=3.10"
+summary = "Lightweight in-process concurrent programming"
+files = [
+    {file = "greenlet-3.5.6-cp311-cp311-macosx_11_0_universal2.whl", hash = "sha256:a6a4b98a9132e0f45c9fc245a63894cfd8c45fb7a0d6bffc5eab3ec327cf7324"},
+    {file = "greenlet-3.5.6-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:45bfd2b51e38aaa5f9849f114d9c7c1d75f69187c849b3549cd64c465283abfa"},
+    {file = "greenlet-3.5.6-cp311-cp311-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:3c6dede9133e1da41d561bc3fb14e92b47e2ce39ae60edefaad145658ea7c5e2"},
+    {file = "greenlet-3.5.6-cp311-cp311-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:4fb8e59f68845d56c23c031dcd79c329f345e4a9d2ffac91c3d1ab366bdc457b"},
+    {file = "greenlet-3.5.6-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1c20ea32a73d17b9b60e3371240e17b0068120c98a5ec01a224a7dd8c89733ba"},
+    {file = "greenlet-3.5.6-cp311-cp311-manylinux_2_39_riscv64.whl", hash = "sha256:d701eab36200c36224833d07dbdb709adb7fd4253429548ddb5e547b8ed40586"},
+    {file = "greenlet-3.5.6-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:5a0b2791239c99992a86c1b635b787fe2a877d9eaaa26f8891ce943832b585ae"},
+    {file = "greenlet-3.5.6-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:188bf333769b7145e2b0b4a7f09615ec550ed44d3a2a8395fb7b36f0e9901e13"},
+    {file = "greenlet-3.5.6-cp311-cp311-win_amd64.whl", hash = "sha256:a6b4ff33f7e011bbaa148238d131c4fd4f8afbab3c104ddfbdb2b12b74ff7016"},
+    {file = "greenlet-3.5.6-cp311-cp311-win_arm64.whl", hash = "sha256:59deccd347735a7774223b05a93773fddbb298aba3cea21be4337fb4752dbe32"},
+    {file = "greenlet-3.5.6-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:a5876d0a60355af98d535c47f6cd6eb0f8a432396dab26845d380b92f8412422"},
+    {file = "greenlet-3.5.6-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e85880b538e59a59f55117b81f208a6660ad5ac328aad9305f812d9b8bc67a0f"},
+    {file = "greenlet-3.5.6-cp312-cp312-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:f0ba7c2a329d650628f4c8572fd1db29f0a59dd70a3e3e0710dcf18a35cce9d8"},
+    {file = "greenlet-3.5.6-cp312-cp312-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:ee7d9da3bf493909cf811a3f038840cb34fab5ae2956b8a263919f6e289ab188"},
+    {file = "greenlet-3.5.6-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:975736b002ed080d124cf81a79cb7e05cb26d6b3f5c7a7b651c0fcce70353aa1"},
+    {file = "greenlet-3.5.6-cp312-cp312-manylinux_2_39_riscv64.whl", hash = "sha256:71890d5247020c25c21a6b65202782bfc281d4e6e244842419d30e3492bb6dcc"},
+    {file = "greenlet-3.5.6-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:0616b8f878098c5681fd8f0dc92d887551717402342a70f0abcbfea5f5ad8a44"},
+    {file = "greenlet-3.5.6-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:3dbb4596a6a4e5d47121a33ff20533a81e60f302d9e67b69909a8bc21a43f0a7"},
+    {file = "greenlet-3.5.6-cp312-cp312-win_amd64.whl", hash = "sha256:7ac4abb3877c43af320392c664774eef6fa2cc063c79a55fc02d844a3cbe7395"},
+    {file = "greenlet-3.5.6-cp312-cp312-win_arm64.whl", hash = "sha256:301102a49120b095e72a7838792b41233975fc1c155daec6d98f81c00c9280e0"},
+    {file = "greenlet-3.5.6-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:f96f0e30b5a95c7631b12bfe214cbc90ec8fe8cfa36920596c10514a65743519"},
+    {file = "greenlet-3.5.6-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c75116c9de79949de23006e2d9b35ee82874c594fcf5c0311b439acaa14b8441"},
+    {file = "greenlet-3.5.6-cp313-cp313-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:cad5782f93f7f738b62c6527b6f32a60694d924029f299a8b524758cfa53d815"},
+    {file = "greenlet-3.5.6-cp313-cp313-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:a93ee7c6e8fd0f8a83525a51bd777be57ee17787e91d805bd8d6faf9dcada18e"},
+    {file = "greenlet-3.5.6-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f98e8215e172f567ce80eeaed9107fb4d32b6c44f26983d9b8334658136a205a"},
+    {file = "greenlet-3.5.6-cp313-cp313-manylinux_2_39_riscv64.whl", hash = "sha256:7f731ebac68ea06d628658295cb2d217b10186329fcf9a3b6a149045059bf92e"},
+    {file = "greenlet-3.5.6-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:df19e2d0b1620039af5102563fbd96e8938c7f5c3f5828528d641d9fc585525e"},
+    {file = "greenlet-3.5.6-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:06c0e933290fba8ffe53ead4ae1b8044b0e9754b75cebf381aa2bc3e50d82fac"},
+    {file = "greenlet-3.5.6-cp313-cp313-win_amd64.whl", hash = "sha256:5b602b4201b965a8354d74e232364a66ff243dd142e350d035f46169bb36e13d"},
+    {file = "greenlet-3.5.6-cp313-cp313-win_arm64.whl", hash = "sha256:876077e7ebb8c84ed068e2b23d4c62ebb010d60df84b9591af1be2f39010ffb2"},
+    {file = "greenlet-3.5.6.tar.gz", hash = "sha256:8e67c43bdfc88d5fee6db0d3e40175b362fc95fb85f0412d233b9b203c53a575"},
 ]
 
 [[package]]
@@ -1339,7 +1391,7 @@ files = [
 
 [[package]]
 name = "pip-licenses"
-version = "5.5.1"
+version = "5.5.5"
 requires_python = ">=3.9"
 summary = "Dump the software license list of Python packages installed with pip."
 dependencies = [
@@ -1347,8 +1399,8 @@ dependencies = [
     "tomli>=2; python_version < \"3.11\"",
 ]
 files = [
-    {file = "pip_licenses-5.5.1-py3-none-any.whl", hash = "sha256:ed5e229a93760e529cfa7edaec6630b5a2cd3874c1bddb8019e5f18a723fdead"},
-    {file = "pip_licenses-5.5.1.tar.gz", hash = "sha256:7df370e6e5024a3f7449abf8e4321ef868ba9a795698ad24ab6851f3e7fc65a7"},
+    {file = "pip_licenses-5.5.5-py3-none-any.whl", hash = "sha256:f4c4c6d9e6a03612cf59f29f19dc8ab54904d82e055b8e191498f2279a224e14"},
+    {file = "pip_licenses-5.5.5.tar.gz", hash = "sha256:60750c006adf7a0910347b726e8ee9fee3bc8d2e7c8307a5c4ec0776c8e2a276"},
 ]
 
 [[package]]
@@ -1373,6 +1425,26 @@ summary = "A small Python package for determining appropriate platform-specific 
 files = [
     {file = "platformdirs-4.7.0-py3-none-any.whl", hash = "sha256:1ed8db354e344c5bb6039cd727f096af975194b508e37177719d562b2b540ee6"},
     {file = "platformdirs-4.7.0.tar.gz", hash = "sha256:fd1a5f8599c85d49b9ac7d6e450bc2f1aaf4a23f1fe86d09952fe20ad365cf36"},
+]
+
+[[package]]
+name = "playwright"
+version = "1.63.0"
+requires_python = ">=3.10"
+summary = "A high-level API to automate web browsers"
+dependencies = [
+    "greenlet<4.0.0,>=3.1.1",
+    "pyee<14,>=13",
+]
+files = [
+    {file = "playwright-1.63.0-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:84c540759e8e7f01e690e197e04060f48899d37cea322299f255843273d3385d"},
+    {file = "playwright-1.63.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:fd1aa00631d44d55e56e0975bf3f3f285fac4a9fd2813183f0c12a488f1a1b24"},
+    {file = "playwright-1.63.0-py3-none-macosx_11_0_universal2.whl", hash = "sha256:c89fc4736502a1f0fac2c8ca5d10c0cbc1c669f1f4774a2d8507a43140e4d53f"},
+    {file = "playwright-1.63.0-py3-none-manylinux1_x86_64.whl", hash = "sha256:ad21bc07516b187965a7521c5cf0df0bd657b17482eaad74335272d35a2b07de"},
+    {file = "playwright-1.63.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:354e15b29503565fc598b89f16fbe070459343bef9d7498a93e304864000c6a7"},
+    {file = "playwright-1.63.0-py3-none-win32.whl", hash = "sha256:660c00c62639e31b16700ba5456b351ddba55bb766b7ce8261223aa34928e482"},
+    {file = "playwright-1.63.0-py3-none-win_amd64.whl", hash = "sha256:2f9a707a6c6c91157ed77bff2b8caeb04b3c8d46e70d585fc134298cbe4b5cc6"},
+    {file = "playwright-1.63.0-py3-none-win_arm64.whl", hash = "sha256:1e4a3a838ce22fb68ad17193fcd142a19610d9d70fb9966d2239f5dddc0cc05b"},
 ]
 
 [[package]]
@@ -1586,6 +1658,19 @@ files = [
 ]
 
 [[package]]
+name = "pyee"
+version = "13.0.1"
+requires_python = ">=3.8"
+summary = "A rough port of Node.js's EventEmitter to Python with a few tricks of its own"
+dependencies = [
+    "typing-extensions",
+]
+files = [
+    {file = "pyee-13.0.1-py3-none-any.whl", hash = "sha256:af2f8fede4171ef667dfded53f96e2ed0d6e6bd7ee3bb46437f77e3b57689228"},
+    {file = "pyee-13.0.1.tar.gz", hash = "sha256:0b931f7c14535667ed4c7e0d531716368715e860b988770fc7eb8578d1f67fc8"},
+]
+
+[[package]]
 name = "pyelftools"
 version = "0.31"
 summary = "Library for analyzing ELF files and DWARF debugging information"
@@ -1674,12 +1759,12 @@ files = [
 
 [[package]]
 name = "pymysql"
-version = "1.1.2"
-requires_python = ">=3.8"
+version = "1.2.3"
+requires_python = ">=3.9"
 summary = "Pure Python MySQL Driver"
 files = [
-    {file = "pymysql-1.1.2-py3-none-any.whl", hash = "sha256:e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f25762ed9"},
-    {file = "pymysql-1.1.2.tar.gz", hash = "sha256:4961d3e165614ae65014e361811a724e2044ad3ea3739de9903ae7c21f539f03"},
+    {file = "pymysql-1.2.3-py3-none-any.whl", hash = "sha256:14f1c68e2ed859243ae5ca41ffbe677027fc46bc136a9f0be8a4e928e5e7415a"},
+    {file = "pymysql-1.2.3.tar.gz", hash = "sha256:d5b288529782e536ae171866df3ca9dc4f6cbfb3cc2f18e6f837fbb90dbc262b"},
 ]
 
 [[package]]
@@ -2087,12 +2172,12 @@ files = [
 
 [[package]]
 name = "rinohtype"
-version = "0.5.5"
-requires_python = "<4.0.0,>=3.8.0"
+version = "0.5.6"
+requires_python = "<4.0.0,>=3.10.0"
 summary = "The Python document processor"
 dependencies = [
     "appdirs<2.0.0,>=1.4.3",
-    "docutils>=0.15",
+    "docutils>=0.18",
     "myst-parser>=0.18.1",
     "packaging>=14.0",
     "rinoh-typeface-dejavuserif<0.2.0,>=0.1.3",
@@ -2101,8 +2186,8 @@ dependencies = [
     "rinoh-typeface-texgyrepagella<0.2.0,>=0.1.1",
 ]
 files = [
-    {file = "rinohtype-0.5.5-py3-none-any.whl", hash = "sha256:b1c429e69c55b1b2400367ac0fcc17f30ec537ceb22e8f2dd768909282c2e642"},
-    {file = "rinohtype-0.5.5.tar.gz", hash = "sha256:2efc38b5f41541693617e5a4bc6826e8932897d3c14b1b0ecd3ae4aaff404224"},
+    {file = "rinohtype-0.5.6-py3-none-any.whl", hash = "sha256:fa137d7f8f805b6725b8100e59ef873a56767f255951be7826596c4f28cbfc5d"},
+    {file = "rinohtype-0.5.6.tar.gz", hash = "sha256:e9392bd4e9117f5bef1285b81d6420183df5393aed289b176f7a81b6c9646d15"},
 ]
 
 [[package]]
@@ -2143,14 +2228,14 @@ files = [
 
 [[package]]
 name = "scp"
-version = "0.15.0"
+version = "0.16.1"
 summary = "scp module for paramiko"
 dependencies = [
     "paramiko",
 ]
 files = [
-    {file = "scp-0.15.0-py2.py3-none-any.whl", hash = "sha256:9e7f721e5ac563c33eb0831d0f949c6342f1c28c3bdc3b02f39d77b5ea20df7e"},
-    {file = "scp-0.15.0.tar.gz", hash = "sha256:f1b22e9932123ccf17eebf19e0953c6e9148f589f93d91b872941a696305c83f"},
+    {file = "scp-0.16.1-py2.py3-none-any.whl", hash = "sha256:52d48423ffb0d22afcec738d66c2c8d5865ab9b45e040a7508789f58b39533fe"},
+    {file = "scp-0.16.1.tar.gz", hash = "sha256:3f2b260bf9bd4c2b6857f697a1d7e8edc26fa569282b77027e849dfe1e48580a"},
 ]
 
 [[package]]
@@ -2290,6 +2375,32 @@ files = [
 ]
 
 [[package]]
+name = "sphinx-design"
+version = "0.7.0"
+requires_python = ">=3.11"
+summary = "A sphinx extension for designing beautiful, view size responsive web components."
+dependencies = [
+    "sphinx<10,>=7",
+]
+files = [
+    {file = "sphinx_design-0.7.0-py3-none-any.whl", hash = "sha256:f82bf179951d58f55dca78ab3706aeafa496b741a91b1911d371441127d64282"},
+    {file = "sphinx_design-0.7.0.tar.gz", hash = "sha256:d2a3f5b19c24b916adb52f97c5f00efab4009ca337812001109084a740ec9b7a"},
+]
+
+[[package]]
+name = "sphinx-reredirects"
+version = "0.1.6"
+requires_python = ">=3.5"
+summary = "Handles redirects for moved pages in Sphinx documentation projects"
+dependencies = [
+    "sphinx>=7.1",
+]
+files = [
+    {file = "sphinx_reredirects-0.1.6-py3-none-any.whl", hash = "sha256:efd50c766fbc5bf40cd5148e10c00f2c00d143027de5c5e48beece93cc40eeea"},
+    {file = "sphinx_reredirects-0.1.6.tar.gz", hash = "sha256:c491cba545f67be9697508727818d8626626366245ae64456fe29f37e9bbea64"},
+]
+
+[[package]]
 name = "sphinxcontrib-applehelp"
 version = "2.0.0"
 requires_python = ">=3.9"
@@ -2384,7 +2495,7 @@ files = [
 
 [[package]]
 name = "textual"
-version = "7.5.0"
+version = "8.2.8"
 requires_python = "<4.0,>=3.9"
 summary = "Modern Text User Interface framework"
 dependencies = [
@@ -2396,8 +2507,8 @@ dependencies = [
     "typing-extensions<5.0.0,>=4.4.0",
 ]
 files = [
-    {file = "textual-7.5.0-py3-none-any.whl", hash = "sha256:849dfee9d705eab3b2d07b33152b7bd74fb1f5056e002873cc448bce500c6374"},
-    {file = "textual-7.5.0.tar.gz", hash = "sha256:c730cba1e3d704e8f1ca915b6a3af01451e3bca380114baacf6abf87e9dac8b6"},
+    {file = "textual-8.2.8-py3-none-any.whl", hash = "sha256:267375fd402dc8d981457212efa71f0e3365fd17bba144ba9bb3ed7563cb374a"},
+    {file = "textual-8.2.8.tar.gz", hash = "sha256:3f106a9fbc73e39dd266c9712432087de78a6d644084c7c241d6a25c3169115b"},
 ]
 
 [[package]]
