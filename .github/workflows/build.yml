@@ -63,9 +63,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: true
+          cache-dependency-path: pdm.docs.lock
+      # The docs build needs the "docs" virtualenv from pdm.docs.lock (see pyproject.toml
+      # and docs/contributing/documentation.rst)
       - name: Install dependencies
-        run: pdm sync -d --clean
-      # NOTE: this also regenerates docs/dependencies_table.rst ("pdm run dep-doc")
+        run: pdm run docs-venv
+      # NOTE: this also regenerates docs/developer/dependencies_table.rst ("pdm run dep-doc")
+      # Warnings are errors (-W --keep-going).
       - name: Build docs (HTML and manpage)
         run: pdm run docs
       - name: Upload HTML docs artifacts

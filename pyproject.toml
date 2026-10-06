@@ -834,7 +834,7 @@ exclude = [
 # https://github.com/henryiii/check-sdist
 [tool.check-sdist]
 sdist-only = ["peat", "AUTHORS", "CHANGELOG.rst", "COPYRIGHT.rst", "SECURITY.rst", "NOTICE"]
-git-only = [".*", "distribution", "examples", "scripts", "tests", "docs", ".venv", ".dockerignore", ".editorconfig", ".gitattributes", ".gitignore", "*.spec", "pdm.lock", "CODE_OF_CONDUCT.rst", "Dockerfile", "pyproject.toml", "README.md", "LICENSE", "CONTRIBUTING.rst", "newsfragments"]
+git-only = [".*", "distribution", "examples", "scripts", "tests", "docs", ".venv", ".dockerignore", ".editorconfig", ".gitattributes", ".gitignore", "*.spec", "pdm.lock", "pdm.docs.lock", "CODE_OF_CONDUCT.rst", "Dockerfile", "pyproject.toml", "README.md", "LICENSE", "CONTRIBUTING.rst", "newsfragments"]
 default-ignore = true
 recurse-submodules = false
 
