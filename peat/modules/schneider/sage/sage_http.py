@@ -9,36 +9,18 @@ Authors
 
 import socket
 import ssl
-import warnings
 from time import sleep
 
 import requests
 import urllib3
-from requests.adapters import HTTPAdapter
-from urllib3.poolmanager import PoolManager
 
 from peat.protocols import HTTP
+from peat.protocols.http import LegacyHTTPAdapter, create_legacy_ssl_context
 
-
-class CustomSSLAdapter(HTTPAdapter):
-    """
-    A custom adapter to force TLSv1.2 and AES256-GCM-SHA384.
-    This exists because otherwise the requests library does not work nicely
-    with the device by default. This sets cipher and TLS versions that the device likes.
-    Run `openssl s_client -connect [IP]:[PORT]` to verify protocol and cipher
-    """
-
-    def __init__(self, ssl_context: ssl.SSLContext, **kwargs):
-        self.ssl_context = ssl_context
-        super().__init__(**kwargs)
-
-    def init_poolmanager(self, connections, maxsize, block=False):
-        self.poolmanager = PoolManager(
-            num_pools=connections,
-            maxsize=maxsize,
-            block=block,
-            ssl_context=self.ssl_context,
-        )
+#: Cipher the Sage web server works with. The requests library doesn't work nicely
+#: with the device by default, so HTTPS connections are restricted to this cipher.
+#: Run ``openssl s_client -connect [IP]:[PORT]`` to verify protocol and cipher.
+SAGE_TLS_CIPHERS = "AES256-GCM-SHA384:@SECLEVEL=0"
 
 
 class SageHTTP(HTTP):
@@ -57,8 +39,6 @@ class SageHTTP(HTTP):
 
         # Disable warnings about unverified HTTPS requests being sent
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        # Disable warnings from the ssl library about "ssl.PROTOCOL_TLS" being deprecated
-        warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         super().__init__(*args, **kwargs)
 
@@ -66,9 +46,8 @@ class SageHTTP(HTTP):
         session = super().gen_session()
 
         if self.protocol == "https":
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-            ssl_context.set_ciphers("AES256-GCM-SHA384")
-            session.mount("https://", CustomSSLAdapter(ssl_context=ssl_context))
+            ssl_context = create_legacy_ssl_context(SAGE_TLS_CIPHERS)
+            session.mount("https://", LegacyHTTPAdapter(ssl_context=ssl_context))
 
         return session
 

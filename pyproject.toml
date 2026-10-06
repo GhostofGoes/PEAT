@@ -116,20 +116,18 @@ dependencies = [
     "elasticsearch<9",
 
     # OpenSearch compatibility
-    # "opensearch-py~=2.8.0",
-    # opensearch-py 2.7 requires requests 2.30+, which PEAT can't support yet
-    "opensearch-py>=2.6.0",
+    "opensearch-py~=2.8.0",
 
     # HTTP requests
     # Required for: ION, SELRelay, SELRTAC, Siprotec, Sage, GERelay, ControlLogix, Fortigate, Totus
-    #
-    # NOTE: Requests 2.30 moved to urllib 2.0
-    # There are a number of changes that break things for PEAT. It's going to
-    # take some development work to untangle how to support urllib 2.0 (or if we even can
-    # due to how old some of the devices PEAT interacts with are). For now,
-    # leave it pinned at 2.29
+    "requests==2.34.2",
+
+    # Used by requests. PEAT also uses it directly to customize TLS for older devices.
+    # NOTE: urllib3 2.x requires TLS 1.2 and stopped setting its own cipher list,
+    # which breaks HTTPS with many devices. PEAT's HTTP sessions use a permissive
+    # SSL context to work around this, see peat.protocols.http.LegacyHTTPAdapter.
     # Details: https://urllib3.readthedocs.io/en/latest/v2-migration-guide.html
-    "requests==2.29.0",
+    "urllib3>=2.6.3,<3",
 
     # Get local network interface configuration and status
     # NOTE: as of June 2021, netifaces is unmaintained and in an archived read-only state
@@ -592,7 +590,7 @@ ignore-path = ["docs/dependencies.rst", "docs/dependencies_table.rst"]
 # check spelling of filenames
 check-filenames = ""
 # NOTE: the ignore words for codespell must be lowercase
-ignore-words-list = "astroid,datas,bre,heros,ser,mot,ot,aci,noe,optin,ro,inh,ardvark,hart,tru,nd,carmel"
+ignore-words-list = "astroid,datas,bre,heros,ser,mot,ot,aci,noe,optin,ro,inh,ardvark,hart,tru,nd,carmel,anull"
 skip = "forked_telnetlib.py,manuf,data_files,htmlcov,.doctrees,_docs_html,_docs_man,built_docs,plc_open,mibs,enip,cip,clx_relay_ladder_parser.py,*.pyc,*.class,*.xsd,*.xml,*.ico,*.apx,*.dmk,*.out,*.stu,*.sta,*.ztx,*.PNG,*.inv,*.png,*.jpg,*.dot,*.ai"
 
 

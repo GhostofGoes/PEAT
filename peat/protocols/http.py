@@ -9,10 +9,107 @@ from pathlib import Path
 from typing import Literal
 
 from bs4 import BeautifulSoup
-from requests import Response, Session
+from requests import PreparedRequest, Response, Session
+from requests.adapters import HTTPAdapter
+from urllib3 import HTTPConnectionPool, HTTPSConnectionPool
 
 import peat  # Avoid circular imports
 from peat import config, consts, log, utils
+
+#: OpenSSL cipher string used for HTTPS connections to devices. Includes
+#: the legacy ciphers (RSA key exchange, SHA-1 MACs, 3DES) that older
+#: devices are often limited to. ``@SECLEVEL=0`` is required for OpenSSL 3
+#: to negotiate TLS 1.0/1.1 and SHA-1 based ciphers at all.
+LEGACY_TLS_CIPHERS = "ALL:!aNULL:!eNULL:@SECLEVEL=0"
+
+
+def create_legacy_ssl_context(ciphers: str = LEGACY_TLS_CIPHERS) -> ssl.SSLContext:
+    """
+    Create a client :class:`ssl.SSLContext` that is able to talk to the
+    old TLS implementations found on ICS/OT devices.
+
+    Certificate and hostname verification are disabled, any TLS version supported
+    by the local OpenSSL library is allowed (including TLS 1.0 and 1.1), and
+    connections to servers that don't support secure renegotiation (RFC 5746)
+    are allowed.
+
+    .. note::
+       urllib3 2.x (used by requests 2.30+) no longer sets its own cipher list
+       and requires TLS 1.2 by default, which breaks HTTPS connections to many
+       devices. This context restores (and extends) the old behavior.
+
+    Args:
+        ciphers: OpenSSL cipher string to use
+
+    Returns:
+        The configured SSL context
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+    context.set_ciphers(ciphers)
+    # OpenSSL 3 refuses to connect to servers that don't support RFC 5746
+    # ("unsafe legacy renegotiation disabled"). 0x4 is the OpenSSL value
+    # for this option, which the ssl module only exposes in Python 3.12+.
+    context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+    return context
+
+
+class _LenientHTTPConnectionPool(HTTPConnectionPool):
+    """
+    Connection pool that doesn't raise an error if a response body
+    is shorter than its ``Content-Length`` header. This was the default
+    behavior in urllib3 1.x, and some device web servers send incorrect
+    ``Content-Length`` values.
+    """
+
+    def urlopen(self, *args, **kwargs):  # type: ignore[override]
+        kwargs.setdefault("enforce_content_length", False)
+        return super().urlopen(*args, **kwargs)
+
+
+class _LenientHTTPSConnectionPool(_LenientHTTPConnectionPool, HTTPSConnectionPool):
+    pass
+
+
+class LegacyHTTPAdapter(HTTPAdapter):
+    """
+    Requests transport adapter for talking to old embedded web servers.
+
+    - When certificate verification is disabled (``verify=False``),
+      HTTPS connections use a permissive SSL context, by default
+      the one from :func:`create_legacy_ssl_context`.
+    - Responses with a body shorter than their ``Content-Length`` header
+      are accepted instead of raising an error.
+    """
+
+    def __init__(self, ssl_context: ssl.SSLContext | None = None, **kwargs) -> None:
+        self.ssl_context: ssl.SSLContext = ssl_context or create_legacy_ssl_context()
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs) -> None:
+        super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+        self.poolmanager.pool_classes_by_scheme = {
+            "http": _LenientHTTPConnectionPool,
+            "https": _LenientHTTPSConnectionPool,
+        }
+
+    def build_connection_pool_key_attributes(
+        self, request: PreparedRequest, verify, cert=None
+    ) -> tuple[dict, dict]:
+        host_params, pool_kwargs = super().build_connection_pool_key_attributes(
+            request, verify, cert
+        )
+
+        # Only use the permissive context when verification is disabled,
+        # so "verify=True" keeps the default (secure) behavior.
+        if verify is False:
+            if getattr(self, "ssl_context", None) is None:  # e.g. after unpickling
+                self.ssl_context = create_legacy_ssl_context()
+            pool_kwargs["ssl_context"] = self.ssl_context
+
+        return host_params, pool_kwargs
 
 
 class HTTP:
@@ -111,6 +208,23 @@ class HTTP:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.ip}, {self.port}, {self.timeout})"
+
+    def _warn_if_truncated(self, response: Response, url: str) -> None:
+        """
+        Log a warning if the response body is shorter than its ``Content-Length``
+        header, which happens with some device web servers. These responses are
+        accepted by :class:`LegacyHTTPAdapter` rather than raising an error.
+        """
+        declared = response.headers.get("Content-Length", "").strip()
+        if not declared.isdigit() or response.headers.get("Content-Encoding"):
+            return
+
+        received = len(response.content)
+        if received < int(declared):
+            self.log.warning(
+                f"Response from {url} may be truncated: received {received} bytes, "
+                f"but the Content-Length header is {declared} bytes"
+            )
 
     def _save_response_to_file(
         self,
@@ -257,6 +371,7 @@ class HTTP:
             response: Response = self.session.get(
                 url, timeout=timeout, params=params, auth=auth, **kwargs
             )
+            self._warn_if_truncated(response, url)
 
             file_path = self._save_response_to_file(response, page, url, dev)
 
@@ -323,6 +438,7 @@ class HTTP:
             req_ts = utils.utc_now()  # rough timestamp of send time
 
             response: Response = self.session.post(url, timeout=timeout, **kwargs)
+            self._warn_if_truncated(response, url)
 
             # Save the raw response text body to disk as an artifact
             parts = urllib.parse.urlparse(url)
@@ -373,8 +489,10 @@ class HTTP:
             #   context.check_hostname = False
             #   context.verify_mode = ssl.CERT_NONE
             #
-            context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-            context.set_ciphers("DEFAULT")
+            # (10/06/2026) create_legacy_ssl_context() handles the above,
+            # and also enables TLS 1.0/1.1 with OpenSSL 3.
+            #
+            context = create_legacy_ssl_context()
 
             with socket.create_connection(
                 address=(self.ip, self.port), timeout=self.timeout
@@ -521,13 +639,17 @@ class HTTP:
     @staticmethod
     def gen_session() -> Session:
         """
-        Session with SSL certificate verification disabled and no
-        proxies from environment (e.g. ``http_proxy``/``https_proxy``).
+        Session with SSL certificate verification disabled, no
+        proxies from environment (e.g. ``http_proxy``/``https_proxy``),
+        and the :class:`LegacyHTTPAdapter` mounted for HTTP and HTTPS.
         """
         session = Session()
         session.verify = False
         session.trust_env = False
+        adapter = LegacyHTTPAdapter()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
         return session
 
 
-__all__ = ["HTTP"]
+__all__ = ["HTTP", "LegacyHTTPAdapter", "create_legacy_ssl_context"]
