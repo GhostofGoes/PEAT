@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 
 import requests
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
+import urllib3
 
 # PEAT Core Imports
 from peat import (
@@ -33,7 +33,7 @@ from peat import (
 )
 
 # Suppress warnings from urllib3 for insecure/self-signed SSL connections
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # --- Standalone Data Processors ---
