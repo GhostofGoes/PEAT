@@ -115,7 +115,7 @@ the packet data can be different from the server PEAT exports results to:
    peat heat -e
 
    # Limit to specific indices, a time range, or hosts
-   peat heat -e --heat-index-names "packetbeat-2021.07.*"
+   peat heat -e --heat-index-names "packets-2021-07-*"
    peat heat -e --heat-date-range "2021-07-15T00:00:00.000 - 2021-07-16T12:34:12.143"
    peat heat -e --heat-only-ips 192.0.2.0/24
    peat heat -e --heat-exclude-ips 192.0.2.10 192.0.2.20

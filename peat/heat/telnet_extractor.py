@@ -316,7 +316,7 @@ class TelnetExtractor(HeatProtocol):
 
         body = {"size": 0, "aggs": aggs}
 
-        search_args = {"size": 0, "index": "packets-*"}
+        search_args = {"size": 0, "index": config.HEAT_INDEX_NAMES}
         search_args["body"] = body
 
         # get aggregate data to build requests for each packet stream

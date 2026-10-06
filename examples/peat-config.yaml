@@ -327,16 +327,16 @@ elastic_uefi_hashes_index: "uefi-hashes"
 # Elasticsearch server to pull HEAT data from
 heat_elastic_server: null
 
-# Names and/or patterns of Elasticsearch indices with Packetbeat data
-heat_index_names: "packetbeat-*"
+# Names and/or patterns of Elasticsearch indices with the packet data (ingest-tshark documents)
+heat_index_names: "packets-*"
 
 # Date range to filter HEAT extraction to
 heat_date_range: null
 
-# IP addresses to exclude from packetbeat search (source and/or destination IP)
+# IP addresses to exclude from the HEAT packet search (source and/or destination IP)
 heat_exclude_ips: []
 
-# IP address to limit packetbeat search to (source or destination IP)
+# IP address to limit the HEAT packet search to (source or destination IP)
 heat_only_ips: []
 
 # Extract the file(s) but don't parse them using PEAT

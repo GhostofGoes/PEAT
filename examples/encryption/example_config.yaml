@@ -62,7 +62,7 @@ elastic_memory_index: ot-device-memory
 elastic_uefi_files_index: uefi-files
 elastic_uefi_hashes_index: uefi-hashes
 heat_elastic_server: null
-heat_index_names: packetbeat-*
+heat_index_names: packets-*
 heat_date_range: null
 heat_exclude_ips: []
 heat_only_ips: []

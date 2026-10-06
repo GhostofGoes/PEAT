@@ -1,11 +1,11 @@
 """
 HEAT protocol extractor for the Schneider UMAS protocol.
 
-UMAS packets in Elasticsearch will have the 'type' field set to 'umas'.
+UMAS packets in Elasticsearch will have the 'type' field set to 'modbus'.
 
 UMAS protocol fields
 
-- modbus.transaction_identifier
+- mbtcp.transaction_identifier
 - umas.connection_id
 - umas.function_code
 - umas.function_name

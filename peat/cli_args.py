@@ -380,9 +380,10 @@ peat heat --list-heat-protocols
 # of '-e'/'--elastic-server' is used instead.
 peat heat -e http://results-elastic:9200/ --heat-elastic-server http://heat-elastic:9200/
 
-# Limit data to only Elasticsearch indices beginning with "packetbeat-2017."
+# Limit data to only Elasticsearch indices beginning with "packets-2017-"
+# (the default is "packets-*", the index naming used by ingest-tshark/tshark)
 # NOTE: '-e' with no argument defaults to 'http://localhost:9200/'
-peat heat -e --heat-index-names "packetbeat-2017.*"
+peat heat -e --heat-index-names "packets-2017-*"
 
 # Only output the files that were extracted and exit.
 # The results will not be parsed by PEAT and will not be stored in Elasticsearch.
@@ -807,7 +808,7 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         type=str,
         metavar="ELASTIC_URL",
         default=None,
-        help="Elasticsearch server to query for Packetbeat data for use with "
+        help="Elasticsearch server with the packet data (from ingest-tshark) for use with "
         "artifact extraction (HEAT). If this argument isn't specified, "
         "then the value of --elastic-server will be used instead. This "
         "argument is distinct from --elastic-server and the values of "
@@ -820,11 +821,11 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         type=str,
         metavar="INDEX_NAMES",
         default=None,
-        help="Elasticsearch index names or patterns with the Packetbeat data"
-        "to use for extraction. This can be multiple index names and/or "
+        help="Elasticsearch index names or patterns with the packet data (from "
+        "ingest-tshark) to use for extraction. This can be multiple index names and/or "
         "patterns, comma-separated. Same format as Elasticsearch's API. "
-        'Example: "packetbeat-2021.05.03,packetbeat-2021.05.04,'
-        'packetbeat-2021.04.*"',
+        'Default: "packets-*". Example: "packets-2021-05-03,packets-2021-05-04,'
+        'packets-2021-04-*"',
     )
     heat_group.add_argument(
         "--heat-date-range",

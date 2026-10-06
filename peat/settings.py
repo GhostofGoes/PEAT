@@ -482,8 +482,8 @@ class Configuration(SettingsManager):
 
     HEAT_INDEX_NAMES: str = "packets-*"
     """
-    Names and/or patterns of Elasticsearch indices with Packetbeat
-    data for :term:`HEAT`.
+    Names and/or patterns of Elasticsearch indices with the packet data
+    (``ingest-tshark`` documents) for :term:`HEAT`.
     """
 
     HEAT_DATE_RANGE: str | None = None
@@ -493,13 +493,13 @@ class Configuration(SettingsManager):
 
     HEAT_EXCLUDE_IPS: list[str] = []
     """
-    IP addresses to exclude from packetbeat search
+    IP addresses to exclude from the :term:`HEAT` packet search
     (source and/or destination IP).
     """
 
     HEAT_ONLY_IPS: list[str] = []
     """
-    IP address to limit packetbeat search to
+    IP address to limit the :term:`HEAT` packet search to
     (source or destination IP).
     """
 
