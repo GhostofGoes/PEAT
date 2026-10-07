@@ -29,7 +29,6 @@ def pillage(source: str) -> bool:
     peat pillage.
 
     Args:
-        config_file: Path to pillage config file
         source: Path of directory to pillage
 
     Returns:

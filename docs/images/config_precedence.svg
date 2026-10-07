@@ -1,0 +1,103 @@
+<figure class="peat-diagram" id="peat-config-precedence">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 428" role="img" aria-labelledby="cp-title cp-desc">
+  <title id="cp-title">Configuration sources and precedence</title>
+  <desc id="cp-desc">Two stacks of configuration sources, highest priority on top. Left, the general options in peat.config: 1, command line arguments and runtime changes, for example --timeout 90, or config.DEFAULT_TIMEOUT = 90 and initialize_peat() from Python; 2, environment variables named PEAT_ followed by the option name, for example PEAT_DEFAULT_TIMEOUT=60; 3, the configuration file passed with -c, YAML or JSON, for example default_timeout: 30, and the only place for device_options, hosts, and credentials; 4, the built-in defaults, the class attributes of Configuration, for example DEFAULT_TIMEOUT: float = 5.0. An upward arrow shows that each layer overrides the layers below it, so the value used for the run is the first source, from the top, that sets the option: DEFAULT_TIMEOUT = 90 in the example. The merged configuration from all sources is written at the end of the run to peat_metadata/peat_configuration.yaml in the run directory and can be reused with -c. Right, the per-device options in dev.options, used by modules and protocols: 1, a host's options in a hosts entry, for example options: {ftp: {pass: ...}}, which apply to that host only; 2, device_options, for example device_options: {sel: {pull_methods: [telnet]}}, which apply to every device of a kind; 3, the module's default_options, the default credentials and ports known to the module. Dashed arrows show that device_options and hosts are keys in the configuration file. A host's options override device_options and the module defaults for that host only.</desc>
+  <defs>
+    <marker id="cp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+  </defs>
+  <style>
+    .cp-text { font-size: 13px; fill: var(--color-foreground-primary); }
+    .cp-title { font-size: 13px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .cp-small { font-size: 12px; fill: var(--color-foreground-secondary); }
+    .cp-head { font-size: 14px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .cp-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; fill: var(--color-foreground-secondary); }
+    .cp-layer { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.2; }
+    .cp-box { fill: var(--color-background-primary); stroke: var(--color-foreground-border); stroke-width: 1.1; }
+    .cp-result { fill: var(--color-brand-primary); stroke: none; }
+    .cp-result-text { font-size: 13px; font-weight: 600; fill: var(--color-background-primary); }
+    .cp-chip { fill: var(--color-brand-primary); stroke: none; }
+    .cp-chip-text { font-size: 12px; font-weight: 700; fill: var(--color-background-primary); }
+    .cp-chip-alt { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 1.5; }
+    .cp-chip-alt-text { font-size: 12px; font-weight: 700; fill: var(--color-brand-primary); }
+    .cp-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#cp-arrow); }
+    .cp-dashed { stroke-dasharray: 5 4; }
+  </style>
+
+  <!-- Headers -->
+  <text x="315" y="30" text-anchor="middle" class="cp-head">General options (peat.config)</text>
+  <text x="805" y="30" text-anchor="middle" class="cp-head">Per-device options (dev.options)</text>
+
+  <!-- Priority axis -->
+  <path d="M 44 306 L 44 52" class="cp-arrow"/>
+  <text transform="rotate(-90 26 178)" x="26" y="178" text-anchor="middle" class="cp-small">overrides the layers below</text>
+
+  <!-- Layer 1: CLI and runtime -->
+  <rect x="70" y="50" width="490" height="58" rx="6" class="cp-layer"/>
+  <circle cx="90" cy="79" r="10" class="cp-chip"/>
+  <text x="90" y="83" text-anchor="middle" class="cp-chip-text">1</text>
+  <text x="110" y="74" class="cp-title">Command line arguments and runtime changes</text>
+  <text x="110" y="94" class="cp-small">--timeout 90, or config.DEFAULT_TIMEOUT = 90 from Python</text>
+
+  <!-- Layer 2: environment -->
+  <rect x="70" y="116" width="490" height="58" rx="6" class="cp-layer"/>
+  <circle cx="90" cy="145" r="10" class="cp-chip"/>
+  <text x="90" y="149" text-anchor="middle" class="cp-chip-text">2</text>
+  <text x="110" y="140" class="cp-title">Environment variables: PEAT_&lt;OPTION&gt;</text>
+  <text x="110" y="160" class="cp-small">PEAT_DEFAULT_TIMEOUT=60</text>
+
+  <!-- Layer 3: configuration file -->
+  <rect x="70" y="182" width="490" height="58" rx="6" class="cp-layer"/>
+  <circle cx="90" cy="211" r="10" class="cp-chip"/>
+  <text x="90" y="215" text-anchor="middle" class="cp-chip-text">3</text>
+  <text x="110" y="206" class="cp-title">Configuration file: -c peat-config.yaml (YAML or JSON)</text>
+  <text x="110" y="226" class="cp-small">default_timeout: 30; the only place for device_options, hosts, and credentials</text>
+
+  <!-- Layer 4: defaults -->
+  <rect x="70" y="248" width="490" height="58" rx="6" class="cp-layer"/>
+  <circle cx="90" cy="277" r="10" class="cp-chip"/>
+  <text x="90" y="281" text-anchor="middle" class="cp-chip-text">4</text>
+  <text x="110" y="272" class="cp-title">Built-in defaults: class attributes of Configuration</text>
+  <text x="110" y="292" class="cp-small">DEFAULT_TIMEOUT: float = 5.0</text>
+
+  <!-- Result -->
+  <path d="M 315 306 L 315 320" class="cp-arrow"/>
+  <rect x="70" y="322" width="490" height="30" rx="6" class="cp-result"/>
+  <text x="315" y="342" text-anchor="middle" class="cp-result-text">Value for the run: DEFAULT_TIMEOUT = 90 (the first source that sets it wins)</text>
+
+  <path d="M 315 352 L 315 366" class="cp-arrow"/>
+  <rect x="70" y="368" width="490" height="46" rx="6" class="cp-box"/>
+  <text x="315" y="386" text-anchor="middle" class="cp-text">peat_metadata/peat_configuration.yaml in the run directory</text>
+  <text x="315" y="405" text-anchor="middle" class="cp-small">the merged configuration from all sources, reusable with -c</text>
+
+  <!-- Right stack: per-device options -->
+  <rect x="630" y="50" width="350" height="58" rx="6" class="cp-layer"/>
+  <circle cx="650" cy="79" r="10" class="cp-chip-alt"/>
+  <text x="650" y="83" text-anchor="middle" class="cp-chip-alt-text">1</text>
+  <text x="670" y="74" class="cp-title">A host's options (that host only)</text>
+  <text x="670" y="94" class="cp-small">options: {ftp: {pass: ...}} in a hosts entry</text>
+
+  <rect x="630" y="116" width="350" height="58" rx="6" class="cp-layer"/>
+  <circle cx="650" cy="145" r="10" class="cp-chip-alt"/>
+  <text x="650" y="149" text-anchor="middle" class="cp-chip-alt-text">2</text>
+  <text x="670" y="140" class="cp-title">device_options (every device of a kind)</text>
+  <text x="670" y="160" class="cp-small">device_options: {sel: {pull_methods: [telnet]}}</text>
+
+  <rect x="630" y="182" width="350" height="58" rx="6" class="cp-layer"/>
+  <circle cx="650" cy="211" r="10" class="cp-chip-alt"/>
+  <text x="650" y="215" text-anchor="middle" class="cp-chip-alt-text">3</text>
+  <text x="670" y="206" class="cp-title">Module defaults: default_options</text>
+  <text x="670" y="226" class="cp-small">default credentials and ports known to the module</text>
+
+  <!-- device_options and hosts live in the configuration file -->
+  <path d="M 560 203 C 596 203, 596 79, 628 79" class="cp-arrow cp-dashed"/>
+  <path d="M 560 219 C 596 219, 596 145, 628 145" class="cp-arrow cp-dashed"/>
+
+  <text x="630" y="262" class="cp-small">device_options and hosts are keys in the configuration file.</text>
+  <text x="630" y="278" class="cp-small">They merge with the module defaults into dev.options for each</text>
+  <text x="630" y="294" class="cp-small">device; a host's options override device_options and the</text>
+  <text x="630" y="310" class="cp-small">module defaults for that host only.</text>
+</svg>
+<figcaption class="peat-dg-caption">Where an option's value comes from. Left: the general options, highest priority on top; the merged result is saved with every run. Right: the module and protocol options a device sees, and how per-host settings fit in.</figcaption>
+</figure>

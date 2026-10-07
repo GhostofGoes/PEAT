@@ -1,0 +1,117 @@
+<figure class="peat-diagram" id="peat-scan-pipeline">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 412" role="img" aria-labelledby="sp-title sp-desc">
+  <title id="sp-title">How a scan works</title>
+  <desc id="sp-desc">A three-stage pipeline applied to each target host of a unicast IP scan, with exits below each stage. Stage 1, online check: with root or Administrator rights, ARP requests on the local subnet and ICMP echo requests for routed hosts; otherwise a TCP connection attempt to one port (SYN_PORT, 80 by default). Hosts that do not answer are offline, are not probed further, and appear in the summary's scan_targets only. Stage 2, port check: only the ports used by the selected modules' identification methods are checked, each unique port once. A host with no open ports is online but unidentified. Stage 3, identification: the methods for the open ports run in order of reliability, highest first, and stop at the first success. A success makes the host verified, with vendor, model, firmware, services and MAC address from that method; if none succeeds the host is online but unidentified. Online-unidentified hosts are listed as hosts_online and verified hosts as hosts_verified in the scan summary, which is written to summaries/scan-summary.json in the run directory, printed to the terminal with -E, and exported to the peat-scan-summaries Elasticsearch index with -e.</desc>
+  <defs>
+    <marker id="sp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+  </defs>
+  <style>
+    .sp-text { font-size: 13px; fill: var(--color-foreground-primary); }
+    .sp-title { font-size: 13px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .sp-small { font-size: 12px; fill: var(--color-foreground-secondary); }
+    .sp-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; fill: var(--color-foreground-secondary); }
+    .sp-halo { paint-order: stroke fill; stroke: var(--color-background-primary); stroke-width: 5px; stroke-linejoin: round; }
+    .sp-stage { fill: var(--color-background-secondary); stroke: var(--color-background-border); stroke-width: 1; }
+    .sp-box { fill: var(--color-background-primary); stroke: var(--color-foreground-border); stroke-width: 1.1; }
+    .sp-device { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.1; }
+    .sp-good { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 2; }
+    .sp-chip { fill: var(--color-brand-primary); stroke: none; }
+    .sp-chip-text { font-size: 12px; font-weight: 700; fill: var(--color-background-primary); }
+    .sp-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#sp-arrow); }
+    .sp-dashed { stroke-dasharray: 5 4; }
+  </style>
+
+  <text x="20" y="30" class="sp-label">FOR EACH TARGET HOST (UNICAST IP SCAN)</text>
+
+  <!-- Target host -->
+  <rect x="20" y="78" width="104" height="48" rx="4" class="sp-device"/>
+  <text x="72" y="98" text-anchor="middle" class="sp-text">Target host</text>
+  <text x="72" y="116" text-anchor="middle" class="sp-small">lowest IP first</text>
+  <path d="M 124 102 L 140 102" class="sp-arrow"/>
+
+  <!-- Stage 1: online check -->
+  <rect x="142" y="48" width="270" height="108" rx="10" class="sp-stage"/>
+  <circle cx="162" cy="68" r="10" class="sp-chip"/>
+  <text x="162" y="72" text-anchor="middle" class="sp-chip-text">1</text>
+  <text x="180" y="72" class="sp-title">Online check</text>
+  <text x="158" y="94" class="sp-small">Root/Administrator: ARP on the local</text>
+  <text x="158" y="110" class="sp-small">subnet, ICMP echo for routed hosts.</text>
+  <text x="158" y="126" class="sp-small">Otherwise: TCP connect to one port</text>
+  <text x="158" y="142" class="sp-small">(SYN_PORT, 80 by default).</text>
+
+  <path d="M 412 102 L 436 102" class="sp-arrow"/>
+  <text x="425" y="42" text-anchor="middle" class="sp-small">online</text>
+
+  <!-- Stage 2: port check -->
+  <rect x="438" y="48" width="250" height="108" rx="10" class="sp-stage"/>
+  <circle cx="458" cy="68" r="10" class="sp-chip"/>
+  <text x="458" y="72" text-anchor="middle" class="sp-chip-text">2</text>
+  <text x="476" y="72" class="sp-title">Port check</text>
+  <text x="454" y="94" class="sp-small">Only the ports used by the</text>
+  <text x="454" y="110" class="sp-small">selected modules' identification</text>
+  <text x="454" y="126" class="sp-small">methods; each unique port is</text>
+  <text x="454" y="142" class="sp-small">checked once.</text>
+
+  <path d="M 688 102 L 712 102" class="sp-arrow"/>
+  <text x="701" y="42" text-anchor="middle" class="sp-small">open ports</text>
+
+  <!-- Stage 3: identification -->
+  <rect x="714" y="48" width="276" height="108" rx="10" class="sp-stage"/>
+  <circle cx="734" cy="68" r="10" class="sp-chip"/>
+  <text x="734" y="72" text-anchor="middle" class="sp-chip-text">3</text>
+  <text x="752" y="72" class="sp-title">Identification</text>
+  <text x="730" y="94" class="sp-small">Methods for the open ports run in</text>
+  <text x="730" y="110" class="sp-small">order of reliability, highest first,</text>
+  <text x="730" y="126" class="sp-small">and stop at the first success.</text>
+
+  <!-- Exits -->
+  <path d="M 277 156 L 277 204" class="sp-arrow"/>
+  <text x="283" y="184" class="sp-small sp-halo">no answer</text>
+  <path d="M 563 156 L 563 204" class="sp-arrow"/>
+  <text x="569" y="184" class="sp-small sp-halo">no open ports</text>
+  <path d="M 750 156 L 750 204" class="sp-arrow"/>
+  <text x="744" y="184" text-anchor="end" class="sp-small sp-halo">none succeed</text>
+  <path d="M 930 156 L 930 204" class="sp-arrow"/>
+  <text x="924" y="184" text-anchor="end" class="sp-small sp-halo">first success</text>
+
+  <!-- Outcomes -->
+  <rect x="197" y="206" width="160" height="64" rx="6" class="sp-box"/>
+  <text x="277" y="228" text-anchor="middle" class="sp-text">Offline</text>
+  <text x="277" y="245" text-anchor="middle" class="sp-small">no answer to the check,</text>
+  <text x="277" y="261" text-anchor="middle" class="sp-small">not probed further</text>
+
+  <rect x="520" y="206" width="270" height="64" rx="6" class="sp-box"/>
+  <text x="655" y="228" text-anchor="middle" class="sp-text">Online, unidentified</text>
+  <text x="655" y="245" text-anchor="middle" class="sp-small">answered, but no selected</text>
+  <text x="655" y="261" text-anchor="middle" class="sp-small">module could identify it</text>
+
+  <rect x="810" y="206" width="180" height="64" rx="6" class="sp-good"/>
+  <text x="900" y="228" text-anchor="middle" class="sp-text">Verified</text>
+  <text x="900" y="245" text-anchor="middle" class="sp-small">vendor, model, firmware,</text>
+  <text x="900" y="261" text-anchor="middle" class="sp-small">services, MAC address</text>
+
+  <!-- Outcomes -> summary -->
+  <path d="M 277 270 L 277 314" class="sp-arrow sp-dashed"/>
+  <text x="283" y="296" class="sp-small sp-halo">scan_targets only</text>
+  <path d="M 655 270 L 655 314" class="sp-arrow"/>
+  <text x="661" y="296" class="sp-small sp-halo">hosts_online</text>
+  <path d="M 900 270 L 900 314" class="sp-arrow"/>
+  <text x="894" y="296" text-anchor="end" class="sp-small sp-halo">hosts_verified</text>
+
+  <!-- Scan summary -->
+  <rect x="142" y="316" width="848" height="82" rx="10" class="sp-stage"/>
+  <text x="156" y="336" class="sp-label">SCAN SUMMARY</text>
+  <rect x="158" y="346" width="282" height="44" rx="6" class="sp-box"/>
+  <text x="299" y="364" text-anchor="middle" class="sp-text">Run directory</text>
+  <text x="299" y="380" text-anchor="middle" class="sp-small">summaries/scan-summary.json</text>
+  <rect x="456" y="346" width="184" height="44" rx="6" class="sp-box"/>
+  <text x="548" y="364" text-anchor="middle" class="sp-text">Terminal</text>
+  <text x="548" y="380" text-anchor="middle" class="sp-small">JSON with -E</text>
+  <rect x="656" y="346" width="318" height="44" rx="6" class="sp-box"/>
+  <text x="815" y="364" text-anchor="middle" class="sp-text">Elasticsearch / OpenSearch</text>
+  <text x="815" y="380" text-anchor="middle" class="sp-small">peat-scan-summaries index (-e)</text>
+</svg>
+<figcaption class="peat-dg-caption">How a unicast IP scan treats each target host. <code>-Y</code> (<code>--assume-online</code>) skips step 1, <code>--sweep</code> stops after it, and <code>--intensive-scan</code> runs every method regardless of open ports and earlier successes.</figcaption>
+</figure>

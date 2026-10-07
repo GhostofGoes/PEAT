@@ -327,16 +327,16 @@ elastic_uefi_hashes_index: "uefi-hashes"
 # Elasticsearch server to pull HEAT data from
 heat_elastic_server: null
 
-# Names and/or patterns of Elasticsearch indices with Packetbeat data
-heat_index_names: "packetbeat-*"
+# Names and/or patterns of Elasticsearch indices with the packet data (ingest-tshark documents)
+heat_index_names: "packets-*"
 
 # Date range to filter HEAT extraction to
 heat_date_range: null
 
-# IP addresses to exclude from packetbeat search (source and/or destination IP)
+# IP addresses to exclude from the HEAT packet search (source and/or destination IP)
 heat_exclude_ips: []
 
-# IP address to limit packetbeat search to (source or destination IP)
+# IP address to limit the HEAT packet search to (source or destination IP)
 heat_only_ips: []
 
 # Extract the file(s) but don't parse them using PEAT
@@ -453,8 +453,10 @@ device_options:
     # (refer to SCEPTRE module docstring for details)
     ftp_testing: false
 
-    # Name of bennu firmware file.
-    # This will be auto-determined if a scan is performed.
+    # Name (or any part of the name) of the bennu firmware file in the device's FTP
+    # directory. The pull downloads the first file whose name contains this string.
+    # On a bennu field device started by the phenix "sceptre" app the file is named
+    # "bennu-field-deviced" until a firmware update has been uploaded.
     bennu_filename: "bennu-field-deviced.firmware"
 
   # Configuration specific to the SEL modules (SELRelay and SELRTAC)

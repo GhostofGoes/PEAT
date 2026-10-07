@@ -1,32 +1,39 @@
 .. _contributor_guide:
 
-Contributor Guide
-*****************
+Contributing to PEAT
+********************
 
-.. seealso::
+PEAT is an open source project, and we welcome contributions from the community: bug
+reports, documentation, new device modules, and fixes. This file is the contribution
+*process*. The rest of the contributor documentation (setting up a development
+environment, code guidelines, logging, testing, building, continuous integration, and
+releases) is in the Contributing section of the PEAT documentation:
+https://sandialabs.github.io/PEAT/contributing/
 
-   :doc:`developer_reference`
-      Details on development of device modules (aka "PEAT modules"), and the design decisions related to them
+.. note::
+   This file (``CONTRIBUTING.rst`` in the root of the repository) is the single source of
+   truth for the contribution process, and is what GitHub links to when opening issues and
+   pull requests. Pull requests that don't follow this guide may be delayed until they
+   comply.
 
-   :ref:`test-docs`
-      Setting up a testing environment, running the tests, and writing new tests
-
-   :doc:`data_model`
-      Data model documentation
+- Development environment: https://sandialabs.github.io/PEAT/contributing/development_environment.html
+- Code guidelines and conventions: https://sandialabs.github.io/PEAT/contributing/code_guidelines.html
+- Logging: https://sandialabs.github.io/PEAT/contributing/logging.html
+- Testing: https://sandialabs.github.io/PEAT/contributing/testing.html
+- Documentation: https://sandialabs.github.io/PEAT/contributing/documentation.html
+- Building and packaging: https://sandialabs.github.io/PEAT/contributing/building.html
+- Continuous integration: https://sandialabs.github.io/PEAT/contributing/ci.html
+- Releases: https://sandialabs.github.io/PEAT/contributing/releases.html
+- Tour of the codebase: https://sandialabs.github.io/PEAT/contributing/codebase_tour.html
+- Writing a device module: https://sandialabs.github.io/PEAT/developer/module_developer_guide.html
 
 
 How to contribute
 -----------------
 
-PEAT is an open source project, and we welcome contributions from the community.
-Here is how you can get started:
-
-.. note::
-   This file (``CONTRIBUTING.rst`` in the root of the repository) is the single source of truth for the contribution process, and is what GitHub links to when opening issues and pull requests. Pull requests that don't follow this guide may be delayed until they comply.
-
 #. **Track the work**
 
-   Submit bug report or feature request via the `issue tracker <https://github.com/sandialabs/PEAT/issues>`__ or `discussions <https://github.com/sandialabs/PEAT/discussions>`__ on GitHub. If the idea is new/complex, we recommend that the idea is discussed before implementation, to avoid wasting time on an idea that may not be accepted due to lack of consensus.
+   Submit a bug report or feature request via the `issue tracker <https://github.com/sandialabs/PEAT/issues>`__ or `discussions <https://github.com/sandialabs/PEAT/discussions>`__ on GitHub. If the idea is new or complex, we recommend discussing it before implementation, to avoid wasting time on an idea that may not be accepted due to lack of consensus.
 
 #. **Create a fork of PEAT**
 
@@ -66,13 +73,12 @@ Here is how you can get started:
    - ``ci``: Changes to our CI configuration files and scripts (example scopes: GitLab, GitHub)
    - ``chore``: Other changes that don't modify source or test files
    - ``revert``: Reverts a previous commit
-   - ``deps`` or ``dependencies``: Changes that updates dependencies
+   - ``deps`` or ``dependencies``: Changes that update dependencies
    - ``sec`` or ``security``: Changes that impact security of the system
    - ``deprecate``: Changes that deprecate some feature
    - ``minor`` or ``patch``: Accepted by the tooling, but prefer one of the more specific types above
 
    All contributions (code, comments, documentation, and commit messages) MUST be in English.
-
 
 #. **Lint and format**
 
@@ -81,11 +87,11 @@ Here is how you can get started:
 #. **Document changes**
 
    If your change introduces new features or changes existing functionality, please update (or create) documentation in ``docs/``.
-   It's difficult to keep documentation up-to-date, so there is an emphasis on ensuring that revisions and especially new functionality is well documented.
+   It's difficult to keep documentation up-to-date, so there is an emphasis on ensuring that revisions and especially new functionality are well documented. The documentation builds with warnings treated as errors; see https://sandialabs.github.io/PEAT/contributing/documentation.html for how to build and check it locally.
 
 #. **Update the CHANGELOG**
 
-   PEAT uses `Towncrier <https://towncrier.readthedocs.io/>`_ to manage changelog entries. Towncrier provides several benefits:
+   PEAT uses `Towncrier <https://towncrier.readthedocs.io/en/stable/>`_ to manage changelog entries. Towncrier provides several benefits:
 
    - **Automated changelog generation**: No need to manually edit CHANGELOG.rst
    - **Avoids merge conflicts**: Multiple contributors can add their own fragment files without conflicting with each other
@@ -132,7 +138,7 @@ Here is how you can get started:
 
    **Release Process:**
 
-   When a maintainer runs the Release workflow (refer to :ref:`release-process`), GitHub Actions builds the changelog from all accumulated news fragments and commits the updated ``CHANGELOG.rst`` before creating the release tag.
+   When a maintainer runs the Release workflow (see https://sandialabs.github.io/PEAT/contributing/releases.html), GitHub Actions builds the changelog from all accumulated news fragments and commits the updated ``CHANGELOG.rst`` before creating the release tag.
 
    **Manual Changelog Building (Optional):**
 
@@ -152,7 +158,7 @@ Here is how you can get started:
 
    When adding a new feature, add tests for that feature, and when changing existing code, ensure tests are updated to cover the changes made (e.g. if there are new edge cases or code paths).
 
-   Ensure tests pass. Run ``pdm run test`` and ``pdm run test-full`` to run most of the tests. Running the tests locally *before* submitting a pull request helps catch problems early.
+   Ensure tests pass. Run ``pdm run test`` and ``pdm run test-full`` to run most of the tests. Running the tests locally *before* submitting a pull request helps catch problems early. See https://sandialabs.github.io/PEAT/contributing/testing.html.
 
 #. **Squash and rebase**
 
@@ -183,7 +189,7 @@ Here is how you can get started:
 
    When a pull request is made, a reviewer will assess the code and write comments on your PR. All pull requests must be approved by at least one maintainer. If you know which maintainers would best understand your contribution, request their review using "Reviewers" on the right side of the PR page. Due to project restrictions, you may not be able to request specific reviewers via the UI, in which case mention them in a comment, e.g. ``@username1 @username2 Requesting review on this PR because you are SMEs on Device X``.
 
-   Every single developer working on the project has their code reviewed, and we've come to see it as friendly conversation from which we all learn and the overall code quality benefits. Therefore, please don't let the review discourage you from contributing: its only aim is to improve the quality of project, not to criticize. Once the code has been reviewed and all comments have been addressed, the reviewer will authorize the patch.
+   Every single developer working on the project has their code reviewed, and we've come to see it as friendly conversation from which we all learn and the overall code quality benefits. Therefore, please don't let the review discourage you from contributing: its only aim is to improve the quality of the project, not to criticize. Once the code has been reviewed and all comments have been addressed, the reviewer will authorize the patch.
 
    After approval, any maintainer may merge (squash or rebase) the PR into ``main``.
 
@@ -201,537 +207,47 @@ Here is how you can get started:
       git merge upstream/main
       git push origin main
 
+
+Requirements before merging
+---------------------------
+
+#. Your name and any other contributors to the change are in ``AUTHORS``
+#. The list of authors in the relevant module-level docstring(s) is updated, including email addresses, so it is clear who to contact about a particular portion of the codebase
+#. There is a minimal set of tests for the change (if applicable)
+#. The GitHub Actions CI pipeline passes
+#. The code has been reviewed by a PEAT maintainer (if the committer is not a PEAT maintainer)
+
+
 Code of Conduct
 ---------------
 
-The PEAT community has adopted a Code Of Conduct to ensure that we have an open and healthy community. Please review :doc:`code_of_conduct` for more information.
+The PEAT community has adopted a Code of Conduct to ensure that we have an open and healthy community. Please review ``CODE_OF_CONDUCT.rst`` (https://sandialabs.github.io/PEAT/code_of_conduct.html) for more information.
 
 
-Setting up a development environment
-------------------------------------
-
-The recommended editor is `Visual Studio Code (VSCode) <https://code.visualstudio.com/>`__.
-
-There are two ways to setup a development environment, with a devcontainer or manual setup.
-
-- :ref:`devcontainer`: this is the recommended method, as it's straightforward a "batteries included" solution that avoids a lot of platform-specific issues.
-- :ref:`manual-setup`: recommended for advanced developers or those wanting more control over their environment.
-
-
-.. _devcontainer:
-
-Devcontainer
-^^^^^^^^^^^^
-
-#. Create a fork of the `PEAT GitHub repository <https://github.com/sandialabs/PEAT>`__
-#. Ensure Git is installed. If it isn't, follow `these instructions <https://git-scm.com/install/>`__.
-#. Install Docker
-
-   - Linux: follow the `Linux Docker install guide <https://docs.docker.com/engine/install/>`__ (NOTE: do NOT install using ``snap``)
-   - macOS: follow the `macOS Docker install guide <https://docs.docker.com/desktop/setup/install/mac-install/>`__
-   - Windows
-
-      #. Open a PowerShell terminal as an Administrator (Right-click PowerShell, click "Run as Administrator")
-      #. Run ``wsl --install``
-      #. Reboot
-      #. Follow the `Docker instructions <https://docs.docker.com/desktop/setup/install/windows-install/>`__ to download and install "Docker Desktop for Windows", and Check the box to use WSL2 backend. Use ``Docker Desktop for Windows - x86_64``, *don't* download the Microsoft Store or ARM versions.
-
-#. Follow the `devcontainers setup guide <https://code.visualstudio.com/docs/devcontainers/containers#_system-requirements>`__ for Docker, VSCode, and Devcontainers
-#. Open a terminal
-#. Clone your fork of the PEAT GitHub repository
-
-   .. code-block:: bash
-
-      git clone https://github.com/<your-username>/peat.git
-      cd peat
-
-#. Add the main repository as a upstream remote
-
-   .. code-block:: bash
-
-      git remote add upstream https://github.com/sandialabs/PEAT.git
-
-#. Open in VSCode
-
-   .. code-block:: bash
-
-      code .
-
-#. When prompted on bottom right to build and launch devcontainer, click button to accept. If this doesn't appear or you dismiss it on accident, hit CTRL + SHIFT + P, then search ``Dev Containers: Rebuild and Reopen in Container``, and hit Enter.
-
-
-.. _manual-setup:
-
-Manual Setup
-^^^^^^^^^^^^
-
-.. note::
-   On Windows, we strongly recommend using PowerShell when setting up the environment manually
-
-#. Create a fork of the `PEAT GitHub repository <https://github.com/sandialabs/PEAT>`__
-#. Ensure Python 3.11 or newer is installed. The versions of Python supported by PEAT are currently 3.11 - 3.13.
-
-   - Ubuntu 22.04: ``sudo apt install -y python3.11 python3.11-dev python3.11-pip``
-   - Ubuntu 24.04: ``sudo apt install -y python3 python3-dev python3-pip`` (this is Python 3.12)
-   - Windows: download from `python.org <https://www.python.org/downloads/windows/>`__
-#. Ensure Git is installed. If it isn't, follow `these instructions <https://git-scm.com/install/>`__.
-#. `Install PDM <https://pdm-project.org/en/stable/#installation>`__
-#. Clone your fork of the PEAT GitHub repository
-
-   .. code-block:: bash
-
-      git clone https://github.com/<your-username>/peat.git
-      cd peat
-
-#. Add the main repository as a upstream remote
-
-   .. code-block:: bash
-
-      git remote add upstream https://github.com/sandialabs/PEAT.git
-
-#. Create virtual environment and install dependencies
-
-   .. code-block:: bash
-
-      pdm install -d
-
-#. Ensure the install worked
-
-   .. code-block:: bash
-
-      pdm run peat --version
-      pdm run peat --help
-
-#. Setup `pre-commit <https://pre-commit.com/>`__ hooks
-
-   .. code-block:: bash
-
-      pdm run pre-commit install
-      pdm run pre-commit run --all-files
-
-#. Ensure linting and tests work
-
-   .. code-block:: bash
-
-      pdm run format
-      pdm run lint
-      pdm run test-full
-
-
-Notes
-^^^^^
-
-- `pre-commit <https://pre-commit.com/>`__ is used to ensure common issues are caught before they're committed and pushed. For example, commit message format (conventional commits), linting or formatting issues, etc.
-- `PDM <https://pdm-project.org>`__ is used for tooling and dependency management
-- Edits to the code (``.py`` files) don't necessitate a reinstall if environment was created with PDM (``pdm install -d``). You only need to install on first setup, or if the dependencies change (these are defined in ``pyproject.toml``).
-- Tests are run using ``pytest``
-- In the :doc:`Developer reference documentation <developer_reference>` (and elsewhere), the Python source code for documented classes and functions is available by clicking the ``source`` button on the top right of the documentation for the class or function.
-- VSCode's Remote Development extensions make life easier if you prefer the interface of an IDE when working on a remote server or device that's behind a remote server (e.g. a :term:`SCEPTRE` environment). This feature enables use of the :term:`GUI` and most of VSCode's numerous extensions while working on code on a remote server or in `Windows Subsystem for Linux (WSL) <https://docs.microsoft.com/en-us/windows/wsl/>`__. See the VSCode documentation for details: `VS Code Remote Development <https://code.visualstudio.com/docs/remote/remote-overview>`__ and `Remote Development tutorials <https://code.visualstudio.com/docs/remote/remote-tutorials>`__
-
-
-Helpful PDM commands
-^^^^^^^^^^^^^^^^^^^^
-.. code-block:: bash
-
-   # Run PEAT. If you make changes to the code, these will be picked up automatically.
-   pdm run peat
-
-   # List available scripts. "scripts" are helpers to do things like format code, build executables, etc
-   pdm run -l
-
-   # Run lint checks
-   pdm run lint
-
-   # Format code
-   pdm run format
-
-   # Run unit tests
-   pdm run test
-
-   # Run unit tests, including slow tests
-   # This takes significantly longer, but is more comprehensive
-   pdm run test-full
-
-   # Run tests for a specific version of Python
-   # For example, Python 3.12
-   pdm use -f 3.12
-   pdm install -d
-   pdm run test
-
-   # Build Windows executable with PyInstaller
-   pdm run build-exe
-
-   # Build Linux executable to be fully portable.
-   # This runs staticx to include system libraries.
-   # This WILL NOT work on Windows, and probably won't work with Mac.
-   # make sure you have the following dependencies (linux) if you run into build issues
-   sudo apt install -qyf python3-dev patchelf binutils scons libpq-dev libpq5 graphviz
-   pdm run build-linux-exe
-
-   # Sneakypeat
-   pdm run build-sneakypeat
-   pdm run build-linux-sneakypeat
-
-   # Build Python packages
-   pdm build
-   ls -lAht ./dist/
-   # View files in the package
-   pdm run wheel-files
-
-   # Build docker
-   pdm run build-docker
-
-
-PR Review Guidelines
+PR review guidelines
 --------------------
 
-These are guidelines for maintainers reviewing Pull Requests with changes to PEAT's code.
+These are guidelines for maintainers reviewing pull requests with changes to PEAT's code.
 
 Maintainers should check all changes for the following:
 
 - PEAT is deployed on sensitive networks with potential consequences on life safety and operation of critical infrastructure. All changes should be viewed through this lens.
 - Trustworthiness
-   - Check for backdoors, malicious changes, etc., especially from untrusted contributors.
-   - Binary or very large files (e.g. test data) should only be accepted from trusted contributors with verified provenance. This is to avoid a ``xz-utils`` type of situation.
+
+  - Check for backdoors, malicious changes, etc., especially from untrusted contributors.
+  - Binary or very large files (e.g. test data) should only be accepted from trusted contributors with verified provenance. This is to avoid a ``xz-utils`` type of situation.
 
 - Correctness
-   - How the changes fit into the larger codebase. Are they using the correct APIs? For example, if a file is being written, then ``utils.write_file()`` or ``DeviceData.write_file()`` should be utilized in most cases.
-   - Are there any issues with the code that you can see?
 
+  - How the changes fit into the larger codebase. Are they using the correct APIs? For example, if a file is being written, then ``utils.write_file()`` or ``DeviceData.write_file()`` should be utilized in most cases.
+  - Are there any issues with the code that you can see?
 
-Releases
---------
+- Completeness
 
-Releases are created when the PEAT maintainers determine a release is warranted. This may be to support a upcoming deployment or exercise, or when enough notable features are added (e.g. new device modules) that warrant cutting a new release to get it in the hands of users.
+  - Tests, documentation (including ``examples/peat-config.yaml`` for new options and the supported devices table for new modules), a news fragment, and an ``AUTHORS`` entry.
 
-Requirements
-^^^^^^^^^^^^
-
-#. The :doc:`changelog` is up to date
-#. The PEAT maintainers are comfortable with the current state of the code
-#. The GitHub Actions pipelines are passing on ``main``
-#. SNL-internal GitLab CI pipeline tests are passing
-
-   - Tests on closed-source datasets
-   - Tests on the PEAT device rack (live devices)
-
-.. _release-process:
-
-Release process
-^^^^^^^^^^^^^^^
-Releases are created by the ``Create Release`` GitHub Actions workflow (``.github/workflows/release.yml``). Do **not** create the release tag manually, the workflow creates it.
-
-#. Open `Actions > Create Release <https://github.com/sandialabs/PEAT/actions/workflows/release.yml>`__, click "Run workflow", and fill in:
-
-   - ``tag_name``: the calendar version for the release prefixed with ``v``, e.g. ``v2026.4.2`` if the date is April 2 2026. Append ``-prerelease`` (e.g. ``v2026.4.2-prerelease``) to mark the release as a pre-release.
-   - ``target_branch``: the branch to release from (normally ``main``)
-
-#. Wait for the workflow to finish. It will:
-
-   - Run the tests and build all of the artifacts (Linux and Windows executables, Python package, HTML docs, man page, sneakypeat), stamped with the release version
-   - Build the :doc:`changelog` from the accumulated news fragments using Towncrier and commit the updated ``CHANGELOG.rst`` to the target branch (skipped if the changelog already has an entry for the tag)
-   - Create the annotated Git tag
-   - Dispatch the Documentation workflow, which rebuilds the documentation for the release and deploys it to `GitHub Pages <https://sandialabs.github.io/PEAT/>`__
-   - Create a **draft** GitHub release with the artifacts attached
-
-#. Verify the draft release in `Releases <https://github.com/sandialabs/PEAT/releases>`__:
-
-   - Ensure the change list is correct
-   - Ensure all expected artifacts are included: Linux EXE, Windows EXE, Python package (source dist and wheel), docs, man page, sneakypeat
-   - Download artifacts and verify they work as expected. The artifacts are tested in CI, but it's good to be sure.
-
-#. Publish the release
-#. Share the release with all relevant stakeholders
-#. Congratulations on a successful release!
-
-Logging and printing
---------------------
-The `Loguru <https://loguru.readthedocs.io/en/stable/>`__ library is used module is used for *all* logging messages (in other words, messages intended to be read by by a human user). Log messages are configured to write to stderr (not stdout), a log file, and Elasticsearch (if configured). The writing to stderr is intentional, enabling users to easily filter output from commands from the logging messages.
-
-The use of :func:`print` and :func:`~pprint.pprint` is forbidden for user messages, and should only be used for printing final results (e.g. scan result summary for a scan). In these cases, add ``# noqa: T201`` to exclude it from linting (and ``# noqa: T203`` for :func:`~pprint.pprint`).
-
-Logging levels
-^^^^^^^^^^^^^^
-- ``CRITICAL``: Something went really wrong. This is usually indiciative of a bug in PEAT or a unusual system error. If something is logged at CRITICAL, it usually results in premature termination of a run of PEAT.
-- ``ERROR``: bad user input (e.g. a input file doesn't exist), a high-level action failed (e.g. a pull from a device was unsuccessful when it was supposed to succeed), general system error. Issues logged at error often result in a failed PEAT run, but may not warrant terminating the run early. For example, if performing a pull from five devices, if one of the devices fail, the other four may succeed, and PEAT will proceed with finishing the pull from those devices.
-- ``WARNING``: anything the user should be aware of, but may not have an impact on the run or necessarily be a failure. For example, if PEAT is retrieving ten different data points, and one of the best-effort data points is unsuccessful (e.g. "battery statistics"), that may be a WARNING instead of an ERROR.
-- ``INFO``: General messages about how a run is progressing. These should provide enough information for the user to be aware of what is happening, without being overly verbose. If additional information is desirable, log at DEBUG level instead, then the user can enable it with the ``-v`` argument.
-- ``DEBUG``: verbose messages, with additional information useful for troubleshooting issues or gaining a deeper understanding of the actions PEAT is taking. These are always saved to the log file, but will only be printed to the terminal if ``-v`` (``--verbose``) argument is set.
-- ``TRACE``, ``TRACE2``, ``TRACE3``, ``TRACE4``: four levels of very verbose logging for debugging and troubleshooting purposes. These are enabled by the ``-V`` argument, e.g. ``-VVV`` will set debugging level to 3 and enable TRACE, TRACE2, and TRACE3 messages to be logged. If DEBUG level is 0, messages logged at TRACE levels are not saved anywhere.
-
-Logging usage
-^^^^^^^^^^^^^
-Using logging is fairly straightforward:
-
-.. code-block:: python
-   :caption: Logging examples
-
-   from peat import log
-
-   log.info("This is a Informational message")
-   log.trace("DEBUG level 1 message")
-   log.trace4("This will only be logged if config.DEBUG == 4, e.g. with -vVVVV arguments")
-
-   # DeviceModule classes have a log attribute, that will add the classes's name as metadata
-   # This example comes from m340.py
-   @classmethod
-   def _verify_snmp(cls, dev: DeviceData) -> bool:
-       ...
-       cls.log.trace(f"Verifying {dev.ip}:{port} via SNMP (timeout: {timeout})")
-
-   # To add information about the target of an action, such as IP address, serial port,
-   # hostname, etc., bind a new logger with "target" set.
-   # This example comes from ab_push.py
-   _log = log.bind(target=ip)
-   _log.info(
-       f"Pushing firmware to {ip}:{port} (size: {utils.fmt_size(len(firmware))})"
-   )
-
-Advanced logging
-^^^^^^^^^^^^^^^^
-Logging format can be customized at runtime using `Loguru's environment variables <https://loguru.readthedocs.io/en/stable/api/logger.html#env>`__. The main reason you'd need to use this is if there are color issues with certain terminals. Instead of disabling colors entirely with ``--no-color``, you can customize the problematic color with ``LOGURU_<LEVEL>_COLOR``, e.g. ``LOGURU_DEBUG_COLOR`` to set the color for ``DEBUG``-level messages.
-
-
-Guidelines and policies
------------------------
-
-Code style
-^^^^^^^^^^
-- `PEP8 <https://www.python.org/dev/peps/pep-0008/>`__ should be adhered to, with the exception of line length can go up to 99 characters (``line-length`` in the ``[tool.ruff]`` section of ``pyproject.toml``), and certain lines can be excluded with ``# noqa: E501``.
-- Run ``pdm run format`` to format your code before pushing. There's no longer a need to worry about formatting, it's all handled for you. Under the hood, `the Ruff formatter <https://docs.astral.sh/ruff/formatter/>`__ is used for formatting and `Ruff's isort check <https://docs.astral.sh/ruff/formatter/#sorting-imports>`__ is used for import sorting.
-- Docstrings should follow `PEP-257 <https://www.python.org/dev/peps/pep-0257/>`__.
-- Argument and Returns in function docstrings should follow the `Googleformat <http://google.github.io/styleguide/pyguide.html>`_ (`Examples <https://www.sphinx-doc.org/en/1.8/usage/extensions/example_google.html>`_).
-- ``TODO`` comments are permitted. However, if the ``TODO`` is significant you should discuss it with the team or open a issue on GitHub.
-
-Git
-^^^
-- All changes to PEAT should be worked on in a Git branch. Changes pushed directly to the ``main`` branch will be rejected.
-- All branches are merged using a GitHub Pull Request (PR).
-- Commit messages and PR titles MUST follow Conventional Commits with a lowercase ``type`` (refer to :ref:`contributor_guide`).
-- When work is nearing completion, open a *Draft* Pull Request. This increases visibility in advance of the reviewing phase, and enables discussion.
-- All Pull Requests should have a code review by another PEAT developer. Reviewers should check that the change is reasonable and complete, check for potential issues or edge cases, and look for anything that jumps out at them or seems "fishy".
-- Requirements before *merging* an PR:
-
-  #. Add your name and any other contributors to the feature to ``AUTHORS``
-  #. Add and/or update the list of authors in the relevant module-level docstring(s) for your changing, including email addresses. This makes it clear who to contact about a particular portion of the codebase.
-  #. There is a minimal set of tests for the change (if applicable)
-  #. GitHub Actions CI pipeline passes
-  #. Code has been been reviewed by a PEAT maintainer (if committer is not a PEAT maintainer)
-
-Versioning
-^^^^^^^^^^
-Releases are tagged with a calendar version prefixed with ``v``, e.g. ``v2024.5.6`` for a release on May 6th, 2024. The tag is created by the Release workflow (refer to :ref:`release-process`), not manually.
-
-The version of the Python package (``peat --version``) is derived from the Git tags by ``pdm-backend`` when PEAT is installed or built. For development builds, this is an automatically generated version such as ``2024.5.6.dev801+gf79832d6.d20240506``. The Release workflow builds the artifacts before the tag exists, so it sets the ``PDM_BUILD_SCM_VERSION`` environment variable to stamp the release version into the executables, Python package, and documentation.
-
-Type annotations
-^^^^^^^^^^^^^^^^
-Python type annotations are used for all methods and functions, and when it makes sense for variables (e.g. if there's ambiguity about the type of a variable). While at first glance it seems overly verbose and "unpythonic" (after all, one of Python's core strengths is it's dynamic "duck" typing), there are a number of reasons we use them:
-
-- They document expected types, which has been especially useful for the deep device-level code, which is difficult to untangle if you aren't the original developer (the ControlLogix code is the nastiest example of this).
-- They are used as part of the documentation generation process to add the types (instead of putting the types in the docstrings, which are often not updated).
-- The `mypy <https://github.com/python/mypy>`__ static analyzer is used to catch typing errors.
-- Linters (e.g. Pylance in VSCode) can help you avoid silly mistakes, like providing arguments in the wrong order.
-
-.. seealso::
-
-   The :mod:`typing` module
-
-   `PEP 484 - Type Hints <https://www.python.org/dev/peps/pep-0484>`__
-
-   `PEP 526 - Syntax for Variable Annotations <https://www.python.org/dev/peps/pep-0526>`__
-
-   `The mypy homepage <http://mypy-lang.org>`__
-
-Exception handling
-^^^^^^^^^^^^^^^^^^
-The methodology for exception handling in PEAT differs somewhat from Python's guidance and common practices. It can be summed up as this: "get as much data as possible and fail safely". If a function or function to collect some data fails, then log that it failed and continue trying other methods. This can be implemented by wrapping code that may fail in a ``try/except`` statement and handle the generic ``Exception`` class. If the failure is critical to the continued operation of the collection or has the potential to affect the device's operation, then log the issue in detail and re-raise the exception so that device's run is terminated. This methodology is why ``try: ...; except Exception: ...`` is used in various places.
-
-Other conventions
-^^^^^^^^^^^^^^^^^
-- Timestamps are assumed to be in the :term:`UTC` timezone unless there is a specific reason for them not to be, e.g value recovered from device with a unknown timezone.
-- :py:class:`~datetime.datetime` objects *should be* timezone-aware
-- UTF-8 encoding is used for all files (unless required and documented otherwise)
-- All hashes *should be* SHA 256
-- Strings
-
-  - Strings should be either :class:`str` or :class:`bytes`
-  - Raw data should be :class:`bytes` type. Use of :class:`bytearray` or other related types should be avoided, *except* for intermediate representations (e.g. building a binary file chunk by chunk).
-  - Convert from :class:`str` to :class:`bytes` using :meth:`str.encode`, and vice-versa using :class:`bytes.decode`
-  - :class:`str` objects should be ``"utf-8"``
-  - `Refer to this guide <https://stackoverflow.com/a/36149089>`__ for converting escaped hex to hex, and vice-versa
 
 License
-^^^^^^^
+-------
+
 By contributing to this project, you agree that your contributions will be licensed under the `GNU General Public License v3.0 <https://github.com/sandialabs/PEAT/blob/main/LICENSE>`__ that covers the project.
-
-Project structure
------------------
-- ``.dockerignore``   Files to ignore when building the Docker containers (`Syntax reference <https://docs.docker.com/engine/reference/builder/#/dockerignore-file>`__)
-- ``.editorconfig``   Consistent configuration baseline used by many editors and IDEs (`Reference <https://editorconfig.org/>`__)
-- ``.gitattributes``  Controls how Git treats file types and line endings (for example, it ensures Bash scripts always have ``LF`` line endings, even when the repository is cloned on Windows)
-- ``.gitignore``      Anything that shouldn't be pushed to GitHub, like temp files and virtual environments
-- ``AUTHORS``         Everyone who has contributed to PEAT
-- ``Dockerfile``      Used to build a Docker image for the PEAT CLI
-- ``LICENSE``         Licensing
-- ``pdm.lock``        Used by PDM to pin the versions of dependencies based on what's defined in ``pyproject.toml``, and ensure their SHA256 hashes match when installing.
-- ``pyproject.toml``  Configuration for the project, including Python packaging metadata, configurations for tools such as ``pytest``, ``ruff``, and ``mypy``, and dependencies. It also controls how the PEAT python package is built and installed. This is what ``pip`` uses when you run ``pip install .``.
-- ``README.md``       Basic documentation that shows up on GitHub project homepage
-
-distribution
-^^^^^^^^^^^^
-Anything related to installing, packaging, or distributing PEAT. See the :ref:`distribution` for further details.
-
-- ``build-docker.sh``  Builds the :term:`Container` image.
-- ``build-linux-package.sh``  Creates a portable PEAT executable on Linux. This is the preferred method of distributing and installing PEAT on Linux.
-- ``file_version_info.txt``   Used by `PyInstaller <https://pyinstaller.readthedocs.io/en/stable/usage.html#windows-specific-options>`__ to add `metadata to the final Windows executable <https://stackoverflow.com/a/14626175>`__. DO NOT MODIFY unless you know what you're doing.
-- ``linux-install-script.sh``  Installs the PEAT executable in ``/usr/local/bin``, the man page in ``/usr/local/share/man/man1/``, and updates the ``mandb``. Intended to be distributed with the Linux executable and the man page (``peat.1``).
-- ``peat.spec``  `PyInstaller spec <https://pyinstaller.readthedocs.io/en/stable/spec-files.html>`__ for building portable PEAT executables (for both Linux and Windows)
-- ``peat_icon.ico``  Icon file used for the Windows executable
-
-examples
-^^^^^^^^
-Example output from PEAT runs, examples of device input files and parsed outputs, example PEAT module, etc.
-
-peat
-^^^^
-Python source code for the ``peat`` module.
-
-- ``api/*``  High-level "wrapper" APIs, e.g. :mod:`~peat.api.pull_api`
-- ``data/*``  Data model implementation
-- ``modules/*``  Device modules included with PEAT
-- ``parsing/*``  General parsing-related code, including Structured Text TC6 XML logic parsing functions
-- ``protocols/*`` General network-related code, including protocol implementations, typecode definitions, wrapper classes (e.g. :class:`~peat.protocols.http.HTTP`) and utility functions
-- ``__init__.py``  Top-level imports for the ``peat`` Python package (Further reading: `What is init.py for? <https://stackoverflow.com/a/4116384/2214380>`__)
-- ``__main__.py``  Entrypoint for the Command Line Interface (CLI)
-- ``cli_args.py``  Command line interface argument definitions, help messages, usage examples, and parsing functions
-- ``cli_main.py``  Core logic for the CLI (this gets called by ``__main__.py``)
-- ``consts.py``  Constants (global variables) such as system information, as well as functions that need to be "import-safe" without cross-dependencies on other PEAT modules
-- ``device.py``  Defines the :class:`~peat.device.DeviceModule` base class used (subclassed) by all PEAT device modules (everything in ``peat/modules/``)
-- ``elastic.py``  Elasticsearch interface implementation, including :class:`~peat.elastic.Elastic`
-- ``es_mappings.py``  Elasticsearch type mappings
-- ``init.py``  Initialization functions, including loading of configurations and Elasticsearch initialization
-- ``log_utils.py``  Logging-related functions
-- ``module_manager.py``  The special sauce behind PEAT's dynamic device module API (``peat.module_api``). The :class:`~peat.module_manager.ModuleManager` manages all imported PEAT :class:`~peat.device.DeviceModule` modules and provides methods to lookup a module or import a new module.
-- ``settings.py``  Configuration and state definitions, including :data:`~peat.settings.config` and :data:`~peat.settings.state`
-- ``settings_manager.py``  The :class:`~peat.settings_manager.SettingsManager` class
-- ``utils.py``  Various utility functions that are used throughout PEAT
-
-tests
-^^^^^
-Anything related to testing, including unit tests and test infrastructure (such as Docker containers). Refer to the :ref:`test-docs` for further details on testing.
-
-- ``modules/``  Unit tests for PEAT :class:`~peat.device.DeviceModule` modules (``peat/modules/``)
-- ``protocols/``  Unit tests for protocols (``peat/protocols/``)
-- ``conftest.py``  Configuration for ``pytest``
-
-Kibana Dashboards and Visualizations
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-**Principles**
-
-- Be deliberate, know your user and the questions they are asking
-- Keep it simple, don't force users to scroll and remember
-- Make more linked dashboards if needed
-- Put important information in important places
-- Use a grid and favor charts that are a bit wider than tall
-
-**Recommended reading**
-
-- `Structure and Layout in System Dashboard Design <http://onemogin.com/observability/dashboards/practitioners-guide-to-system-dashboard-design.html>`__
-- `Presentation and Accessibility in System Dashboard Design <http://onemogin.com/observability/dashboards/practitioners-guide-to-system-dashboard-design-p2.html>`__
-
-
-.. _config-state-deepdive:
-
-Configuration and state deep dive
----------------------------------
-Before proceeding, make sure you're familiar with the regular methods of configuring PEAT, such as environment variables, configuration file, and CLI arguments. Refer to :doc:`operate` for details.
-
-PEAT uses global singletons ("`registries <https://martinfowler.com/eaaCatalog/registry.html>`__") to manage it's configuration and state. These singletons are :data:`~peat.settings.config`, which is an instance of :class:`~peat.settings.Configuration`, and :data:`~peat.settings.state`, which is an instance of :class:`~peat.settings.State`, and both are subclasses (inherit from) :class:`~peat.settings_manager.SettingsManager`. Refer to the :ref:`settings-api` section for details on the APIs of these classes.
-
-These singletons can be safely imported and used anywhere in PEAT or in third party code. Examples:
-
-.. code-block:: python
-
-   from peat import config
-   from peat import state
-
-Changes are applied and available immediately, regardless of when imports occur, as you may be used to from other systems or methods of configuration. This provides flexibility and safety to read and write values from anywhere in the code and at any phase of execution.
-
-.. code-block:: python
-
-   >>> from peat import config
-   >>> config.DEBUG
-   0
-   >>> config.DEBUG = 2
-   >>> config.DEBUG
-   2
-
-Modifications to the configuration or state can be performed via runtime changes, environment variables, or a JSON config file. These changes are always saved in the object in a :class:`~collections.ChainMap` stored in the special ``"CONFIG"`` key on the object. The value that actually gets used when accessed at runtime depends on the *order of precedence*, which is documented in the :ref:`settings-api` section.
-
-The data types of values are automatically checked and converted when loaded from environment variables or JSON files. The data type is defined via Python type annotation syntax on the class variable. The checking and conversion is implemented in :meth:`~peat.settings_manager.SettingsManager.typecast`. Some example type conversions:
-
-- Variables with a type of :class:`~pathlib.Path` accept filesystem path strings in most input methods (e.g. config file), and gets massaged to a :class:`~pathlib.Path` object internally.
-- :class:`bool` variables accept various forms of truth, including "1", "0", "yes", "no", "false", and others.
-
-.. warning::
-   Runtime changes directly to attributes (e.g. ``config.DEBUG = 2``) are NOT type checked or automatically converted. Ensure you are using the proper type!
-
-Configuration changes from command line arguments
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-**Command line arguments with a name matching the value's name are automatically loaded into the configuration** and assigned as **runtime changes**. For example, a command line argument with the name ``--print-results`` will modify the value for :attr:`config.PRINT_RESULTS <peat.settings.Configuration.PRINT_RESULTS>`. Note that only the configuration is automatically modified by command line arguments, the state cannot be changed via the CLI by default. This automatic loading occurs in :func:`peat.init.initialize_peat`, with the ``conf`` argument containing a dictionary of the CLI arguments passed from :func:`peat.cli_main.run_peat`
-
-Adding a attribute to the configuration or state
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-To add a new value to the state or configuration, simply add an attribute to the appropriate class (:class:`~peat.settings.Configuration` or :class:`~peat.settings.State`). The attribute MUST include a type annotation and a default value, as well as a comment describing the attribute. For example:
-
-.. code-block:: python
-
-   class Configuration(SettingsManager):
-       ...
-       # Modifies the coolness of a run
-       COOLNESS_FACTOR: int = 0
-       ...
-
-The variable can now be set via environment variables or JSON configuration files, for example:
-
-.. code-block:: bash
-
-   # Traditional export
-   export PEAT_COOLNESS_FACTOR=9001
-   peat parse examples/
-
-   # Modify only for this command execution
-   PEAT_COOLNESS_FACTOR=9001 peat parse examples/
-
-**The corresponding command line argument is not added automatically**, and must be manually added to :func:`~peat.cli_args.build_argument_parser` in :mod:`peat.cli_args`. If the argument should be available to all commands, add it to the ``'general arguments'`` ``group`` in the ``subparsers`` ``for`` loop, e.g. ``group.add_argument(...)``. Otherwise, add it to the appropriate command parser, e.g. ``scan_parser.add_argument(...)`` or to a ``for`` loop for multiple command parsers (e.g. for ``scan`` and ``pull``).
-
-.. code-block:: python
-
-   group.add_argument(
-       '-o', '--out-dir', type=str, metavar='PATH', default=None,
-       help='Output directory for any files PEAT creates. '
-            'Defaults to "peat_results" in the current directory.'
-   )
-
-Refer to the Usage documentation :ref:`output-structure` section for details on PEAT's file output and examples of the structure.
-
-Landmines
----------
-Some areas of the code are more sensitive or complex than others. If you are confused or unsure about a change, talk to the other developers (git history can help determine who to talk to). I'll try to document here anything that is sensitive or is using advanced Python features that may not be obvious to someone not immersed in the language.
-
-Areas of note:
-
-- ``peat/__init__.py``: Special setup for Loguru, including custom logging levels, handler for Elasticsearch, and customizing log levels for third-party loggers (e.g. Scapy). The order of imports matters in this file!
-- ``peat/device.py`` : The :class:`~peat.device.DeviceModule` base class overrides some "magic methods" (``__<method>__``) and provides methods that are overridden by subclasses.
-- ``peat/settings.py`` : :mod:`~peat.settings` **absolutely cannot** import or rely on other ``peat`` Python modules, since it is imported by practically everything else (``state`` and ``config``). There is a heavy amount of advanced Python hackery happening here, some of which is explained with comments. The only changes most developers will need to make in here are adding/changing configuration or state variables.
-- ``peat/consts.py`` : must be mostly static at runtime and **absolutely cannot** import other Python modules from ``peat``, since it contains values that are imported and used across the codebase. Use this for anything that is determined at runtime or never changes. Several examples are string formats and platform information (e.g. the OS PEAT is running on).
-- ``peat/init.py`` : :func:`~peat.init.initialize_peat` is a workaround for the fact we support multiple independent ways of using PEAT (the CLI, the HTTP server, and as a Python package).
-- Multiple classes use the Python ``@property`` feature, read the official documentation for details: `Python docs - Property <https://docs.python.org/3/library/functions.html#property>`__
-- Multiple classes implement Python built-in methods, commonly known as "magic" or "dunder" methods. These include ``__str__``, ``__repr__``, and others. Check the Python documentation for more details and a full listing: `Python docs - Data Model <https://docs.python.org/3/reference/datamodel.html>`__
-- ``peat/data/*`` : the data models use Pydantic to provide a nice interface for working with data from devices. They process, store and manage device data and provide the structure/schema and associated documentation for said data. **Changes here have the potential to affect every module in PEAT**. Therefore, as with anything critical, think twice, write tests, and ask questions.
-
-Class hierarchy
----------------
-
-.. automod-diagram:: peat

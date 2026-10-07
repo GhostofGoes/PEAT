@@ -14,7 +14,7 @@ Further reading about getting raw socket permissions on Linux
 - https://stackoverflow.com/a/47982075
 - https://stackoverflow.com/a/30826137
 - https://gist.github.com/tomix86/32394a43be70c337cbf1e0c0a56cbd8d
-- http://man7.org/linux/man-pages/man7/capabilities.7.html
+- https://man7.org/linux/man-pages/man7/capabilities.7.html
 """
 
 import timeit

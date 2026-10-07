@@ -1,0 +1,113 @@
+# phenix topology for the PEAT tutorial "Virtual RTUs in a SCEPTRE (phenix) experiment".
+#
+# Two bennu field devices (DNP3 outstations) and a PEAT workstation share the EXP network;
+# the simulation provider feeds the field devices over the MGMT network. The addresses
+# match the "soap" topology from sceptre-phenix-topologies, whose RTU configurations and
+# PyPower case are reused by the scenario (peat-bennu-scenario.yaml).
+#
+# Load it with:  phenix config create /phenix/topologies/peat-bennu/peat-bennu-topology.yaml
+apiVersion: phenix.sandia.gov/v1
+kind: Topology
+metadata:
+  name: peat-bennu
+spec:
+  nodes:
+    # Simulation provider: runs the PyPower power-flow solver that publishes process values
+    # to the field devices (UDP multicast 239.0.0.1:40000 on the MGMT network).
+    - type: VirtualMachine
+      general:
+        hostname: provider
+      hardware:
+        os_type: linux
+        memory: 1024
+        vcpus: 1
+        drives:
+          - image: bennu.qc2
+      network:
+        interfaces:
+          - name: mgmt
+            vlan: MGMT
+            address: 172.16.1.2
+            mask: 16
+            gateway: 172.16.1.1
+            proto: static
+            type: ethernet
+
+    # Field device 1: bennu DNP3 outstation on tcp/20000, FTP on tcp/21 (user "sceptre").
+    - type: VirtualMachine
+      general:
+        hostname: rtu-1
+      hardware:
+        os_type: linux
+        memory: 512
+        vcpus: 1
+        drives:
+          - image: bennu.qc2
+      network:
+        interfaces:
+          - name: exp
+            vlan: EXP
+            address: 10.117.4.101
+            mask: 24
+            proto: static
+            type: ethernet
+          - name: mgmt
+            vlan: MGMT
+            address: 172.16.1.4
+            mask: 16
+            proto: static
+            type: ethernet
+
+    # Field device 2.
+    - type: VirtualMachine
+      general:
+        hostname: rtu-2
+      hardware:
+        os_type: linux
+        memory: 512
+        vcpus: 1
+        drives:
+          - image: bennu.qc2
+      network:
+        interfaces:
+          - name: exp
+            vlan: EXP
+            address: 10.117.4.102
+            mask: 24
+            proto: static
+            type: ethernet
+          - name: mgmt
+            vlan: MGMT
+            address: 172.16.1.5
+            mask: 16
+            proto: static
+            type: ethernet
+
+    # The PEAT workstation: the bennu image used as a plain Ubuntu 22.04 VM (no sceptre app
+    # metadata, so no field device runs on it). The PEAT executable and its configuration
+    # are injected into the disk image when the experiment starts.
+    - type: VirtualMachine
+      general:
+        hostname: peat
+      hardware:
+        os_type: linux
+        memory: 1024
+        vcpus: 1
+        drives:
+          - image: bennu.qc2
+      injections:
+        - src: /phenix/injects/peat
+          dst: /usr/local/bin/peat
+          permissions: '0755'
+          description: PEAT Linux executable
+        - src: /phenix/topologies/peat-bennu/peat-bennu.yaml
+          dst: /root/peat-bennu.yaml
+          description: PEAT configuration for the two RTUs
+      network:
+        interfaces:
+          - name: exp
+            vlan: EXP
+            address: 10.117.4.50
+            mask: 24
+            proto: static
+            type: ethernet

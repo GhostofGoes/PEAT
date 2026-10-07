@@ -1,0 +1,79 @@
+<figure class="peat-diagram" id="peat-heat-flow">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" role="img" aria-labelledby="hf-title hf-desc">
+  <title id="hf-title">How HEAT works</title>
+  <desc id="hf-desc">Left to right. Two traffic sources on the left: PCAP files processed with Zeek (used by the FTP extractor), and PCAP files loaded into Elasticsearch by ingest-tshark (packets-* indices, queried by the Telnet and UMAS extractors). Both feed the HEAT extractor, one per protocol (FTP, Telnet, UMAS), which reassembles the transferred file and saves it under heat_artifacts/ in the run directory; --heat-file-only stops there. The reassembled file is handed to the PEAT module parser, the same parser peat parse uses, which produces device data written to devices/ in the run directory and, with -e, to Elasticsearch.</desc>
+  <defs>
+    <marker id="hf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+  </defs>
+  <style>
+    .hf-text { font-size: 13px; fill: var(--color-foreground-primary); }
+    .hf-small { font-size: 12px; fill: var(--color-foreground-secondary); }
+    .hf-head { font-size: 14px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .hf-halo { paint-order: stroke fill; stroke: var(--color-background-primary); stroke-width: 5px; stroke-linejoin: round; }
+    .hf-box { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.2; }
+    .hf-cmd { fill: var(--color-brand-primary); stroke: none; }
+    .hf-cmd-text { font-size: 13px; font-weight: 600; fill: var(--color-background-primary); }
+    .hf-cmd-small { font-size: 12px; fill: var(--color-background-primary); }
+    .hf-model { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 2; }
+    .hf-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#hf-arrow); }
+  </style>
+
+  <!-- Column headers -->
+  <text x="190" y="30" text-anchor="middle" class="hf-head">Traffic sources</text>
+  <text x="542" y="30" text-anchor="middle" class="hf-head">HEAT extraction</text>
+  <text x="846" y="30" text-anchor="middle" class="hf-head">Parsing and results</text>
+
+  <!-- Source row A: PCAP files processed with Zeek (FTP extractor) -->
+  <rect x="20" y="66" width="84" height="48" rx="6" class="hf-box"/>
+  <text x="62" y="94" text-anchor="middle" class="hf-text">PCAP files</text>
+  <path d="M 104 90 L 124 90" class="hf-arrow"/>
+  <rect x="126" y="66" width="108" height="48" rx="6" class="hf-box"/>
+  <text x="180" y="86" text-anchor="middle" class="hf-text">Zeek</text>
+  <text x="180" y="104" text-anchor="middle" class="hf-small">FTP transfers</text>
+  <path d="M 234 90 L 330 90 C 372 90, 362 135, 402 135" class="hf-arrow"/>
+  <text x="20" y="134" class="hf-small">FTPExtractor: Zeek carves files out of PCAPs</text>
+
+  <!-- Source row B: PCAP files loaded into Elasticsearch by ingest-tshark (Telnet, UMAS extractors) -->
+  <rect x="20" y="196" width="84" height="48" rx="6" class="hf-box"/>
+  <text x="62" y="224" text-anchor="middle" class="hf-text">PCAP files</text>
+  <path d="M 104 220 L 124 220" class="hf-arrow"/>
+  <rect x="126" y="196" width="108" height="48" rx="6" class="hf-box"/>
+  <text x="180" y="216" text-anchor="middle" class="hf-text">ingest-tshark</text>
+  <text x="180" y="234" text-anchor="middle" class="hf-small">runs tshark</text>
+  <path d="M 234 220 L 254 220" class="hf-arrow"/>
+  <rect x="256" y="196" width="104" height="48" rx="6" class="hf-box"/>
+  <text x="308" y="216" text-anchor="middle" class="hf-text">Elasticsearch</text>
+  <text x="308" y="234" text-anchor="middle" class="hf-small">packets-*</text>
+  <path d="M 360 220 C 384 220, 378 175, 402 175" class="hf-arrow"/>
+  <text x="20" y="264" class="hf-small">Telnet and UMAS extractors: query packets in Elasticsearch</text>
+
+  <!-- HEAT extractor -->
+  <rect x="404" y="115" width="130" height="80" rx="8" class="hf-cmd"/>
+  <text x="469" y="142" text-anchor="middle" class="hf-cmd-text">HEAT extractor</text>
+  <text x="469" y="160" text-anchor="middle" class="hf-cmd-small">one per protocol</text>
+  <text x="469" y="177" text-anchor="middle" class="hf-cmd-small">FTP, Telnet, UMAS</text>
+  <path d="M 534 155 L 554 155" class="hf-arrow"/>
+
+  <!-- Reassembled file -->
+  <rect x="556" y="131" width="124" height="48" rx="6" class="hf-box"/>
+  <text x="618" y="151" text-anchor="middle" class="hf-text">Reassembled file</text>
+  <text x="618" y="169" text-anchor="middle" class="hf-small">heat_artifacts/</text>
+  <text x="622" y="199" text-anchor="middle" class="hf-small">--heat-file-only stops here</text>
+  <path d="M 680 155 L 700 155" class="hf-arrow"/>
+
+  <!-- PEAT module parser -->
+  <rect x="702" y="131" width="136" height="48" rx="6" class="hf-box"/>
+  <text x="770" y="151" text-anchor="middle" class="hf-text">PEAT module parser</text>
+  <text x="770" y="169" text-anchor="middle" class="hf-small">same as peat parse</text>
+  <path d="M 838 155 L 858 155" class="hf-arrow"/>
+
+  <!-- Device data -->
+  <rect x="860" y="123" width="130" height="64" rx="6" class="hf-model"/>
+  <text x="925" y="143" text-anchor="middle" class="hf-text">Device data</text>
+  <text x="925" y="160" text-anchor="middle" class="hf-small">devices/&lt;ip&gt;/ JSON</text>
+  <text x="925" y="176" text-anchor="middle" class="hf-small">Elasticsearch (-e)</text>
+</svg>
+<figcaption class="peat-dg-caption">How HEAT works: extractors read traffic from PCAP files (through Zeek) or from packet data in Elasticsearch (loaded by ingest-tshark), reassemble the transferred files into <code>heat_artifacts/</code>, and hand them to the PEAT module that parses them into device data.</figcaption>
+</figure>

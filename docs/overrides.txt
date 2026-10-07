@@ -1,0 +1,10 @@
+# Dependency overrides for the DOCUMENTATION environment only (pdm.docs.lock).
+#
+# PEAT pins "requests==2.29.0" at runtime (urllib3 1.x is required to talk to
+# some older OT devices), but Sphinx 7.4+ requires requests>=2.30. The docs
+# build only imports PEAT so autodoc can read docstrings and type annotations;
+# it never talks to a device, so the newer requests/urllib3 are safe here.
+#
+# Used by: pdm lock --lockfile pdm.docs.lock --override docs/overrides.txt
+# (see the "docs-lock" script in pyproject.toml)
+requests>=2.32.0

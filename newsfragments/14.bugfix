@@ -1,0 +1,3 @@
+Command line fixes: the ``decrypt-results`` examples (``peat decrypt-results --examples``) showed ``encrypt-results`` commands, the ``encrypt-results`` and ``decrypt-results`` descriptions were missing spaces between sentences, and ``peat decrypt-config`` logged "Encrypted config saved" for the decrypted file.
+
+HEAT: the example configuration files, the ``--heat-index-names`` help and examples, and the HEAT messages described Packetbeat data and ``packetbeat-*`` indices, but HEAT reads the ``ingest-tshark`` documents in ``packets-*`` indices (the code default). They now agree. The Telnet extractor also honors ``HEAT_INDEX_NAMES``/``--heat-index-names`` for its stream discovery query instead of always searching ``packets-*``.

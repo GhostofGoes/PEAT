@@ -53,13 +53,13 @@ sudo docker run -i ghcr.io/sandialabs/peat:latest --help
 
 PEAT is distributed in several formats, including executable files for Linux and Windows and a Docker Container. The format you want to install depends on your use case. Typically, you'll want the executable format, which is `peat` on Linux and `peat.exe` on Windows. These can be downloaded from the [releases page](https://github.com/sandialabs/PEAT/releases) or from [CI/CD builds](https://github.com/sandialabs/PEAT/actions).
 
-Python is NOT required to run PEAT if using the executable or container. PEAT is designed to be portable and brings it's own dependencies for the most part, requiring minimal or no configuring on the target system. Refer to the [system requirements page](https://sandialabs.github.io/PEAT/system_requirements.html) for further details.
+Python is NOT required to run PEAT if using the executable or container. PEAT is designed to be portable and brings it's own dependencies for the most part, requiring minimal or no configuring on the target system. Refer to the [system requirements page](https://sandialabs.github.io/PEAT/getting_started/requirements.html) for further details.
 
-NOTE: Refer to the [installation guide](https://sandialabs.github.io/PEAT/install.html) for installation instructions and [operation docs](https://sandialabs.github.io/PEAT/operate.html) for usage. The commands in the [quickstart](#quickstart) section are intended to get you going quickly, and are not comprehensive.
+NOTE: Refer to the [installation guide](https://sandialabs.github.io/PEAT/getting_started/install.html) for installation instructions and [user guide](https://sandialabs.github.io/PEAT/user_guide/) for usage. The commands in the [quickstart](#quickstart) section are intended to get you going quickly, and are not comprehensive.
 
 ## Development
 
-Refer to the [contributing guide](https://sandialabs.github.io/PEAT/contributing.html) and [development infrastructure](https://sandialabs.github.io/PEAT/development_infrastructure.html) documentation for details, including setting up a development environment, testing, and building on your local system.
+Refer to the [contributing guide](https://sandialabs.github.io/PEAT/contributing/) and [development environment](https://sandialabs.github.io/PEAT/contributing/development_environment.html) documentation for details, including setting up a development environment, testing, and building on your local system.
 
 The commands below are a basic "quick start" for development. Ensure [PDM is installed](https://pdm-project.org/en/stable/#installation) before proceeding.
 

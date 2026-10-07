@@ -54,8 +54,8 @@ def heat_main() -> bool:
     else:
         log.error(
             "Cannot run HEAT since no Elasticsearch server specified. "
-            "You must provide an Elasticsearch server with Packetbeat "
-            "data using either HEAT_ELASTIC_SERVER or ELASTIC_SERVER."
+            "You must provide an Elasticsearch server with the packet data "
+            "(from ingest-tshark) using either HEAT_ELASTIC_SERVER or ELASTIC_SERVER."
         )
         state.error = True
         return False

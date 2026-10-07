@@ -344,6 +344,20 @@ docs = [
 
     # For dependencies reference page
     "pip-licenses",
+
+    # Tabs, cards, grids, and dropdowns in the HTML docs
+    # https://sphinx-design.readthedocs.io/
+    "sphinx-design",
+
+    # Client-side redirects from old page URLs to their new locations, so
+    # links to the published docs don't break when pages are moved or renamed
+    # https://documatt.com/sphinx-reredirects/
+    "sphinx-reredirects",
+
+    # Accessibility (WCAG) checks of the built HTML docs using axe-core in a
+    # headless browser ("pdm run docs-a11y")
+    "playwright",
+    "axe-playwright-python",
 ]
 
 
@@ -427,11 +441,12 @@ shell = """
 pipdeptree --graph-output png --exclude pipdeptree,graphviz,pylint,pytest,flake8,ruff,pyinstaller,staticx,tox,tox-pdm,black,isort,vulture,mypy,check-sdist,codespell,pytest-cov,pytest-mock,pytest-randomly,deepdiff,pytest-xdist,pytest-json-report,xdoctest,requests-mock,Pygments,fire,pdm-backend,check-manifest,pyinstaller-hooks-contrib,virtualenv,types-tzlocal,types-PyYAML,wheel,setuptools,pip,better-exceptions,pyproject-api,packaging,build,pytest-metadata,coverage,mypy-extensions,pyproject_hooks,feedparser,requirements-parser,validate-pyproject,types-pytz,distlib,pluggy,wheel,iniconfig,pathspec,platformdirs,dill,filelock,altgraph,execnet,click,cachetools,exceptiongroup,chardet,tomli,ordered-set,tomlkit,mccabe > package_dependencies.png
 """
 
-# NOTE: docs/dependencies_table.rst is generated (and ignored by Git). The
+# NOTE: docs/developer/dependencies_table.rst is generated (and ignored by Git). The
 # "docs-html" and "docs-man" scripts run this automatically before building.
+# It runs in the "docs" virtualenv (see "docs-venv") so the table reflects pdm.docs.lock.
 [tool.pdm.scripts.dep-doc]
-help = "Generate the dependencies table for the documentation (docs/dependencies_table.rst) using 'pip-licenses'"
-cmd = "pip-licenses --ignore-packages PEAT --with-description --format=rst --output-file=docs/dependencies_table.rst"
+help = "Generate the dependencies table for the documentation (docs/developer/dependencies_table.rst) using 'pip-licenses'"
+cmd = "pdm run --venv docs pip-licenses --ignore-packages PEAT --with-description --format=rst --output-file=docs/developer/dependencies_table.rst"
 
 [tool.pdm.scripts.update-manuf-linux]
 help = "(Linux) Update the manuf MAC address file included with PEAT (NOTE: doesn't work on Windows)"
@@ -519,8 +534,9 @@ shell = """
 rm -rf ./_built_docs/
 rm -rf ./_docs_man/
 rm -rf ./_docs_html/
-rm -rf ./docs/automodapi_tmp/
-rm -f ./docs/dependencies_table.rst
+rm -rf ./_docs_linkcheck/
+find ./docs -type d -name "automodapi_tmp" -exec rm -rf {} +
+rm -f ./docs/developer/dependencies_table.rst
 rm -rf ./docs_doctree/
 find . -name ".doctrees" -exec rm -rf {} +
 """
@@ -546,19 +562,50 @@ composite = [
     "rm -f ./packages_*.png",
 ]
 
+# The documentation is built in a separate virtualenv ("docs") from its own lock file
+# (pdm.docs.lock), which overrides the "requests" pin so that a current Sphinx can be
+# used. It requires Python 3.12 or later. Details: docs/contributing/documentation.rst
+#
+#   pdm run docs-venv   # Create/update the virtualenv (once, and after dependency changes)
+#   pdm run docs-html   # Build the HTML docs
+#
+[tool.pdm.scripts.docs-lock]
+help = "Re-resolve the documentation lock file (pdm.docs.lock) with the docs-only overrides"
+cmd = "pdm lock --lockfile pdm.docs.lock --python '>=3.12,<3.14' --override docs/overrides.txt -G docs -G :all"
+
+[tool.pdm.scripts.docs-venv]
+help = "Create or update the 'docs' virtualenv from pdm.docs.lock (requires Python 3.12+)"
+# A Python helper rather than a shell script so it also works on Windows (cmd.exe)
+cmd = "python scripts/docs_venv.py"
+
 [tool.pdm.scripts.docs-html]
-help = "Build HTML docs (output: _docs_html/)"
+help = "Build HTML docs (output: _docs_html/). Warnings are errors."
 composite = [
     "dep-doc",
-    "sphinx-build -j 4 -b html docs _docs_html",
+    "pdm run --venv docs sphinx-build -W --keep-going -j auto -b html docs _docs_html",
 ]
 
 [tool.pdm.scripts.docs-man]
-help = "Build man pages (output: _docs_man/peat.1)"
+help = "Build man pages (output: _docs_man/peat.1). Warnings are errors."
 composite = [
     "dep-doc",
-    "sphinx-build -j 4 -b man docs _docs_man",
+    "pdm run --venv docs sphinx-build -W --keep-going -b man docs _docs_man",
 ]
+
+[tool.pdm.scripts.docs-linkcheck]
+help = "Check the external links in the docs (output: _docs_linkcheck/output.txt)"
+composite = [
+    "dep-doc",
+    "pdm run --venv docs sphinx-build -b linkcheck docs _docs_linkcheck",
+]
+
+[tool.pdm.scripts.docs-a11y]
+help = "Run accessibility (WCAG) checks on the built HTML docs with axe-core (run 'docs-html' first)"
+cmd = "pdm run --venv docs python scripts/docs_a11y.py _docs_html"
+
+[tool.pdm.scripts.docs-serve]
+help = "Serve the built HTML docs locally at http://localhost:8000/"
+cmd = "python -m http.server --directory _docs_html 8000"
 
 # TODO: PDF format (using rinohtype)
 [tool.pdm.scripts.docs]
@@ -583,7 +630,7 @@ ignore = ["D001"]
 extension = [".rst"]
 # dependencies.rst includes the generated dependencies_table.rst, which only
 # exists after "pdm run dep-doc" (part of the docs build, not the lint group)
-ignore-path = ["docs/dependencies.rst", "docs/dependencies_table.rst"]
+ignore-path = ["docs/developer/dependencies.rst", "docs/developer/dependencies_table.rst"]
 
 
 [tool.codespell]
@@ -785,7 +832,7 @@ exclude = [
 # https://github.com/henryiii/check-sdist
 [tool.check-sdist]
 sdist-only = ["peat", "AUTHORS", "CHANGELOG.rst", "COPYRIGHT.rst", "SECURITY.rst", "NOTICE"]
-git-only = [".*", "distribution", "examples", "scripts", "tests", "docs", ".venv", ".dockerignore", ".editorconfig", ".gitattributes", ".gitignore", "*.spec", "pdm.lock", "CODE_OF_CONDUCT.rst", "Dockerfile", "pyproject.toml", "README.md", "LICENSE", "CONTRIBUTING.rst", "newsfragments"]
+git-only = [".*", "distribution", "examples", "scripts", "tests", "docs", ".venv", ".dockerignore", ".editorconfig", ".gitattributes", ".gitignore", "*.spec", "pdm.lock", "pdm.docs.lock", "CODE_OF_CONDUCT.rst", "Dockerfile", "pyproject.toml", "README.md", "LICENSE", "CONTRIBUTING.rst", "newsfragments"]
 default-ignore = true
 recurse-submodules = false
 

@@ -1,0 +1,180 @@
+<figure class="peat-diagram" id="peat-system-diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 820" role="img" aria-labelledby="sys-title sys-desc">
+  <title id="sys-title">PEAT system diagram</title>
+  <desc id="sys-desc">Layered architecture. Top: entry points (peat command line, container image, Python scripts and third-party code, Sneakypeat). Below: the high-level APIs in peat.api (scan, pull, parse, push, pillage, heat, crypto, config builder). Below: core services (module manager, datastore and DeviceData model, settings config and state, logging, Elasticsearch export, initialization, file signatures, shared parsers, utilities). Below: device modules in peat.modules, one per device family, plus third-party modules imported at runtime. Below: the protocol library in peat.protocols (discovery, FTP, Telnet, HTTP, SSH, SNMP, serial, MySQL, EtherNet/IP and CIP, PCCC); vendor-specific protocols such as UMAS, ServLink, and SEL ASCII commands are implemented alongside their device modules. Bottom: field devices reached over Ethernet or serial. On the right, inputs and outputs: the run directory, terminal JSON, and Elasticsearch or OpenSearch.</desc>
+  <defs>
+    <marker id="sys-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+  </defs>
+  <style>
+    .sys-text { font-size: 13px; fill: var(--color-foreground-primary); }
+    .sys-small { font-size: 11.5px; fill: var(--color-foreground-secondary); }
+    .sys-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; fill: var(--color-foreground-secondary); }
+    .sys-layer { fill: var(--color-background-secondary); stroke: var(--color-background-border); stroke-width: 1; rx: 10; }
+    .sys-box { fill: var(--color-background-primary); stroke: var(--color-foreground-border); stroke-width: 1.1; rx: 6; }
+    .sys-accent { fill: var(--color-brand-primary); stroke: none; rx: 6; }
+    .sys-accent-text { font-size: 13px; font-weight: 600; fill: var(--color-background-primary); }
+    .sys-model { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 2; rx: 6; }
+    .sys-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#sys-arrow); }
+    .sys-dashed { stroke-dasharray: 5 4; }
+    .sys-device { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.1; rx: 4; }
+  </style>
+
+  <!-- Layer: entry points -->
+  <rect x="20" y="20" width="700" height="92" class="sys-layer"/>
+  <text x="34" y="40" class="sys-label">ENTRY POINTS</text>
+  <rect x="40" y="52" width="150" height="46" class="sys-box"/>
+  <text x="115" y="72" text-anchor="middle" class="sys-text">peat command line</text>
+  <text x="115" y="89" text-anchor="middle" class="sys-small">cli_args, cli_main</text>
+  <rect x="210" y="52" width="150" height="46" class="sys-box"/>
+  <text x="285" y="72" text-anchor="middle" class="sys-text">Container image</text>
+  <text x="285" y="89" text-anchor="middle" class="sys-small">ghcr.io/sandialabs/peat</text>
+  <rect x="380" y="52" width="160" height="46" class="sys-box"/>
+  <text x="460" y="72" text-anchor="middle" class="sys-text">Python scripts &amp; tools</text>
+  <text x="460" y="89" text-anchor="middle" class="sys-small">import peat</text>
+  <rect x="560" y="52" width="140" height="46" class="sys-box"/>
+  <text x="630" y="72" text-anchor="middle" class="sys-text">Sneakypeat</text>
+  <text x="630" y="89" text-anchor="middle" class="sys-small">lightweight scanner</text>
+
+  <path d="M 370 112 L 370 136" class="sys-arrow"/>
+
+  <!-- Layer: high-level APIs -->
+  <rect x="20" y="138" width="700" height="100" class="sys-layer"/>
+  <text x="34" y="158" class="sys-label">HIGH-LEVEL APIs (peat.api)</text>
+  <rect x="40" y="170" width="72" height="30" class="sys-accent"/>
+  <text x="76" y="190" text-anchor="middle" class="sys-accent-text">scan</text>
+  <rect x="120" y="170" width="72" height="30" class="sys-accent"/>
+  <text x="156" y="190" text-anchor="middle" class="sys-accent-text">pull</text>
+  <rect x="200" y="170" width="72" height="30" class="sys-accent"/>
+  <text x="236" y="190" text-anchor="middle" class="sys-accent-text">parse</text>
+  <rect x="280" y="170" width="72" height="30" class="sys-accent"/>
+  <text x="316" y="190" text-anchor="middle" class="sys-accent-text">push</text>
+  <rect x="360" y="170" width="72" height="30" class="sys-accent"/>
+  <text x="396" y="190" text-anchor="middle" class="sys-accent-text">pillage</text>
+  <rect x="440" y="170" width="72" height="30" class="sys-accent"/>
+  <text x="476" y="190" text-anchor="middle" class="sys-accent-text">heat</text>
+  <rect x="520" y="170" width="64" height="30" class="sys-box"/>
+  <text x="552" y="190" text-anchor="middle" class="sys-text">crypto</text>
+  <rect x="592" y="170" width="116" height="30" class="sys-box"/>
+  <text x="650" y="190" text-anchor="middle" class="sys-text">config builder</text>
+  <text x="40" y="226" class="sys-small">Orchestrate modules, datastore, and exports; return a summary (scan/pull/parse) for the CLI and callers</text>
+
+  <path d="M 370 238 L 370 262" class="sys-arrow"/>
+
+  <!-- Layer: core -->
+  <rect x="20" y="264" width="700" height="132" class="sys-layer"/>
+  <text x="34" y="284" class="sys-label">CORE SERVICES</text>
+  <rect x="40" y="296" width="156" height="40" class="sys-box"/>
+  <text x="118" y="313" text-anchor="middle" class="sys-text">Module manager</text>
+  <text x="118" y="329" text-anchor="middle" class="sys-small">module_api: lookup, import</text>
+  <rect x="206" y="296" width="170" height="40" class="sys-model"/>
+  <text x="291" y="313" text-anchor="middle" class="sys-text">Datastore + DeviceData</text>
+  <text x="291" y="329" text-anchor="middle" class="sys-small">peat.data: the data model</text>
+  <rect x="386" y="296" width="104" height="40" class="sys-box"/>
+  <text x="438" y="313" text-anchor="middle" class="sys-text">Settings</text>
+  <text x="438" y="329" text-anchor="middle" class="sys-small">config, state</text>
+  <rect x="500" y="296" width="100" height="40" class="sys-box"/>
+  <text x="550" y="313" text-anchor="middle" class="sys-text">Logging</text>
+  <text x="550" y="329" text-anchor="middle" class="sys-small">loguru sinks</text>
+  <rect x="610" y="296" width="98" height="40" class="sys-box"/>
+  <text x="659" y="313" text-anchor="middle" class="sys-text">Elastic</text>
+  <text x="659" y="329" text-anchor="middle" class="sys-small">export</text>
+  <rect x="40" y="346" width="190" height="36" class="sys-box"/>
+  <text x="135" y="363" text-anchor="middle" class="sys-text">init: initialize_peat</text>
+  <text x="135" y="377" text-anchor="middle" class="sys-small">config, dirs, logging, modules</text>
+  <rect x="240" y="346" width="140" height="36" class="sys-box"/>
+  <text x="310" y="363" text-anchor="middle" class="sys-text">File signatures</text>
+  <text x="310" y="377" text-anchor="middle" class="sys-small">identify file types</text>
+  <rect x="390" y="346" width="150" height="36" class="sys-box"/>
+  <text x="465" y="363" text-anchor="middle" class="sys-text">Shared parsers</text>
+  <text x="465" y="377" text-anchor="middle" class="sys-small">TC6 to ST, /proc output</text>
+  <rect x="550" y="346" width="158" height="36" class="sys-box"/>
+  <text x="629" y="363" text-anchor="middle" class="sys-text">Utilities</text>
+  <text x="629" y="377" text-anchor="middle" class="sys-small">utils, consts, cleanup</text>
+
+  <path d="M 370 396 L 370 420" class="sys-arrow"/>
+
+  <!-- Layer: device modules -->
+  <rect x="20" y="422" width="700" height="118" class="sys-layer"/>
+  <text x="34" y="442" class="sys-label">DEVICE MODULES (peat.modules): one DeviceModule subclass per device family</text>
+  <g class="sys-text">
+    <rect x="40" y="454" width="96" height="30" class="sys-box"/><text x="88" y="474" text-anchor="middle">SEL</text>
+    <rect x="144" y="454" width="96" height="30" class="sys-box"/><text x="192" y="474" text-anchor="middle">Rockwell</text>
+    <rect x="248" y="454" width="96" height="30" class="sys-box"/><text x="296" y="474" text-anchor="middle">Schneider</text>
+    <rect x="352" y="454" width="96" height="30" class="sys-box"/><text x="400" y="474" text-anchor="middle">GE</text>
+    <rect x="456" y="454" width="96" height="30" class="sys-box"/><text x="504" y="474" text-anchor="middle">Siemens</text>
+    <rect x="560" y="454" width="96" height="30" class="sys-box"/><text x="608" y="474" text-anchor="middle">Woodward</text>
+    <rect x="40" y="494" width="90" height="30" class="sys-box"/><text x="85" y="514" text-anchor="middle">OpenPLC</text>
+    <rect x="140" y="494" width="90" height="30" class="sys-box"/><text x="185" y="514" text-anchor="middle">Fortinet</text>
+    <rect x="240" y="494" width="90" height="30" class="sys-box"/><text x="285" y="514" text-anchor="middle">iDirect</text>
+    <rect x="340" y="494" width="90" height="30" class="sys-box"/><text x="385" y="514" text-anchor="middle">Camlin</text>
+    <rect x="440" y="494" width="160" height="30" class="sys-box"/><text x="520" y="514" text-anchor="middle">SCEPTRE, WinCE, UEFI</text>
+    <rect x="608" y="494" width="100" height="30" class="sys-box sys-dashed"/><text x="658" y="514" text-anchor="middle">3rd-party (-I)</text>
+  </g>
+
+  <path d="M 370 540 L 370 564" class="sys-arrow"/>
+
+  <!-- Layer: protocols -->
+  <rect x="20" y="566" width="700" height="150" class="sys-layer"/>
+  <text x="34" y="586" class="sys-label">PROTOCOL LIBRARY (peat.protocols)</text>
+  <g class="sys-text">
+    <rect x="40" y="598" width="182" height="30" class="sys-box"/><text x="131" y="618" text-anchor="middle">Discovery: ARP, ICMP, TCP</text>
+    <rect x="230" y="598" width="56" height="30" class="sys-box"/><text x="258" y="618" text-anchor="middle">FTP</text>
+    <rect x="294" y="598" width="66" height="30" class="sys-box"/><text x="327" y="618" text-anchor="middle">Telnet</text>
+    <rect x="368" y="598" width="74" height="30" class="sys-box"/><text x="405" y="618" text-anchor="middle">HTTP(S)</text>
+    <rect x="450" y="598" width="84" height="30" class="sys-box"/><text x="492" y="618" text-anchor="middle">SSH / SCP</text>
+    <rect x="542" y="598" width="62" height="30" class="sys-box"/><text x="573" y="618" text-anchor="middle">SNMP</text>
+    <rect x="612" y="598" width="96" height="30" class="sys-box"/><text x="660" y="618" text-anchor="middle">Serial</text>
+    <rect x="40" y="636" width="80" height="30" class="sys-box"/><text x="80" y="656" text-anchor="middle">MySQL</text>
+    <rect x="128" y="636" width="190" height="30" class="sys-box"/><text x="223" y="656" text-anchor="middle">EtherNet/IP, CIP (Rockwell)</text>
+    <rect x="326" y="636" width="120" height="30" class="sys-box"/><text x="386" y="656" text-anchor="middle">PCCC (Rockwell)</text>
+  </g>
+  <text x="40" y="688" class="sys-small">Vendor-specific protocols are implemented alongside their device modules:</text>
+  <text x="40" y="704" class="sys-small">UMAS over Modbus/TCP (Schneider), ServLink (Woodward), SEL ASCII commands (SEL)</text>
+
+  <!-- Field devices -->
+  <path d="M 370 716 L 370 744" class="sys-arrow"/>
+  <text x="34" y="762" class="sys-label">FIELD DEVICES</text>
+  <g class="sys-text">
+    <rect x="40" y="770" width="120" height="30" class="sys-device"/><text x="100" y="790" text-anchor="middle">PLCs</text>
+    <rect x="170" y="770" width="120" height="30" class="sys-device"/><text x="230" y="790" text-anchor="middle">Protection relays</text>
+    <rect x="300" y="770" width="120" height="30" class="sys-device"/><text x="360" y="790" text-anchor="middle">RTUs &amp; gateways</text>
+    <rect x="430" y="770" width="120" height="30" class="sys-device"/><text x="490" y="790" text-anchor="middle">Power meters</text>
+    <rect x="560" y="770" width="70" height="30" class="sys-device"/><text x="595" y="790" text-anchor="middle">HMIs</text>
+    <rect x="640" y="770" width="68" height="30" class="sys-device"/><text x="674" y="790" text-anchor="middle">Firewalls</text>
+  </g>
+  <text x="730" y="790" class="sys-small">Ethernet (LAN, routed,</text>
+  <text x="730" y="804" class="sys-small">broadcast) or serial</text>
+
+  <!-- Outputs column -->
+  <rect x="760" y="138" width="220" height="258" class="sys-layer"/>
+  <text x="774" y="158" class="sys-label">OUTPUTS</text>
+  <rect x="776" y="172" width="188" height="64" class="sys-box"/>
+  <text x="870" y="192" text-anchor="middle" class="sys-text">Run directory</text>
+  <text x="870" y="208" text-anchor="middle" class="sys-small">devices/, summaries/, logs/,</text>
+  <text x="870" y="223" text-anchor="middle" class="sys-small">peat_metadata/, elastic_data/</text>
+  <rect x="776" y="248" width="188" height="48" class="sys-box"/>
+  <text x="870" y="268" text-anchor="middle" class="sys-text">Terminal (stdout)</text>
+  <text x="870" y="284" text-anchor="middle" class="sys-small">JSON summaries (-E), logs on stderr</text>
+  <rect x="776" y="308" width="188" height="72" class="sys-box"/>
+  <text x="870" y="328" text-anchor="middle" class="sys-text">Elasticsearch / OpenSearch</text>
+  <text x="870" y="344" text-anchor="middle" class="sys-small">ot-device-*, peat-* indices</text>
+  <text x="870" y="360" text-anchor="middle" class="sys-small">Kibana, Malcolm dashboards,</text>
+  <text x="870" y="374" text-anchor="middle" class="sys-small">downstream analytics</text>
+
+  <path d="M 720 204 L 774 204" class="sys-arrow"/>
+  <path d="M 720 272 L 774 272" class="sys-arrow"/>
+  <path d="M 708 316 L 774 340" class="sys-arrow"/>
+
+  <!-- Inputs annotation -->
+  <rect x="760" y="20" width="220" height="92" class="sys-layer"/>
+  <text x="774" y="40" class="sys-label">INPUTS</text>
+  <text x="774" y="60" class="sys-small">Targets: hosts, networks, serial ports</text>
+  <text x="774" y="76" class="sys-small">Files, project files, disk images, PCAPs</text>
+  <text x="774" y="92" class="sys-small">YAML configuration, credentials, hosts</text>
+  <text x="774" y="106" class="sys-small">Third-party modules (-I)</text>
+  <path d="M 760 66 L 724 66" class="sys-arrow"/>
+</svg>
+<figcaption class="peat-dg-caption">PEAT's layered architecture. Arrows show the main direction of calls; data flows back up through the DeviceData model to the outputs on the right.</figcaption>
+</figure>

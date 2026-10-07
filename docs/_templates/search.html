@@ -1,0 +1,11 @@
+{#
+  Furo's search page has no level-one heading (the results heading is added by
+  searchtools.js, and only after a search), which fails WCAG best practice
+  "page-has-heading-one". Add one above the results.
+#}
+{% extends "!search.html" %}
+
+{% block content %}
+<h1>{{ _("Search") }}</h1>
+{{ super() }}
+{% endblock %}

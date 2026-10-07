@@ -536,7 +536,7 @@ def write_temp_file(
     .. note::
        The temporary directory is configured via the
        :attr:`TEMP_DIR <peat.settings.Configuration.TEMP_DIR>`
-       :doc:`configuration option <configure>`
+       :doc:`configuration option </user_guide/configure>`
        (:attr:`config.TEMP_DIR <peat.settings.Configuration.TEMP_DIR>`).
        If this is :obj:`None`, then this function is a No-OP (it does nothing).
 

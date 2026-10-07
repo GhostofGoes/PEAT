@@ -73,7 +73,7 @@ elastic_uefi_hashes_index: "uefi-hashes"
 elastic_uefi_files_index: "uefi-files"
 
 heat_elastic_server: null
-heat_index_names: "packetbeat-*"
+heat_index_names: "packets-*"
 heat_date_range: null
 heat_exclude_ips: []
 heat_only_ips: []

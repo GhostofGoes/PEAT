@@ -1,0 +1,51 @@
+# phenix scenario for the PEAT tutorial "Virtual RTUs in a SCEPTRE (phenix) experiment".
+#
+# The "sceptre" app (from sceptre-phenix-apps, included in the phenix container image)
+# generates the bennu configuration and start-up script for each field device and the
+# PyPower provider. The field device metadata is taken from the "soap-legacy" topology in
+# sceptre-phenix-topologies, cloned to /phenix/topologies/, which also supplies the PyPower
+# case file and the hand-written RTU configurations in injects/override/ (identical to
+# PEAT's examples/devices/sceptre/soap/).
+#
+# Load it with:  phenix config create /phenix/topologies/peat-bennu/peat-bennu-scenario.yaml
+apiVersion: phenix.sandia.gov/v2
+kind: Scenario
+metadata:
+  name: peat-bennu
+  annotations:
+    topology: peat-bennu
+spec:
+  apps:
+    - name: sceptre
+      assetDir: /phenix/topologies/soap-legacy
+      hosts:
+        - hostname: provider
+          metadata:
+            type: provider
+            simulator: PyPower
+            case: /phenix/topologies/soap-legacy/injects/case300.py
+            publish_endpoint: udp://*;239.0.0.1:40000
+        - hostname: rtu-1
+          metadata:
+            type: fd-server
+            provider: provider
+            infrastructure: power-transmission
+            dnp3:
+              - name: bus-242
+                type: bus
+              - name: generator-1_bus-242
+                type: generator
+              - name: bus-alert
+                type: bus
+        - hostname: rtu-2
+          metadata:
+            type: fd-server
+            provider: provider
+            infrastructure: power-transmission
+            dnp3:
+              - name: bus-243
+                type: bus
+              - name: load-1_bus-243
+                type: load
+              - name: generator-1_bus-243
+                type: generator

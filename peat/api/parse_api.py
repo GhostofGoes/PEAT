@@ -36,7 +36,7 @@ def parse(
         sub_dirs: If sub-directories of a directory path should be searched
 
     Returns:
-        :ref:`pull-summary` as a :class:`dict`, or :obj:`None` if an error occurred
+        :ref:`parse-summary` as a :class:`dict`, or :obj:`None` if an error occurred
     """
     if isinstance(filepaths, (str, Path)):
         filepaths = [filepaths]

@@ -161,8 +161,8 @@ class HeatProtocol(ABC):
         self.get_data()
         if not self.elastic_data:
             log.error(
-                "No Packetbeat data found for HEAT. Perhaps the date "
-                "range or IP exclusion list is too restrictive?"
+                "No packet data found for HEAT. Perhaps the index names, date "
+                "range, or IP exclusion list are too restrictive?"
             )
             return False
         self.extract_blocks()
@@ -237,7 +237,7 @@ class HeatProtocol(ABC):
 
     @abstractmethod
     def get_data(self) -> None:
-        """Retrieve Eratosthenes Packetbeat data from the Elasticsearch server."""
+        """Retrieve the packet data (ingest-tshark documents) from the Elasticsearch server."""
         raise NotImplementedError
 
     @abstractmethod

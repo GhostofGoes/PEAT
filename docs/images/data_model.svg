@@ -1,0 +1,133 @@
+<figure class="peat-diagram" id="peat-data-model">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" role="img" aria-labelledby="dm-title dm-desc">
+  <title id="dm-title">The device data model</title>
+  <desc id="dm-desc">DeviceData, one object per device, in the centre. Its identity fields are id, name, label, type, serial_number, part_number, and a description with vendor, model, product, and brand. Its network fields are ip, mac, mac_vendor, hostname, and serial_port. Nested objects hold firmware, boot_firmware, os, hardware, logic, related, geo, x509, and extra. Status and collection fields are run_mode, status, uptime, start_time, and successful_pulls (pull success per protocol). The module field is a list of DeviceData for sub-components such as the modules in a PLC rack. The whole device is written to device-data-full.json and device-data-summary.json and, with -e, to the ot-device-hosts-timeseries index. Around it, connected by an arrow labelled with the DeviceData attribute that holds the list, are the list-type sub-models with representative fields: interface holds Interface (name, ip, mac, hostname); service holds Service (protocol, port, transport, status); files holds File (name, path, size, hash); registers holds Register (address, name, data_type); tag holds Tag (name, address, type, io); io holds IO (name, address, direction, type); event holds Event (action, created, message, outcome); memory holds Memory (address, value, size, created); users holds User (name, id, roles, permissions); ssh_keys holds SSHKey (type, user, host, file). Each list is also written to device-data-attribute.jsonl, one JSON object per line, for example device-data-event.jsonl. Files, registers, tags, IO, events, and memory have Elasticsearch indices of their own: ot-device-files, ot-device-registers, ot-device-tags, ot-device-io, ot-device-events, and ot-device-memory; interfaces, services, users, and SSH keys appear only inside the host document.</desc>
+  <defs>
+    <marker id="dm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+  </defs>
+  <style>
+    .dm-text { font-size: 13px; fill: var(--color-foreground-primary); }
+    .dm-title { font-size: 13px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .dm-field { font-size: 12px; fill: var(--color-foreground-primary); }
+    .dm-small { font-size: 12px; fill: var(--color-foreground-secondary); }
+    .dm-head { font-size: 15px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .dm-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; fill: var(--color-foreground-secondary); }
+    .dm-halo { paint-order: stroke fill; stroke: var(--color-background-primary); stroke-width: 5px; stroke-linejoin: round; }
+    .dm-box { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.2; }
+    .dm-model { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 2; }
+    .dm-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#dm-arrow); }
+  </style>
+
+  <!-- DeviceData -->
+  <rect x="320" y="140" width="360" height="330" rx="10" class="dm-model"/>
+  <text x="338" y="164" class="dm-head">DeviceData</text>
+  <text x="662" y="164" text-anchor="end" class="dm-small">peat.data.models</text>
+  <text x="338" y="183" class="dm-small">device-data-full.json, device-data-summary.json</text>
+  <text x="338" y="198" class="dm-small">ot-device-hosts-timeseries index, whole device (-e)</text>
+
+  <text x="338" y="222" class="dm-label">IDENTITY</text>
+  <text x="338" y="239" class="dm-field">id, name, label, type, serial_number, part_number</text>
+  <text x="338" y="255" class="dm-field">description: vendor, model, product, brand</text>
+
+  <text x="338" y="279" class="dm-label">NETWORK</text>
+  <text x="338" y="296" class="dm-field">ip, mac, mac_vendor, hostname, serial_port</text>
+
+  <text x="338" y="320" class="dm-label">NESTED OBJECTS</text>
+  <text x="338" y="337" class="dm-field">firmware, boot_firmware, os, hardware, logic</text>
+  <text x="338" y="353" class="dm-field">related, geo, x509, extra</text>
+
+  <text x="338" y="377" class="dm-label">STATUS AND COLLECTION</text>
+  <text x="338" y="394" class="dm-field">run_mode, status, uptime, start_time</text>
+  <text x="338" y="410" class="dm-field">successful_pulls (per protocol)</text>
+
+  <text x="338" y="434" class="dm-label">SUB-COMPONENTS</text>
+  <text x="338" y="451" class="dm-field">module: list[DeviceData], e.g. modules in a PLC rack</text>
+
+  <!-- Top row -->
+  <rect x="240" y="16" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="340" y="36" text-anchor="middle" class="dm-title">Event</text>
+  <text x="340" y="53" text-anchor="middle" class="dm-small">action, message, outcome</text>
+  <text x="340" y="69" text-anchor="middle" class="dm-small">device-data-event.jsonl</text>
+  <text x="340" y="85" text-anchor="middle" class="dm-small">ot-device-events index</text>
+  <path d="M 340 140 L 340 98" class="dm-arrow"/>
+  <text x="340" y="122" text-anchor="middle" class="dm-small dm-halo">event</text>
+
+  <rect x="560" y="16" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="660" y="36" text-anchor="middle" class="dm-title">Memory</text>
+  <text x="660" y="53" text-anchor="middle" class="dm-small">address, value, size, created</text>
+  <text x="660" y="69" text-anchor="middle" class="dm-small">device-data-memory.jsonl</text>
+  <text x="660" y="85" text-anchor="middle" class="dm-small">ot-device-memory index</text>
+  <path d="M 660 140 L 660 98" class="dm-arrow"/>
+  <text x="660" y="122" text-anchor="middle" class="dm-small dm-halo">memory</text>
+
+  <!-- Left column -->
+  <rect x="20" y="110" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="120" y="130" text-anchor="middle" class="dm-title">Interface</text>
+  <text x="120" y="147" text-anchor="middle" class="dm-small">name, ip, mac, hostname</text>
+  <text x="120" y="163" text-anchor="middle" class="dm-small">device-data-interface.jsonl</text>
+  <text x="120" y="179" text-anchor="middle" class="dm-small">no index of its own</text>
+  <path d="M 320 150 L 222 150" class="dm-arrow"/>
+  <text x="271" y="154" text-anchor="middle" class="dm-small dm-halo">interface</text>
+
+  <rect x="20" y="260" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="120" y="280" text-anchor="middle" class="dm-title">Service</text>
+  <text x="120" y="297" text-anchor="middle" class="dm-small">protocol, port, transport, status</text>
+  <text x="120" y="313" text-anchor="middle" class="dm-small">device-data-service.jsonl</text>
+  <text x="120" y="329" text-anchor="middle" class="dm-small">no index of its own</text>
+  <path d="M 320 300 L 222 300" class="dm-arrow"/>
+  <text x="271" y="304" text-anchor="middle" class="dm-small dm-halo">service</text>
+
+  <rect x="20" y="410" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="120" y="430" text-anchor="middle" class="dm-title">File</text>
+  <text x="120" y="447" text-anchor="middle" class="dm-small">name, path, size, hash</text>
+  <text x="120" y="463" text-anchor="middle" class="dm-small">device-data-files.jsonl</text>
+  <text x="120" y="479" text-anchor="middle" class="dm-small">ot-device-files index</text>
+  <path d="M 320 450 L 222 450" class="dm-arrow"/>
+  <text x="271" y="454" text-anchor="middle" class="dm-small dm-halo">files</text>
+
+  <!-- Right column -->
+  <rect x="780" y="110" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="880" y="130" text-anchor="middle" class="dm-title">Register</text>
+  <text x="880" y="147" text-anchor="middle" class="dm-small">address, name, data_type</text>
+  <text x="880" y="163" text-anchor="middle" class="dm-small">device-data-registers.jsonl</text>
+  <text x="880" y="179" text-anchor="middle" class="dm-small">ot-device-registers index</text>
+  <path d="M 680 150 L 778 150" class="dm-arrow"/>
+  <text x="729" y="154" text-anchor="middle" class="dm-small dm-halo">registers</text>
+
+  <rect x="780" y="260" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="880" y="280" text-anchor="middle" class="dm-title">Tag</text>
+  <text x="880" y="297" text-anchor="middle" class="dm-small">name, address, type, io</text>
+  <text x="880" y="313" text-anchor="middle" class="dm-small">device-data-tag.jsonl</text>
+  <text x="880" y="329" text-anchor="middle" class="dm-small">ot-device-tags index</text>
+  <path d="M 680 300 L 778 300" class="dm-arrow"/>
+  <text x="729" y="304" text-anchor="middle" class="dm-small dm-halo">tag</text>
+
+  <rect x="780" y="410" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="880" y="430" text-anchor="middle" class="dm-title">IO</text>
+  <text x="880" y="447" text-anchor="middle" class="dm-small">name, address, direction, type</text>
+  <text x="880" y="463" text-anchor="middle" class="dm-small">device-data-io.jsonl</text>
+  <text x="880" y="479" text-anchor="middle" class="dm-small">ot-device-io index</text>
+  <path d="M 680 450 L 778 450" class="dm-arrow"/>
+  <text x="729" y="454" text-anchor="middle" class="dm-small dm-halo">io</text>
+
+  <!-- Bottom row -->
+  <rect x="240" y="504" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="340" y="524" text-anchor="middle" class="dm-title">User</text>
+  <text x="340" y="541" text-anchor="middle" class="dm-small">name, id, roles, permissions</text>
+  <text x="340" y="557" text-anchor="middle" class="dm-small">device-data-users.jsonl</text>
+  <text x="340" y="573" text-anchor="middle" class="dm-small">no index of its own</text>
+  <path d="M 340 470 L 340 502" class="dm-arrow"/>
+  <text x="340" y="491" text-anchor="middle" class="dm-small dm-halo">users</text>
+
+  <rect x="560" y="504" width="200" height="80" rx="6" class="dm-box"/>
+  <text x="660" y="524" text-anchor="middle" class="dm-title">SSHKey</text>
+  <text x="660" y="541" text-anchor="middle" class="dm-small">type, user, host, file</text>
+  <text x="660" y="557" text-anchor="middle" class="dm-small">device-data-ssh_keys.jsonl</text>
+  <text x="660" y="573" text-anchor="middle" class="dm-small">no index of its own</text>
+  <path d="M 660 470 L 660 502" class="dm-arrow"/>
+  <text x="660" y="491" text-anchor="middle" class="dm-small dm-halo">ssh_keys</text>
+</svg>
+<figcaption class="peat-dg-caption">DeviceData and the list-type models it holds. Each arrow is labelled with the DeviceData attribute; each list is also written to its own <code>device-data-&lt;attribute&gt;.jsonl</code> file and, where one exists, its own <code>ot-device-*</code> index.</figcaption>
+</figure>
