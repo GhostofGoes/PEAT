@@ -13,22 +13,11 @@ Elasticsearch internals
    :doc:`/user_guide/elasticsearch`
       Elasticsearch usage and other information.
 
-Notes
-=====
-- PEAT follows the `Elastic Common Schema (ECS) <https://www.elastic.co/docs/reference/ecs>`__, and **any changes must adhere to the ECS (when possible)**
-- **All indices share the ECS Base and Agent field sets** (refer to :ref:`database-schema`)
-- ALL timestamps are in the :term:`UTC` timezone
-- Field types (the "Type" column in the tables) are Elasticsearch datatypes (`reference <https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/field-data-types>`__). When storing as a plain :term:`JSON` file, ensure the format it is stored in either matches or can be cohered to the corresponding ES format.
-- The document's ``_id`` field is unique for each document. The format is: ``peat~<run-id>~<microsecond>``, where ``<microsecond>`` is an integer.
-- Sub-fields are nested :term:`JSON` objects. From the `ECS Guidelines <https://www.elastic.co/docs/reference/ecs/ecs-guidelines>`__: "The document structure should be nested JSON objects. If you use Beats or Logstash, the nesting of JSON objects is done for you automatically. If you're ingesting to Elasticsearch using the API, your fields must be nested objects, not strings containing dots."
-
-.. seealso::
-
-   `Elastic Common Schema (ECS) reference <https://www.elastic.co/docs/reference/ecs>`__
-
-   `ECS Guidelines <https://www.elastic.co/docs/reference/ecs/ecs-guidelines>`__
-
-   `Elasticsearch data types <https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/field-data-types>`__
+Conventions
+===========
+The schema conventions (ECS adherence, the shared base and agent field sets, UTC
+timestamps, Elasticsearch data types, the ``_id`` format, and nested JSON objects) are
+documented once, in :ref:`database-schema`; changes to the mappings must follow them.
 
 Code documentation
 ==================

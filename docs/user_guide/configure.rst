@@ -231,15 +231,8 @@ Additional topics
 
 Disabling file output
 ---------------------
-Setting a directory option to an empty string disables output to that directory. For
-example ``LOG_DIR: ""`` disables writing of log files, including protocol transcripts.
-This works well for :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>`,
-:attr:`ELASTIC_DIR <peat.settings.Configuration.ELASTIC_DIR>`, and
-:attr:`LOG_DIR <peat.settings.Configuration.LOG_DIR>`. Disabling the heavily used
-:attr:`DEVICE_DIR <peat.settings.Configuration.DEVICE_DIR>` and
-:attr:`OUT_DIR <peat.settings.Configuration.OUT_DIR>` should also work, but there have been
-regressions in the past where files were written anyway. If disabling file output is
-critical to your use case, test locally before executing in the field.
+Setting a directory option such as ``LOG_DIR`` to an empty string disables output to that
+directory; see :ref:`disabling-file-output` on the results page for the details and caveats.
 
 .. _auto-generated-configs:
 

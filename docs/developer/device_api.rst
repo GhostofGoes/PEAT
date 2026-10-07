@@ -26,10 +26,9 @@ The :class:`~peat.device.DeviceModule` class is the implementation of a PEAT "de
    # Get a DeviceData instance for the device's IP address
    device = datastore.get("192.0.2.22")
 
-   # Pass the instance to the pull_project method on the DeviceModule
-   # implementation "SELRelay". The data pulled is added to the DeviceData
-   # instance created earlier.
-   SELRelay.pull_project(device)
+   # Pass the instance to the pull() method of the DeviceModule implementation
+   # "SELRelay". The data pulled is added to the DeviceData instance created earlier.
+   SELRelay.pull(device)
 
    # Export the data from the DeviceData as a Python dictionary
    pprint(device.export())

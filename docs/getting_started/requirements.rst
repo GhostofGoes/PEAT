@@ -187,8 +187,3 @@ PEAT works well inside a virtual machine (VM). Requirements and recommendations:
   fully supports running inside a :term:`SCEPTRE` experiment, which is hosted with minimega
   and QEMU. Type 1 hypervisors (Microsoft Hyper-V, Xen, ESXi) have not been tested but
   should work.
-
-Containers
-----------
-Refer to :doc:`/user_guide/containers` for requirements and limitations when using the
-container distribution of PEAT (notably, ``--network host`` is required for scanning).

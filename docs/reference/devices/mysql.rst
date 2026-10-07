@@ -42,15 +42,15 @@ When credentials are available, PEAT can enumerate the following via SQL queries
 Configuration
 -------------
 
-Credentials and connection options are specified in the PEAT config file under the ``mysql`` key in ``device_options``:
+The protocol's options live under the ``mysql`` key of ``device_options`` in the PEAT
+configuration file. Only the connection options have defaults (see
+:mod:`peat.data.default_options`); no device module currently uses the class, so there is
+no credential option to set:
 
 .. code-block:: yaml
 
    device_options:
      mysql:
-       credentials:
-         user: root
-         pass: secret
        port: 3306
        timeout: 10
 

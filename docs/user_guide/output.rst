@@ -198,6 +198,8 @@ combine with ``-q`` to suppress the log messages so the output can be piped to a
 program. For dashboards and queries across many runs, export to
 :doc:`Elasticsearch or OpenSearch <elasticsearch>`.
 
+.. _disabling-file-output:
+
 Disabling file output
 =====================
 Setting a directory option to an empty string disables output to that directory: for

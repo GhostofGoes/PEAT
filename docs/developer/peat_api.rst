@@ -38,27 +38,9 @@ Refer to :doc:`/user_guide/configure` for how to set configuration options, :doc
 
 Constants
 =========
-Constants that are determined at program start, such as platform information, timezone, time of start, and time format.
-
-.. csv-table::
-   :name: PEAT Constants
-   :header: "Variable", "Type", "Description"
-   :widths: auto
-   :align: left
-
-   WINDOWS, :class:`bool`, "If running on Windows (not in :term:`WSL`)"
-   POSIX, :class:`bool`, "If running on a POSIX :term:`OS`, including Linux and OSX"
-   LINUX, :class:`bool`, "If running on Linux"
-   WSL, :class:`bool`, "If running in Windows Subsystem for Linux (:term:`WSL`)"
-   TIME_FMT, :class:`str`, "Format used for most string timestamps in PEAT"
-   LOG_TIME_FMT, :class:`str`, "Time format used for most :mod:`logging` handlers"
-   START_TIME_UTC, :class:`~datetime.datetime`, "Time PEAT started in :term:`UTC` timezone"
-   START_TIME_LOCAL, :class:`~datetime.datetime`, "Time PEAT started, as a local timezone :class:`~datetime.datetime` object"
-   START_TIME, :class:`str`, "Time PEAT started, as a human-readable formatted string"
-   TIMEZONE, :class:`str`, "Timezone of the system, e.g ``America/Denver``"
-   RUN_ID, :class:`int`, "Unique integer ID used to distinguish different PEAT runs"
-   LOGO, :class:`str`, "The PEAT logo which is printed to the terminal at startup"
-   SYSINFO, :class:`dict`, "Information about the system PEAT is running on, such as the hostname, username, and :term:`OS`"
+Values determined at program start (platform flags such as ``WINDOWS`` and ``LINUX``, the
+start time and time formats, ``RUN_ID``, ``SYSINFO``, ...) live in :mod:`peat.consts`, which is
+documented in full in :doc:`general_apis`.
 
 State API
 =========
