@@ -65,18 +65,72 @@ def _normalize_header(name: str) -> str:
     return re.sub(r"[^a-z]", "", name.lower())
 
 
+#: Vendor name (as written in the CSV files) -> icon file in docs/images/icons/ (see its README)
+VENDOR_ICONS = {
+    "abb": "abb",
+    "allen-bradley": "rockwellautomation",
+    "camlin": "camlin",
+    "fortinet": "fortinet",
+    "ge": "generalelectric",
+    "idirect": "idirect",
+    "openplc": "openplc",
+    "rockwell": "rockwellautomation",
+    "sandia": "sandia",
+    "schneider electric": "schneiderelectric",
+    "sel": "sel",
+    "siemens": "siemens",
+    "uefi": "uefi",
+    "windows": "windows",
+    "woodward": "woodward",
+}
+
+
+#: Wordmark icons whose viewBox is cropped to the lettering; they render wider than tall
+WIDE_ICONS = {"siemens", "abb"}
+
+
+def _icon_html(icons_dir: Path, vendor: str) -> str | None:
+    """Inline SVG for a vendor's icon, or None if there is none.
+
+    The icon is decorative (``aria-hidden``): the heading text carries the vendor name.
+    """
+    slug = VENDOR_ICONS.get(vendor.strip().lower())
+    if not slug:
+        return None
+    path = icons_dir / f"{slug}.svg"
+    if not path.is_file():
+        return None
+    svg = path.read_text(encoding="utf-8").strip()
+    classes = "peat-vendor-icon"
+    if slug in WIDE_ICONS:
+        classes += " peat-icon-wide"
+    attrs = f'class="{classes}" aria-hidden="true" focusable="false"'
+    return svg.replace("<svg ", f"<svg {attrs} ", 1)
+
+
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as fp:
-        reader = csv.reader(fp)
+        # skipinitialspace: the CSV files put a space after the separating comma, and
+        # without it a quoted field such as ``, "Pull config, Pull firmware"`` would keep its
+        # quotes and be split at the inner comma
+        reader = csv.reader(fp, skipinitialspace=True)
         header = next(reader)
         keys = [COLUMN_KEYS.get(_normalize_header(h), _normalize_header(h)) for h in header]
         rows = []
         for raw in reader:
             if not any(cell.strip() for cell in raw):
                 continue
-            row = {key: (raw[i].strip() if i < len(raw) else "") for i, key in enumerate(keys)}
+            row = {key: (_unquote(raw[i]) if i < len(raw) else "") for i, key in enumerate(keys)}
             rows.append(row)
     return rows
+
+
+def _unquote(cell: str) -> str:
+    """Strip whitespace and a stray pair of surrounding quotes left by hand-edited CSV."""
+    cell = cell.strip()
+    if len(cell) >= 2 and cell[0] == cell[-1] == '"':
+        cell = cell[1:-1].strip()
+    return cell
 
 
 def _cell(text: str) -> str:
@@ -183,7 +237,25 @@ class DeviceTableDirective(SphinxDirective):
             nested_parse_with_titles(self.state, content, container)
         else:
             self.state.nested_parse(content, self.content_offset, container)
+        self._add_vendor_icons(container)
         return [container]
+
+    def _add_vendor_icons(self, container: nodes.container) -> None:
+        """Prefix each vendor heading (section title or rubric) with its icon (HTML only)."""
+        icons_dir = Path(self.env.srcdir) / "images" / "icons"
+        headings: list[nodes.Element] = [
+            section.next_node(nodes.title) for section in container.findall(nodes.section)
+        ]
+        headings += list(container.findall(nodes.rubric))
+        for heading in headings:
+            if heading is None:
+                continue
+            vendor = heading.astext()
+            html = _icon_html(icons_dir, vendor)
+            if html:
+                slug = VENDOR_ICONS[vendor.strip().lower()]
+                self.env.note_dependency(str(icons_dir / f"{slug}.svg"))
+                heading.insert(0, nodes.raw("", html, format="html"))
 
 
 #: Names of Python builtins that commonly appear in type annotations

@@ -171,3 +171,20 @@ summary:focus-visible,
 .highlight-text pre {
   line-height: 1.35;
 }
+
+/* Brand icons inline with text (vendor headings on the supported devices page, tool names) */
+.peat-vendor-icon,
+.peat-inline-icon {
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -0.2em;
+  margin-right: 0.45em;
+  color: var(--color-foreground-primary);
+}
+
+/* Wordmark icons (Siemens, ABB): keep the height, let the width follow the lettering */
+.peat-vendor-icon.peat-icon-wide {
+  width: auto;
+  max-width: 3.4em;
+  vertical-align: -0.12em;
+}
