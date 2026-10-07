@@ -1,7 +1,7 @@
 *******************
 Developer reference
 *******************
-Documentation of PEAT's Python codebase and APIs, for people who use PEAT as a library
+:peat-icon:`python` Documentation of PEAT's Python codebase and APIs, for people who use PEAT as a library
 (``import peat``), extend it with device modules, or work on PEAT itself. For the
 reasoning behind the architecture, see the :doc:`/design/index`; for how to set up a
 development environment and contribute changes, see :doc:`/contributing/index`.

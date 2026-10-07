@@ -6,7 +6,7 @@ drop on the control network that the plant engineer vouches for, and a few hours
 need to leave with a defensible picture of what's on that network: vendors, models,
 firmware, services.*
 
-Windows is often what you have on site, and it works well for this. The differences from
+:peat-icon:`windows` Windows is often what you have on site, and it works well for this. The differences from
 Linux are small: an Administrator PowerShell, Npcap for raw sockets, and paths.
 
 What you need

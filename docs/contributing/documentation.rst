@@ -2,7 +2,7 @@
 Documentation
 *************
 How the documentation is organized, built, checked, and written. The documentation is
-built with `Sphinx <https://www.sphinx-doc.org/en/master/>`__ from the reStructuredText files in
+built with :peat-icon:`sphinx` `Sphinx <https://www.sphinx-doc.org/en/master/>`__ from the reStructuredText files in
 ``docs/``, uses the `Furo <https://pradyunsg.me/furo/>`__ theme, and is published to
 https://sandialabs.github.io/PEAT/ by the ``Documentation`` GitHub Actions workflow on
 every push to ``main`` and on every release.

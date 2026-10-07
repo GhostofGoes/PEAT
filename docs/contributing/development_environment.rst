@@ -8,7 +8,7 @@ advanced developers or those who want more control over their environment.
 
 The recommended editor is `Visual Studio Code (VS Code) <https://code.visualstudio.com/>`__,
 and the project uses `PDM <https://pdm-project.org/en/latest/>`__ for dependency
-management and task running. Python 3.11, 3.12, or 3.13 is required (3.12 or newer to
+management and task running. :peat-icon:`python` Python 3.11, 3.12, or 3.13 is required (3.12 or newer to
 build the documentation).
 
 .. _devcontainer:

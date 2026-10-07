@@ -93,8 +93,8 @@ Push
 #. **Push to each device.** :meth:`DeviceModule.push() <peat.device.DeviceModule.push>`
    validates, logs, and calls the module's ``_push(dev, path, push_type)``, which performs
    the upload in the device's native way (FTP uploads and a Telnet restart for SEL
-   relays, CIP firmware transfer for ControlLogix, a REST API upload for OpenPLC, FTP for
-   SCEPTRE). The outcome is recorded as an event on the device (``action: file_push``,
+   relays, CIP firmware transfer for ControlLogix, a REST API upload for OpenPLC). The
+   outcome is recorded as an event on the device (``action: file_push``,
    ``outcome: success``/``failure``).
 #. **Export** the devices' data and report success or failure through the log and the
    exit code.

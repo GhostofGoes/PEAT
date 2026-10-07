@@ -13,6 +13,22 @@ targets and only pulls from the devices it successfully identifies, using the mo
 identified each one. The scan summary is saved too, so a pull gives you an inventory and
 the artifacts in a single run.
 
+.. raw:: html
+   :file: ../images/pull_sequence.svg
+
+.. only:: not html
+
+   With ``--skip-scan`` the hosts and their ``peat_module`` come from the configuration
+   file's ``hosts`` list (or the single ``-d`` module) without verification. For each
+   verified device, one at a time, the module's ``_pull()`` connects with the configured
+   protocols (``pull_methods`` and credentials from the module defaults, ``device_options``,
+   and the host's options), writes every artifact unmodified under ``devices/<device-id>/``
+   and records it in ``files``, then parses it with the same code as ``peat parse``. The
+   device data is written as ``device-data-full.json``, ``device-data-summary.json``, and
+   ``device-data-<type>.jsonl``, exported to Elasticsearch with ``-e`` and printed with
+   ``-E``, and the pull summary goes to ``summaries/pull-summary.json`` and the
+   ``peat-pull-summaries`` index.
+
 Basic usage
 ===========
 .. code-block:: bash

@@ -10,7 +10,7 @@ beyond a container runtime. This page covers the arguments that matter and examp
 each command. Install instructions are in :doc:`/getting_started/install`.
 
 .. note::
-   The commands use ``docker``. With :term:`Podman` (for example on :term:`RHEL`), replace
+   The commands use :peat-icon:`docker` ``docker``. With :peat-icon:`podman` :term:`Podman` (for example on :term:`RHEL`), replace
    ``docker`` with ``podman``; the interfaces are nearly identical, though lesser-used
    arguments may differ. Refer to the `Podman documentation <https://docs.podman.io/en/latest/>`__.
    On Linux, ``sudo`` is required before ``docker`` unless your user is in the ``docker``

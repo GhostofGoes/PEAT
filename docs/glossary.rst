@@ -35,6 +35,9 @@ Terms link here from the pages that use them.
    BAC
       Building Automation Control
 
+   bennu
+      SCEPTRE's modeling and simulation application for :term:`ICS`/:term:`SCADA` devices: software field devices (RTUs, PLCs, FEPs) that serve DNP3, Modbus, BACnet, IEC 60870-5-104, or SunSpec from a simulated process. PEAT's :class:`~peat.modules.sandia.sceptre_fcd.SCEPTRE` module pulls and parses their configuration. See https://github.com/sandialabs/sceptre-bennu and :doc:`/tutorials/sceptre_phenix`.
+
    BACnet
       Building Automation Control network communications protocol
 
@@ -345,6 +348,9 @@ Terms link here from the pages that use them.
    Pillager
       :term:`PEAT` capability (``peat pillage``) to collect artifacts (e.g. device configs or project files) from engineering workstation disk images or live machines. Refer to :doc:`/user_guide/pillage` for details.
 
+   phenix
+      The experiment orchestrator of :term:`SCEPTRE`: it builds networks of virtual machines on minimega from topology and scenario files, and runs *apps* (such as the ``sceptre`` app that configures :term:`bennu` field devices) against them. Documentation: https://phenix.sceptre.dev/. See :doc:`/tutorials/sceptre_phenix`.
+
    PLC
       Programmable Logic Controller. An industrial computer that runs control logic against physical I/O.
 
@@ -419,7 +425,7 @@ Terms link here from the pages that use them.
       Supervisory Control and Data Acquisition
 
    SCEPTRE
-      SCEPTRE is a comprehensive :term:`OT` modeling and simulation platform developed by :term:`SNL`, which includes virtual field devices PEAT supports. Further reading: `phenix documentation <https://phenix.sceptre.dev/>`__
+      SCEPTRE is a comprehensive :term:`OT` modeling and simulation platform developed by :term:`SNL`, which includes virtual field devices PEAT supports. Its orchestrator is :term:`phenix` and its field device simulator is :term:`bennu`. Further reading: `phenix documentation <https://phenix.sceptre.dev/>`__, :doc:`/tutorials/sceptre_phenix`
 
    SCL
       Substation Configuration Language, the :term:`IEC 61850` XML schema for describing devices and substations (``.ICD``, ``.CID``, ``.SCD``, ``.SSD`` files).

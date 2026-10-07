@@ -1,11 +1,11 @@
 **********************
 OpenSearch and Malcolm
 **********************
-PEAT exports to `OpenSearch <https://opensearch.org/>`__ exactly as it does to
+PEAT exports to :peat-icon:`opensearch` `OpenSearch <https://opensearch.org/>`__ exactly as it does to
 Elasticsearch: the same ``-e`` argument, the same indices and schema, the same local
 copies of every document. OpenSearch is detected automatically, so nothing needs to be
 configured beyond the server URL. This matters in practice because
-`Malcolm <https://malcolm.fyi/>`__, the open-source network traffic analysis suite from
+:peat-icon:`malcolm` `Malcolm <https://malcolm.fyi/>`__, the open-source network traffic analysis suite from
 CISA and Idaho National Laboratory that is widely used on :term:`OT` networks, stores its
 data in OpenSearch, and PEAT ships a dashboard for it.
 
@@ -69,6 +69,22 @@ dumps (``safe_url``). If the shell history is a concern, put ``elastic_server`` 
 
 Malcolm
 =======
+.. only:: html
+
+   .. container:: peat-logo
+
+      .. image:: /images/logos/malcolm_banner.png
+         :alt: Malcolm logo
+         :class: only-light
+         :width: 260px
+         :target: https://malcolm.fyi/
+
+      .. image:: /images/logos/malcolm_banner_dark.png
+         :alt: Malcolm logo
+         :class: only-dark
+         :width: 260px
+         :target: https://malcolm.fyi/
+
 Malcolm exposes OpenSearch to external tools through its web interface at
 ``/mapi/opensearch`` (the "Malcolm API"), authenticated with Malcolm's own user accounts.
 PEAT writes through this proxy, so no direct access to the OpenSearch port is needed:

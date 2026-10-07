@@ -17,13 +17,13 @@ back to a device. It runs on Linux, Windows, and macOS, and as a :term:`containe
    :gutter: 3
    :class-container: peat-landing
 
-   .. grid-item-card:: Get started
+   .. grid-item-card:: :octicon:`rocket` Get started
       :link: getting_started/quickstart
       :link-type: doc
 
       Install PEAT and run your first scan, pull, and parse in about ten minutes.
 
-   .. grid-item-card:: Tutorials
+   .. grid-item-card:: :octicon:`mortar-board` Tutorials
       :link: tutorials/index
       :link-type: doc
 
@@ -31,7 +31,7 @@ back to a device. It runs on Linux, Windows, and macOS, and as a :term:`containe
       investigating an engineering workstation, standing up a lab with OpenPLC,
       and more.
 
-   .. grid-item-card:: User guide
+   .. grid-item-card:: :octicon:`book` User guide
       :link: user_guide/index
       :link-type: doc
 
@@ -39,7 +39,7 @@ back to a device. It runs on Linux, Windows, and macOS, and as a :term:`containe
       ``pillage``, ``heat``), configure PEAT, run it as a container, and
       troubleshoot problems.
 
-   .. grid-item-card:: Reference
+   .. grid-item-card:: :octicon:`list-unordered` Reference
       :link: reference/index
       :link-type: doc
 
@@ -47,13 +47,13 @@ back to a device. It runs on Linux, Windows, and macOS, and as a :term:`containe
       Elasticsearch index and field, plus device-specific reference pages and
       the glossary.
 
-   .. grid-item-card:: Developer reference
+   .. grid-item-card:: :octicon:`code` Developer reference
       :link: developer/index
       :link-type: doc
 
       The Python API, data model, and the guide to writing a PEAT device module.
 
-   .. grid-item-card:: Design and contributing
+   .. grid-item-card:: :octicon:`tools` Design and contributing
       :link: design/index
       :link-type: doc
 

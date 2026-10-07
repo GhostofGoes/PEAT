@@ -2,7 +2,7 @@
 SEL
 ***
 
-There are many Schweitzer Engineering Laboratories (SEL) devices supported by PEAT, including Real Time Automation Controllers (RTACs), the SEL-3620 security gateway, and many types of protection relays. These are implemented by the PEAT modules :class:`~peat.modules.sel.sel_rtac.SELRTAC`, :class:`~peat.modules.sel.sel_3620.SEL3620`, and :class:`~peat.modules.sel.sel_relay.SELRelay`, respectfully.
+There are many :peat-icon:`sel` Schweitzer Engineering Laboratories (SEL) devices supported by PEAT, including Real Time Automation Controllers (RTACs), the SEL-3620 security gateway, and many types of protection relays. These are implemented by the PEAT modules :class:`~peat.modules.sel.sel_rtac.SELRTAC`, :class:`~peat.modules.sel.sel_3620.SEL3620`, and :class:`~peat.modules.sel.sel_relay.SELRelay`, respectfully.
 
 .. seealso::
 

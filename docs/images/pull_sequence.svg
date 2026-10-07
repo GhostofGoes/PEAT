@@ -1,0 +1,131 @@
+<figure class="peat-diagram" id="peat-pull-sequence">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 370" role="img" aria-labelledby="pq-title pq-desc">
+  <title id="pq-title">What peat pull does</title>
+  <desc id="pq-desc">Left to right. The targets (-i hosts or networks, -b broadcast, -f a scan summary, -s a serial port) enter stage 1, scan and identify: the same targets, modules, and communication type as peat scan; only verified devices are pulled, each with the module that identified it, and the scan summary is saved too. If no device is verified, the pull fails. A dashed side branch, --skip-scan, bypasses stage 1: hosts come from the configuration file's hosts list, each with its peat_module, with a single -d module as the fallback; this is faster and causes no scan traffic, but PEAT does not verify that a device is what the file says. Stages 2 to 4 run for each verified device, one at a time. Stage 2, pull: the module's _pull() runs with options merged from the module defaults, device_options, and the host's options, including pull_methods and credentials, and connects with protocol clients such as FTP, Telnet, HTTP, SSH, and serial. Stage 3, save artifacts: every file retrieved is written unmodified to devices/device-id/ in the run directory and recorded in files with hashes, so it appears in the data model and the ot-device-files index. Stage 4, parse: the same code path as peat parse fills in firmware, logic, configuration, events, registers, and so on; a failed artifact is logged and the pull continues. Stage 5, device data: device-data-full.json, device-data-summary.json, and device-data-type.jsonl in devices/device-id/, exported to Elasticsearch with -e after each device, and printed to the terminal as JSON with -E. Finally the pull summary, listing the devices pulled, targets, modules, and duration, is saved to summaries/pull-summary.json and the peat-pull-summaries index.</desc>
+  <defs>
+    <marker id="pq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+  </defs>
+  <style>
+    .pq-text { font-size: 13px; fill: var(--color-foreground-primary); }
+    .pq-title { font-size: 13px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .pq-small { font-size: 12px; fill: var(--color-foreground-secondary); }
+    .pq-head { font-size: 14px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .pq-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; fill: var(--color-foreground-secondary); }
+    .pq-halo { paint-order: stroke fill; stroke: var(--color-background-primary); stroke-width: 5px; stroke-linejoin: round; }
+    .pq-loop { fill: var(--color-background-secondary); stroke: var(--color-background-border); stroke-width: 1; }
+    .pq-stage { fill: var(--color-background-primary); stroke: var(--color-foreground-border); stroke-width: 1.1; }
+    .pq-input { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.1; }
+    .pq-good { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 2; }
+    .pq-chip { fill: var(--color-brand-primary); stroke: none; }
+    .pq-chip-text { font-size: 12px; font-weight: 700; fill: var(--color-background-primary); }
+    .pq-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#pq-arrow); }
+    .pq-dashed { stroke-dasharray: 5 4; }
+  </style>
+
+  <!-- Targets -->
+  <rect x="20" y="14" width="166" height="82" rx="6" class="pq-input"/>
+  <text x="103" y="34" text-anchor="middle" class="pq-title">Targets</text>
+  <text x="103" y="52" text-anchor="middle" class="pq-small">-i hosts or networks,</text>
+  <text x="103" y="68" text-anchor="middle" class="pq-small">-b broadcast, -f a scan</text>
+  <text x="103" y="84" text-anchor="middle" class="pq-small">summary, -s serial port</text>
+  <path d="M 103 96 L 103 134" class="pq-arrow"/>
+
+  <!-- Side branch: skip-scan -->
+  <rect x="222" y="14" width="478" height="82" rx="6" class="pq-stage pq-dashed"/>
+  <text x="238" y="34" class="pq-title">--skip-scan: skip the scan and pull directly</text>
+  <text x="238" y="52" class="pq-small">Hosts come from the configuration file's hosts list, each with its</text>
+  <text x="238" y="68" class="pq-small">peat_module; a single -d module is the fallback. Faster, with no scan</text>
+  <text x="238" y="84" class="pq-small">traffic, but PEAT doesn't verify that a device is what the file says.</text>
+  <path d="M 306 96 L 306 134" class="pq-arrow pq-dashed"/>
+
+  <text x="980" y="34" text-anchor="end" class="pq-head">peat pull</text>
+  <text x="980" y="52" text-anchor="end" class="pq-small">scan, then collect from each</text>
+  <text x="980" y="68" text-anchor="end" class="pq-small">verified device, one at a time</text>
+
+  <!-- Per-device loop -->
+  <rect x="206" y="108" width="568" height="188" rx="10" class="pq-loop"/>
+  <text x="760" y="126" text-anchor="end" class="pq-label">FOR EACH VERIFIED DEVICE, ONE AT A TIME</text>
+
+  <!-- Stage 1: scan and identify -->
+  <rect x="20" y="136" width="166" height="146" rx="6" class="pq-stage"/>
+  <circle cx="40" cy="156" r="10" class="pq-chip"/>
+  <text x="40" y="160" text-anchor="middle" class="pq-chip-text">1</text>
+  <text x="58" y="160" class="pq-title">Scan and identify</text>
+  <text x="36" y="182" class="pq-small">Same targets, modules</text>
+  <text x="36" y="197" class="pq-small">and communication type</text>
+  <text x="36" y="212" class="pq-small">as peat scan. Only</text>
+  <text x="36" y="227" class="pq-small">verified devices are</text>
+  <text x="36" y="242" class="pq-small">pulled, each with the</text>
+  <text x="36" y="257" class="pq-small">module that identified</text>
+  <text x="36" y="272" class="pq-small">it. Scan summary saved.</text>
+  <path d="M 186 209 L 220 209" class="pq-arrow"/>
+
+  <!-- Stage 2: pull -->
+  <rect x="222" y="136" width="168" height="146" rx="6" class="pq-stage"/>
+  <circle cx="242" cy="156" r="10" class="pq-chip"/>
+  <text x="242" y="160" text-anchor="middle" class="pq-chip-text">2</text>
+  <text x="260" y="160" class="pq-title">Pull</text>
+  <text x="238" y="182" class="pq-small">module._pull(device):</text>
+  <text x="238" y="197" class="pq-small">options from module</text>
+  <text x="238" y="212" class="pq-small">defaults, device_options</text>
+  <text x="238" y="227" class="pq-small">and the host's options:</text>
+  <text x="238" y="242" class="pq-small">pull_methods, credentials</text>
+  <text x="238" y="257" class="pq-small">Clients: FTP, Telnet,</text>
+  <text x="238" y="272" class="pq-small">HTTP, SSH, serial, ...</text>
+  <path d="M 390 209 L 404 209" class="pq-arrow"/>
+
+  <!-- Stage 3: save artifacts -->
+  <rect x="406" y="136" width="168" height="146" rx="6" class="pq-stage"/>
+  <circle cx="426" cy="156" r="10" class="pq-chip"/>
+  <text x="426" y="160" text-anchor="middle" class="pq-chip-text">3</text>
+  <text x="444" y="160" class="pq-title">Save artifacts</text>
+  <text x="422" y="182" class="pq-small">Every file retrieved is</text>
+  <text x="422" y="197" class="pq-small">written unmodified to</text>
+  <text x="422" y="212" class="pq-small">devices/&lt;device-id&gt;/</text>
+  <text x="422" y="227" class="pq-small">and recorded in files</text>
+  <text x="422" y="242" class="pq-small">with hashes, so it is in</text>
+  <text x="422" y="257" class="pq-small">the data model and the</text>
+  <text x="422" y="272" class="pq-small">ot-device-files index.</text>
+  <path d="M 574 209 L 588 209" class="pq-arrow"/>
+
+  <!-- Stage 4: parse -->
+  <rect x="590" y="136" width="168" height="146" rx="6" class="pq-stage"/>
+  <circle cx="610" cy="156" r="10" class="pq-chip"/>
+  <text x="610" y="160" text-anchor="middle" class="pq-chip-text">4</text>
+  <text x="628" y="160" class="pq-title">Parse</text>
+  <text x="606" y="182" class="pq-small">The same code path as</text>
+  <text x="606" y="197" class="pq-small">peat parse fills in</text>
+  <text x="606" y="212" class="pq-small">firmware, logic,</text>
+  <text x="606" y="227" class="pq-small">configuration, events,</text>
+  <text x="606" y="242" class="pq-small">registers, and so on.</text>
+  <text x="606" y="257" class="pq-small">A failed artifact is</text>
+  <text x="606" y="272" class="pq-small">logged; pull continues.</text>
+  <path d="M 758 209 L 792 209" class="pq-arrow"/>
+
+  <!-- Stage 5: device data -->
+  <rect x="794" y="136" width="186" height="146" rx="6" class="pq-good"/>
+  <circle cx="814" cy="156" r="10" class="pq-chip"/>
+  <text x="814" y="160" text-anchor="middle" class="pq-chip-text">5</text>
+  <text x="832" y="160" class="pq-title">Device data</text>
+  <text x="810" y="182" class="pq-small">device-data-full.json,</text>
+  <text x="810" y="197" class="pq-small">device-data-summary.json,</text>
+  <text x="810" y="212" class="pq-small">device-data-&lt;type&gt;.jsonl</text>
+  <text x="810" y="227" class="pq-small">in devices/&lt;device-id&gt;/.</text>
+  <text x="810" y="242" class="pq-small">Elasticsearch with -e</text>
+  <text x="810" y="257" class="pq-small">(after each device),</text>
+  <text x="810" y="272" class="pq-small">terminal JSON with -E.</text>
+
+  <!-- Exits below -->
+  <path d="M 103 282 L 103 310" class="pq-arrow pq-dashed"/>
+  <text x="103" y="328" text-anchor="middle" class="pq-small">none verified:</text>
+  <text x="103" y="343" text-anchor="middle" class="pq-small">the pull fails</text>
+
+  <path d="M 887 282 L 887 310" class="pq-arrow"/>
+  <rect x="590" y="312" width="390" height="48" rx="6" class="pq-stage"/>
+  <text x="785" y="330" text-anchor="middle" class="pq-text">Pull summary: devices, targets, modules, duration</text>
+  <text x="785" y="349" text-anchor="middle" class="pq-small">summaries/pull-summary.json; peat-pull-summaries index (-e)</text>
+</svg>
+<figcaption class="peat-dg-caption">What <code>peat pull</code> does for a set of targets: a scan, then a pull, artifact save, and parse for each verified device, ending in the device data files and the pull summary. <code>--skip-scan</code> takes the dashed branch.</figcaption>
+</figure>

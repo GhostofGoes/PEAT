@@ -46,6 +46,15 @@ Every run writes the configuration it actually used, from all sources, to
 ``peat_results/<run-dir>/peat_metadata/peat_configuration.yaml``. When in doubt about
 what value applied, look there.
 
+.. raw:: html
+   :file: ../images/config_precedence.svg
+
+.. only:: not html
+
+   Module and protocol options are merged separately for each device: a host's ``options``
+   in the ``hosts`` list override ``device_options``, which override the module's
+   ``default_options``; ``device_options`` and ``hosts`` are keys in the configuration file.
+
 YAML configuration file
 =======================
 A configuration file is passed with ``-c`` (``--config-file``). Values in the file override

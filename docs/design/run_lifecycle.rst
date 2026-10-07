@@ -6,6 +6,23 @@ code, step by step, with the functions involved. Knowing this order explains whe
 take effect, when files appear, and why some things (such as a configuration error) stop a
 run before any packet is sent.
 
+.. raw:: html
+   :file: ../images/run_lifecycle.svg
+
+.. only:: not html
+
+   A run passes through five stages: argument parsing (``--help`` and ``--version`` exit
+   here), initialization (settings loaded from the configuration file, environment, and
+   command line; run directory created; logging started; Elasticsearch connected with
+   ``-e``; a configuration error ends the run with exit code 1 before any packet is sent),
+   informational commands (``--list-modules``, ``--examples``, and similar print and exit),
+   running the command (the command's API function in ``peat.api``, with the modules
+   writing into the datastore), and finishing (configuration and state exported, summaries
+   and device data written, exit code 1 if any error was recorded). On disk, the run
+   directory and ``peat_metadata/`` appear during initialization, ``logs/`` is written from
+   then until the end, and ``devices/`` and ``summaries/`` are filled while the command
+   runs and finishes.
+
 1. Argument parsing
 ===================
 ``peat`` runs :mod:`peat.__main__`, which builds the argument parser with
@@ -43,7 +60,7 @@ sub-parser per command, each with the shared general arguments (``-c``, ``-R``, 
 #. **Device options** are prepared: serial baud rates and the global timeout are applied,
    ``device_options`` becomes the datastore's global options, and ``hosts`` entries become
    per-host option overrides and known identifiers.
-#. The **exit handlers** that write ``peat_configuration.yaml`` and ``peat_state.json``
+#. The **exit handlers** that write ``peat_configuration.yaml`` and ``peat_state.yaml``
    are registered (CLI entry point only).
 #. **Elasticsearch** is connected if ``-e``/``ELASTIC_SERVER`` is set: an
    :class:`~peat.elastic.Elastic` client is created and pinged (detecting OpenSearch),

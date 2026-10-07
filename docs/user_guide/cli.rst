@@ -24,6 +24,14 @@ Getting help
    # On Linux, the installed man page contains the whole user guide
    man peat
 
+.. only:: html
+
+   .. figure:: /images/terminal/peat_help.svg
+      :alt: Terminal showing the output of peat --help: the usage line, the general options, and the list of commands with a one-line description of each
+      :figclass: peat-terminal
+
+      ``peat --help``: the commands and the general options. Every command has its own ``--help`` and ``--examples``.
+
 Anatomy of a command
 ====================
 .. code-block:: text
@@ -119,6 +127,14 @@ makes scans faster and sends fewer packets to devices that don't understand them
 .. note::
    ``--list-modules`` lists *all* imported modules, including ones that don't support the
    current command (for example, parse-only modules show up for ``peat scan``).
+
+.. only:: html
+
+   .. figure:: /images/terminal/scan_list_modules.svg
+      :alt: Terminal showing peat scan --list-modules printing the names of the twenty device modules as a JSON list
+      :figclass: peat-terminal
+
+      ``--list-modules`` prints the module names to use with ``-d``.
 
 .. _targets:
 

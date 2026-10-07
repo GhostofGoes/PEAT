@@ -42,6 +42,14 @@ Basic usage
    # Windows paths work as expected
    peat parse -d m340 'C:\Projects\Station.apx'
 
+.. only:: html
+
+   .. figure:: /images/terminal/parse_sceptre.svg
+      :alt: Terminal showing peat parse of a SCEPTRE Modbus server file: PEAT prints its banner, the log file and run directory, the file being parsed, the JSONL exports it writes, the parse summary path, and that it finished in under a second
+      :figclass: peat-terminal
+
+      Parsing one file (``peat parse -d sceptre modbus-server.xml``). The log names the run directory, the files written, and the summary. Output shortened.
+
 Which module parses what
 ========================
 Each module declares the file name patterns and :ref:`file signatures <file-signatures>`

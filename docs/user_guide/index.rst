@@ -16,34 +16,34 @@ each function:
    * - Command
      - Purpose
      - Guide
-   * - ``scan``
+   * - :octicon:`search` ``scan``
      - Carefully discover and identify supported devices on a network or serial ports
      - :doc:`scan`
-   * - ``pull``
+   * - :octicon:`download` ``pull``
      - Acquire artifacts from devices: configuration, logic, firmware, logs, memory
      - :doc:`pull`
-   * - ``parse``
+   * - :octicon:`file-code` ``parse``
      - Extract information from device files and vendor project files, offline
      - :doc:`parse`
-   * - ``push``
+   * - :octicon:`upload` ``push``
      - Upload configuration or firmware to a device
      - :doc:`push`
-   * - ``pillage``
+   * - :octicon:`file-directory` ``pillage``
      - Search a disk image, drive, or directory for :term:`OT` project and configuration files
      - :doc:`pillage`
-   * - ``heat``
+   * - :octicon:`broadcast` ``heat``
      - Extract and parse device artifacts from network traffic captures
      - :doc:`heat`
-   * - ``-e`` / ``--elastic-server``
+   * - :octicon:`database` ``-e`` / ``--elastic-server``
      - Export results to Elasticsearch, OpenSearch, or Malcolm
      - :doc:`elasticsearch`, :doc:`opensearch`
-   * - ``config-builder``
+   * - :octicon:`tools` ``config-builder``
      - Interactively build a PEAT configuration file
      - :doc:`config_builder`
-   * - ``encrypt-config``, ``decrypt-config``
+   * - :octicon:`lock` ``encrypt-config``, ``decrypt-config``
      - Encrypt and decrypt a PEAT configuration file (which may hold credentials)
      - :doc:`encryption`
-   * - ``encrypt-results``, ``decrypt-results``
+   * - :octicon:`shield-lock` ``encrypt-results``, ``decrypt-results``
      - Encrypt a results directory into a password-protected archive, and back
      - :doc:`encryption`
 

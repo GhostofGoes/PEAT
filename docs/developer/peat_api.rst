@@ -62,7 +62,7 @@ Constants that are determined at program start, such as platform information, ti
 
 State API
 =========
-Runtime values that are used to preserve or share state across PEAT. Currently stored in :data:`peat.settings.state` variable, which is a singleton instance of the :class:`~peat.settings.State` class. They can be accessed with ``from peat import state``. The state values are saved to a file when PEAT finishes executing in ``peat_results/<run-dir>/peat_metadata/peat_state.json``.
+Runtime values that are used to preserve or share state across PEAT. Currently stored in :data:`peat.settings.state` variable, which is a singleton instance of the :class:`~peat.settings.State` class. They can be accessed with ``from peat import state``. The state values are saved to a file when PEAT finishes executing in ``peat_results/<run-dir>/peat_metadata/peat_state.yaml``.
 
 .. note::
    It is possible to modify the starting state via environment variables. Environment variables beginning with ``PEAT_STATE_`` will be loaded to their corresponding variables in the global state registry. This can be useful if debugging or as a temporary patch for a issue. Modifying the state in this manner should be avoided if possible, as it could cause undefined behavior or a crash.

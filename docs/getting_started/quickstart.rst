@@ -264,7 +264,7 @@ sub-directory per device:
    │   └── telnet.log                       # Protocol transcript (useful when debugging)
    ├── peat_metadata/
    │   ├── peat_configuration.yaml          # The complete configuration used for this run
-   │   └── peat_state.json
+   │   └── peat_state.yaml
    └── summaries/
        ├── scan-summary.json
        └── pull-summary.json

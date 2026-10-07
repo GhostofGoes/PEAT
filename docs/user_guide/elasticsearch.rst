@@ -3,9 +3,11 @@
 ******************************************
 Exporting to Elasticsearch and OpenSearch
 ******************************************
-PEAT can export everything it collects to :term:`Elasticsearch` or OpenSearch: device data,
+PEAT can export everything it collects to :peat-icon:`elasticsearch` :term:`Elasticsearch` or
+:peat-icon:`opensearch` OpenSearch: device data,
 scan/pull/parse summaries, its own logs, and the configuration and state of each run. This
-is how PEAT data gets into dashboards (Kibana, OpenSearch Dashboards, Malcolm), is queried
+is how PEAT data gets into dashboards (:peat-icon:`kibana` Kibana, :peat-icon:`opensearch` OpenSearch Dashboards,
+:peat-icon:`malcolm` Malcolm), is queried
 across many runs, and is consumed by downstream analytics. The documents follow a defined
 schema based on the Elastic Common Schema (:term:`ECS`), described in
 :doc:`/reference/database_schema`.

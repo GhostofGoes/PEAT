@@ -23,6 +23,11 @@ PEAT-specific Sphinx directives.
 Columns are matched by a normalized header name (lowercase, letters only), so the
 CSV headers may contain reStructuredText roles such as ``:term:`TRL```.
 
+``:peat-icon:`name```
+    Inline a monochrome icon from ``docs/images/icons/`` next to a product name, for
+    example ``:peat-icon:`docker` Docker``. See the README in that directory for the
+    icon sources.
+
 The extension also resolves references to Python builtins in type annotations (such as
 ``type`` in ``type[DeviceModule]``) exactly, instead of letting Sphinx "fuzzy match" them
 to PEAT attributes that happen to have the same name (``Interface.type``, ``File.type``,
@@ -299,8 +304,27 @@ def label_sidebar_captions(
         )
 
 
+def peat_icon_role(_name, rawtext, text, lineno, inliner, _options=None, _content=None):
+    """
+    ``:peat-icon:`docker``` inlines an icon from ``docs/images/icons/`` (HTML output only).
+
+    The icon is decorative and follows the text color; put the product name next to it.
+    """
+    env = inliner.document.settings.env
+    icons_dir = Path(env.srcdir) / "images" / "icons"
+    path = icons_dir / f"{text.strip()}.svg"
+    if not path.is_file():
+        msg = inliner.reporter.error(f"peat-icon: no icon named {text.strip()!r}", line=lineno)
+        return [inliner.problematic(rawtext, rawtext, msg)], [msg]
+    env.note_dependency(str(path))
+    svg = path.read_text(encoding="utf-8").strip()
+    attrs = 'class="peat-inline-icon" aria-hidden="true" focusable="false"'
+    return [nodes.raw("", svg.replace("<svg ", f"<svg {attrs} ", 1), format="html")], []
+
+
 def setup(app: Sphinx) -> dict:
     app.add_directive("peat-device-table", DeviceTableDirective)
+    app.add_role("peat-icon", peat_icon_role)
     app.connect("doctree-read", resolve_builtins_exactly)
     app.connect("html-page-context", label_sidebar_captions, priority=600)
     return {

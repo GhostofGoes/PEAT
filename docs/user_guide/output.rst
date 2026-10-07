@@ -47,6 +47,14 @@ The location and names of these directories are configurable (``*_DIR`` options 
 :doc:`configure`), so your layout may differ if any were changed. ``...`` stands for
 miscellaneous files.
 
+.. only:: html
+
+   .. figure:: /images/terminal/run_directory.svg
+      :alt: Terminal showing the directory tree of a run directory after parsing one file: devices/127.0.0.1/ with the device-data JSON and JSONL files and the parsed file, logs/ with peat.log, json-log.jsonl, debug-info.txt and telnet.log, peat_metadata/ with the configuration and state, and summaries/parse-summary.json
+      :figclass: peat-terminal
+
+      A real run directory after ``peat parse`` of a single file. The general layout is below.
+
 .. code-block:: text
 
    ./peat_results/
@@ -70,8 +78,7 @@ miscellaneous files.
             enip/
          peat_metadata/
             peat_configuration.yaml      # The complete configuration used for the run
-            peat_state.json              # PEAT's internal state at the end of the run
-            peat_state.yaml
+            peat_state.yaml              # PEAT's internal state at the end of the run
          summaries/
             scan-summary.json
             pull-summary.json
@@ -104,6 +111,15 @@ Device data files
 ``device-data-full.json`` and ``device-data-summary.json`` contain the device's data in
 PEAT's :doc:`data model </developer/data_model>`, which is the same for every vendor.
 The top-level fields you will use most:
+
+.. only:: html
+
+   .. figure:: /images/terminal/device_summary.svg
+      :alt: Terminal showing the start of a device-data-summary.json file: created timestamp, description with brand, model, product and vendor (Sandia National Laboratories SCEPTRE), id and name rtu-1, ip 127.0.0.1, type RTU, os Canonical Ubuntu, and the beginning of the logic section
+      :figclass: peat-terminal
+
+      The start of a ``device-data-summary.json`` for a parsed SCEPTRE RTU. The same fields
+      are documented in the :doc:`data model </developer/data_model>`.
 
 .. list-table::
    :header-rows: 1

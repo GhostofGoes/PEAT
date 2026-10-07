@@ -2,7 +2,7 @@
 A PEAT lab with OpenPLC in a container
 **************************************
 *You want to see PEAT scan, pull from, and push to a real controller before pointing it at
-anything that matters, and you don't have a PLC on your desk.* OpenPLC Runtime v4 is an
+anything that matters, and you don't have a PLC on your desk.* :peat-icon:`openplc` OpenPLC Runtime v4 is an
 open-source soft PLC that runs in a container and exposes the REST API PEAT's
 :class:`~peat.modules.openplc.openplcv4.OpenPLCv4` module talks to. In about fifteen
 minutes you'll have a lab you can reset at will. This is also exactly how PEAT's own

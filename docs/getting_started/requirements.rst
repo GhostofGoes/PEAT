@@ -24,46 +24,46 @@ Supported platforms
      - Container
      - Python API / development
      - Notes
-   * - Ubuntu
+   * - :peat-icon:`ubuntu` Ubuntu
      - 14.04 and newer
      - Yes
      - 22.04 and newer (Python 3.11 to 3.13)
      - Primary development and testing platform. The executable is built with
        :term:`StaticX` so it runs on old releases.
-   * - Red Hat Enterprise Linux (:term:`RHEL`)
+   * - :peat-icon:`linux` Red Hat Enterprise Linux (:term:`RHEL`)
      - RHEL 6 and newer
      - Yes (``podman``)
      - RHEL 9 (Python 3.11 or 3.12)
      - Used in deployments. RHEL 6 and 7 are tested with the executable and with
        :term:`Podman` 1.0 and newer.
-   * - `Kali Linux <https://www.kali.org/>`__
+   * - :peat-icon:`linux` `Kali Linux <https://www.kali.org/>`__
      - 2018 and newer
      - Yes
      - Yes
      - Relevant for exercises and sensors in emulated environments.
-   * - Other Linux (Debian, Fedora, CentOS, ...)
+   * - :peat-icon:`linux` Other Linux (Debian, Fedora, CentOS, ...)
      - Expected to work
      - Yes
      - If Python 3.11 to 3.13 is available
      - Debian and RHEL-based distributions should work but are not regularly tested. Known
        to work on Debian 9.
-   * - Windows 10 (1809+) / Windows Server 2019+
+   * - :peat-icon:`windows` Windows 10 (1809+) / Windows Server 2019+
      - Yes
      - Docker Desktop (untested)
      - Yes
      - Fully supported and regularly tested (CI runs the unit tests on Windows Server 2022
        and the current GitHub-hosted Windows image).
-   * - Windows 11
+   * - :peat-icon:`windows` Windows 11
      - Yes
      - Docker Desktop (untested)
      - Yes
      - Supported. Builds and tests run on current Windows images in CI.
-   * - Windows 7, 8, and 8.1
+   * - :peat-icon:`windows` Windows 7, 8, and 8.1
      - No
      - No
      - No
      - PEAT's Python runtime (3.11+) requires Windows 10 or newer.
-   * - `Windows Subsystem for Linux (WSL) <https://learn.microsoft.com/en-us/windows/wsl/>`__
+   * - :peat-icon:`windows` `Windows Subsystem for Linux (WSL) <https://learn.microsoft.com/en-us/windows/wsl/>`__
      - Yes (Linux executable)
      - N/A
      - Yes
@@ -76,7 +76,7 @@ Supported platforms
      - Best effort
      - Supported on a best-effort basis to support developers who use Macs. There are
        known issues with some networking components and system dependencies.
-   * - :term:`Docker` 18.03+ / :term:`Podman` 1.0+ (Linux host)
+   * - :peat-icon:`docker` :term:`Docker` 18.03+ / :term:`Podman` 1.0+ (Linux host)
      - N/A
      - Yes
      - N/A

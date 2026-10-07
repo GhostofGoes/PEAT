@@ -1,7 +1,7 @@
 **********************
 Continuous integration
 **********************
-PEAT uses GitHub Actions for testing, building, publishing, and releasing, with an
+PEAT uses :peat-icon:`githubactions` GitHub Actions for testing, building, publishing, and releasing, with an
 additional internal GitLab CI pipeline at Sandia for tests against physical devices. The
 workflows live in ``.github/workflows/``.
 

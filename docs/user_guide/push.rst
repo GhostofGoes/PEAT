@@ -77,7 +77,8 @@ Device notes
   :doc:`/reference/devices/sel`.
 - **ControlLogix**: firmware ``.dmk`` images are pushed over CIP. The PLC must be in a mode
   that accepts a firmware update, and the update takes several minutes.
-- **SCEPTRE** virtual field devices accept both configuration and firmware pushes over FTP.
+- **SCEPTRE** virtual field devices: pull and parse only; the module does not implement
+  push, although it pulls configuration and firmware over FTP.
 - **OpenPLC Runtime v4**: pushes a program ``.zip`` and triggers a build; set
   ``clean_upload`` to force a clean rebuild. See :doc:`/reference/devices/openplc`.
 

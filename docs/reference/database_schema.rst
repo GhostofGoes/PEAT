@@ -184,7 +184,7 @@ Configuration and state (``peat-configs-*``, ``peat-state-*``)
 ==============================================================
 One document per run. ``peat-configs`` holds the configuration values PEAT used
 (the same content as ``peat_metadata/peat_configuration.yaml``), and ``peat-state`` the
-internal state at the end of the run (``peat_metadata/peat_state.json``). Their fields are
+internal state at the end of the run (``peat_metadata/peat_state.yaml``). Their fields are
 the :class:`~peat.settings.Configuration` and :class:`~peat.settings.State` attributes in
 lower case.
 

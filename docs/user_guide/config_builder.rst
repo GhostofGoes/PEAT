@@ -13,6 +13,14 @@ and produces a file you can use directly with ``-c`` or refine further in an edi
    # Or from the container (needs an interactive terminal: -it)
    docker run --rm -it -v "$(pwd):/work" -w /work ghcr.io/sandialabs/peat config-builder
 
+.. only:: html
+
+   .. figure:: /images/terminal/config_builder.svg
+      :alt: The config-builder text user interface in a terminal: two hosts added (relay-7 at 192.0.2.10 using the SEL3620 module and plc-3 at 192.0.2.20 using SELRTAC), each with Add Pull Method and Delete Host buttons; below them the Add Host button with IP, Name and Module fields, an output file name field, and a footer with the d, v and s key bindings
+      :figclass: peat-terminal
+
+      The builder with two hosts added. Keys: :kbd:`v` previews the YAML, :kbd:`s` saves it.
+
 Using the builder
 =================
 The interface is built with `Textual <https://textual.textualize.io/>`__ and works with

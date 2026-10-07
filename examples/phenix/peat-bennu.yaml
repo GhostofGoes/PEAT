@@ -1,0 +1,23 @@
+# PEAT configuration for the two bennu RTUs of the "peat-bennu" phenix experiment.
+# Injected into the PEAT workstation VM as /root/peat-bennu.yaml by the topology.
+metadata:
+  name: "peat-bennu"
+  description: "bennu virtual RTUs in the peat-bennu phenix experiment"
+
+device_options:
+  # The SCEPTRE module logs in over FTP as sceptre/sceptre (the module's defaults). A bennu
+  # field device's FTP directory holds a copy of its running binary named
+  # "bennu-field-deviced"; the module's default looks for "bennu-field-deviced.firmware",
+  # which only appears after a firmware update, so match on the shorter name.
+  sceptre:
+    bennu_filename: "bennu-field-deviced"
+
+hosts:
+  - label: "rtu-1"
+    identifiers:
+      ip: "10.117.4.101"
+    peat_module: "SCEPTRE"
+  - label: "rtu-2"
+    identifiers:
+      ip: "10.117.4.102"
+    peat_module: "SCEPTRE"

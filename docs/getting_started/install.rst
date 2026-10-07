@@ -21,7 +21,7 @@ Installation
 
 .. tab-set::
 
-   .. tab-item:: Linux
+   .. tab-item:: :peat-icon:`linux` Linux
       :sync: linux
 
       **Scripted installation (recommended)**
@@ -76,7 +76,7 @@ Installation
          ./peat --version
          man ./peat.1
 
-   .. tab-item:: Windows
+   .. tab-item:: :peat-icon:`windows` Windows
       :sync: windows
 
       The Windows executable needs no installation and can be run from wherever it is
@@ -109,7 +109,7 @@ Installation
       see :ref:`windows-usage` for details. Microsoft Defender SmartScreen may warn about
       an unrecognized app the first time the executable runs.
 
-   .. tab-item:: Container
+   .. tab-item:: :peat-icon:`docker` Container
       :sync: container
 
       The container image provides an isolated and reproducible way to run PEAT on any
@@ -149,7 +149,7 @@ Installation
          docker load -i peat_docker_image.tar
          docker run --rm -i ghcr.io/sandialabs/peat:latest --version
 
-   .. tab-item:: Python package
+   .. tab-item:: :peat-icon:`python` Python package
       :sync: python
 
       Install the Python package to use PEAT as a library (``import peat``) or to get the

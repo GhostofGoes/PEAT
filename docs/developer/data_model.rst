@@ -3,6 +3,25 @@ Data model
 **********
 Documentation on PEAT's internal model for structuring and managing data from devices (a.k.a "device data").
 
+.. raw:: html
+   :file: ../images/data_model.svg
+
+.. only:: not html
+
+   ``DeviceData`` holds one device: identifiers (``id``, ``name``, ``label``, ``type``,
+   ``serial_number``, ``part_number``, and ``description`` with vendor, model, product),
+   network fields (``ip``, ``mac``, ``mac_vendor``, ``hostname``, ``serial_port``), nested
+   objects (``firmware``, ``boot_firmware``, ``os``, ``hardware``, ``logic``, ``related``,
+   ``geo``, ``x509``, ``extra``), status (``run_mode``, ``status``, ``uptime``, ``start_time``,
+   ``successful_pulls``), and ``module``, a list of sub-component ``DeviceData``. Its list
+   attributes hold the sub-models: ``interface`` (``Interface``), ``service`` (``Service``),
+   ``files`` (``File``), ``registers`` (``Register``), ``tag`` (``Tag``), ``io`` (``IO``),
+   ``event`` (``Event``), ``memory`` (``Memory``), ``users`` (``User``), and ``ssh_keys``
+   (``SSHKey``). The whole device is written to ``device-data-full.json`` and
+   ``device-data-summary.json`` and to the ``ot-device-hosts-timeseries`` index; each list is
+   also written to ``device-data-<attribute>.jsonl``, and files, registers, tags, I/O, events,
+   and memory have their own ``ot-device-*`` indices.
+
 Working with data
 =================
 There are two ways to store and retrieve data:

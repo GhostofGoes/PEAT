@@ -76,7 +76,7 @@ Log files
      - ``peat_results/<run-dir>/peat_metadata/peat_configuration.yaml``
    * - State
      - PEAT's internal state as of the end of the run, in JSON and YAML.
-     - ``peat_results/<run-dir>/peat_metadata/peat_state.json``
+     - ``peat_results/<run-dir>/peat_metadata/peat_state.yaml``
 
 Much of this data is also stored in Elasticsearch when export is enabled (see
 :ref:`peat-index-reference`).

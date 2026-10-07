@@ -23,11 +23,23 @@ it to the PEAT module that parses it. The extracted files are saved to
 ``peat_results/<run-dir>/heat_artifacts/`` and the parsed results are written to the run
 directory (and to Elasticsearch, if enabled) like any other PEAT results.
 
-.. code-block:: text
+.. raw:: html
+   :file: ../images/heat_flow.svg
 
-   PCAP file ──► Zeek ─────────────────┐
-                                        ├──► HEAT extractor ──► reassembled file ──► PEAT module parser ──► device data
-   PCAP ──► ingest-tshark ──► Elastic ─┘                        (heat_artifacts/)                          (devices/, Elastic)
+.. only:: not html
+
+   PCAP files are read either by Zeek (the FTP extractor) or by ``ingest-tshark``, which
+   loads the dissected packets into Elasticsearch, where the Telnet and UMAS extractors
+   query them. The HEAT extractor for each protocol reassembles the transferred file and
+   saves it under ``heat_artifacts/`` (``--heat-file-only`` stops here), then hands it to
+   the PEAT module parser, exactly as ``peat parse`` would. The parsed device data is
+   written to ``devices/<ip>/`` in the run directory and, with ``-e``, to Elasticsearch.
+
+   .. code-block:: text
+
+      PCAP file ──► Zeek ─────────────────┐
+                                           ├──► HEAT extractor ──► reassembled file ──► PEAT module parser ──► device data
+      PCAP ──► ingest-tshark ──► Elastic ─┘                        (heat_artifacts/)                          (devices/, Elastic)
 
 The extractors differ in where they read the traffic from:
 
@@ -42,7 +54,7 @@ The extractors differ in where they read the traffic from:
    * - ``FTPExtractor``
      - :term:`FTP` file transfers
      - SEL relays (settings files), other FTP-capable devices
-     - PCAP files, processed with `Zeek <https://zeek.org/>`__
+     - PCAP files, processed with :peat-icon:`zeek` `Zeek <https://zeek.org/>`__
    * - ``TelnetExtractor``
      - Telnet sessions (SEL ASCII commands and ``file show`` output)
      - SEL relays

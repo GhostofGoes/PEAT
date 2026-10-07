@@ -2,8 +2,8 @@
 Siemens
 *******
 
-Siemens Siprotec 7SJ6x relays
------------------------------
+:peat-icon:`siemens` Siemens Siprotec 7SJ6x relays
+------------------------------------------------------------
 .. warning::
    The PEAT Siprotec module has been tested with 7SJ61 and 7SJ64 relays. It should also work against others in the 7SJ6x family, however this has not been tested and shouldn't be relied upon.
 

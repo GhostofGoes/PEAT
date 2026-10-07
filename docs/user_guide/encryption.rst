@@ -10,6 +10,20 @@ a password so they can be stored and transported more safely.
    PEAT does **not** store or recover passwords. If the password for an encrypted
    configuration or archive is lost, the contents cannot be recovered.
 
+.. raw:: html
+   :file: ../images/encryption_flow.svg
+
+.. only:: not html
+
+   Configuration: ``site.yaml``, which may hold device credentials, is encrypted with
+   ``peat encrypt-config -f site.yaml`` into ``encrypted_site.yaml``, which is used directly
+   with ``-c``; PEAT asks for the password at start-up (or takes it with ``-p``) and
+   decrypts the credentials in memory only. ``peat decrypt-config`` restores the plain text.
+   Results: ``peat encrypt-results -f peat_results/site-a`` packs the run directory into the
+   AES-encrypted archive ``encrypted_site-a.zip``, which travels on removable media or by
+   email; ``peat decrypt-results -f encrypted_site-a.zip`` restores it on the analyst's
+   machine. The passphrases travel separately from the media.
+
 Encrypting a configuration file
 ===============================
 ``peat encrypt-config`` encrypts a YAML configuration file. The encrypted

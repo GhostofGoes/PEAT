@@ -16,31 +16,35 @@ the one closest to your situation.
    * - :doc:`openplc_lab`
      - Anyone who wants hands-on experience with scan, pull, and push against a real
        (software) PLC, with nothing but Docker.
-     - Docker
+     - :peat-icon:`docker` Docker
    * - :doc:`substation_inventory`
      - A protection engineer or OT security analyst who needs an inventory and settings
        backup of the relays and RTAC at a substation, repeatable every month.
-     - Network access to devices
+     - :octicon:`broadcast` Network access to devices
    * - :doc:`windows_field_laptop`
      - An assessor arriving on site with a Windows laptop and a few hours to document
        what's on the control network.
-     - Windows laptop
+     - :peat-icon:`windows` Windows laptop
    * - :doc:`engineering_workstation`
      - An incident responder with a disk image of an engineering workstation, who needs
        to know what logic it held and whether it matches the PLCs.
-     - Linux, root, the image
+     - :peat-icon:`linux` Linux, root, the image
    * - :doc:`elasticsearch_dashboard`
      - An analyst who wants PEAT data in Kibana (or Malcolm) for dashboards and queries
        across devices and over time.
-     - Docker
+     - :peat-icon:`docker` Docker
    * - :doc:`heat_pcap`
      - A network defender with packet captures from an OT network, who wants the device
        files that crossed the wire.
-     - Docker, a PCAP
+     - :peat-icon:`docker` Docker, a PCAP
    * - :doc:`isolated_network`
      - An operator who must collect on an air-gapped network and hand results to an
        analyst elsewhere, securely.
-     - Removable media
+     - :octicon:`lock` Removable media
+   * - :doc:`sceptre_phenix`
+     - A range builder or tool tester who wants virtual RTUs speaking real protocols, and
+       PEAT running inside that environment, without any hardware.
+     - :peat-icon:`sceptre` Linux host with KVM and Docker
 
 .. toctree::
    :maxdepth: 1
@@ -53,6 +57,7 @@ the one closest to your situation.
    elasticsearch_dashboard
    heat_pcap
    isolated_network
+   sceptre_phenix
 
 Conventions
 ===========

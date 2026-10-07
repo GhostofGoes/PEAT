@@ -188,3 +188,46 @@ summary:focus-visible,
   max-width: 3.4em;
   vertical-align: -0.12em;
 }
+
+/* --- Terminal captures ------------------------------------------------------ */
+/* SVG renderings of real terminal sessions (docs/images/terminal/, see its README).
+   They have their own dark background, like a screenshot, in both themes. */
+.peat-terminal {
+  margin: 1.5rem 0;
+}
+
+.peat-terminal img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 60em;
+  margin: 0 auto;
+  border-radius: 8px;
+}
+
+.peat-terminal figcaption,
+.peat-logo figcaption {
+  font-size: var(--font-size--small);
+  color: var(--color-foreground-secondary);
+  text-align: center;
+  margin-top: 0.5rem;
+}
+
+/* --- Third-party logos ------------------------------------------------------ */
+.peat-logo {
+  margin: 1.5rem 0;
+}
+
+.peat-logo img {
+  display: block;
+  height: auto;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+/* Octicons in landing cards and tables sit on the text baseline */
+.sd-card-title .sd-octicon,
+table .sd-octicon {
+  vertical-align: -0.15em;
+  margin-right: 0.25em;
+}

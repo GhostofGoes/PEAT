@@ -9,7 +9,7 @@ answer is in the PCAPs, if you can reassemble it.*
 :term:`HEAT` (High-fidelity Extraction of Artifacts from Traffic) does the reassembly and
 then parses the recovered files with PEAT's modules, so you get the settings file *and*
 the parsed settings, the same as if you had pulled them from the relay at the time. This
-tutorial uses the FTP extractor, which works on PCAP files directly with Zeek.
+tutorial uses the FTP extractor, which works on PCAP files directly with :peat-icon:`zeek` Zeek.
 
 What you need
 =============

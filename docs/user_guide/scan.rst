@@ -18,6 +18,14 @@ index (``-e``).
    A pull always performs a scan first and only pulls from the devices it identifies, so
    there is no need to scan and then pull as separate steps.
 
+.. only:: html
+
+   .. figure:: /images/terminal/scan_examples.svg
+      :alt: Terminal showing the first part of the peat scan --examples cheat sheet: scanning a single host, a subnet, with broadcasts, with specific modules, and ranges of addresses
+      :figclass: peat-terminal
+
+      ``peat scan --examples`` is a cheat sheet of real-world invocations; the :ref:`complete list <scan-examples>` is at the end of this page.
+
 How a scan works
 ================
 For each target host PEAT:
@@ -33,7 +41,21 @@ For each target host PEAT:
    reliability, and stops at the first success. A host identified this way is *verified*,
    and its data (vendor, model, firmware, services) comes from that method.
 
-The :doc:`design documentation </design/scanning>` describes each step in detail.
+.. raw:: html
+   :file: ../images/scan_pipeline.svg
+
+.. only:: not html
+
+   Hosts that don't answer the online check are *offline* and not probed further (they
+   appear only in the summary's ``scan_targets``); hosts with no open ports or no
+   successful method are listed in ``hosts_online``; identified hosts are in
+   ``hosts_verified`` with the vendor, model, firmware, services, and MAC address from
+   the method that succeeded.
+
+``-Y`` (``--assume-online``) skips the online check, ``--sweep`` stops after it, and
+``--intensive-scan`` runs every identification method regardless of open ports and
+earlier successes. The :doc:`design documentation </design/scanning>` describes each
+step in detail.
 
 Unicast IP scanning
 ===================
@@ -203,6 +225,8 @@ Scanning considerations
   Coordinate with the network's defenders first.
 - **Dry run**: ``--dry-run`` validates the targets, modules, and configuration without
   sending any packets.
+
+.. _scan-examples:
 
 Examples
 ========

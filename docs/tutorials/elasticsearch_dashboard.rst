@@ -6,8 +6,8 @@ asks "which devices are still on the firmware with the known vulnerability, and 
 each one last change?" You could script it. Or you could put everything in Elasticsearch
 once and answer questions like that in Kibana for as long as you keep collecting.*
 
-PEAT writes to Elasticsearch (or OpenSearch) natively with ``-e``, following a documented
-schema, so the setup is: run a server, add ``-e`` to your commands, and point Kibana at
+PEAT writes to :peat-icon:`elasticsearch` Elasticsearch (or :peat-icon:`opensearch` OpenSearch) natively with ``-e``, following a documented
+schema, so the setup is: run a server, add ``-e`` to your commands, and point :peat-icon:`kibana` Kibana at
 the indices. This tutorial does all three locally with Docker, then loads a year of
 existing results.
 
