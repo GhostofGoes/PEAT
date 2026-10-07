@@ -6,9 +6,9 @@ metadata:
 
 device_options:
   # The SCEPTRE module logs in over FTP as sceptre/sceptre (the module's defaults). A bennu
-  # field device's FTP directory holds a copy of its running binary named
-  # "bennu-field-deviced"; the module's default looks for "bennu-field-deviced.firmware",
-  # which only appears after a firmware update, so match on the shorter name.
+  # field device's FTP directory holds a copy of its binary named "bennu-field-deviced";
+  # the module's default looks for "bennu-field-deviced.firmware", the name the device's
+  # watcher expects for uploaded firmware, so match on the shorter name.
   sceptre:
     bennu_filename: "bennu-field-deviced"
 

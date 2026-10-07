@@ -453,8 +453,10 @@ device_options:
     # (refer to SCEPTRE module docstring for details)
     ftp_testing: false
 
-    # Name of bennu firmware file.
-    # This will be auto-determined if a scan is performed.
+    # Name (or any part of the name) of the bennu firmware file in the device's FTP
+    # directory. The pull downloads the first file whose name contains this string.
+    # On a bennu field device started by the phenix "sceptre" app the file is named
+    # "bennu-field-deviced" until a firmware update has been uploaded.
     bennu_filename: "bennu-field-deviced.firmware"
 
   # Configuration specific to the SEL modules (SELRelay and SELRTAC)

@@ -84,8 +84,8 @@ spec:
             type: ethernet
 
     # The PEAT workstation: the bennu image used as a plain Ubuntu 22.04 VM (no sceptre app
-    # metadata, so nothing bennu-related runs on it). The PEAT executable and its
-    # configuration are injected into the disk image when the experiment starts.
+    # metadata, so no field device runs on it). The PEAT executable and its configuration
+    # are injected into the disk image when the experiment starts.
     - type: VirtualMachine
       general:
         hostname: peat
