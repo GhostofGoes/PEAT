@@ -47,13 +47,18 @@ What you need
 
 What you will build
 ===================
-Four virtual machines on one phenix host: two bennu field devices (``rtu-1`` at
-10.117.4.101 and ``rtu-2`` at 10.117.4.102, each a DNP3 outstation on TCP port 20000
-with an FTP server on port 21) and the PEAT workstation (10.117.4.50) on the ``EXP``
-control network, and the PyPower simulation provider (172.16.1.2) on the ``MGMT``
-network, which the RTUs also join (172.16.1.4 and 172.16.1.5) to receive process values
-over UDP multicast. The operator reaches the VMs through the phenix web interface on
-port 3000 and its VNC consoles.
+.. raw:: html
+   :file: ../images/phenix_lab_topology.svg
+
+.. only:: not html
+
+   Four virtual machines on one phenix host: two bennu field devices (``rtu-1`` at
+   10.117.4.101 and ``rtu-2`` at 10.117.4.102, each a DNP3 outstation on TCP port 20000
+   with an FTP server on port 21) and the PEAT workstation (10.117.4.50) on the ``EXP``
+   control network, and the PyPower simulation provider (172.16.1.2) on the ``MGMT``
+   network, which the RTUs also join (172.16.1.4 and 172.16.1.5) to receive process values
+   over UDP multicast. The operator reaches the VMs through the phenix web interface on
+   port 3000 and its VNC consoles.
 
 All four VMs use the same ``bennu.qc2`` image, Ubuntu 22.04 with bennu installed. Which
 ones behave as field devices is decided by the *scenario*, which attaches phenix's

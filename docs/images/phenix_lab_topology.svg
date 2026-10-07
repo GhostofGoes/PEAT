@@ -1,0 +1,107 @@
+<figure class="peat-diagram" id="peat-phenix-lab">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" role="img" aria-labelledby="pl-title pl-desc">
+  <title id="pl-title">The phenix lab topology</title>
+  <desc id="pl-desc">Network topology of the small SCEPTRE experiment built in this tutorial. An operator laptop, outside the experiment, reaches the phenix host (an Ubuntu machine running phenix and minimega in Docker) through the phenix web UI on port 3000 and the VNC consoles of the virtual machines. Inside the host are two networks drawn as horizontal bars: EXP, 10.117.4.0/24, the control network, and MGMT, 172.16.0.0/16, the provider bus. Four virtual machines hang off the bars. rtu-1 and rtu-2 are bennu field devices built from the bennu.qc2 image; each runs a DNP3 outstation on tcp/20000 and an FTP server on tcp/21 with the credentials sceptre/sceptre, and each is on both networks: rtu-1 at 10.117.4.101 and 172.16.1.4, rtu-2 at 10.117.4.102 and 172.16.1.5. peat is a bennu.qc2 image used as a plain Ubuntu VM with the PEAT executable injected at /usr/local/bin/peat; it is on the control network only, at 10.117.4.50, and is the machine the reader works from. provider is a bennu.qc2 VM running the PyPower power-flow simulation (pybennu-power-solver); it is on the management network only, at 172.16.1.2. Arrows show the traffic: peat scan and peat pull (FTP) go from peat to both RTUs over the control network, and process values go from the provider to both RTUs over the management network as UDP multicast to 239.0.0.1 port 40000. A note at the bottom reads: topology peat-bennu, scenario peat-bennu (sceptre app), see examples/phenix/.</desc>
+  <defs>
+    <marker id="pl-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-foreground-secondary)"/>
+    </marker>
+    <marker id="pl-arrow-brand" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-brand-primary)"/>
+    </marker>
+  </defs>
+  <style>
+    .pl-text { font-size: 13px; fill: var(--color-foreground-primary); }
+    .pl-title { font-size: 13px; font-weight: 600; fill: var(--color-foreground-primary); }
+    .pl-small { font-size: 12px; fill: var(--color-foreground-secondary); }
+    .pl-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; fill: var(--color-foreground-secondary); }
+    .pl-host { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.2; stroke-dasharray: 6 4; }
+    .pl-box { fill: var(--color-background-primary); stroke: var(--color-foreground-border); stroke-width: 1.1; }
+    .pl-device { fill: var(--color-background-secondary); stroke: var(--color-foreground-border); stroke-width: 1.1; }
+    .pl-good { fill: var(--color-background-primary); stroke: var(--color-brand-primary); stroke-width: 2; }
+    .pl-bus { fill: var(--color-foreground-secondary); stroke: none; }
+    .pl-bus-label { font-size: 12px; font-weight: 600; fill: var(--color-background-primary); }
+    .pl-link { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; }
+    .pl-arrow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; marker-end: url(#pl-arrow); }
+    .pl-flow { fill: none; stroke: var(--color-foreground-secondary); stroke-width: 1.6; stroke-dasharray: 5 4; marker-end: url(#pl-arrow); }
+    .pl-flow-peat { fill: none; stroke: var(--color-brand-primary); stroke-width: 1.8; stroke-dasharray: 5 4; marker-end: url(#pl-arrow-brand); }
+    .pl-flow-label { font-size: 12px; font-weight: 600; fill: var(--color-brand-primary); }
+  </style>
+
+  <!-- Operator, outside the experiment -->
+  <rect x="20" y="12" width="190" height="44" rx="6" class="pl-device"/>
+  <text x="32" y="30" class="pl-title">Operator laptop</text>
+  <text x="32" y="47" class="pl-small">web UI :3000  &#183;  VNC console</text>
+  <path d="M 112 56 L 112 70" class="pl-arrow"/>
+
+  <!-- phenix host -->
+  <rect x="20" y="72" width="960" height="396" rx="10" class="pl-host"/>
+  <text x="36" y="92" class="pl-label">PHENIX HOST</text>
+  <text x="136" y="92" class="pl-small">Ubuntu + Docker: phenix, minimega</text>
+
+  <!-- EXP network bar -->
+  <rect x="44" y="172" width="912" height="24" rx="12" class="pl-bus"/>
+  <text x="60" y="188.8" class="pl-bus-label">EXP<tspan dx="10">10.117.4.0/24</tspan><tspan dx="10">(control network)</tspan></text>
+
+  <!-- MGMT network bar -->
+  <rect x="44" y="328" width="912" height="24" rx="12" class="pl-bus"/>
+  <text x="60" y="344.8" class="pl-bus-label">MGMT<tspan dx="10">172.16.0.0/16</tspan><tspan dx="10">(provider bus)</tspan></text>
+
+  <!-- peat workstation (EXP only) -->
+  <path d="M 852 146 L 852 172" class="pl-link"/>
+  <text x="860" y="163" class="pl-small">10.117.4.50</text>
+  <rect x="740" y="84" width="224" height="62" rx="6" class="pl-good"/>
+  <text x="752" y="103" class="pl-title">peat</text>
+  <text x="952" y="103" text-anchor="end" class="pl-small">bennu.qc2 as Ubuntu VM</text>
+  <text x="752" y="119" class="pl-small">PEAT executable injected at</text>
+  <text x="752" y="135" class="pl-small">/usr/local/bin/peat</text>
+
+  <!-- rtu-1 (EXP + MGMT) -->
+  <path d="M 385 196 L 385 222" class="pl-link"/>
+  <text x="377" y="213" text-anchor="end" class="pl-small">10.117.4.101</text>
+  <path d="M 385 302 L 385 328" class="pl-link"/>
+  <text x="377" y="320" text-anchor="end" class="pl-small">172.16.1.4</text>
+  <rect x="280" y="222" width="210" height="80" rx="6" class="pl-box"/>
+  <text x="292" y="241" class="pl-title">rtu-1</text>
+  <text x="478" y="241" text-anchor="end" class="pl-small">bennu.qc2</text>
+  <text x="292" y="257" class="pl-small">bennu field device</text>
+  <text x="292" y="273" class="pl-small">DNP3 outstation tcp/20000</text>
+  <text x="292" y="289" class="pl-small">FTP tcp/21 (sceptre/sceptre)</text>
+
+  <!-- rtu-2 (EXP + MGMT) -->
+  <path d="M 615 196 L 615 222" class="pl-link"/>
+  <text x="607" y="213" text-anchor="end" class="pl-small">10.117.4.102</text>
+  <path d="M 615 302 L 615 328" class="pl-link"/>
+  <text x="607" y="320" text-anchor="end" class="pl-small">172.16.1.5</text>
+  <rect x="510" y="222" width="210" height="80" rx="6" class="pl-box"/>
+  <text x="522" y="241" class="pl-title">rtu-2</text>
+  <text x="708" y="241" text-anchor="end" class="pl-small">bennu.qc2</text>
+  <text x="522" y="257" class="pl-small">bennu field device</text>
+  <text x="522" y="273" class="pl-small">DNP3 outstation tcp/20000</text>
+  <text x="522" y="289" class="pl-small">FTP tcp/21 (sceptre/sceptre)</text>
+
+  <!-- provider (MGMT only) -->
+  <path d="M 852 352 L 852 378" class="pl-link"/>
+  <text x="860" y="369" class="pl-small">172.16.1.2</text>
+  <rect x="740" y="378" width="224" height="62" rx="6" class="pl-box"/>
+  <text x="752" y="397" class="pl-title">provider</text>
+  <text x="952" y="397" text-anchor="end" class="pl-small">bennu.qc2</text>
+  <text x="752" y="413" class="pl-small">PyPower power-flow simulation</text>
+  <text x="752" y="429" class="pl-small">(pybennu-power-solver)</text>
+
+  <!-- Traffic: peat -> RTUs over EXP -->
+  <text x="726" y="90" text-anchor="end" class="pl-flow-label">peat scan / peat pull (FTP)</text>
+  <path d="M 740 118 L 684 220" class="pl-flow-peat"/>
+  <path d="M 740 98 L 452 220" class="pl-flow-peat"/>
+
+  <!-- Traffic: provider -> RTUs over MGMT -->
+  <path d="M 740 396 L 684 304" class="pl-flow"/>
+  <path d="M 740 410 L 452 304" class="pl-flow"/>
+  <text x="726" y="426" text-anchor="end" class="pl-small">process values,</text>
+  <text x="726" y="442" text-anchor="end" class="pl-small">UDP multicast 239.0.0.1:40000</text>
+
+  <!-- Note -->
+  <text x="36" y="456" class="pl-small">Topology peat-bennu, scenario peat-bennu (sceptre app) &#8212; see examples/phenix/</text>
+</svg>
+<figcaption class="peat-dg-caption">The experiment this tutorial builds: two bennu RTUs and a PEAT workstation on the control network, with the simulation provider on the management network.</figcaption>
+</figure>
