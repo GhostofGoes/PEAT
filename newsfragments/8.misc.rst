@@ -1,0 +1,1 @@
+Upgraded the test suite to pytest 9 and moved the pytest configuration in ``pyproject.toml`` to the native ``[tool.pytest]`` table.
