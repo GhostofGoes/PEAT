@@ -49,7 +49,7 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
         log.error(f"Failed to initialize peat: {ex}")
         sys.exit(1)
 
-    log.trace4(f"** Raw CLI arguments **\n{pformat(args, indent=4)}\n")
+    log.trace4(f"** Raw CLI arguments **\n{pformat(consts.redact_credentials(args), indent=4)}\n")
 
     # Print imported modules and aliases, then exit
     if args.get("list_modules"):

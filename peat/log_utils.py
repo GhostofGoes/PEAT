@@ -144,8 +144,11 @@ def generate_log_dict(record: loguru.Record) -> dict[str, dict | str | None]:
     # Don't store CLI args if being used in third-party code
     # to avoid leaking sensitive arguments e.g. credentials
     if state.entrypoint == "CLI":
-        content["process"]["args"] = list(sys.argv)
-        content["process"]["command_line"] = " ".join(sys.argv)
+        # Credentials passed as arguments (e.g. "--password", or a
+        # "user:pass@" URL for Elasticsearch) are redacted.
+        args = consts.redact_argv(sys.argv)
+        content["process"]["args"] = args
+        content["process"]["command_line"] = " ".join(args)
 
     # Record data from exceptions in error.{type,message,stack_trace} fields
     if record["exception"]:
@@ -381,11 +384,11 @@ def setup_logging(
             info += f"\n\n*** scapy.conf str() ***\n\n{str(scapy_conf)}\n"
             info += f"\n\n*** scapy.conf formatted ***\n\n{pformat(scapy_conf.__dict__)}\n"
 
-        # Raw config dump only when debugging internals
+        # Raw config dump only when debugging internals.
+        # Credentials (e.g. from "device_options" and "hosts") are redacted.
         if config.DEBUG >= 3:
-            info += (
-                f"\n\n** raw config dump ***\n\n{json.dumps(consts.convert(config), indent=2)}\n"
-            )
+            raw_config = consts.convert(consts.redact_credentials(config))
+            info += f"\n\n** raw config dump ***\n\n{json.dumps(raw_config, indent=2)}\n"
 
         df.write_text(info, encoding="utf-8")
         state.written_files.add(df.as_posix())

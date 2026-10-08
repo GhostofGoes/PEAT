@@ -106,10 +106,7 @@ class TotusHTTP(HTTP):
             self.log.debug("Skipping login since we're already logged in")
             return True
 
-        if config.DEBUG:
-            self.log.trace(f"Logging in with username '{username}' and password '{password}'")
-        else:
-            self.log.debug(f"Logging in with username '{username}'")
+        self.log.debug(f"Logging in with username '{username}'")
 
         # Get login XSRF (Cross-site request forgery) token
         # The token is required for all future requests to DGA
