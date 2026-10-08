@@ -1,0 +1,1 @@
+Enabled the flake8-bandit (``S``) Ruff lint rules and documented each finding with a justified ``noqa``.
