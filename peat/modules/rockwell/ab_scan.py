@@ -88,13 +88,23 @@ def fingerprint_device(sock: socket.socket) -> DevDescType | None:
     log = peat_logger.bind(target=f"{ip}:{port}")
     log.info(f"Received a response from device {ip}:{port}")
 
-    # Reconstruct the packet based on raw data from PLC
-    resp_packet = ENIP(data)
+    # Reconstruct the packet based on raw data from PLC.
+    # The data is untrusted, so handle truncated or malformed packets.
+    try:
+        resp_packet = ENIP(data)
+        command_code = resp_packet.commandCode
+        if command_code == 99:
+            identity = ENIPListIdentityResponse(bytes(resp_packet.data))
+    except Exception as err:
+        log.warning(f"Malformed EtherNet/IP response from {ip}:{port}: {err}")
+        return None
 
     # "ListIdentity"
-    if resp_packet.commandCode == 99:
-        identity = ENIPListIdentityResponse(resp_packet.data)
+    if command_code == 99:
         dev_desc = extract_info_response(identity)
+        if not dev_desc:
+            log.warning(f"ListIdentity response from {ip}:{port} has no product name")
+            return None
         dev_desc["ip"] = ip
         dev_desc["port"] = port
         log.info(f"Found {dev_desc['vendor']} {dev_desc['product_name']} at {ip}:{port}")
@@ -133,7 +143,7 @@ def fingerprint_device(sock: socket.socket) -> DevDescType | None:
 
         return dev_desc
     else:
-        log.warning(f"Invalid command code '{resp_packet.commandCode}' received from {ip}:{port}")
+        log.warning(f"Invalid command code '{command_code}' received from {ip}:{port}")
         return None
 
 
@@ -229,7 +239,8 @@ def extract_info_response(
         return {}
 
     # Remove null characters and strip whitespace from product name
-    p_name = " ".join(info.productName.decode().split())
+    # Device-supplied, so it may not be valid UTF-8
+    p_name = " ".join(info.productName.decode(errors="replace").split())
     p_name = p_name.replace("\u0000", "").strip()
 
     extracted = {
