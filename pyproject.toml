@@ -291,6 +291,10 @@ test = [
     # Mocking of HTTP responses for the "requests" module
     "requests-mock",
 
+    # Property-based testing, used for fuzzing parsers (tests/test_fuzz.py)
+    # Docs: https://hypothesis.readthedocs.io/
+    "hypothesis",
+
     # Colors for doctest output
     "Pygments>=2.13.0",
 
