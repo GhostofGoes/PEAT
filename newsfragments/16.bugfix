@@ -1,0 +1,1 @@
+The Rockwell CIP ListIdentity scan no longer fails on malformed responses from devices. Truncated packets, a missing product name, or a product name that isn't valid UTF-8 are now logged and skipped (found by the new fuzz tests).

@@ -1,0 +1,3 @@
+Release files are now signed with Sigstore build provenance attestations, and each release includes a ``SHA256SUMS.txt`` checksum file. Verify a downloaded file with ``gh attestation verify <file> --repo sandialabs/PEAT`` (refer to the new Security page in the documentation). The Linux install script (``scripts/install_peat.sh``) now honors the ``PREFIX`` and ``DESTDIR`` environment variables, and only asks for ``sudo`` when the install location isn't writable.
+
+Added fuzz tests (``tests/test_fuzz.py``, using Hypothesis) for the command and file parsers and the CIP ListIdentity response handling, a weekly ``pip-audit`` scan of the dependencies pinned in ``pdm.lock`` (``.github/workflows/dependency-audit.yml``), and Dependabot updates for GitHub Actions.
