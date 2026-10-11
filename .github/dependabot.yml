@@ -1,0 +1,19 @@
+# Keeps the GitHub Actions used by the workflows up to date.
+# Python dependencies are pinned in pdm.lock, which Dependabot can't update,
+# so they're checked for vulnerabilities by .github/workflows/dependency-audit.yml.
+# Docs: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # Wait a week after a release before proposing it, in case it's withdrawn
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
