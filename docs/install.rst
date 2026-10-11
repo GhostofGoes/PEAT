@@ -31,6 +31,16 @@ Scripted installation
    peat --version
    man peat
 
+The script installs to ``/usr/local`` by default. It honors the standard ``PREFIX`` and ``DESTDIR`` environment variables, so it can install without root to a user-writable location, or stage files for packaging:
+
+.. code-block:: bash
+
+   # Install for the current user only (no sudo needed)
+   PREFIX="$HOME/.local" ./install_peat.sh
+
+   # Stage the files under ./pkgroot/usr/local for packaging
+   DESTDIR="$PWD/pkgroot" ./install_peat.sh
+
 Manual Installation
 +++++++++++++++++++
 These steps are intended for use in environments where there is no Internet access (or access is restricted). The manual page is optional, but recommended.
@@ -151,6 +161,51 @@ The container image can be used on isolated or Internet-restricted networks by d
       docker run -i ghcr.io/sandialabs/peat:latest --version
 
 
+Python package
+^^^^^^^^^^^^^^
+PEAT can also be installed as a Python package with ``pip`` (or ``pipx``), using the wheel (``.whl``) attached to each `release <https://github.com/sandialabs/PEAT/releases>`__. This requires a supported version of Python (refer to :doc:`system_requirements`). ``pip`` honors the usual installation options, such as ``--user``, ``--prefix``, and ``--root``.
+
+.. code-block:: bash
+
+   pip install ./peat-<version>-py3-none-any.whl
+   peat --version
+
+.. _uninstall:
+
+Uninstall
+---------
+
+Linux
+^^^^^
+Remove the files the install script (or the manual installation steps) created. If you set ``PREFIX`` when installing, use that instead of ``/usr/local``.
+
+.. code-block:: bash
+
+   sudo rm -f /usr/local/bin/peat /usr/local/share/man/man1/peat.1
+   sudo mandb
+
+Windows
+^^^^^^^
+Delete ``peat.exe`` from ``%LOCALAPPDATA%\Programs`` (where the install script puts it), and remove that directory from your user ``PATH`` if nothing else uses it.
+
+.. code-block:: powershell
+
+   Remove-Item "$env:LOCALAPPDATA\Programs\peat.exe"
+
+Container
+^^^^^^^^^
+
+.. code-block:: bash
+
+   docker image rm ghcr.io/sandialabs/peat:latest
+
+Python package
+^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   pip uninstall peat
+
 PEAT Releases
 -------------
 PEAT releases are managed via `GitHub Releases <https://github.com/sandialabs/PEAT/releases>`__, and usually consist of the following:
@@ -161,3 +216,6 @@ PEAT releases are managed via `GitHub Releases <https://github.com/sandialabs/PE
 - The :term:`Container` image via GitHub Container Registry (``ghcr.io``)
 - The documentation in HTML format (``peat_docs.zip``)
 - Sneakypeat executables (``sneakypeat`` and ``sneakypeat.exe``)
+- ``SHA256SUMS.txt``, with checksums of the release files
+
+Release files are signed. Refer to :ref:`verifying-releases` for how to verify them.

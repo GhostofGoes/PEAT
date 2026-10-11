@@ -1,0 +1,56 @@
+name: Dependency Audit
+
+# Checks every package version pinned in pdm.lock against the Python Packaging
+# Advisory Database (via pip-audit). Runs weekly and whenever pdm.lock changes
+# on main, so newly disclosed vulnerabilities in dependencies are noticed even
+# when nothing in PEAT changed. A failed run means a dependency needs updating.
+#
+# This complements dependency-review.yml, which checks dependency changes in PRs.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  push:
+    branches:
+      - main
+    paths:
+      - pdm.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: Install pip-audit
+        run: python3 -m pip install --user "pip-audit==2.10.1"
+      - name: List locked package versions
+        shell: python3 {0}
+        run: |
+          import tomllib
+
+          with open("pdm.lock", "rb") as f:
+              lock = tomllib.load(f)
+          with open("locked-requirements.txt", "w") as f:
+              for pkg in sorted(lock["package"], key=lambda p: p["name"]):
+                  f.write(f"{pkg['name']}=={pkg['version']}\n")
+      - name: Audit locked dependencies
+        run: |
+          set -o pipefail
+          python3 -m pip_audit --no-deps --disable-pip --desc on \
+            --requirement locked-requirements.txt --format markdown \
+            | tee -a "$GITHUB_STEP_SUMMARY"

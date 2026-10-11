@@ -256,6 +256,7 @@ jobs:
       id-token: write
       contents: write
       discussions: write
+      attestations: write
     env:
       TAG_NAME: ${{ inputs.tag_name }}
       TARGET_BRANCH: ${{ inputs.target_branch }}
@@ -278,6 +279,9 @@ jobs:
             esm.ubuntu.com:443
             motd.ubuntu.com:443
             packages.microsoft.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with: 
@@ -341,6 +345,38 @@ jobs:
           test -f "peat_docs.zip"
           test -f "linux_exe/peat"
           test -f "windows_exe/peat.exe"
+      - name: Generate checksums
+        run: |
+          sha256sum \
+            linux_exe/peat \
+            windows_exe/peat.exe \
+            "peat_linux_${TAG_NAME}.tgz" \
+            "peat_windows_${TAG_NAME}.zip" \
+            peat_docs.zip \
+            manpage/peat.1 \
+            python_package/*.whl \
+            python_package/*.tar.gz \
+            linux_exe/sneakypeat \
+            windows_exe/sneakypeat.exe \
+            | sed 's|  .*/|  |' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      # Signs the release files with Sigstore, using this workflow's GitHub identity.
+      # Users verify with: gh attestation verify <file> --repo sandialabs/PEAT
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            linux_exe/peat
+            windows_exe/peat.exe
+            peat_linux_${{ env.TAG_NAME }}.tgz
+            peat_windows_${{ env.TAG_NAME }}.zip
+            peat_docs.zip
+            manpage/peat.1
+            python_package/*.whl
+            python_package/*.tar.gz
+            linux_exe/sneakypeat
+            windows_exe/sneakypeat.exe
+            SHA256SUMS.txt
       # NOTE: This will trigger the Docker workflow
       - name: Create GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b
@@ -362,6 +398,7 @@ jobs:
             python_package/*.tar.gz
             linux_exe/sneakypeat
             windows_exe/sneakypeat.exe
+            SHA256SUMS.txt
           draft: true
           name: "${{ env.TAG_NAME }}"
           tag_name: ${{ env.TAG_NAME }}

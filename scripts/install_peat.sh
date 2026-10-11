@@ -1,9 +1,17 @@
 #!/bin/sh
 
 # PEAT easy installer (POSIX sh)
-# Installs latest release PEAT binary /usr/local/bin/peat,
-# man page to /usr/local/share/man/man1, and updates the
+# Installs latest release PEAT binary to $PREFIX/bin/peat,
+# man page to $PREFIX/share/man/man1, and updates the
 # manual database (if 'mandb' command is present).
+#
+# Environment variables:
+#   PREFIX   Installation prefix (default: /usr/local)
+#   DESTDIR  Staging directory prepended to all install paths (default: empty)
+#
+# Examples:
+#   sudo ./install_peat.sh
+#   PREFIX="$HOME/.local" ./install_peat.sh
 
 set -eu
 
@@ -13,10 +21,13 @@ API_URL="https://github.com/$REPO/releases/latest/download"
 BIN_URL="$API_URL/peat"
 MAN_URL="$API_URL/peat.1"
 
-BIN_DIR="/usr/local/bin"
+PREFIX="${PREFIX:-/usr/local}"
+DESTDIR="${DESTDIR:-}"
+
+BIN_DIR="$DESTDIR$PREFIX/bin"
 BIN_DST="$BIN_DIR/peat"
 
-MAN_DIR="/usr/local/share/man/man1"
+MAN_DIR="$DESTDIR$PREFIX/share/man/man1"
 MAN_DST="$MAN_DIR/peat.1"
 
 TMPDIR=${TMPDIR:-/tmp}
@@ -39,11 +50,15 @@ download_to() {
 }
 
 
-# Require privileges (we write to /usr/local)
-if [ "$(id -u)" -ne 0 ]; then
+# Require privileges if the install location isn't writable (e.g. /usr/local)
+INSTALL_ROOT="$DESTDIR$PREFIX"
+while [ ! -e "$INSTALL_ROOT" ]; do
+  INSTALL_ROOT=$(dirname "$INSTALL_ROOT")
+done
+if [ "$(id -u)" -ne 0 ] && [ ! -w "$INSTALL_ROOT" ]; then
   if need_cmd sudo; then
-    say "Re-running with sudo (needed to write to /usr/local)..."
-    exec sudo -H -- "$0" "$@"
+    say "Re-running with sudo (needed to write to $DESTDIR$PREFIX)..."
+    exec sudo -H -- env PREFIX="$PREFIX" DESTDIR="$DESTDIR" REPO="$REPO" "$0" "$@"
   else
     die "This installer must run as root (or install sudo)."
   fi
@@ -82,7 +97,9 @@ else
     chmod 0644 "$MAN_DST"
 fi
 
-if need_cmd mandb; then
+if [ -n "$DESTDIR" ]; then
+    say "DESTDIR is set, skipping man database update"
+elif need_cmd mandb; then
     say "Updating man database (mandb)..."
     mandb >/dev/null 2>&1 || mandb || true
 else
