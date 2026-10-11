@@ -26,6 +26,7 @@ Table of Contents
    install
    configure
    operate
+   security
    reference_documents
    design_documents
    developer_reference
@@ -33,5 +34,8 @@ Table of Contents
    authors
    contributing
    development_infrastructure
+   governance
+   roadmap
+   security_policy
    code_of_conduct
    changelog
