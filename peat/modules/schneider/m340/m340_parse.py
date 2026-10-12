@@ -7,10 +7,12 @@ Authors
 - Christopher Goes
 """
 
+import io
 import re
+import zipfile
 import zlib
 from pprint import pformat
-from typing import Final
+from typing import BinaryIO, Final
 from xml.etree import ElementTree
 from xml.etree.ElementTree import SubElement
 
@@ -24,6 +26,77 @@ ALLOWED_TYPES: Final[set[str]] = {type_pair[0] for type_pair in TypeHierarchy_li
 
 # TODO: process FBD blocks to TC6
 # TODO: process LD blocks to TC6
+
+
+# Largest Station.apx that will be extracted from a STA or STU archive
+MAX_STA_APX_SIZE: Final[int] = 256 * 1024 * 1024
+
+
+def find_sta_apx(archive: zipfile.ZipFile) -> zipfile.ZipInfo | None:
+    """
+    Find the project file (``BinAppli/Station.apx``) in a STA or STU archive.
+
+    STU files may also have a ``PreviousStation.apx``, which is ignored.
+    """
+    found = None
+    for info in archive.infolist():
+        path = info.filename.replace("\\", "/").lower()
+        if path == "binappli/station.apx":
+            return info
+        if found is None and path.rsplit("/", 1)[-1] == "station.apx":
+            found = info
+    return found
+
+
+def is_sta_file(data: BinaryIO | bytes) -> bool:
+    """
+    Check if data is a Unity Pro/Control Expert archived application (``.sta``)
+    or project (``.stu``) file.
+
+    Both are ZIP archives containing the built project file
+    (``BinAppli/Station.apx``) and other files. A STU file only contains
+    ``Station.apx`` if the project has been built.
+    """
+    if isinstance(data, bytes):
+        data = io.BytesIO(data)
+
+    try:
+        with zipfile.ZipFile(data) as archive:
+            return find_sta_apx(archive) is not None
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return False
+
+
+def extract_apx_from_sta(data: bytes) -> bytes:
+    """
+    Extract the project file (``Station.apx``) from a Unity Pro/Control Expert
+    archived application (``.sta``) or project (``.stu``) file, so it can be
+    parsed like a ``.apx`` file.
+
+    Args:
+        data: Contents of the STA or STU file
+
+    Returns:
+        Contents of the ``Station.apx`` file
+
+    Raises:
+        ValueError: If the data isn't a valid STA or STU file
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            info = find_sta_apx(archive)
+            if info is None:
+                raise ValueError(
+                    "No Station.apx file in STA/STU archive (has the project been built?)"
+                )
+            if info.file_size > MAX_STA_APX_SIZE:
+                raise ValueError(
+                    f"Station.apx in STA/STU archive is too large ({info.file_size} bytes)"
+                )
+            log.debug(f"Extracting '{info.filename}' from STA/STU archive")
+            return archive.read(info)
+    except zipfile.BadZipFile as ex:
+        raise ValueError(f"Invalid STA/STU file: {ex}") from None
 
 
 def extract_logic_blocks(logic_blob: bytes) -> dict[str, dict | list]:

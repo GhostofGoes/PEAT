@@ -5,6 +5,12 @@ The Schneider does NOT have separate "logic" and "config" files, just one
 big blob that we call a "project file". Therefore, the semantics of "pull/parse
 config/logic" are slightly skewed in this module.
 
+Project files can be parsed from a ``.apx`` file (``Station.apx``, pulled
+from the device), or from a ``.sta`` (archived application) or ``.stu``
+(project) file saved by Unity Pro or EcoStruxure Control Expert. These are
+ZIP archives containing ``BinAppli/Station.apx`` (for a STU file, only if
+the project has been built).
+
 Services
 
 - FTP (TCP 21)
@@ -85,11 +91,18 @@ class M340(DeviceModule):
     vendor_name = "Schneider Electric"
     brand = "Modicon"
     model = "M340"
-    filename_patterns = ["*.apx"]
+    filename_patterns = ["*.apx", "*.sta", "*.STA", "*.stu", "*.STU"]
     file_signatures = [
         FileSignature(
             default_filename="project.apx",
             magic_number="415058",  # APX
+        ),
+        # Unity Pro/Control Expert archived application (STA) or project (STU),
+        # a ZIP containing Station.apx
+        FileSignature(
+            default_filename="project.sta",
+            magic_number="504B0304",  # PK
+            custom_check=m340_parse.is_sta_file,
         ),
     ]
     default_options = {
@@ -431,6 +444,11 @@ class M340(DeviceModule):
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData:
         file_data = file.read_bytes()
+
+        # STA (archived application) and STU (project) files are a ZIP
+        # containing the APX file
+        if file_data[:2] == b"PK":
+            file_data = m340_parse.extract_apx_from_sta(file_data)
 
         dev = cls._parse_blob(file_data, dev=dev, file=file)
         dev.firmware.file.local_path = file
