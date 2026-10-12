@@ -185,6 +185,11 @@ class TC6:
                 "Copying tree to prevent contamination by OpenPLC compatibility modifications"
             )
 
+            if self.configs.find("configuration") is not None:
+                # The project already has a configuration, resource and tasks
+                log.debug("Using the existing configuration for OpenPLC compatibility")
+                return self.prettify_xml(root)
+
             openplc_root = copy.deepcopy(self.root)
             log.debug("Finished copying tree")
             configs = openplc_root.find(".//configurations")
@@ -279,14 +284,21 @@ class TC6:
 
     def logic_is_empty(self) -> bool:
         """
-        If there is no logic or variables present in main POU.
+        If there is no logic or variables present in any POU or configuration.
         """
-        if not self.element_empty(self.main_pou.find("body")):
-            return False
+        for pou in self.pous:
+            body = pou.find("body")
+            if body is not None and not self.element_empty(body):
+                return False
 
-        for child in list(self.main_pou.find("interface")):
-            # interface -> localVars
-            if not self.element_empty(child):
+            interface = pou.find("interface")
+            for child in list(interface) if interface is not None else []:
+                # interface -> localVars
+                if not self.element_empty(child):
+                    return False
+
+        for global_vars in self.configs.iter("globalVars"):
+            if list(global_vars):
                 return False
 
         log.warning("TC6 logic is empty")
