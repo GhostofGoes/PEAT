@@ -81,3 +81,68 @@ def test_add_logic_to_tc6_generates_st(logic_blocks, openplc):
 )
 def test_get_type_string(var_type, expected):
     assert m340_parse.get_type_string(var_type) == expected
+
+
+def test_add_logic_to_tc6_locates_all_sizes():
+    logic_blocks = {
+        "vars": {
+            "b1": {"type": "BYTE", "address": "%IW1"},
+            "b2": {"type": "USINT", "address": "%IW2"},
+            "w1": {"type": "UINT", "address": "%IW3"},
+            "w2": {"type": "WORD", "address": "%IW4"},
+            "d1": {"type": "REAL", "address": "%IW5", "value": 2.5},
+            "d2": {"type": "DINT", "address": "%IW6"},
+            "l1": {"type": "LREAL", "address": "%IW7"},
+            "l2": {"type": "ULINT", "address": "%IW8"},
+        },
+        "ST": [[b"b1 := b2;"]],
+    }
+    tc6 = TC6("M340Test")
+    m340_parse.add_logic_to_tc6(logic_blocks, tc6)
+    addresses = {name: v.get("address") for name, v in _vars_by_name(tc6).items()}
+
+    assert addresses == {
+        "b1": "%QB0",
+        "b2": "%QB1",
+        "w1": "%MW0",
+        "w2": "%MW1",
+        "d1": "%MD0",
+        "d2": "%MD1",
+        "l1": "%ML0",
+        "l2": "%ML1",
+    }
+
+
+def test_add_logic_to_tc6_unlocatable_io_variables():
+    logic_blocks = {
+        "vars": {
+            "levels": {"type": "ARRAY[1..3] OF INT", "address": "%IW1", "value": 7},
+            "coils": {"type": "ARRAY[0..1] OF EBOOL", "address": "%Q0.1.0"},
+            "delay": {"type": "TIME", "address": "%IW4"},
+            "label": {"type": "STRING", "address": "%IW5"},
+            "after": {"type": "INT", "address": "%IW6"},
+            "unknown": {"type": "ANALOG_IN", "address": "%IW7"},
+        },
+        "ST": [[b"after := levels[1];"]],
+    }
+    tc6 = TC6("M340Test")
+    m340_parse.add_logic_to_tc6(logic_blocks, tc6)
+    variables = _vars_by_name(tc6)
+
+    # MatIEC can't locate arrays, strings or times, so they have no address
+    for name in ["levels", "coils", "delay", "label"]:
+        assert variables[name].get("address") is None
+    assert variables["levels"].find("type/array/dimension").get("lower") == "1"
+    assert variables["levels"].find("type/array/baseType/INT") is not None
+    assert len(variables["levels"].findall("initialValue/arrayValue/value")) == 3
+    assert variables["coils"].find("type/array/baseType/BOOL") is not None
+    assert variables["delay"].find("type/TIME") is not None
+    assert variables["label"].find("type/string") is not None
+    # Unlocated variables don't use up a location
+    assert variables["after"].get("address") == "%MW0"
+    assert "unknown" not in variables
+
+    st = tc6.generate_st(openplc=True)
+    assert "levels : ARRAY [1..3] OF INT := [7, 7, 7];" in st
+    assert "delay : TIME;" in st
+    assert "label : STRING;" in st
