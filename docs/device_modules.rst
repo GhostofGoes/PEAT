@@ -122,8 +122,8 @@ SCEPTRE Field Device
 Schneider Electric
 ==================
 
-Modicon M340 PLC
-----------------
+Modicon M340, Quantum and Premium PLCs
+--------------------------------------
 .. automodule:: peat.modules.schneider.m340.m340
    :members:
    :no-undoc-members:

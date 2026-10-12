@@ -8,6 +8,7 @@ Authors
 """
 
 import re
+import struct
 import zlib
 from pprint import pformat
 from typing import Final
@@ -18,9 +19,27 @@ from peat import log, utils
 from peat.parsing.plc_open.core_modules.definitions import TypeHierarchy_list
 from peat.parsing.tc6 import TC6
 
-ChunksType = dict[int, dict[str, int | str | bytes]]
+ChunksType = dict[int, dict[str, int | str | bytes | bool | None]]
 # IEC 61131-3 types
 ALLOWED_TYPES: Final[set[str]] = {type_pair[0] for type_pair in TypeHierarchy_list}
+
+# APX file format details (header, section and RTE header layouts, compression
+# formats, CRC16, SD section) are based on apxutil by finngineering (MIT License),
+# https://github.com/finngineering/apxutil
+APX_HEADER_SIZE: Final[int] = 32
+# Section header size, by section type
+SECTION_HEADER_SIZES: Final[dict[int, int]] = {0: 8, 1: 16, 2: 16, 3: 24, 4: 24}
+DEFAULT_RTE_TYPE: Final[int] = 2
+DEFAULT_RTE_SIZE: Final[int] = 16
+# The "SD" section (memory layout) and the "RT" section, whose CRC covers more
+# than its data. apxutil's README lists these the other way around, but in real
+# APX files the data of section 0x01 starts with "SD" and 0x11 with "RT".
+SD_SECTION_NUMBER: Final[int] = 0x01
+RT_SECTION_NUMBER: Final[int] = 0x11
+RTE_ATTR_COMPRESSED: Final[int] = 1 << 13  # Section data is compressed
+RTE_ATTR_NO_DATA: Final[int] = 1 << 28  # Section has no data in the file
+PK_HEADER_SIZE: Final[int] = 0x2E
+ZLIB_HEADER_SIZE: Final[int] = 16
 
 # TODO: process FBD blocks to TC6
 # TODO: process LD blocks to TC6
@@ -106,16 +125,103 @@ def strip_xml(data: bytes) -> list[bytes]:
     return stripped_xml
 
 
+def _make_crc16_kermit_table() -> tuple[int, ...]:
+    table = []
+    for i in range(256):
+        crc = i
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x8408 if crc & 1 else crc >> 1
+        table.append(crc)
+    return tuple(table)
+
+
+_CRC16_KERMIT_TABLE: Final[tuple[int, ...]] = _make_crc16_kermit_table()
+
+
+def crc16_kermit(data: bytes, init: int = 0xFFFF) -> int:
+    """
+    CRC16/Kermit (reflected polynomial 0x8408) of ``data``.
+
+    APX files store this checksum of each section's data in the section's
+    RTE header, computed with an initial value of ``0xFFFF``.
+    Algorithm from apxutil (MIT License).
+
+    Args:
+        data: Bytes to compute the checksum of
+        init: Initial CRC value
+
+    Returns:
+        The 16-bit CRC
+    """
+    crc = init
+    for b in data:
+        crc = (crc >> 8) ^ _CRC16_KERMIT_TABLE[(b ^ crc) & 0xFF]
+    return crc & 0xFFFF
+
+
+def _parse_rte(rte: bytes, rte_type: int) -> dict[str, int | bool | None]:
+    """
+    Parse the RTE header that follows each APX section header.
+
+    Only the layout for RTE type 2 is known (from apxutil). For other
+    types, or if the RTE header is too short, all values are :obj:`None`.
+    """
+    info = dict.fromkeys(
+        [
+            "block_count",
+            "size_minus1",
+            "attributes",
+            "crc16",
+            "mem_area",
+            "mem_folio",
+            "compressed",
+        ]
+    )
+
+    if rte_type != 2 or len(rte) < 15:
+        return info
+
+    block_count, size_minus1, attributes, crc16, membyte = struct.unpack_from("<IIIHB", rte)
+    info.update(
+        {
+            "block_count": block_count,
+            "size_minus1": size_minus1,
+            "attributes": attributes,
+            "crc16": crc16,
+            "mem_area": membyte >> 3,
+            "mem_folio": membyte & 0x07,
+            "compressed": bool(attributes & RTE_ATTR_COMPRESSED),
+        }
+    )
+    return info
+
+
 def chunkify(blob: bytes) -> ChunksType:
     """
     Processes a raw APX file and extracts distinct chunks.
 
-    There are four types of chunks: APX, 0000, 0100, 0200
+    Format details are based on apxutil by finngineering (MIT License),
+    https://github.com/finngineering/apxutil
 
-        APX:    Fixed length       Project header
-        0000:   Fixed length       Unknown purpose
-        0100:   Fixed length       Unknown purpose
-        0200:   Variable length    Contains data blocks (ST logic, module configs, etc.)
+    The file starts with a 32 byte header ("APX" chunk), which defines the
+    RTE type (byte 6) and the RTE header size (byte 10, 16 for RTE type 2).
+    The rest of the file is sections, each made of a section header,
+    an RTE header (RTE size bytes) and the section data. The section type
+    is the first 2 bytes of the section header (the chunk's "tag"):
+
+        APX:    32 byte header      Project header
+        0:      8 byte header       No data
+        1:      16 byte header      No data
+        2:      16 byte header      Contains data (ST logic, module configs, etc.)
+        3, 4:   24 byte header      No data (not observed in practice)
+
+    The RTE header fields (attributes, crc16, mem_area, mem_folio, etc.) are
+    added to section chunks, as well as whether the data is compressed and
+    whether the CRC16 of the section data is valid (``crc_valid``). These
+    values are :obj:`None` if unknown (e.g. RTE types other than 2) or not
+    checked. The "type" of a type 2 chunk is the raw bytes of the RTE attributes.
+    The "number" of a section chunk is the 4 bytes at offset 4 of its header,
+    while "section_number" is the actual (2 byte) section number.
 
     Args:
         blob: The blob to decompress portions of
@@ -125,6 +231,8 @@ def chunkify(blob: bytes) -> ChunksType:
     """
     chunks = {}
     i = 0
+    rte_type = DEFAULT_RTE_TYPE
+    rte_size = DEFAULT_RTE_SIZE
 
     if not isinstance(blob, bytes):
         log.warning(f"chunkify got a non-bytes blob with type {type(blob).__name__}")
@@ -134,44 +242,170 @@ def chunkify(blob: bytes) -> ChunksType:
         chunks[i] = {}
 
         if blob[i : i + 3] == b"APX":
+            head = blob[i : i + APX_HEADER_SIZE]
             chunks[i]["tag"] = "APX"
             chunks[i]["number"] = 0
             chunks[i]["type"] = ""
-            chunks[i]["head"] = blob[i : i + 32]
-            i += 32
-        elif blob[i : i + 2] == b"\x00\x00":
-            chunks[i]["tag"] = str(0)
-            chunks[i]["number"] = int(blob[i + 4 : i + 8][::-1].hex(), 16)
-            chunks[i]["type"] = ""
-            chunks[i]["head"] = blob[i : i + 24]
-            i += 24
-        elif blob[i : i + 2] == b"\x01\x00":
-            chunks[i]["tag"] = str(1)
-            chunks[i]["number"] = int(blob[i + 4 : i + 8][::-1].hex(), 16)
-            chunks[i]["type"] = ""
-            chunks[i]["head"] = blob[i : i + 32]
-            i += 32
-        elif blob[i : i + 2] == b"\x02\x00":
-            chunks[i]["tag"] = str(2)
-            chunks[i]["number"] = int(blob[i + 4 : i + 8][::-1].hex(), 16)
-            length = int(blob[i + 10 : i + 14][::-1].hex(), 16)
-            chunks[i]["length"] = length
-            chunks[i]["type"] = blob[i + 24 : i + 28]
-            head = blob[i : i + 32]
             chunks[i]["head"] = head
-            data = blob[i + 32 : i + 32 + length]
-            chunks[i]["data"] = extract_chunk(data)
-            i += 32 + length
-        else:
+
+            if len(head) >= 11:
+                rte_type = head[6]
+                chunks[i]["version"] = int.from_bytes(head[4:6], "little")
+                chunks[i]["rte_type"] = rte_type
+                chunks[i]["rte_size"] = head[10]
+
+                if head[10] == 0:
+                    log.warning(
+                        f"APX header has an RTE size of 0, using the default "
+                        f"of {DEFAULT_RTE_SIZE} bytes instead"
+                    )
+                else:
+                    rte_size = head[10]
+
+                if rte_type != 2:
+                    log.warning(
+                        f"APX file has RTE type {rte_type}, only type 2 is fully "
+                        f"supported. Parsing may be incomplete."
+                    )
+
+            i += APX_HEADER_SIZE
+            continue
+
+        section_type = int.from_bytes(blob[i : i + 2], "little")
+        if len(blob[i : i + 2]) < 2 or section_type not in SECTION_HEADER_SIZES:
             log.warning(f"Unknown chunk tag at index {i}. Terminating chunkify early.")
             break  # Quit, since we don't know what to increment by
+
+        header_size = SECTION_HEADER_SIZES[section_type]
+        rte = blob[i + header_size : i + header_size + rte_size]
+        chunk = chunks[i]
+        chunk["tag"] = str(section_type)
+        # NOTE: "number" is kept as the 4 bytes at offset 4 for compatibility,
+        # but the section number is only the first 2 bytes ("section_number")
+        chunk["number"] = int.from_bytes(blob[i + 4 : i + 8], "little")
+        chunk["section_number"] = int.from_bytes(blob[i + 4 : i + 6], "little")
+        chunk["type"] = ""
+        chunk["head"] = blob[i : i + header_size + rte_size]
+        chunk.update(_parse_rte(rte, rte_type))
+        chunk["crc_valid"] = None
+
+        if section_type != 2:
+            if section_type in (3, 4):
+                log.debug(f"Skipping section type {section_type} at index {i}")
+            i += header_size + rte_size
+            continue
+
+        length = int.from_bytes(blob[i + 10 : i + 14], "little")
+        attributes = chunk["attributes"]
+        if attributes is not None and attributes & RTE_ATTR_NO_DATA:
+            # Per apxutil, the data size is forced to 0 if this attribute is set
+            length = 0
+
+        chunk["length"] = length
+        # For RTE type 2, these are the bytes of the RTE attributes
+        chunk["type"] = blob[i + header_size + 8 : i + header_size + 12]
+
+        data_start = i + header_size + rte_size
+        data = blob[data_start : data_start + length]
+        if len(data) < length:
+            log.warning(
+                f"Section {chunk['section_number']:#06x} at index {i} is truncated "
+                f"(expected {length} bytes of data, got {len(data)})"
+            )
+
+        # The CRC of the RT section covers more than its data, so it isn't checked.
+        # A stored CRC of 0 means the CRC wasn't set (seen in real Quantum projects).
+        if chunk["crc16"] and data and chunk["section_number"] != RT_SECTION_NUMBER:
+            computed = crc16_kermit(data)
+            chunk["crc_valid"] = computed == chunk["crc16"]
+
+            if not chunk["crc_valid"]:
+                log.warning(
+                    f"CRC16 mismatch for section {chunk['section_number']:#06x} at "
+                    f"index {i} (stored: {chunk['crc16']:#06x}, computed: "
+                    f"{computed:#06x}). The section may be corrupted or modified."
+                )
+
+        chunk["data"] = extract_chunk(data, compressed=chunk["compressed"])
+        i = data_start + length
 
     return chunks
 
 
-def extract_chunk(data: bytes) -> bytes:
+def extract_chunk(data: bytes, compressed: bool | None = None) -> bytes:
     """
     Extract and decompress data from a chunk.
+
+    Args:
+        data: Raw section data
+        compressed: If the section data is compressed, as determined by the
+            RTE attributes. If :obj:`None` (unknown), the data is scanned for
+            zlib and zip signatures and anything found is decompressed.
+            If decompression fails when :obj:`True`, scanning is used as a fallback.
+
+    Returns:
+        The extracted data
+    """
+    if compressed is None:
+        return _scan_decompress(data)
+
+    if not compressed:
+        if data[:4] in (b"PK\x01\x02", b"ZLIB"):
+            log.debug("Uncompressed section data starts with a compression signature")
+        return bytes(data)
+
+    try:
+        extracted = _decompress_section(data)
+    except zlib.error as ex:
+        log.debug(f"Failed to decompress section data, falling back to scanning: {ex}")
+        extracted = None
+
+    if extracted is None:
+        return _scan_decompress(data)
+
+    return extracted
+
+
+def _decompress_section(data: bytes) -> bytes | None:
+    """
+    Decompress section data that is flagged as compressed in the RTE attributes.
+
+    Compression formats are from apxutil (MIT License).
+
+    Returns:
+        The decompressed data, or :obj:`None` if the format isn't recognized
+
+    Raises:
+        zlib.error: If the data is malformed
+    """
+    # Zip/"pk": raw deflate following a zip central directory style header
+    if data[:4] == b"PK\x01\x02":
+        return zlib.decompressobj(-15).decompress(data[PK_HEADER_SIZE:])
+
+    # zlib stream following a 16 byte header
+    if data[:4] == b"ZLIB":
+        return zlib.decompressobj().decompress(data[ZLIB_HEADER_SIZE:])
+
+    # One or more consecutive zlib streams
+    if data[:1] == b"\x78":
+        extracted = bytearray()
+        remaining = bytes(data)
+
+        while remaining:
+            zo = zlib.decompressobj()
+            extracted.extend(zo.decompress(remaining))
+            if not zo.eof:  # Truncated stream
+                break
+            remaining = zo.unused_data
+
+        return bytes(extracted)
+
+    return None
+
+
+def _scan_decompress(data: bytes) -> bytes:
+    """
+    Extract and decompress data by scanning it for zlib and zip signatures.
     """
     extracted = bytearray()
     z_header_len = 46  # Zip header length
@@ -221,6 +455,79 @@ def extract_chunk(data: bytes) -> bytes:
             i += 1
 
     return bytes(extracted)  # bytearray -> bytes
+
+
+def parse_sd_section(data: bytes) -> dict[str, int | list] | None:
+    """
+    Decode the memory layout from the data of the APX "SD" section (section 0x01).
+
+    The layout is based on apxutil (MIT License) and is only partially understood.
+
+    Args:
+        data: Data of the SD section
+
+    Returns:
+        The memory layout, or :obj:`None` if it couldn't be decoded
+    """
+    if data[:2] != b"SD":
+        log.debug("SD section data doesn't start with 'SD', skipping memory layout decode")
+        return None
+
+    try:
+        mem_header_offset = struct.unpack_from("<H", data, 4)[0]
+        mem_header_size, mem_area_size, mem_folio_size, mem_area_count = struct.unpack_from(
+            "<HHHB", data, mem_header_offset
+        )
+
+        # Area and folio entries must at least hold the fields read from them
+        if mem_area_size < 7 or mem_folio_size < 13:
+            log.warning(
+                f"Unexpected memory area or folio entry size in APX SD section "
+                f"(area: {mem_area_size}, folio: {mem_folio_size})"
+            )
+            return None
+
+        layout = {
+            "data_size": struct.unpack_from("<H", data, 6)[0],
+            "data_flag": struct.unpack_from("<H", data, 12)[0],
+            "mem_area_count": mem_area_count,
+            "mem_areas": [],
+        }
+
+        offset = mem_header_offset + mem_header_size
+        for _ in range(mem_area_count):
+            area_num, folio_count, area_type, area_address = struct.unpack_from(
+                "<BBBI", data, offset
+            )
+            offset += mem_area_size
+
+            folios = []
+            for _ in range(folio_count):
+                folio_num, folio_size, folio_attributes = struct.unpack_from("<BIH", data, offset)
+                folios.append(
+                    {
+                        "folio_num": folio_num,
+                        "folio_size": folio_size,
+                        "folio_attributes": folio_attributes,
+                        "folio_size2": struct.unpack_from("<I", data, offset + 9)[0],
+                    }
+                )
+                offset += mem_folio_size
+
+            layout["mem_areas"].append(
+                {
+                    "area_num": area_num,
+                    "area_type": area_type,
+                    "area_address": area_address,
+                    "folio_count": folio_count,
+                    "folios": folios,
+                }
+            )
+    except struct.error as ex:
+        log.warning(f"Failed to decode memory layout from APX SD section: {ex}")
+        return None
+
+    return layout
 
 
 def extract_variables(chunk: bytes) -> dict[str, dict[str, int | str | bytes]]:
@@ -355,6 +662,12 @@ def parse_config_to_dict(config_blob: bytes) -> dict[str, str | dict]:
         if not block:
             log.warning("Empty block")
             continue
+
+        # Memory layout of the PLC, from the "SD" section
+        if block["tag"] == "2" and block.get("section_number") == SD_SECTION_NUMBER:
+            memory_layout = parse_sd_section(block["data"])
+            if memory_layout:
+                device_info["memory_layout"] = memory_layout
 
         # Get project file metadata (Name, Unity version, etc.)
         if block["type"] == b"\x00\x00\x8f\xe0" and block["number"] == 20:

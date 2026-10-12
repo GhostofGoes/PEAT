@@ -251,6 +251,8 @@ Device-specific results
 
 Schneider Modicon M340
 ^^^^^^^^^^^^^^^^^^^^^^
+These files are the same for Modicon Quantum and Premium PLCs, which also use the M340 module.
+
 .. csv-table::
    :name: Schneider Modicon M340 PLCs
    :header: "Type of file", "File extension", "Description"

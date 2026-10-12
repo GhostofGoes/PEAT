@@ -59,3 +59,5 @@ In-depth documentation for specific PEAT device modules. Refer to :doc:`device_m
    sel
    siemens
    openplc
+   schneider_file_formats
+   umas_protocol

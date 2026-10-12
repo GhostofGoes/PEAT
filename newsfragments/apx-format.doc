@@ -1,0 +1,3 @@
+Added a reference page that describes the Schneider Electric project file formats (APX, STA, STU, XEF and ZEF), based on `apxutil <https://github.com/finngineering/apxutil>`_, Schneider Electric FAQ articles, published reverse engineering, PEAT's code, and tests on real project files.
+Added a reference page that describes the Schneider Electric UMAS protocol, based on PEAT's code and published research.
+The M340 module documentation now states that the module also works with Modicon Quantum 140 PLCs, and parses project files from Modicon Premium PLCs.

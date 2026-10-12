@@ -1,6 +1,16 @@
 """
 The Schneider Electric Modicon M340 PLC.
 
+This module also works with other Modicon PLCs that use the same APX
+project file format:
+
+- Modicon Quantum (140 series): PEAT parsed APX files from Quantum projects
+  and pulled from a Quantum 140 PLC once with some success.
+- Modicon Premium: PEAT parsed APX files from Premium projects. Pulling from
+  a Premium PLC was not tested.
+
+Refer to :ref:`schneider_apx_format` for a description of the APX file format.
+
 The Schneider does NOT have separate "logic" and "config" files, just one
 big blob that we call a "project file". Therefore, the semantics of "pull/parse
 config/logic" are slightly skewed in this module.
