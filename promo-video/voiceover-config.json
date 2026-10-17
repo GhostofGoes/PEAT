@@ -55,6 +55,26 @@
       "text": "Ten-plus vendors. Linux, Windows, or Docker."
     },
     {
+      "id": "push",
+      "text": "And for recovery, Push uploads known-good configs or firmware back to the device."
+    },
+    {
+      "id": "devices",
+      "text": "Out of the box, PEAT collects from PLCs, protection relays, RTUs, and more, across over ten vendors."
+    },
+    {
+      "id": "platforms",
+      "text": "PEAT itself runs on Linux, Windows, macOS, or Docker, with no Python install needed."
+    },
+    {
+      "id": "library",
+      "text": "Prefer code? Import PEAT as a Python library, and build it into your own tools."
+    },
+    {
+      "id": "modules",
+      "text": "Every device is a self-contained module, so adding a new one starts with a single Python class."
+    },
+    {
       "id": "free",
       "text": "And it's completely free. Open source, under GPL version three."
     },

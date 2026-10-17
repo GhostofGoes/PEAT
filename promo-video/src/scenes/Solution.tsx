@@ -97,7 +97,7 @@ export const RevealScene: React.FC = () => {
 
 /* ---------- shared feature layout ---------- */
 
-const Feature: React.FC<{
+export const Feature: React.FC<{
   step: string;
   icon: React.ReactNode;
   title: string;

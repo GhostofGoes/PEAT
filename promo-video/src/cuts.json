@@ -1,0 +1,36 @@
+{
+  "short": [
+    {"id": "threat", "gap": 14},
+    {"id": "question", "gap": 14},
+    {"id": "baseline", "gap": 14},
+    {"id": "tooling", "gap": 14},
+    {"id": "turn", "gap": 30},
+    {"id": "reveal", "gap": 10},
+    {"id": "scan", "gap": 22},
+    {"id": "pull", "gap": 10},
+    {"id": "parse", "gap": 18},
+    {"id": "downstream", "gap": 14},
+    {"id": "proof", "gap": 14},
+    {"id": "free", "gap": 16},
+    {"id": "cta", "gap": 78}
+  ],
+  "long": [
+    {"id": "threat", "gap": 14},
+    {"id": "question", "gap": 14},
+    {"id": "baseline", "gap": 14},
+    {"id": "tooling", "gap": 14},
+    {"id": "turn", "gap": 30},
+    {"id": "reveal", "gap": 10},
+    {"id": "scan", "gap": 22},
+    {"id": "pull", "gap": 10},
+    {"id": "parse", "gap": 18},
+    {"id": "downstream", "gap": 14},
+    {"id": "push", "gap": 16},
+    {"id": "devices", "gap": 18},
+    {"id": "platforms", "gap": 18},
+    {"id": "library", "gap": 16},
+    {"id": "modules", "gap": 18},
+    {"id": "free", "gap": 16},
+    {"id": "cta", "gap": 96}
+  ]
+}
