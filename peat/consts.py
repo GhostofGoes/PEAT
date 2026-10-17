@@ -57,8 +57,24 @@ POSIX: Final[bool] = os.name == "posix"
 #: bool: If the local system is Linux-based
 LINUX: Final[bool] = sys.platform == "linux"
 
+
+def _is_wsl() -> bool:
+    """
+    If running in Windows Subsystem for Linux (WSL), either WSL 1 or WSL 2.
+
+    WSL 1 kernels have "Microsoft" in the version string (e.g. "#1-Microsoft"),
+    while WSL 2 kernels have "microsoft" in the release string
+    (e.g. "5.15.153.1-microsoft-standard-WSL2"), so check both, case-insensitively.
+    """
+    if not LINUX:
+        return False
+
+    uname = platform.uname()
+    return "microsoft" in f"{uname.release} {uname.version}".lower()
+
+
 #: bool: If the local system is a Windows Subsystem for Linux (WSL) environment
-WSL: Final[bool] = LINUX and "Microsoft" in platform.version()
+WSL: Final[bool] = _is_wsl()
 
 #: str: Format to use for timestamp strings
 TIME_FMT: Final[str] = "%Y-%m-%d_%H-%M-%S"
