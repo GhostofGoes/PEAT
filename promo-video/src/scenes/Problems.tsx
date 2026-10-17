@@ -143,7 +143,7 @@ export const QuestionScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { pick, isPortrait } = useLayout();
-  const rn = spring({ frame: frame - 96, fps, config: { damping: 10, mass: 0.6 } });
+  const rn = spring({ frame: frame - 97, fps, config: { damping: 10, mass: 0.6 } });
   const icons = isPortrait ? 6 : 8;
 
   return (
@@ -197,14 +197,14 @@ export const QuestionScene: React.FC = () => {
           );
         })}
       </div>
-      <Words text="Are your controllers *compromised?*" delay={22} stagger={6} size={pick(112, 96)} accent={C.red} align="center" />
+      <Words text="Are your controllers *compromised?*" delay={30} stagger={6} size={pick(112, 96)} accent={C.red} align="center" />
       <div
         style={{
           opacity: Math.min(1, rn * 1.5),
           transform: `scale(${interpolate(rn, [0, 1], [1.6, 1])})`,
           fontFamily: FONT,
           fontWeight: 800,
-          fontSize: pick(76, 72),
+          fontSize: pick(72, 64),
           color: C.amber,
           letterSpacing: "0.02em",
           padding: "10px 44px",
@@ -213,7 +213,7 @@ export const QuestionScene: React.FC = () => {
           boxShadow: `0 0 50px ${C.amber}55`,
         }}
       >
-        Right now?
+        Would you even know?
       </div>
     </Stage>
   );

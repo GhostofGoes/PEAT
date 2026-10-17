@@ -16,7 +16,7 @@ The voiceover is the ElevenLabs library voice "Adam - American, Dark and Tough" 
 | Scene | Line |
 |---|---|
 | Threat | From Stuxnet to FrostyGoop, attacks now target the controllers themselves. |
-| Question | So... are your controllers compromised? Right now? |
+| Question | So... are your controllers compromised? Would you even know? |
 | Baseline | Configs are rarely checked against a golden baseline. |
 | Tooling | Vendor tools work one device at a time, need a Windows VM per vendor, and can cost eleven thousand dollars a seat. |
 | Turn | What if one tool could see them all? |
