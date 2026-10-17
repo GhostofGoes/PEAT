@@ -11,7 +11,7 @@ There are two compositions built from the same scenes:
 
 ## Script
 
-The voiceover is ElevenLabs voice "wayne" (`RV8OR7AC0uhWHZnVnmI5`), `eleven_multilingual_v2`, with the Confident preset (stability 0.60, similarity 0.85, style 0.25) at speed 1.05.
+The voiceover is the ElevenLabs library voice "Adam - American, Dark and Tough" (`IRHApOXLvnW57QJPQH2P`), `eleven_multilingual_v2`, with the Confident preset (stability 0.60, similarity 0.85, style 0.25) at speed 1.05. An earlier cut used "wayne" (`RV8OR7AC0uhWHZnVnmI5`). To switch voices, change `voiceId` in `voiceover-config.json`, regenerate the clips, and re-sync the cues (see below).
 
 | Scene | Line |
 |---|---|

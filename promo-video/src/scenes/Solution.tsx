@@ -86,7 +86,7 @@ export const RevealScene: React.FC = () => {
         align="center"
         style={{ maxWidth: isPortrait ? 900 : 1600 }}
       />
-      <Rise delay={128} y={20}>
+      <Rise delay={120} y={20}>
         <div style={{ fontFamily: FONT, fontSize: pick(36, 36), color: C.muted, textAlign: "center", fontWeight: 500 }}>
           Built at <span style={{ color: C.text, fontWeight: 700 }}>Sandia National Laboratories</span>
         </div>
@@ -193,10 +193,10 @@ export const ScanScene: React.FC = () => {
 /* ---------- 8. Pull ---------- */
 
 const ARTIFACTS = [
-  { label: "Logic", detail: "ladder · ST · protection", Icon: FileCode2, at: 20 },
-  { label: "Configs", detail: "IPs · services · users", Icon: SlidersHorizontal, at: 47 },
-  { label: "Logs", detail: "SER · audit · events", Icon: ScrollText, at: 77 },
-  { label: "Firmware", detail: "images · hashes", Icon: HardDrive, at: 105 },
+  { label: "Logic", detail: "ladder · ST · protection", Icon: FileCode2, at: 24 },
+  { label: "Configs", detail: "IPs · services · users", Icon: SlidersHorizontal, at: 56 },
+  { label: "Logs", detail: "SER · audit · events", Icon: ScrollText, at: 88 },
+  { label: "Firmware", detail: "images · hashes", Icon: HardDrive, at: 102 },
 ];
 
 export const PullScene: React.FC = () => {
@@ -237,10 +237,10 @@ export const PullScene: React.FC = () => {
             })}
           </div>
           <div style={{ display: "flex", gap: 20, justifyContent: "center" }}>
-            <Chip color={C.cyanBright} delay={146} size={pick(34, 36)} icon={<Cable size={36} />}>
+            <Chip color={C.cyanBright} delay={140} size={pick(34, 36)} icon={<Cable size={36} />}>
               Ethernet
             </Chip>
-            <Chip color={C.cyanBright} delay={170} size={pick(34, 36)} icon={<Cable size={36} />}>
+            <Chip color={C.cyanBright} delay={160} size={pick(34, 36)} icon={<Cable size={36} />}>
               Serial (RS-232)
             </Chip>
           </div>
@@ -273,7 +273,7 @@ const JSON_LINES: Array<[string, string?]> = [
 export const ParseScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { isPortrait, pick } = useLayout();
-  const flow = interpolate(frame, [40, 66], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const flow = interpolate(frame, [46, 72], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const fs = pick(25, 32);
   const Arrow = isPortrait ? ArrowDown : ArrowRight;
   return (
@@ -313,7 +313,7 @@ export const ParseScene: React.FC = () => {
                     lineHeight: 1.5,
                     whiteSpace: "pre",
                     color: C.muted,
-                    opacity: interpolate(frame, [52 + i * 3, 58 + i * 3], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+                    opacity: interpolate(frame, [58 + i * 3, 64 + i * 3], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
                   }}
                 >
                   {k}
@@ -343,7 +343,7 @@ export const DiffScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { pick } = useLayout();
   const fs = pick(34, 36);
-  const badge = useEnter(60, { damping: 12, mass: 0.6 });
+  const badge = useEnter(66, { damping: 12, mass: 0.6 });
   return (
     <Feature
       step="04 · DIFF & SHIP"
@@ -375,7 +375,7 @@ export const DiffScene: React.FC = () => {
               <div style={{ padding: "16px 0" }}>
                 {DIFF.map((d, i) => {
                   const o = interpolate(frame, [18 + i * 5, 24 + i * 5], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-                  const hl = d.kind !== " " && frame > 44;
+                  const hl = d.kind !== " " && frame > 58;
                   const color = d.kind === "+" ? C.green : d.kind === "-" ? C.red : C.muted;
                   return (
                     <div
@@ -399,13 +399,13 @@ export const DiffScene: React.FC = () => {
             </Panel>
           </Rise>
           <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", alignItems: "center" }}>
-            <Chip color={C.cyanBright} delay={100} size={pick(32, 34)} icon={<Database size={32} />}>
+            <Chip color={C.cyanBright} delay={120} size={pick(32, 34)} icon={<Database size={32} />}>
               Elasticsearch
             </Chip>
-            <Chip color={C.cyanBright} delay={110} size={pick(32, 34)} icon={<Database size={32} />}>
+            <Chip color={C.cyanBright} delay={130} size={pick(32, 34)} icon={<Database size={32} />}>
               Malcolm
             </Chip>
-            <Chip color={C.cyanBright} delay={124} size={pick(32, 34)} icon={<Database size={32} />}>
+            <Chip color={C.cyanBright} delay={150} size={pick(32, 34)} icon={<Database size={32} />}>
               Splunk
             </Chip>
           </div>
@@ -437,7 +437,7 @@ export const ProofScene: React.FC = () => {
   const platforms = [
     { name: "Linux", Icon: TerminalIcon, at: 54 },
     { name: "Windows", Icon: Monitor, at: 75 },
-    { name: "Docker", Icon: Container, at: 88 },
+    { name: "Docker", Icon: Container, at: 94 },
   ];
   return (
     <AbsoluteFill style={{ padding, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: pick(70, 90) }}>
@@ -465,7 +465,7 @@ export const FreeScene: React.FC = () => {
   const { fps } = useVideoConfig();
   const { padding, pick } = useLayout();
   const strike = interpolate(frame, [8, 22], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const zero = spring({ frame: frame - 22, fps, config: { damping: 10, mass: 0.8 } });
+  const zero = spring({ frame: frame - 26, fps, config: { damping: 10, mass: 0.8 } });
   return (
     <AbsoluteFill style={{ padding, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: pick(20, 30) }}>
       <div style={{ position: "relative", fontFamily: FONT, fontWeight: 800, fontSize: pick(80, 76), color: C.dim }}>
@@ -487,9 +487,9 @@ export const FreeScene: React.FC = () => {
       >
         $0
       </div>
-      <Words text="No license fees. *Free to use.*" delay={30} size={pick(64, 60)} align="center" accent={C.cyanBright} />
+      <Words text="No license fees. *Free to use.*" delay={34} size={pick(64, 60)} align="center" accent={C.cyanBright} />
       <div style={{ display: "flex", gap: 22, marginTop: 24, flexWrap: "wrap", justifyContent: "center" }}>
-        <Chip color={C.cyanBright} delay={56} size={36} icon={<BookOpen size={36} />}>
+        <Chip color={C.cyanBright} delay={64} size={36} icon={<BookOpen size={36} />}>
           Open source
         </Chip>
         <Chip color={C.cyanBright} delay={100} size={36} icon={<FileCode2 size={36} />}>

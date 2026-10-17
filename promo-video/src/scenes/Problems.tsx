@@ -143,7 +143,7 @@ export const QuestionScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { pick, isPortrait } = useLayout();
-  const rn = spring({ frame: frame - 106, fps, config: { damping: 10, mass: 0.6 } });
+  const rn = spring({ frame: frame - 96, fps, config: { damping: 10, mass: 0.6 } });
   const icons = isPortrait ? 6 : 8;
 
   return (
@@ -294,7 +294,7 @@ export const BaselineScene: React.FC = () => {
   return (
     <Stage gap={pick(50, 56)}>
       <Eyebrow label="03 — NO BASELINE" color={C.red} delay={2} />
-      <Words text="Configs are rarely checked against a *golden baseline.*" delay={50} size={pick(80, 72)} accent={C.amber} stagger={5} />
+      <Words text="Configs are rarely checked against a *golden baseline.*" delay={58} size={pick(80, 72)} accent={C.amber} stagger={5} />
       <div style={{ display: "flex", flexDirection: isPortrait ? "column" : "row", gap: 36, alignItems: "stretch" }}>
         {devicePanel}
         {vs}
@@ -317,8 +317,8 @@ export const ToolingScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { isPortrait, pick } = useLayout();
-  const priceP = spring({ frame: frame - 172, fps, config: { damping: 12, mass: 0.7 } });
-  const price = Math.round(interpolate(frame, [172, 196], [0, 11000], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }));
+  const priceP = spring({ frame: frame - 166, fps, config: { damping: 12, mass: 0.7 } });
+  const price = Math.round(interpolate(frame, [166, 190], [0, 11000], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }));
 
   const stack = (
     <div style={{ position: "relative", width: pick(960, 940), height: pick(560, 640), flexShrink: 0 }}>
@@ -418,7 +418,7 @@ export const TurnScene: React.FC = () => {
   return (
     <Stage center>
       <Words text="What if one tool could" delay={6} stagger={3} size={pick(100, 92)} align="center" color={C.muted} weight={700} />
-      <Words text="*see them all?*" delay={30} stagger={5} size={pick(150, 140)} align="center" accent={C.cyanBright} style={{ marginTop: -20 }} />
+      <Words text="*see them all?*" delay={34} stagger={5} size={pick(150, 140)} align="center" accent={C.cyanBright} style={{ marginTop: -20 }} />
     </Stage>
   );
 };
