@@ -1,0 +1,15 @@
+{
+  "threat": 4.676,
+  "question": 4.023,
+  "baseline": 4.545,
+  "tooling": 7.706,
+  "turn": 1.802,
+  "reveal": 6.348,
+  "scan": 2.743,
+  "pull": 6.296,
+  "parse": 3.056,
+  "downstream": 4.728,
+  "proof": 3.422,
+  "free": 4.728,
+  "cta": 3.892
+}

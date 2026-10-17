@@ -1,0 +1,66 @@
+{
+  "voiceId": "RV8OR7AC0uhWHZnVnmI5",
+  "voiceName": "wayne",
+  "model": "eleven_multilingual_v2",
+  "emotion": "confident",
+  "settings": {
+    "stability": 0.6,
+    "similarity_boost": 0.85,
+    "style": 0.25,
+    "speed": 1.05
+  },
+  "sections": [
+    {
+      "id": "threat",
+      "text": "From Stuxnet to FrostyGoop, attacks now target the controllers themselves."
+    },
+    {
+      "id": "question",
+      "text": "So... are your controllers compromised? Right now?"
+    },
+    {
+      "id": "baseline",
+      "text": "Most sites can't say. Configs are rarely checked against a golden baseline."
+    },
+    {
+      "id": "tooling",
+      "text": "Vendor tools work one device at a time, need a Windows VM per vendor, and can cost eleven thousand dollars a seat."
+    },
+    {
+      "id": "turn",
+      "text": "What if one tool could see them all?"
+    },
+    {
+      "id": "reveal",
+      "text": "Meet PEAT. The Process Extraction and Analysis Tool, from Sandia National Laboratories."
+    },
+    {
+      "id": "scan",
+      "text": "Scan finds and fingerprints O-T devices."
+    },
+    {
+      "id": "pull",
+      "text": "Pull grabs logic, configs, logs, and firmware, over Ethernet or serial."
+    },
+    {
+      "id": "parse",
+      "text": "Parse turns proprietary blobs into one data model."
+    },
+    {
+      "id": "downstream",
+      "text": "Then diff it against your golden config, or stream it into Elastic or Splunk."
+    },
+    {
+      "id": "proof",
+      "text": "Ten-plus vendors. Linux, Windows, or Docker."
+    },
+    {
+      "id": "free",
+      "text": "And it's completely free. Open source, under GPL version three."
+    },
+    {
+      "id": "cta",
+      "text": "Close the visibility gap. Get PEAT on GitHub today."
+    }
+  ]
+}

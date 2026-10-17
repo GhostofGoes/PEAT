@@ -1,0 +1,26 @@
+{
+  "name": "peat-promo-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "60-second promo video for PEAT (Remotion)",
+  "scripts": {
+    "studio": "remotion studio",
+    "render:landscape": "remotion render Promo-Landscape out/promo-landscape.mp4",
+    "render:portrait": "remotion render Promo-Portrait out/promo-portrait.mp4"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@remotion/cli": "^4.0.536",
+    "@remotion/fonts": "^4.0.536",
+    "@remotion/transitions": "^4.0.536",
+    "lucide-react": "^1.59.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "remotion": "^4.0.536"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}

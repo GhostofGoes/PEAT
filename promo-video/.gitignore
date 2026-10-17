@@ -1,0 +1,5 @@
+node_modules/
+out/
+voice-tests/
+*.mp3
+*.mp4
