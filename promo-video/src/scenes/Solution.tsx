@@ -242,7 +242,7 @@ export const ParseScene: React.FC = () => {
   return (
     <Feature
       icon={<Braces size={40} color={C.accentHi} />}
-      textWidth={460}
+      textWidth={500}
       visual={
         <div style={{ display: "flex", flexDirection: isPortrait ? "column" : "row", alignItems: "center", gap: 22, width: "100%" }}>
           <Rise delay={14} style={{ flex: 1, width: isPortrait ? "100%" : undefined }}>

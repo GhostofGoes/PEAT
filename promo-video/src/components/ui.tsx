@@ -134,6 +134,7 @@ export const Eyebrow: React.FC<{ label: string; color?: string; delay?: number; 
         fontSize: size,
         letterSpacing: "0.24em",
         color: c,
+        whiteSpace: "nowrap",
       }}
     >
       <div style={{ width: 56 * p, height: 4, borderRadius: 2, background: c, boxShadow: C.dark ? `0 0 16px ${c}` : undefined }} />

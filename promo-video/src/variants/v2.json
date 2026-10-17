@@ -25,7 +25,7 @@
     {
       "id": "tooling", "gap": 14,
       "vo": "Each vendor ships its own proprietary software, often thousands of dollars a license, designed for engineering, not security.",
-      "text": { "eyebrow": "SPEC 04 — TOOLING", "headline": "One vendor, *one proprietary tool.*", "cost": "$ Thousands", "costSub": "per license", "security": "Engineering ≠ security", "securitySub": "not designed for cybersecurity" },
+      "text": { "eyebrow": "SPEC 04 — TOOLING", "headline": "One vendor, *one proprietary tool.*", "cost": "Thousands", "costSub": "per license", "security": "Engineering ≠ security", "securitySub": "not designed for cybersecurity" },
       "cues": { "cost": "thousands", "security": "designed" }
     },
     {
