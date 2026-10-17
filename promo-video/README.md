@@ -1,8 +1,8 @@
 # PEAT promo video
 
-Promo videos for PEAT, built with [Remotion](https://www.remotion.dev/), in two cuts: a short cut (~70s) and a long cut (~102s). It uses the "Problem Stack" story structure: four pain points about control-layer visibility, a "what if" turn, then PEAT's Scan, Pull, Parse and Diff workflow. It ends on the fact that PEAT is free and open source (GPLv3).
+Promo videos for PEAT, built with [Remotion](https://www.remotion.dev/), in two cuts: a short cut (~70s) and a long cut (~96s). It uses the "Problem Stack" story structure: four pain points about control-layer visibility, a "what if" turn, then PEAT's Scan, Pull, Parse and Diff workflow. It ends on the fact that PEAT is free and open source (GPLv3).
 
-The long cut adds Push (recovery), what PEAT collects from (device types and vendors), where PEAT itself runs (Linux, Windows, macOS, Docker), the Python API, and the modular device design. In place of the short cut's combined stats scene, it covers devices and platforms in separate scenes. Scene order and pacing for each cut live in `src/cuts.json`.
+The long cut adds what PEAT collects from (device types and vendors), where PEAT itself runs (Linux, Windows, macOS, Docker), the Python API, and the modular device design. In place of the short cut's combined stats scene, it covers devices and platforms in separate scenes. Scene order and pacing for each cut live in `src/cuts.json`.
 
 | Composition | Cut | Size |
 |---|---|---|
@@ -28,7 +28,6 @@ The voiceover is the ElevenLabs library voice "Adam - American, Dark and Tough" 
 | Parse | Parse turns proprietary blobs into one data model. |
 | Diff | Then diff it against your golden config, or stream it into Elastic or Splunk. |
 | Proof (short only) | Ten-plus vendors. Linux, Windows, or Docker. |
-| Push (long only) | And for recovery, Push uploads known-good configs or firmware back to the device. |
 | Devices (long only) | Out of the box, PEAT collects from PLCs, protection relays, RTUs, and more, across over ten vendors. |
 | Platforms (long only) | PEAT itself runs on Linux, Windows, macOS, or Docker, with no Python install needed. |
 | Library (long only) | Prefer code? Import PEAT as a Python library, and build it into your own tools. |

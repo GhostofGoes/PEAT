@@ -55,10 +55,6 @@
       "text": "Ten-plus vendors. Linux, Windows, or Docker."
     },
     {
-      "id": "push",
-      "text": "And for recovery, Push uploads known-good configs or firmware back to the device."
-    },
-    {
       "id": "devices",
       "text": "Out of the box, PEAT collects from PLCs, protection relays, RTUs, and more, across over ten vendors."
     },

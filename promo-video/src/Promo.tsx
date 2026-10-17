@@ -9,7 +9,7 @@ import { Cut, LEAD, SceneId, T, TIMELINES } from "./timeline";
 import { FONT } from "./theme";
 import { BaselineScene, QuestionScene, ThreatScene, ToolingScene, TurnScene } from "./scenes/Problems";
 import { CtaScene, DiffScene, FreeScene, ParseScene, ProofScene, PullScene, RevealScene, ScanScene } from "./scenes/Solution";
-import { DevicesScene, LibraryScene, ModulesScene, PlatformsScene, PushScene } from "./scenes/Extended";
+import { DevicesScene, LibraryScene, ModulesScene, PlatformsScene } from "./scenes/Extended";
 
 const COMPONENTS: Record<SceneId, React.FC> = {
   threat: ThreatScene,
@@ -22,7 +22,6 @@ const COMPONENTS: Record<SceneId, React.FC> = {
   pull: PullScene,
   parse: ParseScene,
   downstream: DiffScene,
-  push: PushScene,
   devices: DevicesScene,
   platforms: PlatformsScene,
   library: LibraryScene,
@@ -44,7 +43,6 @@ const ENTER: Partial<Record<SceneId, () => TransitionPresentation<any>>> = {
   pull: () => slide({ direction: "from-right" }),
   parse: () => slide({ direction: "from-right" }),
   downstream: () => slide({ direction: "from-right" }),
-  push: () => slide({ direction: "from-right" }),
   devices: metallicSwoosh,
   platforms: crossfade,
   library: metallicSwoosh,

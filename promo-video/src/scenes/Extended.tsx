@@ -14,51 +14,17 @@ import {
   Router,
   Shield,
   Terminal as TerminalIcon,
-  Upload,
   Zap,
 } from "lucide-react";
 import { C, FONT, MONO } from "../theme";
 import { useLayout } from "../layout";
-import { Chip, Eyebrow, Panel, Rise, Terminal, Words, useEnter } from "../components/ui";
+import { Chip, Eyebrow, Panel, Rise, Words } from "../components/ui";
 import { Feature } from "./Solution";
 
 // Scenes used only in the long cut. Cue frames are word timings from the voiceover
 // (scene start + LEAD + word time).
 
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
-
-/* ---------- Push (recovery) ---------- */
-
-export const PushScene: React.FC = () => {
-  const frame = useCurrentFrame();
-  const { pick } = useLayout();
-  const p = useEnter(4);
-  const pct = Math.round(interpolate(frame, [62, 118], [0, 100], clamp));
-  const filled = Math.round(pct / 5);
-  return (
-    <Feature
-      step="05 · PUSH"
-      icon={<Upload size={40} color={C.cyanBright} />}
-      title="Restore a *known-good* state"
-      sub="Upload configs or firmware back to a device for recovery."
-      visual={
-        <div style={{ width: "100%", transform: `perspective(1400px) rotateY(${pick(-9, 0)}deg) rotateX(${pick(4, 6)}deg) scale(${0.92 + p * 0.08})`, opacity: p }}>
-          <Terminal
-            title="peat — push"
-            command="peat push -d ControlLogix -i 192.0.2.33 -t firmware fw.dmk"
-            commandAt={6}
-            fontSize={pick(28, 25)}
-            lines={[
-              { text: "verifying 192.0.2.33 … ControlLogix ✔", at: 52, color: C.text },
-              { text: `uploading  [${"█".repeat(filled)}${"░".repeat(20 - filled)}] ${pct}%`, at: 60, color: C.cyanBright },
-              { text: "push succeeded · device back to known-good", at: 124, color: C.green, bold: true },
-            ]}
-          />
-        </div>
-      }
-    />
-  );
-};
 
 /* ---------- Devices: what PEAT collects from ---------- */
 
