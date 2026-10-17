@@ -1,6 +1,6 @@
 # PEAT promo video
 
-A ~71 second promo video for PEAT, built with [Remotion](https://www.remotion.dev/). It uses the "Problem Stack" story structure: four pain points about control-layer visibility, a "what if" turn, then PEAT's Scan, Pull, Parse and Diff workflow. It ends on the fact that PEAT is free and open source (GPLv3).
+A ~69 second promo video for PEAT, built with [Remotion](https://www.remotion.dev/). It uses the "Problem Stack" story structure: four pain points about control-layer visibility, a "what if" turn, then PEAT's Scan, Pull, Parse and Diff workflow. It ends on the fact that PEAT is free and open source (GPLv3).
 
 There are two compositions built from the same scenes:
 
@@ -17,7 +17,7 @@ The voiceover is the ElevenLabs library voice "Adam - American, Dark and Tough" 
 |---|---|
 | Threat | From Stuxnet to FrostyGoop, attacks now target the controllers themselves. |
 | Question | So... are your controllers compromised? Right now? |
-| Baseline | Most sites can't say. Configs are rarely checked against a golden baseline. |
+| Baseline | Configs are rarely checked against a golden baseline. |
 | Tooling | Vendor tools work one device at a time, need a Windows VM per vendor, and can cost eleven thousand dollars a seat. |
 | Turn | What if one tool could see them all? |
 | Reveal | Meet PEAT. The Process Extraction and Analysis Tool, from Sandia National Laboratories. |

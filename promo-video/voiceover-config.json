@@ -20,7 +20,7 @@
     },
     {
       "id": "baseline",
-      "text": "Most sites can't say. Configs are rarely checked against a golden baseline."
+      "text": "Configs are rarely checked against a golden baseline."
     },
     {
       "id": "tooling",

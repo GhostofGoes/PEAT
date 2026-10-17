@@ -236,13 +236,13 @@ export const BaselineScene: React.FC = () => {
   const blink = Math.floor(frame / 10) % 2 === 0 ? 1 : 0.55;
 
   const devicePanel = (
-    <Rise delay={8} style={{ flex: 1 }}>
+    <Rise delay={22} style={{ flex: 1 }}>
       <Panel style={{ padding: 36 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, fontFamily: FONT, fontSize: 28, fontWeight: 700, color: C.muted, marginBottom: 22 }}>
           <Server size={34} color={C.muted} /> ON THE DEVICE
         </div>
         {DEVICE_LINES.map(([k, v], i) => (
-          <Rise key={k} delay={14 + i * 4} y={14}>
+          <Rise key={k} delay={28 + i * 4} y={14}>
             <div style={{ fontFamily: MONO, fontSize: fs, lineHeight: 1.75, color: C.text }}>
               <span style={{ color: C.cyanBright }}>{k}</span> := "{v}"
             </div>
@@ -253,7 +253,7 @@ export const BaselineScene: React.FC = () => {
   );
 
   const goldenPanel = (
-    <Rise delay={18} style={{ flex: 1 }}>
+    <Rise delay={34} style={{ flex: 1 }}>
       <Panel style={{ padding: 36, border: `3px dashed ${C.dim}`, background: "rgba(13,20,36,0.5)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, fontFamily: FONT, fontSize: 28, fontWeight: 700, color: C.dim, marginBottom: 22 }}>
           <ShieldQuestion size={34} color={C.dim} /> GOLDEN CONFIG
@@ -282,7 +282,7 @@ export const BaselineScene: React.FC = () => {
         fontWeight: 800,
         fontSize: 64,
         color: C.red,
-        opacity: interpolate(frame, [30, 40], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+        opacity: interpolate(frame, [44, 54], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         boxShadow: `0 0 40px ${C.red}66`,
         alignSelf: "center",
       }}
@@ -294,13 +294,13 @@ export const BaselineScene: React.FC = () => {
   return (
     <Stage gap={pick(50, 56)}>
       <Eyebrow label="03 — NO BASELINE" color={C.red} delay={2} />
-      <Words text="Configs are rarely checked against a *golden baseline.*" delay={58} size={pick(80, 72)} accent={C.amber} stagger={5} />
+      <Words text="Configs are rarely checked against a *golden baseline.*" delay={8} size={pick(80, 72)} accent={C.amber} stagger={5} />
       <div style={{ display: "flex", flexDirection: isPortrait ? "column" : "row", gap: 36, alignItems: "stretch" }}>
         {devicePanel}
         {vs}
         {goldenPanel}
       </div>
-      <Rise delay={100} y={20}>
+      <Rise delay={72} y={20}>
         <div style={{ fontFamily: MONO, fontSize: pick(34, 32), color: C.redSoft, opacity: blink }}>
           ● last compared to golden config: NEVER
         </div>
