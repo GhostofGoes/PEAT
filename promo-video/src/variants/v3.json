@@ -1,0 +1,110 @@
+{
+  "id": "v3",
+  "name": "Control Room",
+  "theme": "controlRoom",
+  "music": "corporate.mp3",
+  "scenes": [
+    {
+      "id": "threat", "gap": 14,
+      "vo": "Attackers aren't stopping at the network anymore. They're going after the controllers.",
+      "text": { "eyebrow": "ALARM 01 — THREAT", "headline": "Attackers are going *after the controllers.*" },
+      "cues": { "headline": "going" }
+    },
+    {
+      "id": "question", "gap": 14,
+      "vo": "Are yours compromised? Could you prove they're not?",
+      "text": { "eyebrow": "ALARM 02 — INTEGRITY", "headline": "Are yours *compromised?*", "kicker": "Could you prove they're not?" },
+      "cues": { "headline": "are", "kicker": "could" }
+    },
+    {
+      "id": "baseline", "gap": 14,
+      "vo": "Without a golden baseline, a malicious change looks like routine engineering.",
+      "text": { "eyebrow": "ALARM 03 — NO BASELINE", "headline": "A malicious change looks like *routine engineering.*", "status": "change source: UNKNOWN" },
+      "cues": { "status": "routine" }
+    },
+    {
+      "id": "tooling", "gap": 14,
+      "vo": "And every vendor's software is different. Proprietary, priced in the thousands, and never built for security work.",
+      "text": { "eyebrow": "ALARM 04 — TOOLING", "headline": "Every vendor's software is *different.*", "cost": "Thousands", "costSub": "per license, per vendor", "security": "Never built for security", "securitySub": "engineering tools, not forensics" },
+      "cues": { "cost": "thousands", "security": "never" }
+    },
+    {
+      "id": "turn", "gap": 30,
+      "vo": "Now imagine one tool for all of it.",
+      "text": { "line1": "Now imagine", "line2": "*one tool for all of it.*" },
+      "cues": { "line2": "one" }
+    },
+    {
+      "id": "reveal", "gap": 10,
+      "vo": "This is PEAT. The Process Extraction and Analysis Tool, from Sandia National Laboratories.",
+      "text": { "title": "Process Extraction and Analysis Tool" },
+      "cues": { "title": "process", "sub": "sandia" }
+    },
+    {
+      "id": "scan", "gap": 22,
+      "vo": "Scan the network. Fingerprint every O-T device.",
+      "text": { "step": "SCAN", "title": "Fingerprint *every* OT device", "sub": "Discover hosts, then verify vendor and model." },
+      "cues": { "results": "fingerprint" }
+    },
+    {
+      "id": "pull", "gap": 10,
+      "vo": "Pull the logic, configs, logs, and firmware. Ethernet or serial.",
+      "text": { "step": "PULL", "title": "Pull the *evidence*", "sub": "Logic, configs, logs and firmware, straight off the device." },
+      "cues": { "logic": "logic", "configs": "configs", "logs": "logs", "firmware": "firmware", "link": "ethernet" }
+    },
+    {
+      "id": "parse", "gap": 18,
+      "vo": "Parse it all into one standard format.",
+      "text": { "step": "PARSE", "title": "One *standard format*", "sub": "Every vendor's data, normalized into one model." },
+      "cues": { "flow": "one" }
+    },
+    {
+      "id": "downstream", "gap": 14,
+      "vo": "Diff against your golden config. Send results to Elastic or Splunk.",
+      "text": { "step": "DIFF", "title": "Spot the *change*", "sub": "Compare to your golden config, then send to your SIEM." },
+      "cues": { "diff": "golden", "siem": "elastic" }
+    },
+    {
+      "id": "safety", "gap": 16,
+      "vo": "Built with safety first. PEAT confirms what each device is before it collects anything, and pulls only what you ask for.",
+      "text": { "eyebrow": "SAFETY FIRST", "headline": "Confirm first. *Collect carefully.*", "items": ["Confirms each device before collecting", "Fingerprints one device at a time", "Gentle on sensitive services", "Pulls only what you ask for"], "status": "process: STABLE" },
+      "cues": { "i1": "confirms", "i2": "each", "i3": "collects", "i4": "only" }
+    },
+    {
+      "id": "devices", "gap": 18,
+      "vo": "PLCs. Protection relays. RTUs. And more, across over ten vendors.",
+      "text": { "eyebrow": "COLLECTS FROM", "headline": "Field devices, *10+ vendors*", "footer": "25+ device families · 13 protocols · Ethernet & serial" },
+      "cues": { "plcs": "plcs", "relays": "relays", "rtus": "rtus", "more": "more", "vendors": "vendors" }
+    },
+    {
+      "id": "platforms", "gap": 18,
+      "vo": "PEAT itself runs on Linux, Windows, macOS, or Docker. Download it and run it, in minutes.",
+      "text": { "eyebrow": "RUNS ON", "headline": "Your machine. *Your platform.*", "badges": ["Up and running in minutes", "No vendor software required"] },
+      "cues": { "linux": "linux", "windows": "windows", "macos": "macos", "docker": "docker", "badges": "download" }
+    },
+    {
+      "id": "library", "gap": 16,
+      "vo": "Want automation? Use PEAT as a Python library.",
+      "text": { "step": "PYTHON API", "title": "Automate it in *Python*", "sub": "Import PEAT and drive it from your own code.", "chips": ["Scheduled pulls", "Pipelines", "Custom tooling"] },
+      "cues": { "code": "use", "chips": "library" }
+    },
+    {
+      "id": "modules", "gap": 18,
+      "vo": "Need a new device? It's one self-contained Python module.",
+      "text": { "step": "MODULAR", "title": "New device? *New module.*", "sub": "One self-contained Python class per device." },
+      "cues": { "add": "new", "code": "self" }
+    },
+    {
+      "id": "free", "gap": 16,
+      "vo": "And it costs nothing. Free and open source, GPL version three.",
+      "text": { "struck": "Thousands per license", "big": "$0", "line": "It costs *nothing.*", "chips": ["Open source", "GPLv3"] },
+      "cues": { "zero": "nothing", "chips": "free" }
+    },
+    {
+      "id": "cta", "gap": 96,
+      "vo": "Know what your controllers are doing. Get PEAT on GitHub.",
+      "text": { "line1": "Know what your controllers", "line2": "*are doing.*" },
+      "cues": { "url": "github" }
+    }
+  ]
+}

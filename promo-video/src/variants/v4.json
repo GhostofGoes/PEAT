@@ -1,0 +1,110 @@
+{
+  "id": "v4",
+  "name": "Daylight",
+  "theme": "daylight",
+  "music": "motivational.mp3",
+  "scenes": [
+    {
+      "id": "threat", "gap": 14,
+      "vo": "Since Stuxnet, some of the most serious cyberattacks have targeted industrial controllers directly.",
+      "text": { "eyebrow": "THE RISK", "headline": "Cyberattacks now target *industrial controllers.*" },
+      "cues": { "headline": "serious" }
+    },
+    {
+      "id": "question", "gap": 14,
+      "vo": "If yours were changed tonight, would anyone notice?",
+      "text": { "eyebrow": "THE QUESTION", "headline": "If yours were *changed tonight...*", "kicker": "would anyone notice?" },
+      "cues": { "headline": "yours", "kicker": "would" }
+    },
+    {
+      "id": "baseline", "gap": 14,
+      "vo": "Controller settings are rarely compared against a trusted, known-good copy.",
+      "text": { "eyebrow": "THE GAP", "headline": "Settings are rarely compared to a *trusted copy.*", "status": "last checked against trusted copy: never" },
+      "cues": { "status": "trusted" }
+    },
+    {
+      "id": "tooling", "gap": 14,
+      "vo": "Every vendor has its own proprietary software. Licenses cost thousands, and those tools weren't designed for cybersecurity.",
+      "text": { "eyebrow": "THE TOOLS", "headline": "A different *proprietary app* for every vendor", "cost": "Thousands", "costSub": "in license fees", "security": "Not made for security", "securitySub": "built to configure, not to check" },
+      "cues": { "cost": "thousands", "security": "weren" }
+    },
+    {
+      "id": "turn", "gap": 30,
+      "vo": "What if checking your controllers was simple?",
+      "text": { "line1": "What if checking your controllers", "line2": "*was simple?*" },
+      "cues": { "line2": "simple" }
+    },
+    {
+      "id": "reveal", "gap": 10,
+      "vo": "Introducing PEAT, the Process Extraction and Analysis Tool, created at Sandia National Laboratories.",
+      "text": { "title": "Process Extraction and Analysis Tool" },
+      "cues": { "title": "process", "sub": "sandia" }
+    },
+    {
+      "id": "scan", "gap": 22,
+      "vo": "PEAT finds the controllers on your network, and identifies each one.",
+      "text": { "step": "FIND", "title": "Find and *identify* every controller", "sub": "Discovers devices on your network and confirms what they are." },
+      "cues": { "results": "identifies" }
+    },
+    {
+      "id": "pull", "gap": 10,
+      "vo": "It gathers their logic, settings, logs, and firmware, over Ethernet or serial.",
+      "text": { "step": "GATHER", "title": "Gather what *matters*", "sub": "Logic, settings, logs and firmware, in one pass." },
+      "cues": { "logic": "logic", "configs": "settings", "logs": "logs", "firmware": "firmware", "link": "ethernet" }
+    },
+    {
+      "id": "parse", "gap": 18,
+      "vo": "Then it translates every vendor's format into one consistent view.",
+      "text": { "step": "TRANSLATE", "title": "One *consistent view*", "sub": "Every vendor's format, translated into the same structure." },
+      "cues": { "flow": "one" }
+    },
+    {
+      "id": "downstream", "gap": 14,
+      "vo": "Compare today's data with your trusted copy, or send it to tools like Elastic and Splunk.",
+      "text": { "step": "COMPARE", "title": "See *what changed*", "sub": "Compare against your trusted copy, or send it to your SIEM." },
+      "cues": { "diff": "trusted", "siem": "elastic" }
+    },
+    {
+      "id": "safety", "gap": 16,
+      "vo": "And it's designed with safety in mind. PEAT identifies each device carefully before collecting anything, and it's built to be gentle on sensitive equipment.",
+      "text": { "eyebrow": "SAFETY IN MIND", "headline": "Gentle on *sensitive equipment*", "items": ["Identifies each device before collecting", "Works through devices one at a time", "Starts with the lowest-load methods", "Collects only what you choose"], "status": "operations: normal" },
+      "cues": { "i1": "identifies", "i2": "carefully", "i3": "collecting", "i4": "gentle" }
+    },
+    {
+      "id": "devices", "gap": 18,
+      "vo": "It works with PLCs, protection relays, RTUs, and more, from over ten vendors.",
+      "text": { "eyebrow": "WORKS WITH", "headline": "Equipment from *10+ vendors*", "footer": "25+ device families · Ethernet & serial · project files too" },
+      "cues": { "plcs": "plcs", "relays": "relays", "rtus": "rtus", "more": "more", "vendors": "vendors" }
+    },
+    {
+      "id": "platforms", "gap": 18,
+      "vo": "PEAT itself runs on Linux, Windows, macOS, or Docker, and it's easy to download and use.",
+      "text": { "eyebrow": "RUNS ON", "headline": "Easy to *download and use*", "badges": ["Simple download", "No vendor software required"] },
+      "cues": { "linux": "linux", "windows": "windows", "macos": "macos", "docker": "docker", "badges": "easy" }
+    },
+    {
+      "id": "library", "gap": 16,
+      "vo": "Developers can use PEAT as a Python library, and build it into their own tools.",
+      "text": { "step": "FOR DEVELOPERS", "title": "A *Python library*, too", "sub": "Build PEAT into your own scripts and tools.", "chips": ["Scripts", "Integrations", "Analytics"] },
+      "cues": { "code": "python", "chips": "build" }
+    },
+    {
+      "id": "modules", "gap": 18,
+      "vo": "And it's modular, so adding support for a new device is straightforward.",
+      "text": { "step": "MODULAR", "title": "Adding devices is *straightforward*", "sub": "Each device is its own module, written as one Python class." },
+      "cues": { "add": "adding", "code": "new" }
+    },
+    {
+      "id": "free", "gap": 16,
+      "vo": "Best of all, PEAT is free. Open source, under GPL version three.",
+      "text": { "struck": "License fees", "big": "Free", "line": "Best of all, *it's free.*", "chips": ["Open source", "GPLv3"] },
+      "cues": { "zero": "free", "chips": "open" }
+    },
+    {
+      "id": "cta", "gap": 96,
+      "vo": "Start seeing your controllers clearly. Get PEAT on GitHub.",
+      "text": { "line1": "See your controllers", "line2": "*clearly.*" },
+      "cues": { "url": "github" }
+    }
+  ]
+}

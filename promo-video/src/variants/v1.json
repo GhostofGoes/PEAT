@@ -1,0 +1,110 @@
+{
+  "id": "v1",
+  "name": "Signal",
+  "theme": "signal",
+  "music": "ambient.mp3",
+  "scenes": [
+    {
+      "id": "threat", "gap": 14,
+      "vo": "From Stuxnet to FrostyGoop, attacks now target the controllers themselves.",
+      "text": { "eyebrow": "01 — THE THREAT IS REAL", "headline": "Attacks now target *the controllers themselves.*" },
+      "cues": { "headline": "attacks" }
+    },
+    {
+      "id": "question", "gap": 14,
+      "vo": "So... are your controllers compromised? Would you even know?",
+      "text": { "eyebrow": "02 — THE QUESTION", "headline": "Are your controllers *compromised?*", "kicker": "Would you even know?" },
+      "cues": { "headline": "are", "kicker": "would" }
+    },
+    {
+      "id": "baseline", "gap": 14,
+      "vo": "Configs are rarely checked against a golden baseline.",
+      "text": { "eyebrow": "03 — NO BASELINE", "headline": "Configs are rarely checked against a *golden baseline.*", "status": "last compared to golden config: NEVER" },
+      "cues": { "status": "golden" }
+    },
+    {
+      "id": "tooling", "gap": 14,
+      "vo": "Every vendor has its own proprietary software. It costs thousands per seat, and none of it was built for cybersecurity.",
+      "text": { "eyebrow": "04 — THE TOOLING", "headline": "Every vendor, *its own proprietary software.*", "cost": "Thousands", "costSub": "per license seat", "security": "Not built for security", "securitySub": "designed for engineering, one device at a time" },
+      "cues": { "cost": "thousands", "security": "none" }
+    },
+    {
+      "id": "turn", "gap": 30,
+      "vo": "What if one tool could see them all?",
+      "text": { "line1": "What if one tool could", "line2": "*see them all?*" },
+      "cues": { "line2": "see" }
+    },
+    {
+      "id": "reveal", "gap": 10,
+      "vo": "Meet PEAT. The Process Extraction and Analysis Tool, from Sandia National Laboratories.",
+      "text": { "title": "Process Extraction and Analysis Tool" },
+      "cues": { "title": "process", "sub": "sandia" }
+    },
+    {
+      "id": "scan", "gap": 22,
+      "vo": "Scan finds and fingerprints O-T devices.",
+      "text": { "step": "01 · SCAN", "title": "Find & *fingerprint* OT devices", "sub": "Discovers what's on the network and verifies vendor and model." },
+      "cues": { "results": "fingerprints" }
+    },
+    {
+      "id": "pull", "gap": 10,
+      "vo": "Pull grabs logic, configs, logs, and firmware, over Ethernet or serial.",
+      "text": { "step": "02 · PULL", "title": "Collect the *artifacts* that matter", "sub": "Deep, read-focused collection from live devices." },
+      "cues": { "logic": "logic", "configs": "configs", "logs": "logs", "firmware": "firmware", "link": "ethernet" }
+    },
+    {
+      "id": "parse", "gap": 18,
+      "vo": "Parse turns proprietary blobs into one data model.",
+      "text": { "step": "03 · PARSE", "title": "One *data model.* Every vendor.", "sub": "Proprietary formats decoded into standardized, human-readable JSON." },
+      "cues": { "flow": "one" }
+    },
+    {
+      "id": "downstream", "gap": 14,
+      "vo": "Then diff it against your golden config, or stream it into Elastic or Splunk.",
+      "text": { "step": "04 · DIFF & SHIP", "title": "Catch *every change*", "sub": "Compare against your golden config, then send results to your SIEM." },
+      "cues": { "diff": "golden", "siem": "elastic" }
+    },
+    {
+      "id": "safety", "gap": 16,
+      "vo": "And it's built for sensitive, live controllers. PEAT verifies each device before it pulls, fingerprints them one at a time, and only collects what you ask for.",
+      "text": { "eyebrow": "SAFE BY DESIGN", "headline": "Built for *live, sensitive* controllers", "items": ["Verifies each device before pulling", "Fingerprints one device at a time", "Most reliable, lowest-load methods first", "Collects only what you ask for"], "status": "process: RUNNING" },
+      "cues": { "i1": "verifies", "i2": "fingerprints", "i3": "time", "i4": "only" }
+    },
+    {
+      "id": "devices", "gap": 18,
+      "vo": "Out of the box, PEAT collects from PLCs, protection relays, RTUs, and more, across over ten vendors.",
+      "text": { "eyebrow": "WHAT PEAT COLLECTS FROM", "headline": "OT devices from *10+ vendors*", "footer": "25+ device families · 13 protocols · Ethernet & serial · project files too" },
+      "cues": { "plcs": "plcs", "relays": "relays", "rtus": "rtus", "more": "more", "vendors": "vendors" }
+    },
+    {
+      "id": "platforms", "gap": 18,
+      "vo": "PEAT itself runs on Linux, Windows, macOS, or Docker, and it's easy to download and start using.",
+      "text": { "eyebrow": "WHERE PEAT RUNS", "headline": "Runs on *your* machine", "badges": ["Easy to download", "No vendor software required"] },
+      "cues": { "linux": "linux", "windows": "windows", "macos": "macos", "docker": "docker", "badges": "easy" }
+    },
+    {
+      "id": "library", "gap": 16,
+      "vo": "Prefer code? Import PEAT as a Python library, and build it into your own tools.",
+      "text": { "step": "PYTHON API", "title": "Use it as a *Python library*", "sub": "Script pulls, parsing and analysis into your own tools.", "chips": ["Scheduled pulls", "Pipelines", "Analytics"] },
+      "cues": { "code": "import", "chips": "build" }
+    },
+    {
+      "id": "modules", "gap": 18,
+      "vo": "Every device is a self-contained module, so adding a new one starts with a single Python class.",
+      "text": { "step": "MODULAR", "title": "Add a device with *one Python class*", "sub": "Each device is a self-contained module. Load your own at runtime." },
+      "cues": { "add": "adding", "code": "single" }
+    },
+    {
+      "id": "free", "gap": 16,
+      "vo": "And it's completely free. Open source, under GPL version three.",
+      "text": { "struck": "Thousands per license", "big": "$0", "line": "No license fees. *Free to use.*", "chips": ["Open source", "GPLv3"] },
+      "cues": { "zero": "free", "chips": "open" }
+    },
+    {
+      "id": "cta", "gap": 96,
+      "vo": "Close the visibility gap. Get PEAT on GitHub today.",
+      "text": { "line1": "Close the", "line2": "*visibility gap.*" },
+      "cues": { "url": "github" }
+    }
+  ]
+}

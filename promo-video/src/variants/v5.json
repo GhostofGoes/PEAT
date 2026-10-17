@@ -1,0 +1,110 @@
+{
+  "id": "v5",
+  "name": "Kinetic",
+  "theme": "kinetic",
+  "music": "corporate.mp3",
+  "scenes": [
+    {
+      "id": "threat", "gap": 14,
+      "vo": "Stuxnet. Industroyer. Triton. FrostyGoop. The target? Your controllers.",
+      "text": { "eyebrow": "THE TARGET", "headline": "The target? *Your controllers.*" },
+      "cues": { "headline": "target" }
+    },
+    {
+      "id": "question", "gap": 14,
+      "vo": "Compromised? Clean? Can you even tell?",
+      "text": { "eyebrow": "THE QUESTION", "headline": "Compromised? *Clean?*", "kicker": "Can you even tell?" },
+      "cues": { "headline": "compromised", "kicker": "can" }
+    },
+    {
+      "id": "baseline", "gap": 14,
+      "vo": "No golden baseline. No comparison. No answer.",
+      "text": { "eyebrow": "THE GAP", "headline": "No baseline. No comparison. *No answer.*", "status": "golden config: MISSING" },
+      "cues": { "status": "answer" }
+    },
+    {
+      "id": "tooling", "gap": 14,
+      "vo": "Vendor software? Proprietary. Thousands per seat. And never built for cybersecurity.",
+      "text": { "eyebrow": "THE TOOLS", "headline": "Vendor software? *Proprietary.*", "cost": "Thousands", "costSub": "per seat", "security": "Never built for cyber", "securitySub": "made for engineering, not defense" },
+      "cues": { "cost": "thousands", "security": "never" }
+    },
+    {
+      "id": "turn", "gap": 30,
+      "vo": "Time for one tool that sees them all.",
+      "text": { "line1": "Time for one tool", "line2": "*that sees them all.*" },
+      "cues": { "line2": "sees" }
+    },
+    {
+      "id": "reveal", "gap": 10,
+      "vo": "PEAT. The Process Extraction and Analysis Tool. Built at Sandia National Laboratories.",
+      "text": { "title": "Process Extraction and Analysis Tool" },
+      "cues": { "title": "process", "sub": "sandia" }
+    },
+    {
+      "id": "scan", "gap": 22,
+      "vo": "Scan. Discover and fingerprint every O-T device.",
+      "text": { "step": "SCAN", "title": "Discover. *Fingerprint.*", "sub": "Every OT device on the network, identified." },
+      "cues": { "results": "fingerprint" }
+    },
+    {
+      "id": "pull", "gap": 10,
+      "vo": "Pull. Logic, configs, logs, firmware. Ethernet or serial.",
+      "text": { "step": "PULL", "title": "Grab *everything.*", "sub": "Logic, configs, logs and firmware." },
+      "cues": { "logic": "logic", "configs": "configs", "logs": "logs", "firmware": "firmware", "link": "ethernet" }
+    },
+    {
+      "id": "parse", "gap": 18,
+      "vo": "Parse. Every vendor, one data model.",
+      "text": { "step": "PARSE", "title": "Every vendor. *One model.*", "sub": "Proprietary formats, normalized." },
+      "cues": { "flow": "one" }
+    },
+    {
+      "id": "downstream", "gap": 14,
+      "vo": "Diff. Spot every change, then stream it to Elastic or Splunk.",
+      "text": { "step": "DIFF", "title": "Spot *every change.*", "sub": "Against your golden config. Then into your SIEM." },
+      "cues": { "diff": "spot", "siem": "elastic" }
+    },
+    {
+      "id": "safety", "gap": 16,
+      "vo": "Safe by design. Devices verified first. One at a time. Only what you ask for.",
+      "text": { "eyebrow": "SAFE BY DESIGN", "headline": "Careful. *By design.*", "items": ["Verified first", "One at a time", "Lowest-load methods first", "Only what you ask for"], "status": "process: UNDISTURBED" },
+      "cues": { "i1": "verified", "i2": "one", "i3": "time", "i4": "only" }
+    },
+    {
+      "id": "devices", "gap": 18,
+      "vo": "PLCs, protection relays, RTUs, and more. Over ten vendors, out of the box.",
+      "text": { "eyebrow": "TARGETS", "headline": "*10+ vendors.* Out of the box.", "footer": "25+ device families · 13 protocols · Ethernet & serial" },
+      "cues": { "plcs": "plcs", "relays": "relays", "rtus": "rtus", "more": "more", "vendors": "vendors" }
+    },
+    {
+      "id": "platforms", "gap": 18,
+      "vo": "PEAT runs on Linux, Windows, macOS, or Docker. Download it and go.",
+      "text": { "eyebrow": "RUNS ON", "headline": "Download it. *Go.*", "badges": ["Download and go", "No vendor software"] },
+      "cues": { "linux": "linux", "windows": "windows", "macos": "macos", "docker": "docker", "badges": "download" }
+    },
+    {
+      "id": "library", "gap": 16,
+      "vo": "Python library? Yes. Script it, automate it, extend it.",
+      "text": { "step": "PYTHON", "title": "Script it. *Automate it.*", "sub": "PEAT is a Python library, too.", "chips": ["Script", "Automate", "Extend"] },
+      "cues": { "code": "yes", "chips": "script" }
+    },
+    {
+      "id": "modules", "gap": 18,
+      "vo": "Modular by design. A new device is just one Python class.",
+      "text": { "step": "MODULAR", "title": "New device = *one class.*", "sub": "Self-contained modules, loaded at runtime." },
+      "cues": { "add": "new", "code": "one" }
+    },
+    {
+      "id": "free", "gap": 16,
+      "vo": "Price? Zero. Free and open source, under GPL version three.",
+      "text": { "struck": "Thousands per seat", "big": "$0", "line": "Price? *Zero.*", "chips": ["Open source", "GPLv3"] },
+      "cues": { "zero": "zero", "chips": "free" }
+    },
+    {
+      "id": "cta", "gap": 96,
+      "vo": "Close the visibility gap. Get PEAT on GitHub.",
+      "text": { "line1": "Close the", "line2": "*visibility gap.*" },
+      "cues": { "url": "github" }
+    }
+  ]
+}
