@@ -683,7 +683,9 @@ Linux
 - Must be run as ``root``.  This is specifically needed if mounting an image.
 - ``qemu-nbd``, a part of the ``qemu-utils`` package. Installation: ``sudo apt install qemu-utils``
 - ``kmodpy`` Python package. This should be automatically installed with PEAT.
-- If the first partition is encrypted with BitLocker, pillage stops with an error. To search it, unlock and mount it yourself (e.g. with ``cryptsetup open --type bitlk --readonly`` or ``dislocker``), then pillage the mount point.
+- Every partition on the image is mounted read-only in its own directory in ``pillage_temp_<random>`` and searched. Partitions that can't be mounted, such as swap or extended partitions, are skipped. Images without a partition table (a filesystem directly on the disk) are mounted as a single volume.
+- ``cryptsetup`` is required for partitions encrypted with BitLocker or LUKS (see :ref:`pillage-encrypted-volumes`). Installation: ``sudo apt install cryptsetup``
+- ``lvm`` is required for LVM volumes, e.g. the default encrypted Ubuntu install, which has LVM inside LUKS. Installation: ``sudo apt install lvm2``
 - If pillaging a raw disk image, the host system must support the filesystem. The filesystems supported by the host can be found by:
 
   - Opening the file ``/proc/filesystems`` on the host system
@@ -696,8 +698,35 @@ Windows
 - VHD and VHDX images must be mounted as Administrator. ISO images can be mounted as a standard user.
 - Other image formats (raw, VMDK, qcow2, etc.) are converted to a temporary VHDX file in a ``pillage_temp_<random>`` directory before mounting, which requires ``qemu-img.exe`` from `QEMU for Windows <https://qemu.weilnetz.de/w64/>`__ to be in the ``PATH``. The conversion makes a copy of the image, so there must be enough free disk space in the current directory to hold it. Alternatively, convert the image yourself (``qemu-img convert -O vhdx disk.vmdk disk.vhdx``) or mount it with another tool and pillage its drive letter.
 - Images that were already attached before pillage started are searched as they are, and left attached when it finishes.
-- Volumes encrypted with BitLocker are skipped with a warning, since they're locked. To search one, attach the image with ``Mount-DiskImage``, unlock the volume (e.g. in File Explorer or with ``manage-bde -unlock``), then run pillage again.
+- Volumes encrypted with BitLocker are unlocked with ``Unlock-BitLocker`` (see :ref:`pillage-encrypted-volumes`). This requires the BitLocker PowerShell module, which is included in Windows 10 and 11 (Pro, Enterprise, and Education) but not in Windows Server unless the BitLocker feature is installed (``Install-WindowsFeature BitLocker``, then restart). If it isn't available, BitLocker volumes are skipped with an error; pillage the image on Linux instead.
 - Directory junctions (e.g. ``Documents and Settings``) aren't followed, since they point to other directories that may be searched twice. To search where a junction points, pillage that directory.
+
+.. _pillage-encrypted-volumes:
+
+Encrypted volumes
+^^^^^^^^^^^^^^^^^
+Pillage can unlock volumes on a disk image that are encrypted with BitLocker (on Windows and Linux) or LUKS (on Linux). Volumes are only unlocked read-only, and are locked again when pillage finishes.
+
+Passwords are given in a password file with ``--password-file FILE``, with one password or BitLocker recovery password per line. Each line is used exactly as it's written, except for the line ending, and empty lines are ignored. Every password in the file is tried on each locked volume until one unlocks it, so one file can hold the passwords for several images or volumes. If ``--password-file`` isn't given and PEAT is running in a terminal, it prompts for the password of each locked volume instead (up to 3 tries, enter an empty password to skip the volume). A password that unlocks one volume is tried first on the others.
+
+Passwords can't be given on the command line, so they don't end up in shell history or process listings. PEAT doesn't log passwords, and passes them to ``cryptsetup`` through stdin and to PowerShell through an environment variable, never as command line arguments. Protect the password file like any other file with secrets in it, and delete it when you're done.
+
+- BitLocker recovery passwords (48 digits in 8 groups of 6, e.g. ``123456-123456-123456-123456-123456-123456-123456-123456``) are detected by their format, and used as recovery passwords. Anything else is used as a password (BitLocker) or passphrase (LUKS).
+- BitLocker volumes protected only by a TPM, a smart card, or a startup key can't be unlocked by pillage. Use their recovery password instead.
+- On Linux, BitLocker and LUKS partitions are unlocked with ``cryptsetup open --readonly``. If the unlocked volume (or any other partition) is an LVM physical volume, its volume group is activated with its logical volumes read-only, using only that device, and each logical volume is mounted and searched. Volume groups with the same name as a volume group that's already on the system (e.g. ``ubuntu-vg``, when pillaging an Ubuntu image on an Ubuntu system that uses LVM) can't be activated at the same time, so they're skipped with an error; pillage the image on a different system instead.
+- On Windows, the image is mounted read-only, then BitLocker volumes are unlocked with ``Unlock-BitLocker``. This works with the image attached read-only, and is tested in CI on Windows Server 2022, Windows Server 2025, and Windows 11. Locked volumes are found with ``Get-BitLockerVolume``. Dismounting the image locks them again. If the image was attached before pillage started, it's left attached, but volumes pillage unlocked are locked again with ``Lock-BitLocker``.
+
+.. code-block:: bash
+
+   # passwords.txt has one password or recovery password per line
+   sudo peat pillage -c examples/peat-config.yaml -P encrypted_ubuntu.qcow2 --password-file passwords.txt
+
+   # Prompt for the password of each locked volume
+   sudo peat pillage -c examples/peat-config.yaml -P encrypted_ubuntu.qcow2
+
+.. code-block:: powershell
+
+   peat.exe pillage -c peat-config.yaml -P C:\images\laptop.vhdx --password-file C:\keys\passwords.txt
 
 Running Pillage
 ---------------
@@ -744,6 +773,7 @@ Command line arguments
 ^^^^^^^^^^^^^^^^^^^^^^
 - ``-c`` The PEAT configuration file to use. Refer to :ref:`pillage-config`.
 - ``-P`` The source image or directory to search
+- ``--password-file`` File with passwords or BitLocker recovery passwords for encrypted volumes, one per line (see :ref:`pillage-encrypted-volumes`)
 
 Examples
 ^^^^^^^^
@@ -755,14 +785,20 @@ Examples
 
 When things go wrong
 --------------------
-If there is a critical failure and PEAT is unable to cleanup, run the following commands to cleanup ``pillage_temp``:
+If there is a critical failure and PEAT is unable to cleanup, run the following commands to cleanup ``pillage_temp_<random>``. Each volume is mounted in its own directory in it. Unmount everything before deleting the directory.
 
 .. code-block:: bash
 
-   sudo umount pillage_temp
-   sudo rm -rf pillage_temp
+   # Unmount each volume, e.g. pillage_temp_abc123/nbd1p1
+   sudo umount pillage_temp_*/*
+   # If LVM volume groups on the image were activated (check with "sudo lvs")
+   sudo vgchange --activate n <volume group name>
+   # If encrypted volumes were unlocked (named "peat_pillage_*")
+   ls /dev/mapper/
+   sudo cryptsetup close <name>
    sudo qemu-nbd -d /dev/nbd1
    sudo rmmod nbd
+   sudo rm -r pillage_temp_*
 
 On Windows, unmount the image (or the converted image in ``pillage_temp_<random>``) and delete the ``pillage_temp_<random>`` directory from an Administrator PowerShell terminal:
 
@@ -774,8 +810,8 @@ On Windows, unmount the image (or the converted image in ``pillage_temp_<random>
 Notes
 -----
 - When the source is the root of a drive, a mounted filesystem, or a disk image, Windows system directories in its root (e.g. ``Windows``, ``$Recycle.Bin``, ``System Volume Information``) are skipped, since they won't have project files in them. These directories aren't skipped when searching other directories.
-- On Linux, disk images must be in a format ``qemu-nbd`` can read (raw, VMDK, qcow2, VHD, VHDX, etc.), and only the first partition is searched. On Windows, all readable volumes are searched. To use unsupported images with pillage either convert it to a raw disk image or mount it to the host filesystem manually and provide the mount point as the input source to Pillage.
-- If a disk image is used as a source on Linux, Pillager will mount it (read only) to a directory prior to searching called ``pillage_temp``.  It will be located in the current working directory when Pillage is ran.  Once Pillager is complete the image will be unmounted and this directory will be removed.
+- On Linux, disk images must be in a format ``qemu-nbd`` can read (raw, VMDK, qcow2, VHD, VHDX, etc.). On Linux and Windows, all readable volumes are searched. To use unsupported images with pillage either convert it to a raw disk image or mount it to the host filesystem manually and provide the mount point as the input source to Pillage.
+- If a disk image is used as a source on Linux, Pillager will mount its volumes (read only) to directories in a directory called ``pillage_temp_<random>`` prior to searching.  It will be located in the current working directory when Pillage is ran.  Once Pillager is complete the image will be unmounted and this directory will be removed.
 - There have been times during development and testing when the host OS would not mount the image, but if the same Pillage command was tried again after waiting a few seconds it would mount just fine.
 - If running in a VMware Workstation VM, pillage can run on a disk image or file system loaded in a shared folder. See the VMware documentation for details on how to set this up. If you run into issues, this askubuntu answer may be helpful: `How do I mount shared folders in Ubuntu using VMware tools? <https://askubuntu.com/a/1051620>`__
 - To manually mount an image in the same manner as pillage:
@@ -787,8 +823,13 @@ Notes
    qemu-nbd -r -c /dev/nbd1 /path/to/disk/image.vmdk
    mount -o ro /dev/nbd1p1 /mnt/myimage
 
+   # For a LUKS (or "--type bitlk" for BitLocker) encrypted partition
+   sudo cryptsetup open --type luks --readonly /dev/nbd1p3 myimage_p3
+   sudo mount -o ro /dev/mapper/myimage_p3 /mnt/myimage
+
    # Cleanup
    sudo umount /mnt/myimage
+   sudo cryptsetup close myimage_p3
    sudo qemu-nbd -d /dev/nbd1
    sudo rmmod nbd
 

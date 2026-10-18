@@ -369,6 +369,14 @@ peat pillage -c peat-config.json -P raw_disk.qcow2 -e http://192.0.2.33:9200/
 # Windows: pillage files from a VHDX image (requires Administrator)
 peat.exe pillage -c peat-config.json -P C:\\images\\eng_workstation.vhdx
 
+# Pillage a disk image with encrypted volumes (BitLocker or LUKS), trying each
+# password or BitLocker recovery password in passwords.txt (one per line).
+# Without --password-file, PEAT prompts for the password of each locked volume.
+peat pillage -c peat-config.json -P encrypted_disk.qcow2 --password-file passwords.txt
+
+# Windows: pillage a VHDX image with a BitLocker encrypted volume
+peat.exe pillage -c peat-config.json -P C:\\images\\laptop.vhdx --password-file C:\\keys\\passwords.txt
+
 # Windows: pillage files from the C: drive of the local system
 peat.exe pillage -c peat-config.json -P C:\\
 """  # End pillage examples
@@ -1125,6 +1133,20 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         'specified. If the source is a "split" VMware VMDK disk '
         "(e.g. multiple VMDK files that make up a single disk), "
         'use the file without the "-sXXX" in the name as the source.',
+    )
+    pillage_parser.add_argument(
+        "--password-file",
+        type=str,
+        required=False,
+        default=None,
+        metavar="FILE",
+        dest="pillage_password_file",
+        help="File with passwords or BitLocker recovery passwords for encrypted "
+        "volumes (BitLocker or LUKS) on a disk image, one per line. Each one is tried "
+        "on each locked volume until one works. If this isn't given and PEAT is "
+        "running in a terminal, it prompts for the password of each locked volume "
+        "instead. Passwords can't be given on the command line, to keep them out of "
+        "shell history and process listings.",
     )
     add_list_module_args(pillage_parser)  # Hack to add "--list-*" commands
 

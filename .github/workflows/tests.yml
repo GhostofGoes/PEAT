@@ -152,6 +152,20 @@ jobs:
       - name: Run Unit Tests
         run: |
           pdm run pytest --basetemp=./pytest_files --run-slow --durations=10 --cov-report term-missing:skip-covered --cov-report html --cov=peat --no-cov-on-fail --xdoctest -n 8 ./tests ./peat
+      # Mounting disk images with pillage requires root, so these tests are skipped
+      # above. Run them as root, and fail if they're skipped instead of passing.
+      - name: Run Linux Disk Image Tests (root)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-utils cryptsetup lvm2
+          # The nbd kernel module isn't in the base modules package of some kernels
+          if ! sudo modprobe --dry-run nbd; then
+            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+          fi
+          sudo .venv/bin/python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest_root --run-slow -v -rs -k test_pillage_image_linux_real tests/api/test_pillage_api.py 2>&1 | tee pytest_root.txt
+          grep -q "1 passed" pytest_root.txt
       - name: Upload Test Results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
