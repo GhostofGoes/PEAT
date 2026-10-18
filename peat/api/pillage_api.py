@@ -1,5 +1,7 @@
+import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -7,6 +9,7 @@ from pathlib import Path
 
 # Allow module to be imported without errors
 # on non-Linux systems (Windows and OSX).
+# kmodpy is only used for mounting disk images on Linux.
 try:
     import kmodpy
 
@@ -14,12 +17,78 @@ try:
 except (ImportError, OSError):
     KMODPY_INSTALLED = False
 
-from peat import config, consts, log
+from peat import config, consts, log, utils
 
 # Keep track if the nbd module was already loaded when pillage started
 # don't remove it if it was.  Keep the system in the same state when done
 # pillaging
 NBD_ALREADY_LOADED = False
+
+#: Disk image formats that Windows can mount natively (with ``Mount-DiskImage``).
+#: Other formats are converted to VHDX with ``qemu-img`` before mounting.
+WINDOWS_NATIVE_IMAGE_FORMATS = (".vhd", ".vhdx", ".iso")
+
+#: Directories in the root of the source that are skipped when searching.
+#: These are Windows system directories that won't have project files in them.
+#: Names are compared case-insensitively, since Windows paths are case-insensitive.
+EXCLUDED_DIRS = [
+    "Windows",
+    "System Volume Information",
+    "PerfLogs",
+    "MSOCache",
+    "cygwin64",
+    "Recovery",
+    "Boot",
+    "$Recycle.Bin",
+    "bootmgr",
+]
+
+# Mounts the disk image read-only (unless it's already attached), waits for
+# Windows to bring its volumes online, then prints the volumes as JSON.
+# The image path is passed in an environment variable to avoid quoting issues.
+_PS_MOUNT_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$imagePath = $env:PEAT_PILLAGE_IMAGE
+$alreadyAttached = (Get-DiskImage -ImagePath $imagePath).Attached
+if (-not $alreadyAttached) {
+    Mount-DiskImage -ImagePath $imagePath -Access ReadOnly | Out-Null
+}
+$volumes = @()
+for ($i = 0; $i -lt 30; $i++) {
+    $volumes = @(Get-DiskImage -ImagePath $imagePath | Get-Volume -ErrorAction SilentlyContinue)
+    if ($volumes.Count -gt 0) { break }
+    # ISO images only have one volume, but VHDs are disks with partitions.
+    # Windows Server's default SAN policy leaves newly attached disks offline.
+    $disk = Get-DiskImage -ImagePath $imagePath | Get-Disk -ErrorAction SilentlyContinue
+    if ($disk) {
+        if ($disk.IsOffline) {
+            Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue
+        }
+        $volumes = @($disk | Get-Partition -ErrorAction SilentlyContinue |
+            Get-Volume -ErrorAction SilentlyContinue)
+        if ($volumes.Count -gt 0) { break }
+    }
+    Start-Sleep -Milliseconds 500
+}
+$result = [PSCustomObject]@{
+    already_attached = [bool]$alreadyAttached
+    volumes = @($volumes | ForEach-Object {
+        [PSCustomObject]@{
+            drive_letter = if ($_.DriveLetter) { [string]$_.DriveLetter } else { '' }
+            path = [string]$_.Path
+            filesystem = [string]$_.FileSystemType
+            label = [string]$_.FileSystemLabel
+        }
+    })
+}
+ConvertTo-Json -InputObject $result -Depth 3 -Compress
+"""
+
+_PS_UNMOUNT_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+Dismount-DiskImage -ImagePath $env:PEAT_PILLAGE_IMAGE | Out-Null
+"""
 
 # TODO: integrate pillage with parse. Pillage results should go in peat_results.
 
@@ -56,38 +125,42 @@ def pillage(source: str) -> bool:
             return search(source_path, results_path)
 
         elif source_path.is_file():
+            log.info(f"Pillaging image {source}")
+            if consts.WINDOWS:
+                return pillage_image_windows(source_path, results_path)
+
             # TODO: build in support for images made of up smaller image files
-            if validate_image_mounting():
-                log.info(f"Pillaging image {source}")
+            if not validate_image_mounting():
+                return False
 
-                # Create temporary directory to mount image to in current directory
-                temp_path = Path("pillage_temp")
-                if temp_path.exists():
-                    try:
-                        shutil.rmtree(temp_path)
-                    except OSError:
-                        unmount_image(temp_path)
-                temp_path.mkdir()
-
-                # Mount image
-                log.debug(f"Mount image to {temp_path}")
-                success = False
-                if mount_image(source_path, temp_path):
-                    try:
-                        success = search(temp_path, results_path)
-                    except (Exception, KeyboardInterrupt) as ex:
-                        log.critical(f"Failed pillage search: {ex}")
-                    # remove Mount
-                    if unmount_image(temp_path):
-                        log.debug(f"Unmout image from '{temp_path}'")
-                else:
-                    log.error("Failed to mount image")
-
-                if temp_path.exists():
+            # Create temporary directory to mount image to in current directory
+            temp_path = Path("pillage_temp")
+            if temp_path.exists():
+                try:
                     shutil.rmtree(temp_path)
-                    log.debug(f"Deleted temp directory '{temp_path}'")
+                except OSError:
+                    unmount_image(temp_path)
+            temp_path.mkdir()
 
-                return success
+            # Mount image
+            log.debug(f"Mount image to {temp_path}")
+            success = False
+            if mount_image(source_path, temp_path):
+                try:
+                    success = search(temp_path, results_path)
+                except (Exception, KeyboardInterrupt) as ex:
+                    log.critical(f"Failed pillage search: {ex}")
+                # remove Mount
+                if unmount_image(temp_path):
+                    log.debug(f"Unmout image from '{temp_path}'")
+            else:
+                log.error("Failed to mount image")
+
+            if temp_path.exists():
+                shutil.rmtree(temp_path)
+                log.debug(f"Deleted temp directory '{temp_path}'")
+
+            return success
         else:
             log.error("Unsupported source type")
             return False
@@ -102,7 +175,8 @@ def validate_image_mounting() -> bool:
     In order to mount an image and search, certain conditions must be met:
 
     - PEAT must be run as ``root``
-    - PEAT must be run on a Linux system and not on Windows Subsystem for Linux (WSL)
+    - PEAT must be run on a Linux system and not on Windows Subsystem for Linux (WSL).
+      Windows is handled separately, by :func:`validate_image_mounting_windows`.
     - ``kmodpy`` Python package must be installed
     - ``qemu-nbd`` must be installed and available in the system PATH
 
@@ -112,7 +186,8 @@ def validate_image_mounting() -> bool:
     if consts.WSL or not consts.LINUX:
         log.error(
             "To mount an image for searching, you must be running on Linux "
-            "(Windows, WSL, or OSX are not supported at this time)"
+            "or Windows (WSL and OSX are not supported at this time). If you "
+            "are using WSL, run peat.exe on Windows instead."
         )
         return False
     elif os.geteuid() != 0:
@@ -211,33 +286,268 @@ def list_loaded_modules() -> list[str]:
     return result
 
 
-def search(source: Path, results: Path) -> bool:
-    if not source.is_dir():
+def pillage_image_windows(source: Path, results: Path) -> bool:
+    """
+    Mount a disk image read-only on Windows, search its volumes, then unmount it.
+
+    VHD, VHDX, and ISO images are mounted natively with ``Mount-DiskImage``.
+    Other formats (raw, VMDK, qcow2, etc.) are first converted to a temporary
+    VHDX file in ``pillage_temp`` using ``qemu-img``, which must be installed.
+    """
+    if not validate_image_mounting_windows(source):
+        return False
+
+    image = source.resolve()
+    temp_path = None
+
+    if image.suffix.lower() not in WINDOWS_NATIVE_IMAGE_FORMATS:
+        temp_path = Path("pillage_temp")
+        if temp_path.exists():
+            shutil.rmtree(temp_path)
+        temp_path.mkdir()
+
+        converted = convert_image_windows(image, temp_path.resolve())
+        if not converted:
+            shutil.rmtree(temp_path, ignore_errors=True)
+            return False
+        image = converted
+
+    success = False
+    mount_info = mount_image_windows(image)
+
+    if mount_info is None:
+        log.error("Failed to mount image")
+    else:
+        try:
+            success = search_volumes_windows(mount_info["volumes"], results)
+        except (Exception, KeyboardInterrupt) as ex:
+            log.critical(f"Failed pillage search: {ex}")
+
+        # Leave the image attached if it was attached before pillage started
+        if mount_info["already_attached"]:
+            log.info(f"Leaving '{image}' attached, since it was attached before pillage started")
+        elif unmount_image_windows(image):
+            log.debug(f"Unmounted image '{image}'")
+
+    if temp_path and temp_path.exists():
+        shutil.rmtree(temp_path, ignore_errors=True)
+        log.debug(f"Deleted temp directory '{temp_path}'")
+
+    return success
+
+
+def validate_image_mounting_windows(source: Path) -> bool:
+    """
+    Ensure all the requirements needed to mount an image on Windows are satisfied.
+
+    - PowerShell (``powershell.exe``) must be available, for ``Mount-DiskImage``
+    - PEAT must be run as Administrator, unless the image is an ISO
+    - ``qemu-img`` must be installed and in the system PATH, unless
+      the image is a VHD, VHDX, or ISO
+
+    Returns:
+        If the requirements for mounting are met
+    """
+    suffix = source.suffix.lower()
+
+    if not shutil.which("powershell"):
+        log.error(
+            "Could not find 'powershell.exe', which is required to mount a disk image on Windows"
+        )
+    elif suffix != ".iso" and not utils.are_we_superuser():
+        log.error(
+            "To mount a disk image for searching on Windows, you must run PEAT "
+            "as Administrator (ISO images are the exception). Re-run PEAT from "
+            "an Administrator PowerShell or CMD terminal."
+        )
+    elif suffix not in WINDOWS_NATIVE_IMAGE_FORMATS and not shutil.which("qemu-img"):
+        log.error(
+            f"Windows can't mount '{suffix}' images natively, only VHD, VHDX, and ISO "
+            f"images. Install QEMU (https://qemu.weilnetz.de/w64/) and add "
+            f"'qemu-img.exe' to the PATH so PEAT can convert the image, convert it "
+            f"to VHDX yourself ('qemu-img convert -O vhdx {source.name} image.vhdx'), "
+            f"or mount it with another tool and pillage the drive letter instead."
+        )
+    else:
+        return True
+
+    return False
+
+
+def convert_image_windows(source: Path, temp_dir: Path) -> Path | None:
+    """
+    Convert a disk image Windows can't mount natively to a VHDX file.
+
+    Returns:
+        Path to the converted VHDX image, or :obj:`None` if the conversion failed
+    """
+    dest = temp_dir / f"{source.stem}.vhdx"
+    qemu_args = ["qemu-img", "convert", "-O", "vhdx", str(source), str(dest)]
+
+    log.info(
+        f"Converting '{source.name}' to VHDX so Windows can mount it. This makes "
+        f"a temporary copy of the image in '{temp_dir}', which may take a while "
+        f"and use a lot of disk space for large images."
+    )
+    log.debug(f"Running '{' '.join(qemu_args)}'")
+
+    retval = subprocess.call(qemu_args)
+    if retval != 0 or not dest.is_file():
+        log.error(f"Failed to run '{' '.join(qemu_args)}' (return code: {retval})")
+        return None
+
+    return dest
+
+
+def _run_powershell(script: str, image: Path) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["PEAT_PILLAGE_IMAGE"] = str(image)
+
+    return subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
+def mount_image_windows(image: Path) -> dict | None:
+    """
+    Mount a VHD, VHDX, or ISO image read-only using ``Mount-DiskImage``.
+
+    Returns:
+        Dict with ``already_attached`` (if the image was already attached, in which
+        case it isn't mounted again) and ``volumes`` (list of dicts describing each
+        volume on the image), or :obj:`None` if mounting failed.
+    """
+    log.debug(f"Mounting image '{image}' (read-only)")
+    proc = _run_powershell(_PS_MOUNT_SCRIPT, image)
+
+    if proc.returncode != 0:
+        log.error(
+            f"Failed to mount '{image}' with Mount-DiskImage "
+            f"(return code: {proc.returncode}): {proc.stderr.strip()}"
+        )
+        return None
+
+    try:
+        info = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        log.error(f"Failed to parse Mount-DiskImage output: {proc.stdout.strip()}")
+        unmount_image_windows(image)
+        return None
+
+    # PowerShell 5.1 doesn't serialize empty arrays nested in objects consistently
+    volumes = info.get("volumes") or []
+    if isinstance(volumes, dict):
+        volumes = [volumes]
+    info["volumes"] = volumes
+
+    log.debug(f"Mounted image '{image}' with {len(volumes)} volumes: {volumes}")
+    return info
+
+
+def unmount_image_windows(image: Path) -> bool:
+    proc = _run_powershell(_PS_UNMOUNT_SCRIPT, image)
+
+    if proc.returncode != 0:
+        log.error(
+            f"Failed to unmount '{image}' with Dismount-DiskImage "
+            f"(return code: {proc.returncode}): {proc.stderr.strip()}"
+        )
+        return False
+
+    return True
+
+
+def search_volumes_windows(volumes: list[dict], results: Path) -> bool:
+    """
+    Search the volumes of a mounted disk image.
+
+    Volumes that were assigned a drive letter are searched using it
+    (e.g. ``E:\\``), otherwise the volume GUID path is used
+    (e.g. ``\\\\?\\Volume{...}\\``). Volumes with a filesystem Windows
+    can't read (e.g. ext4) are skipped.
+
+    Returns:
+        If at least one volume was searched successfully
+    """
+    searched = 0
+
+    for vol in volumes:
+        fs = vol.get("filesystem", "")
+        name = vol.get("label") or vol.get("path", "")
+
+        if not fs or fs.lower() in ["unknown", "raw"]:
+            log.warning(
+                f"Skipping volume '{name}', its filesystem isn't readable by Windows. "
+                f"To pillage it, run PEAT on Linux, which supports more filesystems."
+            )
+            continue
+
+        if vol.get("drive_letter"):
+            vol_path = f"{vol['drive_letter']}:\\"
+        elif vol.get("path"):
+            # Kept as a string, since pathlib drops the trailing backslash from
+            # volume GUID paths, and without it they refer to the volume device
+            # instead of the root directory of its filesystem.
+            vol_path = vol["path"].rstrip("\\/") + os.sep
+        else:
+            log.warning(f"Skipping volume '{name}', it doesn't have a path")
+            continue
+
+        log.info(f"Pillaging volume '{vol_path}' ({fs}, label: '{vol.get('label', '')}')")
+        if search(vol_path, results):
+            searched += 1
+
+    if not searched:
+        log.error("No volumes on the image could be searched")
+        return False
+
+    return True
+
+
+def _is_junction(path: str) -> bool:
+    """
+    If a path is a Windows directory junction (mount point reparse point).
+
+    Junctions such as ``C:\\Documents and Settings`` point to other directories
+    on the same system, and following them would search the same files twice.
+    """
+    try:
+        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (AttributeError, OSError):
+        return False
+
+
+def search(source: Path | str, results: Path) -> bool:
+    source = str(source)
+    if not os.path.isdir(source):
         log.error(f"Failed pillage search: source path '{source}' is not a valid directory.")
         return False
 
-    excluded = [
-        "Windows",
-        "System Volume Information",
-        "PerfLogs",
-        "MSOCache",
-        "cygwin64",
-        "Recovery",
-        "Boot",
-        "$Recycle.Bin",
-        "bootmgr",
-    ]
+    excluded = {name.lower() for name in EXCLUDED_DIRS}
     exclude_counter = 0
 
-    for root, _dirnames, filenames in os.walk(str(source)):
+    def _walk_error(err: OSError) -> None:
+        # Common on live Windows systems, e.g. for folders only SYSTEM can read
+        log.debug(f"Failed to search '{err.filename}': {err.strerror}")
+
+    for root, dirnames, filenames in os.walk(source, onerror=_walk_error):
         log.trace2(f"Searching in: {root}")
 
-        parts = root.split(os.sep)
-
-        if len(parts) >= 2 and parts[1] in excluded:
-            log.trace2(f"Skipping excluded dir '{root}'")
-            exclude_counter += 1
-            continue
+        # Prune excluded system directories in the root of the source,
+        # and junctions, so os.walk doesn't descend into them.
+        for dirname in list(dirnames):
+            dir_path = os.path.join(root, dirname)
+            if (root == source and dirname.lower() in excluded) or (
+                consts.WINDOWS and _is_junction(dir_path)
+            ):
+                log.trace2(f"Skipping excluded dir '{dir_path}'")
+                dirnames.remove(dirname)
+                exclude_counter += 1
 
         for filename in filenames:
             src_file = Path(root) / filename
@@ -317,7 +627,13 @@ def copy_file(src: Path, dst: Path) -> None:
     if not dst.parent.exists():
         dst.parent.mkdir(exist_ok=True, parents=True)
 
-    shutil.copyfile(str(src), str(dst))
+    try:
+        shutil.copyfile(str(src), str(dst))
+    except OSError as ex:
+        # e.g. the file is locked by another program on Windows
+        log.error(f"[Pillage] Failed to copy {src} to {dst}: {ex}")
+        return
+
     log.info(f"[Pillage] Copied {src} to {dst}")
 
 

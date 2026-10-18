@@ -1,0 +1,1 @@
+``peat pillage`` can now mount and search disk images on Windows. VHD, VHDX, and ISO images are mounted read-only with ``Mount-DiskImage``, and other formats (raw, VMDK, qcow2) are converted to VHDX with ``qemu-img`` first. Directory searches skip excluded system folders case-insensitively, skip Windows junctions, and no longer fail on unreadable folders or locked files.
