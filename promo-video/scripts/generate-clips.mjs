@@ -1,6 +1,7 @@
 // Generate one ElevenLabs clip per scene of every version in src/variants/, loudness-normalize
 // it, and record its duration in src/voiceover-durations.json. Lines whose text hasn't changed
 // since the last run (tracked in src/voice-manifest.json) are skipped.
+// A version may set "voice" (e.g. {"speed": 1.1}) to override voiceover-config.json settings.
 // Usage: node scripts/generate-clips.mjs [--force] [--reprocess] [v1 | v1-threat ...]
 //   --force      regenerate even if the text is unchanged
 //   --reprocess  re-trim/normalize the existing raw clips without calling the API
@@ -31,12 +32,12 @@ const save = () => {
   writeFileSync("src/voice-manifest.json", JSON.stringify(sorted(manifest), null, 2) + "\n");
 };
 
-async function synthesize(text, rawPath) {
+async function synthesize(text, rawPath, overrides = {}) {
   for (let attempt = 1; ; attempt++) {
     const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice.voiceId}`, {
       method: "POST",
       headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ text, model_id: voice.model, voice_settings: { ...voice.settings, use_speaker_boost: true } }),
+      body: JSON.stringify({ text, model_id: voice.model, voice_settings: { ...voice.settings, ...overrides, use_speaker_boost: true } }),
     });
     if (res.ok) return writeFileSync(rawPath, Buffer.from(await res.arrayBuffer()));
     const body = (await res.text()).slice(0, 300);
@@ -61,10 +62,12 @@ function processClip(key) {
 
 const jobs = variants.flatMap((v) =>
   v.scenes
-    .map((s) => ({ key: `${v.id}-${s.id}`, text: s.vo, variant: v.id }))
+    .map((s) => ({ key: `${v.id}-${s.id}`, text: s.vo, variant: v.id, voice: v.voice ?? {} }))
     .filter((j) => !only.length || only.includes(j.key) || only.includes(j.variant)),
 );
-const todo = jobs.filter((j) => force || reprocess || manifest[j.key] !== j.text || !existsSync(`public/voice/${j.key}.mp3`));
+// The manifest records each line's text plus any per-version voice overrides (e.g. speed).
+const sig = (j) => (Object.keys(j.voice).length ? `${j.text} ${JSON.stringify(j.voice)}` : j.text);
+const todo = jobs.filter((j) => force || reprocess || manifest[j.key] !== sig(j) || !existsSync(`public/voice/${j.key}.mp3`));
 console.log(`${todo.length} of ${jobs.length} clips to ${reprocess ? "reprocess" : "generate"}`);
 
 // A few requests at a time keeps within ElevenLabs concurrency limits.
@@ -72,9 +75,9 @@ const queue = [...todo];
 await Promise.all(
   Array.from({ length: 3 }, async () => {
     for (let job; (job = queue.shift()); ) {
-      if (!reprocess) await synthesize(job.text, `voice-tests/${job.key}-raw.mp3`);
+      if (!reprocess) await synthesize(job.text, `voice-tests/${job.key}-raw.mp3`, job.voice);
       durations[job.key] = processClip(job.key);
-      manifest[job.key] = job.text;
+      manifest[job.key] = sig(job);
       console.log(`${job.key.padEnd(16)} ${durations[job.key].toFixed(2)}s  "${job.text}"`);
       save();
     }

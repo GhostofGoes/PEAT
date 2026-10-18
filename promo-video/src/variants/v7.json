@@ -1,0 +1,289 @@
+{
+  "id": "v7",
+  "name": "Inspect",
+  "theme": "blueprint",
+  "music": "motivational.mp3",
+  "scenes": [
+    {
+      "id": "threat",
+      "gap": 14,
+      "vo": "Attackers aren't stopping at the network anymore. They're going after the controllers themselves.",
+      "text": {
+        "eyebrow": "SPEC 01 \u2014 THREAT MODEL",
+        "headline": "Attackers are going *after the controllers.*"
+      },
+      "cues": {
+        "headline": "going"
+      }
+    },
+    {
+      "id": "question",
+      "gap": 14,
+      "vo": "If your PLCs or relays were changed tonight, would anyone notice?",
+      "text": {
+        "eyebrow": "SPEC 02 \u2014 INTEGRITY",
+        "headline": "Changed *tonight?*",
+        "kicker": "Would anyone notice?"
+      },
+      "cues": {
+        "headline": "changed",
+        "kicker": "would"
+      }
+    },
+    {
+      "id": "baseline",
+      "gap": 14,
+      "vo": "A golden baseline is your approved state, frozen in time. Without one, a malicious change looks like routine engineering.",
+      "text": {
+        "eyebrow": "SPEC 03 \u2014 BASELINE",
+        "headline": "Golden baseline: *your approved state, frozen in time.*",
+        "status": "without one, a malicious change looks routine"
+      },
+      "cues": {
+        "status": "malicious"
+      }
+    },
+    {
+      "id": "tooling",
+      "gap": 14,
+      "vo": "Each vendor ships its own proprietary software. It costs thousands per license, and it's built for engineering, not security.",
+      "text": {
+        "eyebrow": "SPEC 04 \u2014 TOOLING",
+        "headline": "One vendor, *one proprietary tool.*",
+        "cost": "Thousands",
+        "costSub": "per license",
+        "security": "Engineering \u2260 security",
+        "securitySub": "not designed for cybersecurity"
+      },
+      "cues": {
+        "cost": "thousands",
+        "security": "built"
+      }
+    },
+    {
+      "id": "turn",
+      "gap": 26,
+      "vo": "There's a better way to look at the control layer.",
+      "text": {
+        "line1": "There's a better way to see",
+        "line2": "*the control layer.*"
+      },
+      "cues": {
+        "line2": "control"
+      }
+    },
+    {
+      "id": "reveal",
+      "gap": 10,
+      "vo": "PEAT. The Process Extraction and Analysis Tool, developed at Sandia National Laboratories.",
+      "text": {
+        "title": "Process Extraction and Analysis Tool"
+      },
+      "cues": {
+        "title": "process",
+        "sub": "sandia"
+      }
+    },
+    {
+      "id": "scan",
+      "gap": 16,
+      "vo": "First, it discovers and identifies the devices on your network.",
+      "text": {
+        "step": "STEP 1 \u00b7 SCAN",
+        "title": "Discover and *identify* devices",
+        "sub": "Network discovery with vendor and model verification."
+      },
+      "cues": {
+        "results": "identifies"
+      }
+    },
+    {
+      "id": "pull",
+      "gap": 10,
+      "vo": "Next, it collects the logic, configuration, logs, and firmware from each one.",
+      "text": {
+        "step": "STEP 2 \u00b7 PULL",
+        "title": "Collect *logic, config, logs & firmware*",
+        "sub": "Over Ethernet or serial, straight from the device."
+      },
+      "cues": {
+        "logic": "logic",
+        "configs": "configuration",
+        "logs": "logs",
+        "firmware": "firmware",
+        "link": "each"
+      }
+    },
+    {
+      "id": "parse",
+      "gap": 14,
+      "vo": "Then it decodes vendor formats into a single, consistent data model.",
+      "text": {
+        "step": "STEP 3 \u00b7 PARSE",
+        "title": "Decode into *one data model*",
+        "sub": "Vendor-specific formats become consistent, structured JSON."
+      },
+      "cues": {
+        "flow": "single"
+      }
+    },
+    {
+      "id": "downstream",
+      "gap": 14,
+      "vo": "It's not whether a config looks reasonable. It's whether it matches what you signed off on. Elastic and Splunk work out of the box.",
+      "text": {
+        "step": "STEP 4 \u00b7 COMPARE",
+        "title": "Does it match *what you signed off on?*",
+        "sub": "Diff every pull against your approved baseline, then stream it to your data stores."
+      },
+      "cues": {
+        "diff": "matches",
+        "siem": "elastic"
+      }
+    },
+    {
+      "id": "safety",
+      "gap": 16,
+      "vo": "It's OT-native, built with operational realities in mind. Devices are verified first, one at a time, and you control exactly what's pulled.",
+      "text": {
+        "eyebrow": "SPEC 05 \u2014 SAFETY",
+        "headline": "OT-native, *by design*",
+        "items": [
+          "Verify before anything is collected",
+          "One device at a time",
+          "Lowest-load methods tried first",
+          "You control exactly what's pulled"
+        ],
+        "status": "process value: NOMINAL"
+      },
+      "cues": {
+        "i1": "verified",
+        "i2": "one",
+        "i3": "time",
+        "i4": "control"
+      }
+    },
+    {
+      "id": "devices",
+      "gap": 18,
+      "vo": "It supports PLCs, protection relays, RTUs, and more, from over ten vendors.",
+      "text": {
+        "eyebrow": "SUPPORTED TARGETS",
+        "headline": "Field devices from *10+ vendors*",
+        "footer": "25+ device families \u00b7 13 protocols \u00b7 project files & disk images"
+      },
+      "cues": {
+        "plcs": "plcs",
+        "relays": "relays",
+        "rtus": "rtus",
+        "more": "more",
+        "vendors": "vendors"
+      }
+    },
+    {
+      "id": "value",
+      "gap": 14,
+      "vo": "Now you can see your controllers clearly, and know what they're actually doing.",
+      "text": {
+        "eyebrow": "SPEC 06 \u2014 OUTCOME",
+        "line1": "See your controllers *clearly.*",
+        "line2": "Know what they're *actually doing.*"
+      },
+      "cues": {
+        "verify": "see",
+        "line2": "know"
+      }
+    },
+    {
+      "id": "platforms",
+      "gap": 14,
+      "vo": "PEAT itself runs on Linux, Windows, macOS, or Docker. Download it, and you're ready to go.",
+      "text": {
+        "eyebrow": "HOST PLATFORMS",
+        "headline": "Runs where *you* work",
+        "badges": [
+          "Download and go",
+          "No vendor software required"
+        ]
+      },
+      "cues": {
+        "linux": "linux",
+        "windows": "windows",
+        "macos": "mac",
+        "docker": "docker",
+        "badges": "download"
+      }
+    },
+    {
+      "id": "library",
+      "gap": 16,
+      "vo": "It's also a Python library, so you can script PEAT into your own workflows.",
+      "text": {
+        "step": "PYTHON API",
+        "title": "A *Python library*, too",
+        "sub": "Script PEAT into your own workflows and tooling.",
+        "chips": [
+          "Automation",
+          "Pipelines",
+          "Research"
+        ]
+      },
+      "cues": {
+        "code": "python",
+        "chips": "script"
+      }
+    },
+    {
+      "id": "modules",
+      "gap": 18,
+      "vo": "Each device lives in its own module. To add a new one, write a single Python class.",
+      "text": {
+        "step": "EXTENSIBLE",
+        "title": "New device? *One Python class.*",
+        "sub": "Self-contained device modules, loadable at runtime."
+      },
+      "cues": {
+        "add": "add",
+        "code": "write"
+      }
+    },
+    {
+      "id": "free",
+      "gap": 16,
+      "vo": "No license fees. PEAT is free, open source, and GPL licensed.",
+      "text": {
+        "struck": "Per-seat licensing",
+        "big": "$0",
+        "line": "*Free* and open source.",
+        "chips": [
+          "Open source",
+          "GPL licensed"
+        ]
+      },
+      "cues": {
+        "zero": "no",
+        "chips": "open"
+      }
+    },
+    {
+      "id": "cta",
+      "gap": 72,
+      "vo": "Security is what you inspect, not what you expect. Get PEAT on GitHub today.",
+      "text": {
+        "line1": "Security is what you *inspect,*",
+        "line2": "not what you *expect.*",
+        "portraitLines": [
+          "Security is what",
+          "you *inspect,*",
+          "not what you *expect.*"
+        ]
+      },
+      "cues": {
+        "url": "github"
+      }
+    }
+  ],
+  "voice": {
+    "speed": 1.1
+  }
+}

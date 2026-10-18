@@ -413,15 +413,23 @@ export const CtaScene: React.FC = () => {
   const copy = useCopy();
   const cue = useCue();
   const btnAt = cue("url", 0.6);
+  // A long tagline gets a deliberate line break in landscape too.
+  const twoLines = `${copy.str("line1")} ${copy.str("line2")}`.length > 32;
   const btn = spring({ frame: frame - btnAt, fps, config: { damping: 12, mass: 0.7 } });
   const glow = 0.6 + 0.4 * Math.sin(frame / 10);
   return (
     <AbsoluteFill style={{ padding, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: pick(40, 56) }}>
       <Logo height={pick(280, 380)} delay={0} />
-      {isPortrait ? (
+      {isPortrait && copy.list("portraitLines").length ? (
         <div>
-          <Words text={copy.str("line1")} delay={10} stagger={5} size={100} align="center" />
-          <Words text={copy.str("line2")} delay={20} stagger={5} size={100} align="center" />
+          {copy.list("portraitLines").map((l, i) => (
+            <Words key={i} text={l} delay={10 + i * 8} stagger={5} size={80} align="center" />
+          ))}
+        </div>
+      ) : isPortrait || twoLines ? (
+        <div>
+          <Words text={copy.str("line1")} delay={10} stagger={5} size={pick(88, 100)} align="center" />
+          <Words text={copy.str("line2")} delay={20} stagger={5} size={pick(88, 100)} align="center" />
         </div>
       ) : (
         <Words text={`${copy.str("line1")} ${copy.str("line2")}`} delay={10} stagger={5} size={96} align="center" />
