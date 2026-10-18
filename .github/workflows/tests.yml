@@ -158,8 +158,14 @@ jobs:
       - name: Install dependencies
         run: pdm sync -G test
       - name: Run Unit Tests
+        shell: bash
         run: |
-          pdm run pytest --basetemp=./pytest_files --run-slow --durations=10 --cov-report term-missing:skip-covered --cov-report html --cov=peat --no-cov-on-fail --xdoctest -n 8 ./tests ./peat
+          set -o pipefail
+          pdm run pytest --basetemp=./pytest_files --run-slow --durations=10 --cov-report term-missing:skip-covered --cov-report html --cov=peat --no-cov-on-fail --xdoctest -n 8 ./tests ./peat 2>&1 | tee pytest_output.txt
+      # Show why each test failed as an annotation, so it's visible without the full log
+      - name: Report test failures
+        if: failure()
+        run: pdm run python .github/report_pytest_failures.py pytest_output.txt
       - name: Upload Test Results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -169,13 +175,71 @@ jobs:
             pytest_files/
           if-no-files-found: error
 
+  # Create real disk images with hdiutil (FAT32, exFAT, HFS+, APFS, ISO, raw, encrypted
+  # DMG and APFS, and qemu-img formats) and pillage them. These run in their own job
+  # and not in parallel, since attaching images changes the state of the runner, and
+  # hdiutil fails under CodeQL's build tracing. The tests are skipped unless
+  # PEAT_TEST_MACOS_IMAGES is set, so fail if any of them are skipped.
+  macos-image-tests:
+    name: macOS Disk Image Tests
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ["macos-15", "macos-15-intel", "macos-26"]
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Setup PDM
+        uses: pdm-project/setup-pdm@94a823180e06fcde4ad29308721954a521c96ed0 # v4
+        with:
+          python-version: "3.12"
+          cache: true
+      - name: Install dependencies
+        run: pdm sync -G test
+      - name: Install QEMU (qemu-img)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
+        run: |
+          brew install qemu
+          qemu-img --version
+      - name: Run macOS Disk Image Tests
+        env:
+          PEAT_TEST_MACOS_IMAGES: "1"
+        run: |
+          set -euo pipefail
+          sw_vers
+          pdm run pytest -p no:cacheprovider --basetemp=./pytest_images --run-slow -v -rs -k "macos_real or macos_live_root" tests/api/test_pillage_api.py 2>&1 | tee pytest_images.txt
+          if grep -q "SKIPPED" pytest_images.txt; then
+            echo "::error ::macOS disk image tests were skipped"
+            exit 1
+          fi
+      # Show why each test failed as an annotation, so it's visible without the full log
+      - name: Report test failures
+        if: failure()
+        run: python3 .github/report_pytest_failures.py pytest_images.txt
+      - name: Check no disk images were left attached
+        if: always()
+        run: |
+          hdiutil info
+          if hdiutil info | grep -q "pytest_images"; then
+            echo "::error ::Disk images created by the tests are still attached"
+            exit 1
+          fi
+
   # Single status check that can be marked as "required" in branch protection,
   # instead of having to require every job and matrix entry individually.
   # NOTE: add any new jobs in this workflow to "needs".
   all-tests-passed:
     name: All Tests Passed
     if: always()
-    needs: [commits, check-newsfragments, check-changelog, code-quality, unit-tests]
+    needs: [commits, check-newsfragments, check-changelog, code-quality, unit-tests, macos-image-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner

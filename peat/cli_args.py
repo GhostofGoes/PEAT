@@ -371,6 +371,18 @@ peat.exe pillage -c peat-config.json -P C:\\images\\eng_workstation.vhdx
 
 # Windows: pillage files from the C: drive of the local system
 peat.exe pillage -c peat-config.json -P C:\\
+
+# macOS: pillage files from a DMG image (doesn't require root)
+peat pillage -c peat-config.json -P ~/images/eng_workstation.dmg
+
+# macOS: pillage an encrypted DMG image, or an image with encrypted APFS volumes,
+# trying each password in passwords.txt (one per line). Without --password-file,
+# PEAT prompts for the password of each encrypted image or volume.
+peat pillage -c peat-config.json -P encrypted.dmg --password-file passwords.txt
+
+# macOS: pillage files from the local system (give the terminal app
+# Full Disk Access first, to search folders protected by macOS)
+peat pillage -c peat-config.json -P /
 """  # End pillage examples
 
 
@@ -1123,10 +1135,24 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         metavar="SOURCE",
         dest="pillage_source",
         help="Source to pillage, either a disk image file (raw, VMDK, qcow2, "
-        "VHD, VHDX, ISO, etc.) or a directory location. Defaults to local directory if nothing "
-        'specified. If the source is a "split" VMware VMDK disk '
+        "VHD, VHDX, ISO, DMG, etc.) or a directory location. Defaults to local directory if "
+        'nothing specified. If the source is a "split" VMware VMDK disk '
         "(e.g. multiple VMDK files that make up a single disk), "
         'use the file without the "-sXXX" in the name as the source.',
+    )
+    pillage_parser.add_argument(
+        "--password-file",
+        type=str,
+        required=False,
+        default=None,
+        metavar="FILE",
+        dest="pillage_password_file",
+        help="File with passwords for encrypted disk images and volumes, one per "
+        "line (macOS only: encrypted DMG images and encrypted APFS volumes). Each one "
+        "is tried on each locked image or volume until one works. If this isn't given "
+        "and PEAT is running in a terminal, it prompts for the password of each locked "
+        "image or volume instead. Passwords can't be given on the command line, to keep "
+        "them out of shell history and process listings.",
     )
     add_list_module_args(pillage_parser)  # Hack to add "--list-*" commands
 

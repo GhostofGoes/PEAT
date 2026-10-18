@@ -675,7 +675,7 @@ Requirements
 ------------
 Pillage can search directories on any platform PEAT runs on, including a live Windows system (e.g. ``C:\``) or a mounted drive. Searching a directory doesn't require root or Administrator, but files the current user can't read will be skipped.
 
-Mounting disk images is supported on Linux and Windows. It isn't supported in :term:`WSL` or on macOS; in WSL, use ``peat.exe`` on Windows instead.
+Mounting disk images is supported on Linux, Windows, and macOS. It isn't supported in :term:`WSL`; in WSL, use ``peat.exe`` on Windows instead.
 
 Linux
 ^^^^^
@@ -698,6 +698,26 @@ Windows
 - Images that were already attached before pillage started are searched as they are, and left attached when it finishes.
 - Volumes encrypted with BitLocker are skipped with a warning, since they're locked. To search one, attach the image with ``Mount-DiskImage``, unlock the volume (e.g. in File Explorer or with ``manage-bde -unlock``), then run pillage again.
 - Directory junctions (e.g. ``Documents and Settings``) aren't followed, since they point to other directories that may be searched twice. To search where a junction points, pillage that directory.
+
+macOS
+^^^^^
+- Tested on the macOS versions listed in :ref:`platforms-section` (macOS 15 Sequoia on Apple Silicon and Intel, and macOS 26 Tahoe on Apple Silicon).
+- Disk images are attached read-only with the built-in ``hdiutil`` command, with ``-nobrowse`` so they don't show up in Finder, and their volumes are mounted in a ``/tmp/peat_pillage_<random>`` directory. Root isn't required, as long as the current user can read the image.
+- DMG (all variants), sparse images (``.sparseimage``), sparse bundles (``.sparsebundle``), ISO and CD/DVD master (``.cdr``) images are attached natively. Raw images (e.g. ``.img``, ``.raw``, ``.dd``, or the ``-flat.vmdk`` file of a flat VMDK disk) are attached as raw disks.
+- Other image formats (VMDK, VHD, VHDX, qcow2, etc.) are converted to a temporary raw image in a ``pillage_temp_<random>`` directory before attaching, which requires ``qemu-img`` (``brew install qemu``). If ``qemu-img`` is installed, it's also used to check the format of images, instead of relying on the file extension. PEAT checks there's enough free disk space in the current directory for the converted image first. On APFS the converted image is a sparse file, so it only uses as much space as the data in the image, but on HFS+, FAT, and exFAT it uses the full size of the disk.
+- Every volume macOS can read is searched: APFS (including every volume in an APFS container), HFS+, FAT32, exFAT, NTFS (read-only, which covers most Windows images), and ISO 9660/UDF. Volumes with other filesystems, such as ext4, Btrfs, or XFS, are skipped; use Linux to pillage those.
+- Encrypted DMG and sparse bundle images, and encrypted APFS volumes, are unlocked with a password, which is read from the file given with ``--password-file`` (one password per line, each one is tried until one works), or prompted for if PEAT is running in a terminal and there's no password file. Passwords are passed to ``hdiutil attach -stdinpass`` and ``diskutil apfs unlockVolume -stdinpassphrase`` through stdin, so they're never on the command line, and they're never logged.
+- BitLocker and LUKS encrypted volumes are skipped with a warning, since macOS can't unlock them. Use Linux to pillage those. FileVault-encrypted internal drives of Apple Silicon and T2 Macs can't be decrypted from an image either, since their keys are tied to the Mac's hardware.
+- Images that were already attached before pillage started are searched as they are (only the volumes that are mounted), and left attached when it finishes.
+- Images in ``~/Desktop``, ``~/Documents``, ``~/Downloads``, iCloud Drive, or on removable or network volumes may need the terminal app to be allowed to access them. macOS asks the first time, or the error is "Operation not permitted".
+- E01 (EnCase) forensic images aren't supported. Use ``ewfmount`` to expose them as a raw image first, or use Linux.
+
+Pillaging a live macOS system (``/``):
+
+- The macOS Data volume (``/System/Volumes/Data``) is never searched as part of ``/``, since everything in it is already searched through the firmlinks in ``/`` (e.g. ``/Users``, ``/Applications``, ``/Library``, and ``/private``).
+- macOS system directories are skipped (see the notes below), along with ``/Volumes``, ``/dev``, ``/Network``, ``/net``, and ``/home``, which other drives, disk images, network shares, and devices are mounted on. To search another drive, pillage it directly (e.g. ``/Volumes/Backup``).
+- macOS privacy protections (TCC) block access to folders such as Mail, Messages, Safari, Time Machine backups, and other users' Desktop and Documents folders, even when running as root. To search them, give the terminal app PEAT runs in (e.g. Terminal) Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then restart the terminal. Folders that can't be searched are logged with a reminder of this.
+- Files in iCloud Drive and other cloud storage (e.g. ``~/Library/CloudStorage``) that haven't been downloaded to the Mac are skipped, since copying them would download them. To pillage them, download them first (e.g. with "Download Now" in Finder).
 
 Running Pillage
 ---------------
@@ -740,10 +760,20 @@ On Windows, pillage a VHDX image, the live system drive, or a mounted drive (run
    peat.exe pillage -c peat-config.yaml -P C:\
    peat.exe pillage -c peat-config.yaml -P E:\
 
+On macOS, pillage a DMG or VMDK image, an encrypted DMG image (or an image with encrypted APFS volumes), or the live system (root isn't required for any of them)
+
+.. code-block:: bash
+
+   peat pillage -c peat-config.yaml -P ~/images/eng_workstation.dmg
+   peat pillage -c peat-config.yaml -P ~/images/eng_vm.vmdk
+   peat pillage -c peat-config.yaml -P encrypted.dmg --password-file passwords.txt
+   peat pillage -c peat-config.yaml -P /
+
 Command line arguments
 ^^^^^^^^^^^^^^^^^^^^^^
 - ``-c`` The PEAT configuration file to use. Refer to :ref:`pillage-config`.
 - ``-P`` The source image or directory to search
+- ``--password-file`` (macOS only) File with passwords for encrypted DMG images and encrypted APFS volumes, one per line. Without it, PEAT prompts for passwords if it's running in a terminal.
 
 Examples
 ^^^^^^^^
@@ -771,10 +801,21 @@ On Windows, unmount the image (or the converted image in ``pillage_temp_<random>
    Dismount-DiskImage -ImagePath C:\full\path\to\image.vhdx
    Remove-Item -Recurse -Force pillage_temp_*
 
+On macOS, find the image's disk device (e.g. ``/dev/disk4``) in the output of ``hdiutil info``, detach it, and delete the temporary directories. Root isn't needed, unless the image was attached by root.
+
+.. code-block:: bash
+
+   hdiutil info
+   hdiutil detach /dev/disk4
+   # If it's busy, force it
+   hdiutil detach /dev/disk4 -force
+   rm -rf /tmp/peat_pillage_* pillage_temp_*
+
 Notes
 -----
 - When the source is the root of a drive, a mounted filesystem, or a disk image, Windows system directories in its root (e.g. ``Windows``, ``$Recycle.Bin``, ``System Volume Information``) are skipped, since they won't have project files in them. These directories aren't skipped when searching other directories.
-- On Linux, disk images must be in a format ``qemu-nbd`` can read (raw, VMDK, qcow2, VHD, VHDX, etc.), and only the first partition is searched. On Windows, all readable volumes are searched. To use unsupported images with pillage either convert it to a raw disk image or mount it to the host filesystem manually and provide the mount point as the input source to Pillage.
+- macOS system directories are skipped in the same way: ``System`` (which includes the Data volume at ``System/Volumes/Data``), ``cores``, ``private/var/vm``, ``private/var/db``, ``private/var/folders``, ``.Spotlight-V100``, ``.fseventsd``, ``.DocumentRevisions-V100``, ``.MobileBackups``, ``.Trashes``, and ``.vol``. Directories that can hold vendor software and project files, such as ``Applications``, ``Library``, ``Users``, ``opt``, ``usr/local``, and ``private/etc``, are searched.
+- On Linux, disk images must be in a format ``qemu-nbd`` can read (raw, VMDK, qcow2, VHD, VHDX, etc.), and only the first partition is searched. On Windows and macOS, all readable volumes are searched. To use unsupported images with pillage either convert it to a raw disk image or mount it to the host filesystem manually and provide the mount point as the input source to Pillage.
 - If a disk image is used as a source on Linux, Pillager will mount it (read only) to a directory prior to searching called ``pillage_temp``.  It will be located in the current working directory when Pillage is ran.  Once Pillager is complete the image will be unmounted and this directory will be removed.
 - There have been times during development and testing when the host OS would not mount the image, but if the same Pillage command was tried again after waiting a few seconds it would mount just fine.
 - If running in a VMware Workstation VM, pillage can run on a disk image or file system loaded in a shared folder. See the VMware documentation for details on how to set this up. If you run into issues, this askubuntu answer may be helpful: `How do I mount shared folders in Ubuntu using VMware tools? <https://askubuntu.com/a/1051620>`__
