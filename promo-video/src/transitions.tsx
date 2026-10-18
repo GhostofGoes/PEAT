@@ -73,7 +73,7 @@ export const zoom = (): TransitionPresentation<NoProps> => ({ component: ZoomPre
 type Presentation = TransitionPresentation<any>;
 
 const FEATURES: SceneId[] = ["pull", "parse", "downstream", "modules"];
-const SECTIONS: SceneId[] = ["reveal", "scan", "safety", "devices", "library", "cta"];
+const SECTIONS: SceneId[] = ["reveal", "scan", "safety", "devices", "value", "library", "cta"];
 
 /** Transition into `scene` for a theme's transition style. */
 export const enterTransition = (style: TransitionStyle, scene: SceneId): Presentation => {

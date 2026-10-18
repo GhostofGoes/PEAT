@@ -8,7 +8,7 @@ import { LEAD, SceneContext, SceneId, T, Timeline, Variant } from "./timeline";
 import { THEMES, ThemeContext } from "./theme";
 import { BaselineScene, QuestionScene, ThreatScene, ToolingScene, TurnScene } from "./scenes/Problems";
 import { CtaScene, DiffScene, FreeScene, ParseScene, PullScene, RevealScene, ScanScene } from "./scenes/Solution";
-import { DevicesScene, LibraryScene, ModulesScene, PlatformsScene, SafetyScene } from "./scenes/Extended";
+import { DevicesScene, LibraryScene, ModulesScene, PlatformsScene, SafetyScene, ValueScene } from "./scenes/Extended";
 
 const COMPONENTS: Record<SceneId, React.FC> = {
   threat: ThreatScene,
@@ -23,6 +23,7 @@ const COMPONENTS: Record<SceneId, React.FC> = {
   downstream: DiffScene,
   safety: SafetyScene,
   devices: DevicesScene,
+  value: ValueScene,
   platforms: PlatformsScene,
   library: LibraryScene,
   modules: ModulesScene,

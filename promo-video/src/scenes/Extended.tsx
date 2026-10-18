@@ -25,7 +25,7 @@ import { alpha, useTheme } from "../theme";
 import { useLayout } from "../layout";
 import { useCopy, useCue } from "../timeline";
 import { Chip, clamp, Eyebrow, Panel, Rise, Stage, Words } from "../components/ui";
-import { PlcRack } from "../components/Hardware";
+import { PlcRack, RelayPanel, RtuUnit } from "../components/Hardware";
 import { Feature } from "./Solution";
 
 /* ---------- Safety ---------- */
@@ -98,6 +98,81 @@ export const SafetyScene: React.FC = () => {
         {isPortrait ? device : null}
         {list}
         {isPortrait ? null : device}
+      </div>
+    </Stage>
+  );
+};
+
+/* ---------- Value: the payoff after the workflow ---------- */
+
+/** The same three controllers as the opening question, now verified. */
+const VerifiedSlot: React.FC<{ label: string; at: number; children: React.ReactNode }> = ({ label, at, children }) => {
+  const C = useTheme();
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const p = spring({ frame: frame - 4, fps, config: { damping: 200 } });
+  const check = spring({ frame: frame - at, fps, config: { damping: 10, mass: 0.5 } });
+  const ok = frame >= at;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14, opacity: p, transform: `translateY(${(1 - p) * 30}px)` }}>
+      <div style={{ position: "relative", filter: ok && C.dark ? `drop-shadow(0 0 22px ${alpha(C.ok, 0.35)})` : undefined }}>
+        {children}
+        <div
+          style={{
+            position: "absolute",
+            top: -22,
+            right: -22,
+            width: 58,
+            height: 58,
+            borderRadius: 29,
+            background: C.ok,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            opacity: Math.min(1, check * 1.5),
+            transform: `scale(${check})`,
+            boxShadow: `0 6px 20px ${alpha(C.ok, 0.45)}`,
+          }}
+        >
+          <CircleCheck size={40} color={C.bg} strokeWidth={2.6} />
+        </div>
+      </div>
+      <div style={{ fontFamily: C.mono, fontSize: 24, letterSpacing: "0.14em", color: ok ? C.ok : C.muted }}>{ok ? `${label} · VERIFIED` : label}</div>
+    </div>
+  );
+};
+
+export const ValueScene: React.FC = () => {
+  const C = useTheme();
+  const { isPortrait, pick } = useLayout();
+  const copy = useCopy();
+  const cue = useCue();
+  const verifyAt = cue("verify", 0.15);
+  const line2At = cue("line2", 0.55);
+  const plc = <VerifiedSlot label="PLC" at={verifyAt}><PlcRack width={pick(640, 860)} /></VerifiedSlot>;
+  const relay = <VerifiedSlot label="RELAY" at={verifyAt + 6}><RelayPanel width={pick(260, 330)} /></VerifiedSlot>;
+  const rtu = <VerifiedSlot label="RTU" at={verifyAt + 12}><RtuUnit width={pick(260, 330)} /></VerifiedSlot>;
+  return (
+    <Stage center gap={pick(36, 56)}>
+      <Eyebrow label={copy.str("eyebrow")} color={C.ok} delay={2} center />
+      {isPortrait ? (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 40 }}>
+          {plc}
+          <div style={{ display: "flex", gap: 70 }}>
+            {relay}
+            {rtu}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 70 }}>
+          {plc}
+          {relay}
+          {rtu}
+        </div>
+      )}
+      <div>
+        <Words text={copy.str("line1")} delay={verifyAt} stagger={4} size={pick(84, 80)} align="center" accent={C.ok} />
+        <Words text={copy.str("line2")} delay={line2At} stagger={4} size={pick(84, 80)} align="center" style={{ marginTop: 10 }} />
       </div>
     </Stage>
   );

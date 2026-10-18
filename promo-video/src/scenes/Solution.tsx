@@ -452,7 +452,7 @@ export const CtaScene: React.FC = () => {
             <BookOpen size={32} color={C.accentHi} /> Docs: <span style={{ color: C.text, fontWeight: 600 }}>sandialabs.github.io/PEAT</span>
           </span>
           {isPortrait ? null : <span style={{ color: C.dim }}>·</span>}
-          <span>Free & open source · GPLv3</span>
+          <span>Free & open source · GPL licensed</span>
         </div>
       </Rise>
     </AbsoluteFill>
