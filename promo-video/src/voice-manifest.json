@@ -119,5 +119,22 @@
   "v7-threat": "Attackers aren't stopping at the network anymore. They're going after the controllers themselves.",
   "v7-tooling": "Each vendor ships its own proprietary software, often thousands of dollars a license, designed for engineering, not security.",
   "v7-turn": "There's a better way to look at the control layer.",
-  "v7-value": "Now you can see your controllers clearly, and know what they're actually doing."
+  "v7-value": "Now you can see your controllers clearly, and know what they're actually doing.",
+  "v8-baseline": "Without a golden baseline, a malicious change looks like routine engineering.",
+  "v8-cta": "Security is what you inspect, not what you expect. Get PEAT on GitHub today.",
+  "v8-devices": "It supports PLCs, protection relays, RTUs, and more, from over ten vendors.",
+  "v8-downstream": "Diff every pull against your golden config, and any unapproved change stands out. Elastic and Splunk work out of the box.",
+  "v8-free": "No license fees. PEAT is free, open source, and GPL licensed.",
+  "v8-library": "It's also a Python library, so you can script PEAT into your own workflows.",
+  "v8-parse": "Then it decodes vendor formats into a single, consistent data model.",
+  "v8-platforms": "PEAT runs on Linux, Windows, macOS, or Docker. Once it's downloaded, it works fully offline, so your configurations never touch the cloud.",
+  "v8-pull": "Next, it collects the logic, configuration, logs, and firmware from each one.",
+  "v8-question": "If your PLCs or relays were changed tonight, would anyone notice?",
+  "v8-reveal": "PEAT. The Process Extraction and Analysis Tool, developed at Sandia National Laboratories.",
+  "v8-safety": "It's built for OT, safety first. Devices are verified before anything is collected, one at a time, and you control exactly what gets pulled.",
+  "v8-scan": "First, it discovers and identifies the devices on your network.",
+  "v8-threat": "Attackers aren't stopping at the network anymore. They're going after the controllers themselves.",
+  "v8-tooling": "Each vendor ships its own proprietary software, often thousands of dollars a license, designed for engineering, not security.",
+  "v8-turn": "There's a better way to look at the control layer.",
+  "v8-value": "Now you can see your controllers clearly, and know what they're actually doing."
 }

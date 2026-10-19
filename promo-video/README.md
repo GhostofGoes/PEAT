@@ -1,14 +1,14 @@
 # PEAT promo video
 
-Promo videos for PEAT, built with [Remotion](https://www.remotion.dev/). There are five versions, each with its own script and visual style. They all follow the same story ("Problem Stack"):
+Promo videos for PEAT, built with [Remotion](https://www.remotion.dev/). There are eight versions. V1–V5 each have their own script and visual style; V6–V8 combine and refine them from reviewer feedback. They all follow the same story ("Problem Stack"):
 
 1. Four pain points about control-layer visibility.
 2. A "what if" turn.
 3. PEAT's Scan, Pull, Parse and Diff workflow.
 4. Safety, then what PEAT collects from, where it runs, the Python API and the modular design.
-5. The close: PEAT is free and open source (GPLv3).
+5. The close: PEAT is free and open source (GPL licensed).
 
-Each version runs about 1:40–2:00.
+Each version runs about 1:40–2:15.
 
 | Version | Style | Script tone | Music |
 |---|---|---|---|
@@ -17,14 +17,17 @@ Each version runs about 1:40–2:00.
 | V3 Control Room | SCADA/HMI dark, phosphor green, scanlines, Space Grotesk | Short and punchy | Upbeat Corporate |
 | V4 Daylight | Light mode, soft cards, Manrope | Plain language for managers and asset owners | Motivational Day |
 | V5 Kinetic | Black with electric cyan, dot matrix, zoom transitions, Sora | Rhetorical, high-energy | Upbeat Corporate |
+| V6 Consolidated | Blueprint (from V2) | V3/V4 hooks with V2's technical middle, plus an outcome beat | Motivational Day |
+| V7 Inspect | Blueprint (from V2) | V6 with a baseline explanation, data-store streaming, and a new closing line | Motivational Day |
+| V8 Offline-ready | Blueprint (from V2) | V6 with a sharper change-detection line, offline use, no module section, and V7's close | Motivational Day |
 
 Every version renders in three formats:
 
 | Composition | Size | Use |
 |---|---|---|
-| `Promo-V1-Landscape` … `Promo-V5-Landscape` | 1920x1080 (16:9) | Web, slides, YouTube |
-| `Promo-V1-Portrait` … `Promo-V5-Portrait` | 1080x1920 (9:16) | Mobile, social, Shorts |
-| `Promo-V1-Ultrawide` … `Promo-V5-Ultrawide` | 3440x1440 (21:9) | Ultrawide monitors |
+| `Promo-V1-Landscape` … `Promo-V8-Landscape` | 1920x1080 (16:9) | Web, slides, YouTube |
+| `Promo-V1-Portrait` … `Promo-V8-Portrait` | 1080x1920 (9:16) | Mobile, social, Shorts |
+| `Promo-V1-Ultrawide` … `Promo-V8-Ultrawide` | 3440x1440 (21:9) | Ultrawide monitors |
 
 The ultrawide format lays scenes out on a 1080px-tall virtual canvas and scales it up to 1440. That keeps type sizes consistent across formats while the layout uses the extra width (`src/layout.tsx`).
 
@@ -32,9 +35,9 @@ The ultrawide format lays scenes out on a 1080px-tall virtual canvas and scales 
 
 | Path | What it holds |
 |---|---|
-| `src/variants/v1.json` … `v5.json` | One file per version: theme, music, and for each scene the voiceover line (`vo`), on-screen copy (`text`, with accent words in `*asterisks*`), pacing (`gap`) and `cues`. |
+| `src/variants/v1.json` … `v8.json` | One file per version: theme, music, and for each scene the voiceover line (`vo`), on-screen copy (`text`, with accent words in `*asterisks*`), pacing (`gap`) and `cues`. |
 | `src/theme.ts` | The five visual themes: palette, fonts, panel and background style, transition style. |
-| `src/scenes/` | Scene components. They read copy and cues from the current version, so one set of scenes serves all five. |
+| `src/scenes/` | Scene components. They read copy and cues from the current version, so one set of scenes serves every version. |
 | `src/word-times.json` | Word timestamps for every clip. A cue such as `"kicker": "would"` starts that animation on the frame where "would" is spoken. |
 
 The voiceover is the ElevenLabs library voice "Adam - American, Dark and Tough" (`IRHApOXLvnW57QJPQH2P`), `eleven_multilingual_v2`, with the Confident preset (stability 0.60, similarity 0.85, style 0.25) at speed 1.05 (`voiceover-config.json`).

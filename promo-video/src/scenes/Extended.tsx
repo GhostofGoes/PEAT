@@ -3,6 +3,7 @@ import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } fr
 import {
   Boxes,
   CircleCheck,
+  CloudOff,
   Code,
   Container,
   Cpu,
@@ -20,6 +21,7 @@ import {
   ShieldCheck,
   Terminal as TerminalIcon,
   Zap,
+  WifiOff,
 } from "lucide-react";
 import { alpha, useTheme } from "../theme";
 import { useLayout } from "../layout";
@@ -261,6 +263,14 @@ const PLATFORMS = [
   { name: "Docker", Icon: Container, cue: "docker", f: 0.52 },
 ];
 
+// Badge icon picked from its wording, so a version can swap badges without code changes.
+const badgeIcon = (label: string, i: number) => {
+  const l = label.toLowerCase();
+  if (l.includes("offline")) return <WifiOff size={34} />;
+  if (l.includes("cloud")) return <CloudOff size={34} />;
+  return i === 0 ? <Download size={34} /> : <CircleCheck size={34} />;
+};
+
 export const PlatformsScene: React.FC = () => {
   const C = useTheme();
   const frame = useCurrentFrame();
@@ -288,7 +298,7 @@ export const PlatformsScene: React.FC = () => {
       </div>
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center" }}>
         {copy.list("badges").map((b, i) => (
-          <Chip key={b} color={C.ok} delay={badgesAt + i * 10} size={pick(34, 32)} icon={i === 0 ? <Download size={34} /> : <CircleCheck size={34} />}>
+          <Chip key={b} color={C.ok} delay={badgesAt + i * 10} size={pick(34, 32)} icon={badgeIcon(b, i)}>
             {b}
           </Chip>
         ))}

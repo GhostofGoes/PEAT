@@ -119,5 +119,22 @@
   "v7-threat": 5.094,
   "v7-tooling": 9.378,
   "v7-turn": 2.325,
-  "v7-value": 4.31
+  "v7-value": 4.31,
+  "v8-baseline": 4.754,
+  "v8-cta": 6.217,
+  "v8-devices": 6.478,
+  "v8-downstream": 8.411,
+  "v8-free": 5.329,
+  "v8-library": 5.564,
+  "v8-parse": 4.389,
+  "v8-platforms": 10.684,
+  "v8-pull": 6.557,
+  "v8-question": 3.944,
+  "v8-reveal": 6.975,
+  "v8-safety": 9.352,
+  "v8-scan": 4.415,
+  "v8-threat": 5.094,
+  "v8-tooling": 9.378,
+  "v8-turn": 2.325,
+  "v8-value": 4.31
 }

@@ -8,6 +8,7 @@ import v4 from "./variants/v4.json";
 import v5 from "./variants/v5.json";
 import v6 from "./variants/v6.json";
 import v7 from "./variants/v7.json";
+import v8 from "./variants/v8.json";
 import type { ThemeName } from "./theme";
 
 export const FPS = 30;
@@ -50,7 +51,7 @@ export type SceneSpec = {
 
 export type Variant = { id: string; name: string; theme: ThemeName; music: string; voice?: Record<string, number>; scenes: SceneSpec[] };
 
-export const VARIANTS = [v1, v2, v3, v4, v5, v6, v7] as unknown as Variant[];
+export const VARIANTS = [v1, v2, v3, v4, v5, v6, v7, v8] as unknown as Variant[];
 
 type Durations = Record<string, number>;
 type WordTimes = Record<string, Array<[string, number]>>;
