@@ -89,9 +89,10 @@ import functools
 import time
 import timeit
 from copy import deepcopy
+from fnmatch import fnmatchcase
 from pathlib import Path
 from pprint import pformat
-from typing import Literal
+from typing import Final, Literal
 
 import olefile
 import serial
@@ -105,6 +106,7 @@ from peat import (
     IPMethod,
     SerialMethod,
     Service,
+    config,
     consts,
     datastore,
     state,
@@ -114,10 +116,18 @@ from peat.file_signature import FileSignature
 from peat.protocols import FTP, check_tcp_port
 
 from .relay_parse import (
+    SETTINGS_FILENAME_RE,
+    clean_settings_text,
+    combine_settings_files,
+    create_dev_from_configs,
     event_data_present,
+    has_settings_sections,
+    is_event_filename,
+    looks_like_show_output,
     parse_and_process_events,
     parse_cfg_txt,
-    parse_rdb,
+    parse_config_data,
+    parse_rdb_relays,
     parse_set_all,
     process_cid_file,
     process_info_into_dev,
@@ -127,8 +137,29 @@ from .sel_http import SELHTTP
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
 
-# TODO: auto-construct SET_ALL.TXT from individual files for parse,
-#   e.g. a directory of SET_* files.
+#: Names of files on relays, parsed by SELRelay._parse_relay_files().
+#: Individual settings files (SET_*.TXT) and *.CID files are also included.
+RELAY_FILENAMES: Final = (
+    "SET_ALL.TXT",
+    "CFG.TXT",
+    "SER.TXT",
+    "CSER.TXT",
+    "HISTORY.TXT",
+    "CHISTORY.TXT",
+)
+
+#: Directories on relays, and "Misc" in RDB files.
+#: Files in these belong to the relay in the parent directory.
+RELAY_DIRNAMES: Final = (
+    "SETTINGS",
+    "EVENTS",
+    "REPORTS",
+    "SER",
+    "HMI",
+    "DIAGNOSTICS",
+    "STATUS",
+    "MISC",
+)
 
 # TODO: support parse input files:
 #   CFG.XML
@@ -171,26 +202,22 @@ class SELRelay(DeviceModule):
     vendor_id = "SEL"
     vendor_name = "Schweitzer Engineering Laboratories"
     brand = "SEL"
+    # NOTE: filename patterns are case-insensitive
     filename_patterns = [
         "*.rdb",
-        "*SET_ALL.TXT",
-        "*SET_ALL.txt",
-        "*set_all.txt",
+        # SET_ALL.TXT and individual settings files (SET_1.TXT, SET_P5.TXT, etc.)
+        "*SET_*.TXT",
         "*CFG.TXT",
-        "*CFG.txt",
-        "*cfg.txt",
         # SER and CSER
         "*SER.TXT",
-        "*SER.txt",
-        "*ser.txt",
         # HISTORY and CHISTORY
         "*HISTORY.TXT",
-        "*HISTORY.txt",
-        "*history.txt",
         # *.CID (e.g. SET_61850.CID)
         "*.CID",
-        "*.cid",
     ]
+
+    # Directories of relay files, e.g. "relay_files" from a pull
+    can_parse_dir = True
 
     # Targeted function for file_signatures custom_check usage
     def is_cid(data):
@@ -591,11 +618,37 @@ class SELRelay(DeviceModule):
                 cls.log.warning(f"Failed to parse CFG.TXT pulled from {dev.address}: {ex}")
                 successful = False
 
+        # Some relays don't have SET_ALL.TXT (or it failed to download),
+        # reconstruct it from the individual settings files (SET_*.TXT).
+        if not (all_files.get("SET_ALL.TXT") and all_files["SET_ALL.TXT"]["data"].strip()):
+            combined = combine_settings_files(
+                {
+                    name: info["data"]
+                    for name, info in all_files.items()
+                    if info.get("data")
+                    and (name.upper() == "CFG.TXT" or SETTINGS_FILENAME_RE.match(name))
+                }
+            )
+
+            if has_settings_sections(combined):
+                cls.log.info(
+                    f"SET_ALL.TXT wasn't pulled from {dev.address}, using settings "
+                    f"combined from the individual settings files (SET_*.TXT)"
+                )
+                dev.write_file(combined, "combined_SET_ALL.txt")
+                all_files["SET_ALL.TXT"] = {
+                    "name": "SET_ALL.TXT",
+                    "data": combined,
+                    "device_path": None,
+                    "local_path": None,
+                }
+
         if all_files.get("SET_ALL.TXT") and all_files["SET_ALL.TXT"]["data"].strip():
             set_all = all_files["SET_ALL.TXT"]
 
             # Path on the device (PurePosixPath)
-            dev.logic.file.path = set_all["device_path"]
+            if set_all["device_path"]:
+                dev.logic.file.path = set_all["device_path"]
 
             # Path locally where PEAT is running (Path)
             if set_all["local_path"]:
@@ -1423,40 +1476,17 @@ class SELRelay(DeviceModule):
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData | None:
         # "file" can be one of the following:
-        # - a SET_ALL.TXT file
-        # - a *.rdb file
-        # - CFG.TXT, SER.TXT, CSER.TXT, *.CID, and others
+        # - a SET_ALL.TXT file or an individual settings file (SET_1.TXT, SET_P5.TXT, etc.)
+        # - a *.rdb SEL QuickSet database file, with the settings for one or more relays
+        # - output of the SHOW (SHO) command saved from a terminal session
+        # - a directory of relay files, e.g. the "relay_files" directory from a PEAT pull
+        # - CFG.TXT, SER.TXT, CSER.TXT, HISTORY.TXT, CHISTORY.TXT, *.CID
         #
-        # Some examples are in peat/tests/modules/sel/data_files/
+        # Examples are in tests/modules/sel/data_files/relay/
+        if file.is_dir():
+            return cls._parse_dir(file, dev)
 
         raw_data = file.read_bytes()
-
-        # CFG.TXT, SER.TXT, CSER.TXT, HISTORY.TXT, CHISTORY.TXT, *.CID
-        f_name = file.name.lower()
-        if "cfg" in f_name or "ser" in f_name or "history" in f_name or f_name.endswith(".cid"):
-            if not dev:
-                dev = datastore.get(f"selrelay_{file.stem.lower()}", "id")
-
-            if f_name.endswith(".cid"):
-                cid_extracted = process_cid_file(raw_data, file, dev)
-
-                if not cid_extracted:
-                    return None
-            elif "ser" in f_name or "history" in f_name:
-                if not event_data_present(raw_data):
-                    cls.log.warning(f"No event data in {file.name}")
-                    return dev
-
-                events, info = parse_and_process_events(raw_data, file.name, dev)
-
-                if not events and not info:
-                    return None
-            else:
-                parse_cfg_txt(raw_data, dev)
-
-            cls.update_dev(dev)  # Populate any fields that are unset
-
-            return dev
 
         # NOTE: isOleFile will interpret the argument as a filename string
         # if the length of the data is smaller than 1536 bytes. To avoid this,
@@ -1468,30 +1498,270 @@ class SELRelay(DeviceModule):
         # Compound File Binary (CFB) Format or Microsoft OLE2 File.
         # isOleFile() checks the file for the magic number at the
         # start of the header to determine if it is the correct format.
-        temp_path = None
         if is_rdb:
             cls.log.debug("Input data is in CFB format, parsing as a RDB project")
-            to_parse = parse_rdb(raw_data)  # *.rdb
+            return cls._parse_rdb(file, raw_data, dev)
 
-            # Save the extracted SET_ALL data from the rdb to a temporary file
-            # This is helpful if debugging an issue with parsing of rdb files
-            temp_path = utils.write_temp_file(to_parse, "extracted_SET_ALL.txt")
-        else:
-            cls.log.debug("Input data is text, parsing as a non-RDB config file")
-            to_parse = raw_data.decode("utf-8")  # SET_ALL.TXT
+        f_name = file.name.upper()
 
-        dev = cls.parse_config(set_all=to_parse, dev=dev)
+        # CFG.TXT, SER.TXT, CSER.TXT, HISTORY.TXT, CHISTORY.TXT, *.CID
+        if f_name.endswith(".CID") or f_name.endswith("CFG.TXT") or is_event_filename(f_name):
+            if not dev:
+                dev = datastore.get(f"selrelay_{file.stem.lower()}", "id")
+
+            if f_name.endswith(".CID"):
+                cid_extracted = process_cid_file(raw_data, file, dev)
+
+                if not cid_extracted:
+                    return None
+            elif f_name.endswith("CFG.TXT"):
+                parse_cfg_txt(raw_data, dev)
+            else:
+                if not event_data_present(raw_data):
+                    cls.log.warning(f"No event data in {file.name}")
+                    return dev
+
+                events, info = parse_and_process_events(raw_data, file.name, dev)
+
+                if not events and not info:
+                    return None
+
+            cls.update_dev(dev)  # Populate any fields that are unset
+
+            return dev
+
+        text = clean_settings_text(raw_data)
+        if not has_settings_sections(text) and not looks_like_show_output(text):
+            cls.log.warning(f"{file.name} doesn't look like a SEL relay settings file")
+            return None
+
+        cls.log.debug("Input data is text, parsing as a settings file")
+        dev = cls.parse_config(set_all=text, dev=dev)
 
         if not dev:
             return None
 
-        if is_rdb:
-            dev.write_file(raw_data, "raw-rdb-config.rdb")
-
-            if temp_path and temp_path.exists():
-                utils.move_file(temp_path, dev.get_out_dir())
-
         dev.logic.file.local_path = file
+
+        cls.update_dev(dev)  # Populate any fields that are unset
+
+        return dev
+
+    @classmethod
+    def _export_extra_dev(cls, dev: DeviceData) -> None:
+        """
+        Export a device that was parsed in addition to the device returned
+        by ``_parse()``, e.g. the other relays in a RDB file.
+        :meth:`~peat.device.DeviceModule.parse` only exports the device returned.
+        """
+        dev.purge_duplicates(force=True)
+
+        if config.DEVICE_DIR:
+            dev.export_to_files()
+
+        if state.elastic:
+            dev.export_to_elastic()
+
+    @classmethod
+    def _parse_rdb(cls, file: Path, raw_data: bytes, dev: DeviceData | None) -> DeviceData | None:
+        """
+        Parse the settings for the relays in a SEL QuickSet database (``*.rdb``).
+
+        A RDB file can have settings for multiple relays. The device for the
+        first relay is returned, and the other relays are parsed into their
+        own devices, which are added to the datastore and exported.
+        """
+        relays = parse_rdb_relays(raw_data)
+
+        if len(relays) > 1:
+            cls.log.info(f"{len(relays)} relays in {file.name}: {', '.join(relays)}")
+
+        parsed_devs = []  # type: list[DeviceData]
+
+        for relay_name, set_all in relays.items():
+            relay_dev = dev if not parsed_devs else None
+
+            if parsed_devs:
+                # Relays in templates often have the same IP address or
+                # name, so they'd end up as the same device. Use the name
+                # of the relay in the RDB file to keep them separate.
+                relay_dev = create_dev_from_configs(parse_config_data(set_all))
+                if any(relay_dev is d for d in parsed_devs):
+                    cls.log.warning(
+                        f"Relay '{relay_name}' in {file.name} has the same identifier "
+                        f"as another relay in the file ({relay_dev.get_id()}), using "
+                        f"'{file.stem}_{relay_name}' as its identifier instead"
+                    )
+                    relay_dev = datastore.get(f"{file.stem}_{relay_name}", "id")
+
+            relay_dev = cls.parse_config(set_all=set_all, dev=relay_dev)
+
+            if not relay_dev:
+                # Save the extracted SET_ALL data from the rdb to a temporary file
+                # This is helpful if debugging an issue with parsing of rdb files
+                temp_path = utils.write_temp_file(set_all, "extracted_SET_ALL.txt")
+                cls.log.error(
+                    f"Failed to parse settings for relay '{relay_name}' in {file.name}. "
+                    f"The extracted settings were saved to {temp_path}"
+                )
+                continue
+
+            if relay_name:
+                relay_dev.extra["rdb_relay_name"] = relay_name
+
+            relay_dev.write_file(set_all, "extracted_SET_ALL.txt")
+            relay_dev.write_file(raw_data, "raw-rdb-config.rdb")
+            relay_dev.logic.file.local_path = file
+
+            cls.update_dev(relay_dev)  # Populate any fields that are unset
+
+            if parsed_devs:
+                cls._export_extra_dev(relay_dev)
+
+            parsed_devs.append(relay_dev)
+
+        return parsed_devs[0] if parsed_devs else None
+
+    @classmethod
+    def _parse_dir(cls, directory: Path, dev: DeviceData | None = None) -> DeviceData | None:
+        """
+        Parse a directory of files from relays, such as the ``relay_files``
+        directory from a PEAT pull, files downloaded from a relay using FTP,
+        or the settings files extracted from a QuickSet RDB file.
+
+        Files with the names used on relays (``SET_ALL.TXT``, ``CFG.TXT``,
+        ``SET_*.TXT``, ``SER.TXT``, etc.) are grouped by the directory they're
+        in, and each group is parsed as one relay. Files in a ``SETTINGS``
+        (or other known relay directory) sub-directory belong to the parent
+        directory's relay. Other files that match the module's filename
+        patterns (e.g. ``*.rdb`` or ``relay1_SET_ALL.TXT``) are parsed by themselves.
+
+        The device for the first relay is returned, and the other devices
+        are exported.
+        """
+        groups = {}  # type: dict[Path, dict[str, Path]]
+        others = []  # type: list[Path]
+
+        for path in sorted(directory.rglob("*")):
+            if not path.is_file():
+                continue
+
+            # Filenames are case-insensitive, e.g. "set_1.txt" from a RDB
+            name = path.name.upper()
+
+            is_relay_file = name in RELAY_FILENAMES or SETTINGS_FILENAME_RE.match(name)
+
+            if is_relay_file or name.endswith(".CID"):
+                root = path.parent
+                if root != directory and root.name.upper() in RELAY_DIRNAMES:
+                    root = root.parent
+
+                group = groups.setdefault(root, {})
+                if name in group:
+                    cls.log.warning(f"Skipping {path}, {group[name]} was already found")
+                else:
+                    group[name] = path
+            elif any(fnmatchcase(name, pat.upper()) for pat in cls.filename_patterns):
+                others.append(path)
+
+        cls.log.debug(
+            f"Parsing directory {directory} ({len(groups)} relays, {len(others)} other files)"
+        )
+
+        parsed_devs = []  # type: list[DeviceData]
+
+        for root, files in groups.items():
+            relay_dev = cls._parse_relay_files(root, files, dev if not parsed_devs else None)
+            if relay_dev and not any(relay_dev is d for d in parsed_devs):
+                parsed_devs.append(relay_dev)
+
+        for path in others:
+            other_dev = cls._parse(path, dev if not parsed_devs else None)
+            if other_dev and not any(other_dev is d for d in parsed_devs):
+                parsed_devs.append(other_dev)
+
+        if not parsed_devs:
+            cls.log.error(f"No SEL relay files found in {directory}")
+            return None
+
+        for extra_dev in parsed_devs[1:]:
+            cls._export_extra_dev(extra_dev)
+
+        return parsed_devs[0]
+
+    @classmethod
+    def _parse_relay_files(
+        cls, root: Path, files: dict[str, Path], dev: DeviceData | None = None
+    ) -> DeviceData | None:
+        """
+        Parse files from a single relay, keyed by their uppercase filename.
+
+        If there isn't a ``SET_ALL.TXT`` (or it's empty), it's reconstructed
+        from ``CFG.TXT`` and the individual settings files (``SET_*.TXT``).
+        Event files (``SER.TXT``, etc.) and ``*.CID`` files are parsed into
+        the same device.
+        """
+        set_all_path = files.get("SET_ALL.TXT")
+        set_all = clean_settings_text(set_all_path.read_bytes()) if set_all_path else ""
+
+        if not has_settings_sections(set_all):
+            if set_all_path:
+                cls.log.warning(f"No settings in {set_all_path}, using the SET_*.TXT files")
+                set_all_path = None
+
+            set_all = combine_settings_files(
+                {
+                    name: path.read_bytes()
+                    for name, path in files.items()
+                    if name == "CFG.TXT" or SETTINGS_FILENAME_RE.match(name)
+                }
+            )
+
+        has_settings = has_settings_sections(set_all)
+
+        if has_settings:
+            dev = cls.parse_config(set_all=set_all, dev=dev)
+            if not dev:
+                return None
+            dev.logic.file.local_path = set_all_path if set_all_path else root
+        elif not dev:
+            dev = datastore.get(f"selrelay_{root.name.lower()}", "id")
+
+        # Parse CFG.TXT separately, like during a pull, since
+        # it's not always included in SET_ALL.TXT
+        parsed_cfg = False
+        if "CFG.TXT" in files:
+            try:
+                parse_cfg_txt(files["CFG.TXT"].read_bytes(), dev)
+                parsed_cfg = True
+            except Exception as ex:
+                cls.log.warning(f"Failed to parse {files['CFG.TXT']}: {ex}")
+
+        # Parse Sequential Event Recorder (SER) events, falling back to CSER
+        events = []
+        for ser_name in ["SER.TXT", "CSER.TXT"]:
+            if not events and ser_name in files:
+                ser_data = files[ser_name].read_bytes()
+                if event_data_present(ser_data):
+                    events = parse_and_process_events(ser_data, ser_name, dev)[0]
+
+        # History of events, falling back to CHISTORY
+        history = []
+        for his_name in ["HISTORY.TXT", "CHISTORY.TXT"]:
+            if not history and his_name in files:
+                his_data = files[his_name].read_bytes()
+                if event_data_present(his_data):
+                    history = parse_and_process_events(his_data, his_name, dev)[0]
+
+        cid_extracted = False
+        for name, path in files.items():
+            if name.endswith(".CID"):
+                if process_cid_file(data=path.read_bytes(), filepath=path, dev=dev):
+                    cid_extracted = True
+
+        if not any([has_settings, parsed_cfg, events, history, cid_extracted]):
+            cls.log.warning(f"No data parsed from the SEL relay files in {root}")
+            return None
 
         cls.update_dev(dev)  # Populate any fields that are unset
 

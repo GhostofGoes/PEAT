@@ -1,0 +1,21 @@
+[INFO]
+RELAYTYPE=SEL-710
+FID=SEL-710-Rxxx-Vx-Z008004-Dxxxxxxxx
+BFID=SLBT-710-Rxxx-V0-Z007004-Dxxxxxxxx
+PARTNO=071001A5X6X71821210
+[CLASSES]
+1,"Group 1"
+2,"Group 2"
+3,"Group 3"
+L1,"Logic 1"
+L2,"Logic 2"
+L3,"Logic 3"
+G,"Global"
+PF,"Port F"
+P1,"Port 1"
+P2,"Port 2"
+P3,"Port 3"
+P4,"Port 4"
+F,"Front Panel"
+R,"Report"
+M,"Modbus User Map"
