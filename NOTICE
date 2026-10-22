@@ -7,3 +7,5 @@ The PEAT software includes the following third-party software:
 beremiz - GNU General Public License v2.0: Copyright (C) 2016: Andrey Skvortsov, Copyright (C) 2007: Edouard TISSERANT and Laurent BESSARD. See COPYING file in plc_open directory for copyrights details.
 
 nrbf.py - .NET Remoting Binary Format reading library for Python 3.6+ - Copyright (C) 2017, 2020, 2021 Christopher Gurnee
+
+SEL RTAC test data (tests/modules/sel/data_files/rtac/) - public SEL RTAC project exports under the MIT, LGPL-3.0 and GPL-3.0 licenses. The source, copyright and license of each export are in SOURCES.md in that directory, and the license files are in each tarball.

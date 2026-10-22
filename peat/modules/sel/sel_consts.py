@@ -1,3 +1,5 @@
+from typing import Final
+
 CLOSE_LOGIC_KEYS = [
     "CLS",
     "ULCLS",
@@ -319,6 +321,47 @@ ANSI_CODES = {
 # ---------------------- RTAC ----------------------
 
 RTAC_DB_NAME = "3530"
+
+# Protocol names in RTAC project exports ("Connection/Protocol" of a "Device"
+# or "GooseDevice", e.g. "ModbusClient" or "GooseRx") contain these strings.
+# They map to the protocol names PEAT uses in "related.protocols" and
+# "Register.protocol" (the same names as the SELRelay module, e.g. "iec61850"
+# for both GOOSE and MMS). The first match wins. Names with no match are lowercased.
+# Access points are raw TCP or UDP sockets, so they don't have a protocol name.
+RTAC_EXPORT_PROTOCOLS: Final[tuple[tuple[str, str], ...]] = (
+    ("accesspoint", ""),
+    ("modbus", "modbus"),
+    ("dnp", "dnp3"),
+    ("c37118", "c37.118"),
+    ("goose", "iec61850"),
+    ("61850", "iec61850"),
+    ("mms", "iec61850"),
+    ("60870", "iec60870"),
+)
+
+# Columns of the tag tables of a "Device" in a RTAC project export that hold
+# the protocol address of the tag (DNP3 point, Modbus register, etc.).
+RTAC_EXPORT_ADDRESS_COLUMNS: Final[tuple[str, ...]] = (
+    "Point Number",
+    "Register Address Start",
+    "Coil Address",
+    "Input Address",
+)
+
+# Settings of a "Device" in a RTAC project export with an IP address
+# of a remote device, or a port number.
+RTAC_EXPORT_IP_SETTINGS: Final[tuple[str, ...]] = (
+    "Server IP Address",
+    "Client IP Address",
+    "Remote Connected IED IP Address",
+    "Multicast Group IP Address",
+)
+RTAC_EXPORT_PORT_SETTINGS: Final[tuple[str, ...]] = (
+    "Server IP Port",
+    "Client IP Port",
+    "Local Port Number",
+    "Client UDP Broadcast Port",
+)
 
 # Hard coded definition of tables to expect in RTAC PostgreSQL database.
 RTAC_DB_TABLES = {

@@ -34,7 +34,7 @@ SEL,"2032 Communications Processor","Scan, Pull config, Push config, Parse confi
 SEL,"3530, 3530-4, 3350 RTACs","Scan, Pull config, Parse project file","HTTP, PostgreSQL","3530 Firmware R144.V2 (D2019-02-16),
 3530 Firmware R149.V1 (D2021-12-14),
 3530-4 Firmware R144.V1 (D2019-01-11),
-3350 Firmware R152.V0 (D2023-11-07)","PEAT module: :class:`~peat.modules.sel.sel_rtac.SELRTAC`. Device OS: Linux (with custom kernel modules and whitelisting).",TRL 6
+3350 Firmware R152.V0 (D2023-11-07)","PEAT module: :class:`~peat.modules.sel.sel_rtac.SELRTAC`. Device OS: Linux (with custom kernel modules and whitelisting). Parsing of ACSELERATOR RTAC project exports is tested with 3530, 3530-4 and 3555 exports (export schemas 22 to 36).",TRL 6
 SEL,"3620 Security Gateway","Scan, Pull config","HTTPS","SEL-3620 R212 V0 Z017006 (D2022-10-03)","PEAT module: :class:`~peat.modules.sel.sel_3620.SEL3620`","TRL 3"
 Sandia,SCEPTRE Virtual Field Device,"Scan, Pull config, Pull firmware, Push firmware, Push config, Parse config",FTP,,PEAT module: :class:`~peat.modules.sandia.sceptre_fcd.SCEPTRE`. Device OS: Ubuntu 14.04 LTS.,TRL 6
 Siemens,Siprotec 4 relay,"Scan, Pull network config","HTTP, SNMP",,PEAT module: :class:`~peat.modules.siemens.siprotec.Siprotec`. Device OS: Unknown (TBD).,TRL 4
