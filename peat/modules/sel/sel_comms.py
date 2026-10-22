@@ -291,8 +291,8 @@ def pull_files(
     )
     log.debug(f"Files pulled from {dev.address} via {method}: {', '.join(all_files.keys())}")
 
-    # TODO: if "SET_ALL.TXT" not in files and SET_x.TXT in files,
-    #  then reconstruct SET_ALL from individual settings files
+    # NOTE: if SET_ALL.TXT isn't in the files, it's reconstructed from the
+    # individual settings files (SET_*.TXT) in SELRelay.pull_configs()
     dev._cache["all_files"] = all_files
 
     # Add files to related.files, in case they aren't already

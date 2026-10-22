@@ -125,3 +125,9 @@ BOOTROM.SYS binary
 
 # Rockwell tests
 tests/modules/rockwell/data_files/*.txt     text eol=lf
+
+# SEL relay test data: keep line endings and the 0x1C characters in RDB streams as-is
+tests/modules/sel/data_files/relay/**/*.TXT    -text
+tests/modules/sel/data_files/relay/**/*.txt    -text
+tests/modules/sel/data_files/relay/**/Version  -text
+tests/modules/sel/data_files/relay/*.rdb       binary

@@ -2,7 +2,7 @@
 SEL
 ***
 
-There are many Schweitzer Engineering Laboratories (SEL) devices supported by PEAT, including Real Time Automation Controllers (RTACs), the SEL-3620 security gateway, and many types of protection relays. These are implemented by the PEAT modules :class:`~peat.modules.sel.sel_rtac.SELRTAC`, :class:`~peat.modules.sel.sel_3620.SEL3620`, and :class:`~peat.modules.sel.sel_relay.SELRelay`, respectfully.
+There are many Schweitzer Engineering Laboratories (SEL) devices supported by PEAT, including Real Time Automation Controllers (RTACs), the SEL-3620 security gateway, and many types of protection relays. These are implemented by the PEAT modules :class:`~peat.modules.sel.sel_rtac.SELRTAC`, :class:`~peat.modules.sel.sel_3620.SEL3620`, and :class:`~peat.modules.sel.sel_relay.SELRelay`, respectively.
 
 .. seealso::
 
@@ -74,8 +74,8 @@ The files recovered and/or generated vary by model and device. They may include 
 
 - ``CFG.TXT``: basic device data (firmware, model) and a list of the configuration files on the device. Every *relay* has this.
 - ``CFG.XML``: similar to the above, in XML format. Seen on the 700G, 710, and 751.
-- ``SET_ALL.TXT``: the complete device configuration. This is essentially all of the individual configuration files merged into a single file. The file structure is roughly equivalent to INI with some eccentricities. Every relay has this.
-- ``SETTINGS/``: directory containing the individual configuration files (``SET_1.TXT``, etc.). Each file contains an identical ``[1]`` section at the beginning with the device relaytype, FID, BFID, and part number.
+- ``SET_ALL.TXT``: the complete device configuration. This is essentially all of the individual configuration files merged into a single file. The file structure is roughly equivalent to INI with some eccentricities. Most relays have this.
+- ``SETTINGS/``: directory containing the individual configuration files (``SET_1.TXT``, etc.). Each file begins with an identical ``[INFO]`` section with the device RELAYTYPE, FID, BFID, and part number, followed by the section for that file (e.g. ``[1]`` in ``SET_1.TXT``). Some relays don't have ``SET_ALL.TXT``. In that case, PEAT reconstructs it from ``CFG.TXT`` and the individual files. When pulling from a relay, the reconstructed file is saved as ``combined_SET_ALL.txt``.
 
 The SEL configuration is stored in a single file called SET_ALL.TXT. This file is broken up into multiple sub files representing sections of the configuration, e.g. ``SET_1.TXT`` for the section ``[SET_1]`` in the full configuration. PEAT pulls this file and the individual files from a device via FTP and parses it into useful information. To change the device configuration, the individual files are uploaded via FTP, then the relay is restarted via a command sent over Telnet. The individual files must be sent due to ``SET_ALL.TXT`` being read-only.
 
@@ -122,9 +122,91 @@ Setting categories (configuration sections)
 - SET M: Modbus settings
 - SET D: DNP3 settings
 
+Settings file format
+^^^^^^^^^^^^^^^^^^^^
+Settings files are a mix of INI and CSV. Sections are INI-style headers (``[P5]``). The ``[INFO]`` section has ``KEY=VALUE`` lines. Other sections have CSV lines, where the first value is the setting name and the second is the value. The number of columns and the quoting vary by model and firmware:
+
+.. code-block:: text
+
+   [INFO]
+   RELAYTYPE=0351S
+   FID=SEL-351S-7-R516-V2-Z106105-D20190111
+   [CLASSES]
+   1,"Group 1","\SETTINGS\SET_1.TXT","a9dd3ac2"
+   [1]
+   RID,"FEEDER 7","","","","Relay Identifier (30 characters)"
+   [L1]
+   OUT101,"TRIP"
+   [P5]
+   "TPORT",23,"23,1025-65534",I,"","Telnet Port (23,1025-65534)"
+
+- 3xx and 7xx relays generally use ``NAME,"VALUE"``, sometimes with four more columns ending in a description.
+- 4xx relays generally quote the setting name and add the range and type (``"NAME",VALUE,"RANGE",TYPE,"","Description"``). The 451 truncates setting names longer than 7 characters.
+- ``[CLASSES]`` lists the settings classes in the file, with the file they're from and a checksum.
+- ``[STORAGE]`` (4xx) lists other files on the relay, such as ``\SWCFG.ZIP``.
+- ``[DNPA]`` and ``[DNPB]`` (311L, 387) are DNP3 maps with all of the points in a single space-separated value.
+- QuickSet ends each line in the settings in a RDB file with a file separator character (``0x1C``), and some files end with a substitution character (``0x1A``). PEAT removes these before parsing.
+
+Parsing relay files
+^^^^^^^^^^^^^^^^^^^
+``peat parse -d selrelay`` accepts the following:
+
+- ``SET_ALL.TXT``
+- Individual settings files (``SET_1.TXT``, ``SET_P5.TXT``, etc.). A single file only has part of the settings, e.g. ``SET_P5.TXT`` has the network settings but not the logic.
+- A directory of relay files, such as the ``relay_files`` directory from a PEAT pull, files downloaded from a relay with FTP, or settings files extracted from a RDB file. Sub-directories (e.g. ``SETTINGS/``) are included and filenames are case-insensitive. If there's no ``SET_ALL.TXT``, it's reconstructed from ``CFG.TXT`` and the ``SET_*.TXT`` files. Event files (``SER.TXT``, ``CSER.TXT``, ``HISTORY.TXT``, ``CHISTORY.TXT``) and ``*.CID`` files in the directory are parsed into the same device. A directory can have files from multiple relays, with each relay's files in its own sub-directory, and each relay is parsed into its own device.
+- QuickSet database files (``*.rdb``), see below.
+- Output of the ``SHOW`` (``SHO``) command, saved from a Telnet or serial terminal or the QuickSet terminal. See below.
+- ``CFG.TXT``, ``SER.TXT``, ``CSER.TXT``, ``HISTORY.TXT``, ``CHISTORY.TXT``, and ``*.CID`` files.
+
+.. code-block:: bash
+
+   peat parse -d selrelay ./SET_ALL.TXT
+   peat parse -d selrelay ./relay_files/
+   peat parse -d selrelay ./substation.rdb
+   peat parse -d selrelay ./sho_output.txt
+
+Example files, and where they're from, are in ``tests/modules/sel/data_files/relay/``.
+
+SHOW command output
+^^^^^^^^^^^^^^^^^^^
+The ``SHO`` command displays settings in a terminal. Newer relays use ``:=`` and older relays use ``=``, and there may be multiple settings on a line:
+
+.. code-block:: text
+
+   =>>SHO 1
+   Group 1
+
+   RID      := SEL-751
+   CTR      := 120                CTRN     := 120
+   TR       := 50P1T OR 51P1T OR 51G1T OR 50G1T OR SV01T OR
+               REMTRIP
+
+   =>SHO L 1
+   SELogic group 1
+   TR      =M1P + Z1G + 51PT + 51GT + 50P1*SH0
+
+PEAT determines the settings class from the command (``SHO P 5`` is ``[P5]``, ``SHO L 1`` is ``[L1]``), or from the headings in the output (``Group 1``, ``Port 5``, ``SELogic group 1``, ``Global``) if the command wasn't captured. Indented lines without a setting continue the previous setting's value. The output doesn't include the FID, so the model isn't known unless an ``FID=`` line is included (e.g. from the ``ID`` command).
+
 SEL software: RDB Project Files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-SEL configuration software stores device configurations in project files with a ``.rdb`` file extension. The ``.rdb`` SEL project files use a file structure called Compound File Binary Format, or Microsoft OLE2 File. PEAT uses the ``olefile`` method ``isOleFile()`` to check the file for the magic number at the start of the header to determine if it is the correct format. If it is, the ``SET_ALL`` configuration for the device is extracted and parsed (with the same parsing code used for configurations pulled form devies).
+SEL configuration software (ACSELERATOR QuickSet) stores device configurations in project files with a ``.rdb`` file extension. The ``.rdb`` SEL project files use a file structure called Compound File Binary Format, or Microsoft OLE2 File. PEAT uses the ``olefile`` method ``isOleFile()`` to check the file for the magic number at the start of the header to determine if it is the correct format.
+
+A RDB file can have settings for multiple relays, with a storage for each relay:
+
+.. code-block:: text
+
+   Relays/
+       <relay name>/
+           Misc/
+               Cfg.txt       (same as CFG.TXT on a relay)
+               Device.txt    (name of the relay in QuickSet)
+               Version       (QuickSet version and when the settings were saved)
+               GL1.gle, ...  (logic diagrams)
+           set_1.txt, set_P1.txt, ...
+
+Filenames may be lowercase (``set_1.txt``) or uppercase (``SET_1.TXT``), and PEAT matches them without regard to case. PEAT combines each relay's ``Cfg.txt`` and settings files into the ``SET_ALL`` format (saved as ``extracted_SET_ALL.txt``), and parses it with the same code used for configurations pulled from devices. The "Saved on" date from ``Version`` is used for the logic's created and last updated times. The name of the relay in the RDB file is saved in ``extra.rdb_relay_name``.
+
+If there are multiple relays in the file, each relay is parsed into its own device and exported to files. Only the first relay is included in the parse results summary. Relays with the same IP address (e.g. defaults in templates) are kept as separate devices, with an ID of ``<rdb file name>_<relay name>``. The other relays are also exported to Elasticsearch, if it's enabled.
 
 
 Configured IED Description (.CID) Files

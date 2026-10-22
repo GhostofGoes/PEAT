@@ -3,7 +3,7 @@ import csv
 import re
 import zlib
 from pathlib import PurePath, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import olefile
 from dateutil.parser import parse as date_parse
@@ -33,18 +33,290 @@ ConfigSectionType = list[str] | dict[str, str]
 ConfigsType = dict[str, ConfigSectionType]
 
 
-def parse_rdb(rdb_data: bytes) -> str:
-    """
-    Extract usable configuration from a SEL QuickSet database (``*.rdb`` file).
+#: Individual settings files, e.g. ``SET_1.TXT`` on a relay or ``set_p1.txt`` in an RDB.
+#: This also matches ``SET_ALL.TXT``, callers that care must check for it.
+SETTINGS_FILENAME_RE: Final = re.compile(r"^SET_[A-Z0-9]+\.TXT$", re.IGNORECASE)
 
-    Parse the binary data contained in a rdb project file and convert it
-    to a string that is the same format used in SET_ALL.TXT.
+#: Section header line in a settings file, e.g. ``[INFO]`` or ``[P5]``
+SECTION_HEADER_RE: Final = re.compile(r"^\s*\[([^\]]*)\]\s*$")
+
+#: Characters that appear in settings files but aren't part of the settings.
+#: QuickSet terminates each line in an RDB stream with a file separator (0x1C),
+#: some files end with a substitution character (0x1A), and some older RDBs
+#: (e.g. ``300G_000.rdb``) have NUL bytes that break the CSV parser.
+SETTINGS_JUNK_CHARS: Final = ("\x1c", "\x1a", "\x00")
+
+
+#: Event files, e.g. ``SER.TXT``, ``CSER.TXT``, ``HISTORY.TXT``, or ``CHISTORY.TXT``.
+#: A prefix is allowed (``192.0.2.1_SER.TXT``), but not one that's part of a word (``USER.TXT``).
+EVENT_FILENAME_RE: Final = re.compile(r"(?:^|[^A-Z])C?(?:SER|HISTORY)\.TXT$", re.IGNORECASE)
+
+
+def is_event_filename(filename: str) -> bool:
+    """
+    If a filename is for a SER, CSER, HISTORY, or CHISTORY event file.
+    """
+    return bool(EVENT_FILENAME_RE.search(filename))
+
+
+def clean_settings_text(data: bytes | str) -> str:
+    """
+    Decode settings file data and remove characters that aren't part of the settings.
+    """
+    if isinstance(data, bytes):
+        try:
+            data = data.decode("utf-8")
+        except UnicodeDecodeError:
+            # QuickSet runs on Windows, files may have Windows-1252 characters
+            data = data.decode("latin-1")
+
+    data = data.removeprefix("\ufeff")  # UTF-8 Byte Order Mark (BOM)
+
+    for char in SETTINGS_JUNK_CHARS:
+        data = data.replace(char, "")
+
+    return data
+
+
+def _format_dnpb_lines(lines: list[str]) -> list[str]:
+    """
+    Convert the DNP Binary map (``[DNPB]``) from a single space-separated
+    value into one ``BI_<n>`` line per point.
+
+    Example: ``DNPB,"52A 52B IN101"`` => ``BI_1,"52A"``, ``BI_2,"52B"``, etc.
+    """
+    formatted = []
+    idx = 1
+
+    for line in extract_csv_lines(lines):
+        if len(line) > 1 and line[0].upper() == "DNPB":
+            for address in line[1].split():
+                formatted.append(f'BI_{idx},"{address}"')
+                idx += 1
+        else:
+            formatted.append(",".join(f'"{chunk}"' for chunk in line))
+
+    return formatted
+
+
+def _format_dnpb(data: str) -> str:
+    """
+    Convert the ``[DNPB]`` section in the text of a settings file with
+    :func:`_format_dnpb_lines`, leaving the other sections as-is.
+    """
+    output = []
+
+    for section, lines in split_raw_sections(data):
+        if section.upper() == "DNPB":
+            lines = _format_dnpb_lines(lines)
+        output.extend([f"[{section}]", *lines])
+
+    return "\r\n".join(output) + "\r\n"
+
+
+def split_raw_sections(text: str) -> list[tuple[str, list[str]]]:
+    """
+    Split the text of a settings file into sections, preserving their order
+    and the original lines. Lines before the first section header are dropped.
+
+    Returns:
+        List of tuples of section name and the raw lines in that section
+    """
+    sections = []  # type: list[tuple[str, list[str]]]
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+
+        header = SECTION_HEADER_RE.match(line)
+        if header:
+            sections.append((header.group(1).strip(), []))
+        elif sections:
+            sections[-1][1].append(line.rstrip())
+        else:
+            log.debug("Skipping settings line before the first section header")
+
+    return sections
+
+
+def _natural_sort_key(name: str) -> list[int | str]:
+    # "SET_2.TXT" sorts before "SET_10.TXT"
+    return [int(c) if c.isdigit() else c for c in re.split(r"(\d+)", name.upper())]
+
+
+def combine_settings_files(
+    files: dict[str, bytes | str], save_info: list[str] | None = None
+) -> str:
+    """
+    Combine ``CFG.TXT`` and individual settings files (``SET_*.TXT``) into
+    a single string in the same format as ``SET_ALL.TXT``.
+
+    This is used for relays that don't have a ``SET_ALL.TXT``, directories
+    of settings files, and the settings in QuickSet RDB files.
+
+    Every settings file begins with a copy of the ``[INFO]`` section. Only
+    the first ``[INFO]`` is kept, with ``CFG.TXT`` taking priority since it
+    also has the ``[CLASSES]`` section listing the settings classes.
+
+    Args:
+        files: settings file data keyed by filename. The filenames are case-insensitive.
+            Files that aren't ``CFG.TXT`` or ``SET_*.TXT`` are ignored, as is ``SET_ALL.TXT``.
+        save_info: Lines about when and how settings were saved, e.g. from the
+            ``Version`` stream in a RDB file ("Saved on 2/16/2023 at 10:14:22 PM").
+            These are added to the ``[CLASSES]`` section.
+
+    Returns:
+        The combined settings, or an empty string if there were no settings
+    """
+    by_name = {name.upper(): data for name, data in files.items()}
+
+    ordered_names = []
+    if "CFG.TXT" in by_name:
+        ordered_names.append("CFG.TXT")
+
+    # Order the settings files the same as the classes in CFG.TXT, like in
+    # SET_ALL.TXT ("SET_P1.TXT" is the settings for class "P1").
+    class_order = []  # type: list[str]
+    if "CFG.TXT" in by_name:
+        for section, lines in split_raw_sections(clean_settings_text(by_name["CFG.TXT"])):
+            if section.upper() == "CLASSES":
+                class_order.extend(
+                    f"SET_{line[0].upper()}.TXT" for line in extract_csv_lines(lines) if line
+                )
+
+    def _order(name: str) -> tuple[int, list[int | str]]:
+        position = class_order.index(name) if name in class_order else len(class_order)
+        return position, _natural_sort_key(name)
+
+    ordered_names.extend(
+        sorted(
+            (
+                name
+                for name in by_name
+                if SETTINGS_FILENAME_RE.match(name) and name != "SET_ALL.TXT"
+            ),
+            key=_order,
+        )
+    )
+
+    info_lines = None  # type: list[str] | None
+    classes_lines = []  # type: list[str]
+    other_sections = []  # type: list[tuple[str, list[str]]]
+
+    for name in ordered_names:
+        text = clean_settings_text(by_name[name])
+
+        for section, lines in split_raw_sections(text):
+            if section.upper() == "DNPB":
+                lines = _format_dnpb_lines(lines)
+
+            if section.upper() == "INFO":
+                if info_lines is None:
+                    info_lines = lines
+            elif section.upper() == "CLASSES":
+                classes_lines.extend(lines)
+            else:
+                other_sections.append((section, lines))
+
+    if not other_sections and not info_lines:
+        return ""
+
+    if save_info:
+        for msg in save_info:
+            escaped = msg.strip().replace('"', '""')
+            classes_lines.append(f'"{escaped}"')
+
+    output = []
+    if info_lines is not None:
+        output.extend(["[INFO]", *info_lines])
+    if classes_lines:
+        output.extend(["[CLASSES]", *classes_lines])
+    for section, lines in other_sections:
+        output.extend([f"[{section}]", *lines])
+
+    return "\r\n".join(output) + "\r\n"
+
+
+def read_rdb_streams(rdb_data: bytes) -> dict[str, dict[str, bytes]]:
+    """
+    Read the streams from a SEL QuickSet database (``*.rdb`` file) and
+    group them by the relay they're for.
+
+    RDB files are OLE2 Compound File Binary (CFB) files, with a storage
+    for each relay in the database:
+
+    .. code-block:: text
+
+       Relays/
+           <relay name>/
+               Misc/
+                   Cfg.txt       (same as CFG.TXT on a relay)
+                   Device.txt    (name of the relay in QuickSet)
+                   Version       (QuickSet version and when the settings were saved)
+                   GL1.gle, ...  (logic diagrams, binary)
+               set_1.txt, set_p1.txt, SET_G1.TXT, ...
 
     Args:
         rdb_data: Binary data from an ``.rdb`` project file
 
     Returns:
-        Device configuration information parsed from the file, in the SET_ALL.TXT format
+        Stream data keyed by the relay name, then by the path of the stream
+        relative to the relay's storage (e.g. ``"Misc/Cfg.txt"``). Streams that
+        aren't in a relay's storage are keyed by an empty relay name (``""``).
+    """
+    relays = {}  # type: dict[str, dict[str, bytes]]
+
+    with olefile.OleFileIO(rdb_data) as rdb_ole:
+        for stream_list in rdb_ole.listdir(streams=True, storages=False):
+            data = rdb_ole.openstream(stream_list).read()
+
+            if len(stream_list) >= 3 and stream_list[0].lower() == "relays":
+                relay_name = stream_list[1]
+                stream_path = "/".join(stream_list[2:])
+            else:
+                relay_name = ""
+                stream_path = "/".join(stream_list)
+
+            relays.setdefault(relay_name, {})[stream_path] = data
+
+    return relays
+
+
+def rdb_relay_to_set_all(streams: dict[str, bytes]) -> str:
+    """
+    Convert the streams for a single relay in a RDB file into a string
+    in the same format as ``SET_ALL.TXT``.
+
+    Args:
+        streams: Streams for a relay, from :func:`read_rdb_streams`
+
+    Returns:
+        The relay's settings in the ``SET_ALL.TXT`` format, or an
+        empty string if there are no settings.
+    """
+    files = {}  # type: dict[str, bytes]
+    save_info = []  # type: list[str]
+
+    for stream_path, data in streams.items():
+        name = PurePosixPath(stream_path).name
+
+        if name.lower() == "cfg.txt":
+            files["CFG.TXT"] = data
+        elif name.lower() == "version":
+            # "Saved on 2/16/2023 at 10:14:22 PM"
+            save_info.extend(
+                line.strip() for line in clean_settings_text(data).splitlines() if line.strip()
+            )
+        elif SETTINGS_FILENAME_RE.match(name):
+            files[name] = data
+
+    return combine_settings_files(files, save_info)
+
+
+def _concat_rdb_streams(rdb_data: bytes) -> str:
+    """
+    Concatenate every stream in a RDB file. This is a fallback for
+    RDB files that don't have the usual ``Relays/<name>/`` layout.
     """
     output = ""
     rdb_ole = olefile.OleFileIO(rdb_data)
@@ -52,62 +324,118 @@ def parse_rdb(rdb_data: bytes) -> str:
 
     for stream_list in streams:
         stream_path = "/".join(stream_list)
-        data = rdb_ole.openstream(stream_path).read().decode("ascii", "replace")
-
-        # Remove the file separator character
-        data = data.replace("\x1c", "")
-
-        # Remove the substitution character
-        data = data.replace("\x1a", "")
-
-        # Remove NUL characters that break CSV parser
-        # An example of a file where these appear is 300G_000.rdb
-        data = data.replace("\x00", "")
+        data = clean_settings_text(rdb_ole.openstream(stream_path).read())
 
         if not data.endswith("\r\n"):
             data += "\r\n"
 
-        # Format the DNP Binary map
         if "[DNPB]" in data:
-            start = data.find('"')  # Find the start of the DNP Binary Memory Map
-            dnpb_sub = data[start + 1 : -3]
-            dnp_addresses = dnpb_sub.split(" ")
-            data = "[DNPB]\r\n"
-            idx = 1
-            for address in dnp_addresses:
-                data += f'BI_{idx},"{address}"\r\n'
-                idx += 1
+            data = _format_dnpb(data)
+
         output += data
 
+    rdb_ole.close()
+
     # Remove UI info stored by some configs
-    start_index = output.find("INFO")
-    output = output[start_index - 1 :]
+    start_index = output.find("[INFO]")
+    if start_index > 0:
+        output = output[start_index:]
 
     return output
+
+
+def parse_rdb_relays(rdb_data: bytes) -> dict[str, str]:
+    """
+    Extract the settings for every relay in a SEL QuickSet database (``*.rdb`` file).
+
+    Args:
+        rdb_data: Binary data from an ``.rdb`` project file
+
+    Returns:
+        Settings for each relay in the ``SET_ALL.TXT`` format, keyed by
+        the name of the relay in the RDB file. If the file doesn't have
+        the usual layout, then all of the streams are combined and returned
+        with an empty string as the relay name.
+    """
+    relays = {}  # type: dict[str, str]
+
+    for relay_name, streams in read_rdb_streams(rdb_data).items():
+        if not relay_name:
+            continue
+
+        set_all = rdb_relay_to_set_all(streams)
+        if set_all:
+            relays[relay_name] = set_all
+        else:
+            log.warning(f"No settings found for relay '{relay_name}' in RDB file")
+
+    if not relays:
+        log.debug("No relays found in RDB 'Relays' storage, combining all streams")
+        relays[""] = _concat_rdb_streams(rdb_data)
+
+    return relays
+
+
+def has_settings_sections(text: str) -> bool:
+    """
+    If text has settings sections, e.g. ``[1]`` or ``[P5]``, and not just
+    the sections with information about the settings (``[INFO]``,
+    ``[CLASSES]``, and ``[STORAGE]``).
+    """
+    return bool(set(extract_sections(text)) - {"INFO", "CLASSES", "STORAGE"})
+
+
+def parse_rdb(rdb_data: bytes) -> str:
+    """
+    Extract usable configuration from a SEL QuickSet database (``*.rdb`` file).
+
+    Parse the binary data contained in a rdb project file and convert it
+    to a string that is the same format used in SET_ALL.TXT. If there
+    are multiple relays in the file, the settings for the first relay are
+    returned. Use :func:`parse_rdb_relays` to get the settings for all relays.
+
+    Args:
+        rdb_data: Binary data from an ``.rdb`` project file
+
+    Returns:
+        Device configuration information parsed from the file, in the SET_ALL.TXT format
+    """
+    relays = parse_rdb_relays(rdb_data)
+
+    if len(relays) > 1:
+        log.warning(
+            f"{len(relays)} relays in RDB file, only returning settings for "
+            f"the first relay ('{next(iter(relays))}')"
+        )
+
+    return next(iter(relays.values()))
 
 
 def extract_sections(raw_text: str) -> dict[str, list[str]]:
     """
     Convert raw text of a config file into a dict with the text lines
     for each section.
+
+    Lines before the first section header are skipped. If a section
+    appears more than once, the last one wins (this happens with the
+    ``[INFO]`` section when individual settings files are concatenated).
     """
-    cleaned_lines = [line.strip() for line in raw_text.splitlines() if line]
-
     raw_sections = {}
-    current_section = ""  # Section name, e.g. "INFO", "P1", etc.
 
-    for line in cleaned_lines:
-        if re.match(r"^\[.*]$", line):
-            # Set what the current section is and initialize it's dict
-            current_section = line.strip("[]")
-            raw_sections[current_section] = []
-        else:
+    for section, lines in split_raw_sections(raw_text):
+        cleaned_lines = []
+
+        for line in lines:
+            line = line.strip()
+
             if line.endswith(","):
                 line += '""'  # Handle trailing commas in some configs
             elif line.endswith(',"'):
                 line += '"'
 
-            raw_sections[current_section].append(line)
+            cleaned_lines.append(line)
+
+        raw_sections[section] = cleaned_lines
 
     return raw_sections
 
@@ -249,6 +577,183 @@ def parse_sections(raw_sections: dict[str, list[str]]) -> dict[str, ConfigSectio
     return configs
 
 
+#: Echo of a ``SHOW`` command in a terminal capture, e.g. ``=>>SHO P 5``
+SHOW_COMMAND_RE: Final = re.compile(
+    r"^[ \t]*(?:[=>]*>[ \t]*)?SHOW?(?P<args>(?:[ \t]+[A-Z0-9]+)*)[ \t]*$", re.IGNORECASE
+)
+
+#: A setting in ``SHOW`` command output. Newer relays use ``:=``
+#: (``RID      := FEEDER 1``), older relays use ``=`` (``RID     =FEEDER 1``).
+SHOW_SETTING_RE: Final = re.compile(r"(?<![^\s])(?P<key>[A-Z0-9_]+)\s*:?=(?!=)")
+
+#: Headings in ``SHOW`` command output that name a settings class.
+#: Used when the command that produced the output wasn't captured.
+SHOW_HEADINGS: Final = (
+    (re.compile(r"^Group\s+(\d+)$", re.IGNORECASE), r"\1"),
+    (re.compile(r"^(?:SELogic|Logic)(?:\s+group)?\s+(\d+)$", re.IGNORECASE), r"L\1"),
+    (re.compile(r"^Port\s+([0-9F]+)$", re.IGNORECASE), r"P\1"),
+    (re.compile(r"^Global(?:\s+Settings)?$", re.IGNORECASE), "G"),
+    (re.compile(r"^Front[\s-]+Panel(?:\s+Settings)?$", re.IGNORECASE), "F"),
+    (re.compile(r"^Report(?:\s+Settings)?$", re.IGNORECASE), "R"),
+)
+
+#: Settings in ``SHOW`` output that belong in the ``[INFO]`` section
+SHOW_INFO_KEYS: Final = ("RELAYTYPE", "FID", "BFID", "PARTNO", "CID", "DEVID", "SERIALNO")
+
+
+def _show_command_section(args: str) -> str | None:
+    """
+    Settings class from the arguments of a ``SHOW`` command, e.g.
+    ``"P 5"`` => ``"P5"``, ``"1"`` => ``"1"``, ``"L 2"`` => ``"L2"``.
+
+    Returns None if the class can't be determined from the arguments,
+    e.g. ``SHO`` without arguments shows the active group.
+    """
+    tokens = args.upper().split()
+    if not tokens:
+        return None
+
+    # "SHO 1", "SHO L 2", "SHO P F", "SHO D1"
+    section = "".join(tokens[:2]) if len(tokens[0]) == 1 and not tokens[0].isdigit() else tokens[0]
+
+    # Settings classes, e.g. "1", "G", "L1", "PF", "D1", "DNPB".
+    # Other arguments are settings, e.g. "SHO TR" shows just the TR setting.
+    if not re.fullmatch(r"\d+|[A-Z]\d*|PF|DNP[A-Z]?", section):
+        return None
+
+    # "SHO L" and "SHO P" show the active group or the current port
+    if section in ("L", "P"):
+        return None
+
+    return section
+
+
+def looks_like_show_output(text: str) -> bool:
+    """
+    If text looks like the output of the ``SHOW`` (``SHO``) settings command,
+    instead of a settings file like ``SET_ALL.TXT``.
+    """
+    if any(SECTION_HEADER_RE.match(line) for line in text.splitlines()):
+        return False
+
+    # Lines like "FID=..." are in other output too, e.g. SER.TXT
+    return any(
+        match.group(1) not in SHOW_INFO_KEYS
+        for match in re.finditer(r"(?m)^[ \t]*([A-Z0-9_]+)[ \t]*:?=", text)
+    )
+
+
+def parse_show_output(text: str) -> dict[str, ConfigSectionType]:
+    """
+    Parse settings from the output of the ``SHOW`` (``SHO``) command, e.g.
+    from a capture of a Telnet or serial terminal session or a report
+    saved from the QuickSet terminal.
+
+    Settings are put into the same structure as :func:`parse_config_data`,
+    with sections named after the settings class (``"1"`` for Group 1,
+    ``"P5"`` for Port 5, ``"L1"`` for Logic 1, etc.). The settings class
+    is determined from the echo of the command (e.g. ``=>>SHO P 5``),
+    or from headings in the output (e.g. ``Port 5``) if the command
+    wasn't captured. Settings that can't be associated with a class are
+    put into a section named ``"SHOW"``.
+
+    Example of output from newer relays:
+
+    .. code-block:: text
+
+       =>>SHO 1
+       Group 1
+
+       Relay Configuration
+       RID      := SEL-751
+       CTR      := 120               CTRN     := 120
+       TR       := 51P1T OR 50P1T OR 51G1T OR
+                   50G1T
+
+    Example of output from older relays:
+
+    .. code-block:: text
+
+       =>SHO L 1
+       SELogic group 1
+
+       TR      =M1P + Z1G + M2PT + 51GT
+
+    Args:
+        text: Output of one or more ``SHOW`` commands
+
+    Returns:
+        :class:`dict` representation of the settings
+    """
+    configs = {"INFO": {}}  # type: dict[str, Any]
+    section = "SHOW"
+    section_from_command = False
+    last_key = ""
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            last_key = ""  # Continuations never follow a blank line
+            continue
+
+        # Commands are short, don't run the regex on long lines
+        command = SHOW_COMMAND_RE.match(line) if len(line) < 80 else None
+        if command:
+            from_args = _show_command_section(command.group("args") or "")
+            section = from_args or "SHOW"
+            section_from_command = bool(from_args)
+            last_key = ""
+            continue
+
+        stripped = line.strip()
+
+        # Prompt with no command, e.g. "=>" or "=>>"
+        if re.fullmatch(r"[=>]+", stripped):
+            last_key = ""
+            continue
+
+        matches = list(SHOW_SETTING_RE.finditer(line))
+
+        if not matches:
+            # Equations that are too long for one line are continued
+            # on the next line, which is indented.
+            if last_key and raw_line[:1].isspace():
+                current = configs[section][last_key]
+                current["value"] = f"{current['value']} {stripped}".strip()
+                continue
+
+            last_key = ""
+            if not section_from_command:
+                for heading_re, replacement in SHOW_HEADINGS:
+                    if heading_re.match(stripped):
+                        section = heading_re.sub(replacement, stripped).upper()
+                        break
+            continue
+
+        for idx, match in enumerate(matches):
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(line)
+            key = match.group("key")
+            value = line[match.end() : end].strip()
+
+            # String values are quoted in the output of some relays
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
+
+            if key in SHOW_INFO_KEYS:
+                configs["INFO"][key] = value
+                last_key = ""
+                continue
+
+            configs.setdefault(section, {})[key] = {"value": value, "description": ""}
+            last_key = key
+
+        # A continuation can only follow a line with a single setting
+        if len(matches) > 1:
+            last_key = ""
+
+    return configs
+
+
 def parse_config_data(config_text: bytes | str) -> dict[str, ConfigSectionType]:
     """
     Convert config file sections into a Python :class:`dict` structure.
@@ -290,12 +795,16 @@ def parse_config_data(config_text: bytes | str) -> dict[str, ConfigSectionType]:
         Nested keys are individual values in those sections, e.g. ``"RELAYTYPE"`` OR ``"TRCOMM"``
     """
     if isinstance(config_text, bytes):
-        config_text = config_text.decode("ascii")
+        config_text = clean_settings_text(config_text)
 
     if not config_text:
         return {}
 
     try:
+        if looks_like_show_output(config_text):
+            log.debug("Settings look like SHOW command output, parsing as SHOW output")
+            return parse_show_output(config_text)
+
         extracted_sections = extract_sections(config_text)
         parsed_configs = parse_sections(extracted_sections)
         return parsed_configs
@@ -399,8 +908,12 @@ def process_info_classes(configs: ConfigsType, dev: DeviceData) -> None:
     Process the [INFO] and [CLASSES] sections into the PEAT data model.
     """
     # Extract firmware info
-    # NOTE: The INFO section should ALWAYS be present
-    process_info_into_dev(configs["INFO"], dev)
+    # NOTE: The INFO section should always be present in settings files,
+    # but it's not in SHOW command output or a file that was cut off.
+    if isinstance(configs.get("INFO"), dict):
+        process_info_into_dev(configs["INFO"], dev)
+    else:
+        log.warning(f"No [INFO] section in settings for {dev.get_id()}")
 
     # Parse [CLASSES] section and put into related.files
     if configs.get("CLASSES"):
@@ -441,7 +954,13 @@ def process_info_classes(configs: ConfigsType, dev: DeviceData) -> None:
         # Add any filenames from [STORAGE] section, if they're files
         # Lines in this section can be random data too.
         for line in configs["STORAGE"]:
-            if " " not in line and "." in line and len(line) > 3 and is_valid_filepath(line):
+            # "/SWCFG.ZIP" (paths are absolute, which aren't valid on all platforms)
+            if (
+                " " not in line
+                and "." in line
+                and len(line) > 3
+                and is_valid_filepath(line, platform="posix")
+            ):
                 file_obj = PurePosixPath(line)
                 dev.related.files.add(file_obj.name)
 
@@ -457,9 +976,10 @@ def create_dev_from_configs(configs: ConfigsType) -> DeviceData:
 
     # IP address
     for settings in configs.values():
-        if "IPADDR" in settings:
+        if isinstance(settings, dict) and "IPADDR" in settings:
             ip_addr = parse_ipaddr(settings).ip
-            return datastore.get(ip_addr, "ip")
+            if ip_addr:
+                return datastore.get(ip_addr, "ip")
 
     # RID+TID generally in sections [1] through [6] or section [G1]
     for settings in configs.values():
@@ -511,9 +1031,11 @@ def process_info_into_dev(info: dict, dev: DeviceData) -> None:
     elif info.get("SERIALNO"):
         dev.serial_number = info.pop("SERIALNO")
 
+    # "0351", "SEL-710", "SEL-487E-3" ("487E", the same as in the FID)
     relaytype = info.pop("RELAYTYPE", None)
     if relaytype and not dev.description.model:
-        dev.description.model = relaytype.strip("0")
+        model = relaytype.strip().upper().removeprefix("SEL-").split("-")[0]
+        dev.description.model = model.lstrip("0")
 
     # Add any remaining info that hasn't been processed
     # to dev.extra (hence the .pop() calls above).
@@ -623,15 +1145,15 @@ def process_port_settings(
 
             # Possible value for SPEED may be "SYNC" on some models,
             # according to SEL documentation
-            if speed.upper() != "SYNC":
-                iface.baudrate = int(speed)
+            if _to_int(speed) is not None:
+                iface.baudrate = _to_int(speed)
 
             iface.type = "serial"
 
         if "BITS" in settings:
-            iface.data_bits = int(_getv(settings["BITS"]))
+            iface.data_bits = _to_int(_getv(settings["BITS"]))
         elif "DATABIT" in settings:  # 411L, 487E, some 451's
-            iface.data_bits = int(_getv(settings["DATABIT"]))
+            iface.data_bits = _to_int(_getv(settings["DATABIT"]))
 
         if "PARITY" in settings:
             parity = _getv(settings["PARITY"]).upper()
@@ -649,18 +1171,19 @@ def process_port_settings(
             iface.parity = parity
 
         if "STOP" in settings:  # 2411, 2015+ firmwares (possibly earlier)
-            iface.stop_bits = int(_getv(settings["STOP"]))
+            iface.stop_bits = _to_int(_getv(settings["STOP"]))
         elif "STOPBIT" in settings:
             # 451, 411L, and others
-            iface.stop_bits = int(_getv(settings["STOPBIT"]))
+            iface.stop_bits = _to_int(_getv(settings["STOPBIT"]))
 
         if "RTSCTS" in settings and value_is_enabled(_getv(settings["RTSCTS"])):
             iface.flow_control = "rts/cts"
         elif settings.get("SPEED"):
             iface.flow_control = "none"
 
-        if "T_OUT" in settings:
-            iface.extra["inactivity_timeout"] = float(_getv(settings["T_OUT"]))
+        # Port timeout in minutes, can be "OFF" on some models
+        if "T_OUT" in settings and _to_float(_getv(settings["T_OUT"])) is not None:
+            iface.extra["inactivity_timeout"] = _to_float(_getv(settings["T_OUT"]))
 
         if "MAXACC" in settings:
             iface.extra["max_privilege_level"] = _getv(settings["MAXACC"])
@@ -694,7 +1217,7 @@ def process_port_settings(
             ftp_svc.enabled = value_is_enabled(_getv(settings["EFTPSERV"]))
 
         if settings.get("FTPIDLE"):
-            ftp_svc.extra["idle_timeout"] = float(_getv(settings["FTPIDLE"]))
+            ftp_svc.extra["idle_timeout"] = _to_float(_getv(settings["FTPIDLE"]))
 
         if settings.get("FTPUSER"):
             ftp_svc.extra["user"] = _getv(settings["FTPUSER"])
@@ -731,43 +1254,52 @@ def process_port_settings(
             elif svc_name == "PMIP":
                 protocol = "c37.118"
 
+            enable_value = str(_getv(settings[f"E{svc_name}"])).strip().upper()
+
+            # ESNTP is the SNTP mode: OFF, UNICAST, MANYCAST, or BROADCAST
+            # EDNP is the number of DNP sessions (0-6) on some relays
+            if svc_name in ["SNTP", "DNP"]:
+                svc_enabled = enable_value not in ["", "OFF", "N", "NO", "0"]
+            else:
+                svc_enabled = value_is_enabled(enable_value)
+
             svc = Service(
                 protocol=protocol,
-                enabled=value_is_enabled(_getv(settings[f"E{svc_name}"])),
+                enabled=svc_enabled,
             )
 
             if protocol == "http":
                 svc.transport = "tcp"
 
                 if settings.get("HTTPPOR"):
-                    svc.port = int(_getv(settings["HTTPPOR"]))
+                    svc.port = _to_int(_getv(settings["HTTPPOR"]))
                 elif settings.get("HTTPPORT"):
-                    svc.port = int(_getv(settings["HTTPPORT"]))
+                    svc.port = _to_int(_getv(settings["HTTPPORT"]))
 
                 if settings.get("HIDLE"):
-                    svc.extra = {"idle_timeout": float(_getv(settings["HIDLE"]))}
+                    svc.extra = {"idle_timeout": _to_float(_getv(settings["HIDLE"]))}
                 elif settings.get("HTTPIDLE"):
-                    svc.extra = {"idle_timeout": float(_getv(settings["HTTPIDLE"]))}
+                    svc.extra = {"idle_timeout": _to_float(_getv(settings["HTTPIDLE"]))}
 
             elif protocol == "telnet":
                 svc.transport = "tcp"
 
                 if settings.get("TPORT"):
-                    svc.port = int(_getv(settings["TPORT"]))
+                    svc.port = _to_int(_getv(settings["TPORT"]))
                 # 311L: "Telnet Port for Card Access"
                 elif settings.get("TPORTC"):
-                    svc.port = int(_getv(settings["TPORTC"]))
+                    svc.port = _to_int(_getv(settings["TPORTC"]))
 
                 if settings.get("TIDLE"):
-                    svc.extra["idle_timeout"] = float(_getv(settings["TIDLE"]))
+                    svc.extra["idle_timeout"] = _to_float(_getv(settings["TIDLE"]))
 
             elif protocol == "sntp":
                 svc.transport = "udp"
 
                 if settings.get("SNTPPORT"):
-                    svc.port = int(_getv(settings["SNTPPORT"]))
+                    svc.port = _to_int(_getv(settings["SNTPPORT"]))
                 elif settings.get("SNTPPOR"):
-                    svc.port = int(_getv(settings["SNTPPOR"]))
+                    svc.port = _to_int(_getv(settings["SNTPPOR"]))
 
                 if settings.get("SNTPPSIP"):
                     svc.extra["sntp_primary_ip"] = clean_ipv4(_getv(settings["SNTPPSIP"]))
@@ -784,17 +1316,17 @@ def process_port_settings(
                     dev.related.ip.add(svc.extra["sntp_backup_ip"])
 
                 if settings.get("SNTPRATE"):
-                    svc.extra["sntp_rate"] = int(_getv(settings["SNTPRATE"]))
+                    svc.extra["sntp_rate"] = _to_int(_getv(settings["SNTPRATE"]))
                 elif settings.get("SNTPRAT"):
-                    svc.extra["sntp_rate"] = int(_getv(settings["SNTPRAT"]))
+                    svc.extra["sntp_rate"] = _to_int(_getv(settings["SNTPRAT"]))
                 if settings.get("SNTPTO"):
-                    svc.extra["sntp_timeout"] = float(_getv(settings["SNTPTO"]))
+                    svc.extra["sntp_timeout"] = _to_float(_getv(settings["SNTPTO"]))
 
             elif protocol == "dnp3":
                 if settings.get("DNPNUM"):
-                    svc.port = int(_getv(settings["DNPNUM"]))
+                    svc.port = _to_int(_getv(settings["DNPNUM"]))
                 elif settings.get("DNPPNUM"):
-                    svc.port = int(_getv(settings["DNPPNUM"]))
+                    svc.port = _to_int(_getv(settings["DNPPNUM"]))
                 if settings.get("DNPADR"):
                     svc.protocol_id = _getv(settings["DNPADR"])
                 if settings.get("DNPID"):
@@ -819,8 +1351,13 @@ def process_port_settings(
 
                     if settings.get(f"DNPUDP{idx}"):
                         # "UDP Response Port (REQ, 1025-65534)"
-                        st["port"] = int(_getv(settings[f"DNPUDP{idx}"]))
-                        dev.related.ports.add(st["port"])
+                        # "REQ" means respond to the port the request came from
+                        udp_port = _getv(settings[f"DNPUDP{idx}"])
+                        if _to_int(udp_port) is not None:
+                            st["port"] = _to_int(udp_port)
+                            dev.related.ports.add(st["port"])
+                        else:
+                            st["port"] = udp_port
 
                     if settings.get(f"REPADR{idx}"):
                         # "DNP Address to Report to (0-65519)"
@@ -832,7 +1369,7 @@ def process_port_settings(
 
                     if settings.get(f"DNPINA{idx}"):
                         # "Seconds to Send Data Link Heartbeat (0-7200)"
-                        st["heartbeat_timeout"] = int(_getv(settings[f"DNPINA{idx}"]))
+                        st["heartbeat_timeout"] = _to_int(_getv(settings[f"DNPINA{idx}"]))
 
                     if settings.get(f"DNPCL{idx}"):
                         # "Enable Control Operations (Y,N)"
@@ -864,7 +1401,7 @@ def process_port_settings(
                         dev.related.ip.add(endp["ip"])
 
                     if settings.get(f"MTIMEO{idx}"):
-                        endp["timeout"] = float(_getv(settings[f"MTIMEO{idx}"]))
+                        endp["timeout"] = _to_float(_getv(settings[f"MTIMEO{idx}"]))
 
                     if endp:
                         endp["endpoint_num"] = idx
@@ -894,12 +1431,12 @@ def process_port_settings(
                         endp["ip"] = clean_ipv4(_getv(settings[f"PMOIPA{idx}"]))
                         dev.related.ip.add(endp["ip"])
 
-                    if settings.get(f"PMOTCP{idx}"):
-                        endp["tcp_local_port"] = int(_getv(settings[f"PMOTCP{idx}"]))
+                    if _to_int(_getv(settings.get(f"PMOTCP{idx}", ""))) is not None:
+                        endp["tcp_local_port"] = _to_int(_getv(settings[f"PMOTCP{idx}"]))
                         dev.related.ports.add(endp["tcp_local_port"])
 
-                    if settings.get(f"PMOUDP{idx}"):
-                        endp["udp_remote_port"] = int(_getv(settings[f"PMOUDP{idx}"]))
+                    if _to_int(_getv(settings.get(f"PMOUDP{idx}", ""))) is not None:
+                        endp["udp_remote_port"] = _to_int(_getv(settings[f"PMOUDP{idx}"]))
                         dev.related.ports.add(endp["udp_remote_port"])
 
                     if endp:
@@ -993,7 +1530,7 @@ def parse_ids(configs: dict[str, dict]) -> dict[str, str | dict[str, str]]:
             if ident not in settings:
                 continue
 
-            id_val = settings[ident]["value"]
+            id_val = _getv(settings[ident])
 
             # "relay_id_by_group"
             ids[f"{desc}_by_group"][config] = id_val
@@ -1022,11 +1559,11 @@ def parse_and_process_modbus(configs: dict[str, dict], dev: DeviceData) -> None:
 
     for config, settings in configs.items():
         # M, M1, M2, etc.
-        if not config[0] == "M" or not re.match(r"^M\d?$", config, re.ASCII):
+        if not re.match(r"^M\d?$", config, re.ASCII) or not isinstance(settings, dict):
             continue
 
         # TODO: [M1] is "monitoring and metering" on SEL-487E
-        if dev.description.model == "487E" and config[1].isdigit():
+        if dev.description.model == "487E" and config != "M":
             continue
 
         log.debug(f"Parsing and processing Modbus data from section {config}")
@@ -1093,8 +1630,8 @@ def parse_and_process_dnp3(configs: dict[str, dict], dev: DeviceData) -> None:
     }
 
     for config, settings in configs.items():
-        # DNPA, DNPB, D1, D2, D3, etc.
-        if not config[0] == "D" or (not config[1].isdigit() and not config.startswith("DNP")):
+        # D, DNPA, DNPB, D1, D2, D3, etc.
+        if not re.match(r"^(D\d*|DNP.*)$", config, re.ASCII) or not isinstance(settings, dict):
             continue
 
         log.debug(f"Parsing and processing DNP3 data from section {config}")
@@ -1126,6 +1663,8 @@ def parse_and_process_dnp3(configs: dict[str, dict], dev: DeviceData) -> None:
                 for idx, val in enumerate(vals):
                     # TODO: create Register and IO objects for DNPA/DNPB
                     dev.extra[f"{config}_analog_inputs"][str(idx)] = val
+
+                continue
 
             # if does not start with BI, BO, AI, AO,
             # then parse as a variable, e.g.
@@ -1239,7 +1778,7 @@ def parse_logic_section(
             if logic_key not in settings:
                 continue
 
-            value = settings[logic_key]["value"]
+            value = _getv(settings[logic_key])
 
             # NOTE: close logic used to compare value != 0, which
             # was never valid (at least for a while) since the values
@@ -1340,7 +1879,8 @@ def parse_fid(id_string: str) -> dict[str, str]:
 
     # Parse backwards to handle variable parts (SLBT-3CF1 vs BOOTLDR)
     release_date = sfid.pop().strip("D")  # D20120321
-    if "XXXXX" in release_date:
+    # Masked dates in QuickSet templates, e.g. "Dxxxxxxxx" or "DXXXXXXXX"
+    if re.fullmatch(r"[xX]+", release_date):
         release_datetime = None
     else:
         release_datetime = utils.parse_date(release_date)
@@ -1953,6 +2493,26 @@ def _getv(val: dict | Any) -> Any:
     if isinstance(val, dict) and "value" in val:
         return val["value"]
     return val
+
+
+def _to_int(val: Any) -> int | None:
+    """
+    Convert a setting value to an integer, or None if it's not a number (e.g. "OFF").
+    """
+    try:
+        return int(str(val).strip())
+    except ValueError:
+        return None
+
+
+def _to_float(val: Any) -> float | None:
+    """
+    Convert a setting value to a float, or None if it's not a number (e.g. "OFF").
+    """
+    try:
+        return float(str(val).strip())
+    except ValueError:
+        return None
 
 
 def is_enabled(conf: dict) -> bool:
