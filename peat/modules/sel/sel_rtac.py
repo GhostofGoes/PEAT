@@ -8,11 +8,11 @@ Core functionality for interrogating a SEL Real-Time Automation Controller (RTAC
    force TCP SYN checks to be used with port 443.
 
 SEL RTACs store data in a PostgreSQL database, but it can be exported as XML.
-Each "page" of the RTAC configuration is its own XML file.
-Instead of importing all of the XML files separately, they should be put into
-a tarball. PEAT will then decompress it to the file system, read each file
-into memory, sort based on file type, and finally delete the files from the file
-system. PEAT can then parse the configuration based on what's in-memory.
+ACSELERATOR RTAC (SEL-5033) exports a project as a directory of XML files,
+with one XML file for each item in the project tree (devices, tag lists,
+programs, system settings, etc.). PEAT can parse the directory, a tarball of
+the directory (``.tar``, ``.tar.gz`` or ``.tgz``), or a single XML file.
+Refer to :ref:`sel-rtac-project-exports` for details on the file format.
 
 To test Postgres (connecting to the "3530" database table):
 ``psql -h <ip> -U <username> -d 3530``
@@ -39,6 +39,7 @@ Authors
 
 import base64
 import functools
+import ipaddress
 import math
 import re
 import tarfile
@@ -62,20 +63,42 @@ from peat import (
 )
 from peat.consts import DeviceError
 from peat.data.data_utils import merge_models
-from peat.data.models import User
+from peat.data.models import Register, User
 from peat.data.validators import validate_hash
+from peat.file_signature import FileSignature
 from peat.protocols import HTTP
 
 from .rtac_parse import (
+    build_structured_text,
     parse_accesspointrouters,
+    parse_backupable_objects,
     parse_contact_ios,
+    parse_data_types,
     parse_devices,
+    parse_export_source,
+    parse_goose_devices,
+    parse_gvls,
+    parse_iec61850_info,
+    parse_logic_engine_objects,
     parse_maincontroller,
     parse_pous,
+    parse_project_info,
+    parse_system_time_control,
     parse_systemtags,
+    parse_tag_lists,
     parse_tagprocessor,
+    parse_user_libraries,
+    parse_visualizations,
 )
-from .sel_consts import RTAC_DB_NAME, RTAC_DB_TABLES, RTAC_TRANSIENT_KEYS
+from .sel_consts import (
+    RTAC_DB_NAME,
+    RTAC_DB_TABLES,
+    RTAC_EXPORT_ADDRESS_COLUMNS,
+    RTAC_EXPORT_IP_SETTINGS,
+    RTAC_EXPORT_PORT_SETTINGS,
+    RTAC_EXPORT_PROTOCOLS,
+    RTAC_TRANSIENT_KEYS,
+)
 from .sel_http import SELHTTP
 
 
@@ -102,6 +125,14 @@ class SELRTAC(DeviceModule):
         "SystemTags.xml",
         "Main Controller.xml",
         "Contact I_O.xml",
+        "System_Time_Control.xml",
+        "Project Info.xml",
+    ]
+    file_signatures = [
+        FileSignature(
+            default_filename="rtac-export.xml",
+            xml_tags=("RTACModule",),
+        ),
     ]
 
     # These are what's known to work. Others may work as well
@@ -137,12 +168,27 @@ class SELRTAC(DeviceModule):
     _tag_to_parser_map = {
         "AccessPointRouter": parse_accesspointrouters,
         "Device": parse_devices,
+        "GooseDevice": parse_goose_devices,
+        "TagList": parse_tag_lists,
         "TagProcessor": parse_tagprocessor,
         "ContactIO": parse_contact_ios,
         "SystemTags": parse_systemtags,
+        "SystemTimeControl": parse_system_time_control,
         "MainController": parse_maincontroller,
         "POU": parse_pous,
+        "LogicEngineObject": parse_logic_engine_objects,
+        "DataType": parse_data_types,
+        "GVL": parse_gvls,
+        "UserLibrary": parse_user_libraries,
+        "ProjectInfo": parse_project_info,
+        "IEC61850Info": parse_iec61850_info,
+        "RTACBackupableObject": parse_backupable_objects,
+        "Visualization": parse_visualizations,
+        "VisualizationManager": parse_visualizations,
     }
+
+    # Items in a project export that don't have any useful data
+    _ignored_tags = {"NavigatorLayout"}
 
     @classmethod
     def _verify_http(cls, dev: DeviceData, protocol: Literal["http", "https"] = "http") -> bool:
@@ -947,13 +993,54 @@ class SELRTAC(DeviceModule):
             break
 
     @classmethod
-    def parse_xml(cls, data: str, filename: str, device_info: dict):
+    def parse_xml(cls, data: str, filename: str, device_info: dict) -> bool:
+        """
+        Parse one XML file from a RTAC project export into ``device_info``.
+
+        Returns:
+            If the file was a RTAC XML file with a known item type
+        """
         xml_root = ET.fromstring(data)
+        if xml_root.tag != "RTACModule" or not len(xml_root):
+            cls.log.debug(f"Skipping non-RTAC XML file '{filename}' (root: '{xml_root.tag}')")
+            return False
+
         tag = xml_root[0].tag
+
+        # Keep track of the RTAC models and the export schema versions
+        export_source = parse_export_source(xml_root[0])
+        sources = device_info.setdefault("ExportSource", {"Schema": [], "DeviceMOT": []})
+        for key, value in export_source.items():
+            if value not in sources[key]:
+                sources[key].append(value)
+
         if tag in cls._tag_to_parser_map:
             cls._tag_to_parser_map[tag](xml_root, device_info)
-        else:
+            return True
+
+        if tag not in cls._ignored_tags:
             cls.log.debug(f"Skipping unknown XML file '{filename}' with tag '{tag}'")
+        return False
+
+    @classmethod
+    def _parse_file(cls, data: bytes, name: str, dev: DeviceData, device_info: dict) -> None:
+        """Parse a XML file, and log a error if the parse fails (instead of raising)."""
+        try:
+            # NOTE: all RTAC XML files must be read with encoding "utf-8-sig".
+            # The RTAC editor saves some XML files as "UTF-8 with BOM" encoding.
+            # The XML parser handles this fine on Linux, but for some reason it
+            # isn't handled well on Windows. This is fixed by decoding the text
+            # using the "utf-8-sig" encoding, which will skip the BOM if present.
+            # Per the Python documentation:
+            #   "On decoding utf-8-sig will skip those three bytes if they appear
+            #   as the first three bytes in the file."
+            # Ref: https://docs.python.org/3/library/codecs.html#encodings-and-unicode
+            text = data.decode(encoding="utf-8-sig")
+            if cls.parse_xml(text, name, device_info):
+                dev.related.files.add(Path(name).name)
+        except Exception as ex:
+            cls.log.error(f"Failed to parse '{name}': {ex}")
+            device_info.setdefault("parse_errors", []).append(name)
 
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData:
@@ -963,75 +1050,296 @@ class SELRTAC(DeviceModule):
         device_info = {}
 
         # Possible inputs:
+        # - directory of XML files (a project export)
         # - .tar.gz/.tar file containing XML files
-        # - directory of XML files
-        # - single XML file?
-        #
-        # NOTE: all RTAC XML files must be read with encoding "utf-8-sig".
-        # The RTAC editor appears to save XML files as "UTF-8 with BOM" encoding.
-        # The XML parser handles this fine on Linux, but for some reason it
-        # isn't handled well on Windows. This is fixed by decoding the text
-        # using the "utf-8-sig" encoding, which will skip the BOM if present.
-        # Per the Python documentation:
-        #   "On decoding utf-8-sig will skip those three bytes if they appear
-        #   as the first three bytes in the file."
-        # Ref: https://docs.python.org/3/library/codecs.html#encodings-and-unicode
+        # - single XML file
         if file.is_dir():
-            xml_files = file.rglob("*.xml")
-            for xf in xml_files:
-                cls.parse_xml(xf.read_text(encoding="utf-8-sig"), xf.name, device_info)
-                dev.related.files.add(xf.name)
-        elif file.suffix == ".xml":
-            cls.parse_xml(file.read_text(encoding="utf-8-sig"), file.name, device_info)
-            dev.related.files.add(file.name)
+            xml_files = [f for f in file.rglob("*") if f.is_file() and f.suffix.lower() == ".xml"]
+            for xf in sorted(xml_files):
+                cls._parse_file(xf.read_bytes(), xf.relative_to(file).as_posix(), dev, device_info)
+        elif file.suffix.lower() == ".xml":
+            cls._parse_file(file.read_bytes(), file.name, dev, device_info)
         elif tarfile.is_tarfile(file):
-            if any("gz" in s for s in file.suffixes):
-                mode = "r:gz"
-            else:
-                mode = "r"  # transparent, i think this auto-determines compression
-
             device_info["existing_files"] = []
-            with tarfile.open(name=file.as_posix(), mode=mode, encoding="utf-8") as tar:
+            # Mode "r" detects the compression (none, gzip, bz2, xz)
+            with tarfile.open(name=file.as_posix(), mode="r", encoding="utf-8") as tar:
                 for member in tar.getmembers():
+                    if not member.isfile():  # skip directories and links
+                        continue
+
+                    member_path = Path(member.name)
+                    if member_path.is_absolute() or ".." in member_path.parts:
+                        cls.log.warning(f"Skipping unsafe path '{member.name}' in '{file.name}'")
+                        continue
+
                     cls.log.debug(f"Parsing '{member.name}' from '{file.name}'")
                     f_handle = tar.extractfile(member)
+                    if f_handle is None:
+                        continue
 
-                    if f_handle is not None:  # skip directories
-                        device_info["existing_files"].append(member.name)
-                        # see note earlier in code about utf-8-sig encoding
-                        data = f_handle.read().decode(encoding="utf-8-sig")
+                    data = f_handle.read()
+                    device_info["existing_files"].append(member.name)
+                    if member_path.suffix.lower() == ".xml":
+                        cls._parse_file(data, member.name, dev, device_info)
 
-                        try:
-                            cls.parse_xml(data, member.name, device_info)
-                        except Exception as ex:
-                            # still save the data to file even if parsing failed
-                            cls.log.error(
-                                f"Failed to parse '{member.name}' from '{file.name}': {ex}"
-                            )
+                    # still save the data to file even if parsing failed
+                    dev.write_file(data, f"extracted_files/{member.name}")
+        else:
+            raise DeviceError(f"Unknown type of file for SEL RTAC parsing: {file.name}")
 
-                        dev.write_file(data, f"extracted_files/{member.name}")
-                        dev.related.files.add(Path(member.name).name)
-
-        # TODO: there is useful information being parsed we're not saving yet
-        #   Interfaces (Ethernet, serial, and USB)
-        #   Services (e.g. SSH, Telnet, SEL FastMessage)
-        #   Remote device endpoints and registers (Device)
-        #       Get a DeviceData from datastore, then update:
-        #           registers, IP, services, interfaces, model/brand/vendor
-        #   Internal Tags?
         dev.extra.update(device_info)
+        cls._process_export(dev, device_info)
 
-        # TODO: hack, defaulting model to 3530 for now (it's not being extracted...)
         if not dev.description.model:
             cls.log.warning(
-                "RTAC parsing doesn't currently extract the model, "
-                "it defaults to '3530' for the time being"
+                "No RTAC model found in the project export, defaulting to '3530'. "
+                "The model is in the 'DeviceMOT' element of 'Project Info.xml' "
+                "and most other files in the export."
             )
             dev.description.model = "3530"
 
         cls.update_dev(dev)
 
         return dev
+
+    @classmethod
+    def _process_export(cls, dev: DeviceData, device_info: dict) -> None:
+        """
+        Populate the device data model with the
+        data parsed from a RTAC project export.
+        """
+        # --- Model and part number ---
+        project_info = device_info.get("ProjectInfo", {})
+        project_rtacs = project_info.get("Devices", [])
+        if len(project_rtacs) > 1:
+            cls.log.warning(
+                f"The project export has {len(project_rtacs)} RTACs "
+                f"({[r.get('FolderName') for r in project_rtacs]}). PEAT parses "
+                f"them as one device, so items with the same name in different "
+                f"RTACs overwrite each other. Parse the folder of each RTAC on "
+                f"its own to keep the data separate."
+            )
+
+        # DeviceMOT is a model (e.g. "3530") or a part number (e.g. "3530HB0AX313X1XXXXXX")
+        mots = [str(r["DeviceMOT"]) for r in project_rtacs if r.get("DeviceMOT")]
+        for mot in device_info.get("ExportSource", {}).get("DeviceMOT", []):
+            if str(mot) not in mots:
+                mots.append(str(mot))
+        if len({mot[:4] for mot in mots}) > 1:
+            cls.log.warning(f"Project export has data from more than one RTAC model: {mots}")
+        if mots and not dev.description.model:
+            mot = mots[0]
+            model_match = re.match(r"\d{4}", mot)
+            if model_match:
+                dev.description.model = model_match.group(0)
+            else:
+                dev.description.model = mot
+        # Use the first value that is a full part number
+        for mot in mots:
+            if re.fullmatch(r"\d{4}[0-9A-Z]{6,}", mot) and not dev.part_number:
+                dev.part_number = mot
+                break
+
+        # --- Host name and Ethernet interfaces ---
+        # NOTE: set the host name before adding interfaces, since the first
+        # interface stored is copied to the device's ip, mac, and hostname.
+        advanced = device_info.get("AdvancedSettings", {})
+        for web_info in advanced.get("Website Settings", {}).get("device_info", []):
+            host_name = web_info.get("host_name", "").strip()
+            if host_name:
+                if not dev.hostname:
+                    dev.hostname = host_name
+                dev.related.hosts.add(host_name)
+                # The default host name has the model, e.g. "SEL3530-4-0030A702E165"
+                host_match = re.match(r"SEL-?(\d{4}(?:-\d)?)-", host_name)
+                if host_match and (
+                    not dev.description.model
+                    or host_match.group(1).startswith(dev.description.model)
+                ):
+                    dev.description.model = host_match.group(1)
+            if web_info.get("description") and not dev.description.description:
+                dev.description.description = web_info["description"]
+
+        cls._process_ethernet_settings(dev, advanced.get("Ethernet Settings", {}))
+
+        rtac_name = device_info.get("IEC61850Info", {}).get("RtacName")
+        if rtac_name:
+            if not dev.name:
+                dev.name = rtac_name
+            dev.related.hosts.add(rtac_name)
+
+        # --- Remote devices, protocols, IPs, ports, and registers ---
+        for dev_name, rem_dev in device_info.get("Devices", {}).items():
+            protocol = cls._normalize_protocol(rem_dev.get("Protocol", ""))
+            if protocol:
+                dev.related.protocols.add(protocol)
+
+            # Skip access points (local sockets) and tunnels, e.g "Eng_Access_40"
+            if (
+                "Eng_Access_" not in dev_name
+                and "accesspoint" not in str(rem_dev.get("Protocol", "")).lower()
+            ):
+                dev.related.hosts.add(dev_name)
+
+            settings = rem_dev.get("Settings", {})
+            for ip_key in RTAC_EXPORT_IP_SETTINGS:
+                ip = str(settings.get(ip_key, "")).strip()
+                if not utils.is_ip(ip):
+                    continue
+                ip_obj = ipaddress.ip_address(ip)
+                # Multicast groups and "0.0.0.0" are not hosts
+                if not ip_obj.is_unspecified and not ip_obj.is_multicast:
+                    dev.related.ip.add(ip)
+
+            for port_key in RTAC_EXPORT_PORT_SETTINGS:
+                # The client port isn't fixed if it's automatically assigned
+                if port_key == "Client IP Port" and settings.get("Auto Client IP Port") is True:
+                    continue
+                port = settings.get(port_key)
+                if type(port) is int and 0 < port < 65536:
+                    dev.related.ports.add(port)
+
+            cls._process_device_registers(dev, dev_name, rem_dev, protocol)
+
+        for goose in device_info.get("GooseDevices", {}).values():
+            dev.related.protocols.add(cls._normalize_protocol(goose.get("Protocol", "goose")))
+            if goose.get("IED Name"):
+                dev.related.hosts.add(goose["IED Name"])
+
+        # --- Logic ---
+        if project_info.get("Description") and not dev.logic.description:
+            dev.logic.description = project_info["Description"]
+
+        st_logic = build_structured_text(device_info)
+        if st_logic:
+            dev.logic.formats["structured_text"] = st_logic
+            if not dev.logic.parsed:
+                dev.logic.parsed = st_logic
+            dev.write_file(st_logic, "logic.st")
+
+    @classmethod
+    def _process_ethernet_settings(cls, dev: DeviceData, eth_settings: dict) -> None:
+        """Add interfaces from the "Ethernet Settings" in a project export."""
+        ipv6_by_id = {}
+        for ipv6 in eth_settings.get("ipv6_network_interfaces", []):
+            if ipv6.get("network_interface_id") is not None:
+                ipv6_by_id[ipv6["network_interface_id"]] = ipv6
+
+        for ipv4 in eth_settings.get("ipv4_network_interfaces", []):
+            name = ipv4.get("name", "")
+            try:
+                iface = cls._make_interface(ipv4, ipv6_by_id.get(ipv4.get("network_interface_id")))
+            except Exception as ex:
+                cls.log.warning(f"Failed to parse Ethernet interface '{name}': {ex}")
+                continue
+            dev.store("interface", iface, lookup="name")
+
+    @classmethod
+    def _make_interface(cls, ipv4: dict, ipv6: dict | None) -> Interface:
+        """
+        Make an Interface from the attributes of a ``ipv4_network_interfaces``
+        element (and the matching ``ipv6_network_interfaces`` element, if any).
+        """
+        name = ipv4.get("name", "")
+        iface = Interface(
+            name=name,
+            id=ipv4.get("network_interface_id", ""),
+            type="usb" if name.upper().startswith("USB") else "ethernet",
+        )
+        if ipv4.get("interface_enabled"):
+            iface.enabled = ipv4["interface_enabled"].lower() == "true"
+        if ipv4.get("mac"):
+            iface.mac = ipv4["mac"]
+
+        address = ipv4.get("ipv4_address", "").strip()
+        if address:
+            try:
+                ip_iface = ipaddress.IPv4Interface(address)
+                iface.ip = str(ip_iface.ip)
+                # Only set the mask if the address has a prefix, e.g. "/24"
+                if "/" in address:
+                    iface.subnet_mask = str(ip_iface.netmask)
+            except ValueError:
+                cls.log.warning(f"Invalid IPv4 address '{address}' for interface '{name}'")
+
+        # Keep the attributes that aren't fields of the Interface in "extra"
+        used = {"name", "network_interface_id", "interface_enabled", "mac", "ipv4_address"}
+        iface.extra = {k: v for k, v in ipv4.items() if k not in used}
+        if ipv6 and ipv6.get("ip_address"):
+            iface.extra["ipv6_address"] = ipv6["ip_address"]
+            if ipv6.get("interface_enabled"):
+                iface.extra["ipv6_enabled"] = ipv6["interface_enabled"].lower() == "true"
+
+        return iface
+
+    @classmethod
+    def _normalize_protocol(cls, protocol: str) -> str:
+        """
+        Convert a protocol name from a project export (e.g. "ModbusClient")
+        to a PEAT protocol name (e.g. "modbus").
+        """
+        if not protocol:
+            return ""
+        lowered = protocol.lower()
+        for substring, name in RTAC_EXPORT_PROTOCOLS:
+            if substring in lowered:
+                return name
+        return lowered
+
+    @classmethod
+    def _process_device_registers(
+        cls, dev: DeviceData, dev_name: str, rem_dev: dict, protocol: str
+    ) -> None:
+        """
+        Add registers for the tags of a remote device that have a
+        protocol address, e.g. Modbus registers or DNP3 points.
+        """
+        for page_key, page in rem_dev.items():
+            if not isinstance(page, dict) or page_key == "Settings":
+                continue
+
+            for tag_key, row in page.items():
+                if not isinstance(row, dict):
+                    continue
+
+                address = None
+                for column in RTAC_EXPORT_ADDRESS_COLUMNS:
+                    if row.get(column) is not None:
+                        address = row[column]
+                        break
+                if address is None:
+                    continue
+
+                tag_name = str(row.get("Tag Name", tag_key))
+                if "binary" in page_key or "coil" in page_key or "discrete" in page_key:
+                    measurement = "binary"
+                elif "analog" in page_key or "register" in page_key:
+                    measurement = "analog"
+                else:
+                    measurement = ""
+
+                extra = {"remote_device": dev_name, "page": page_key}
+                if row.get("Register Address Stop") is not None:
+                    extra["address_stop"] = str(row["Register Address Stop"])
+                if row.get("Tag Alias"):
+                    extra["alias"] = str(row["Tag Alias"])
+
+                reg = Register(
+                    address=str(address),
+                    name=tag_name,
+                    tag=tag_name,
+                    data_type=str(row.get("Tag Type", "")),
+                    measurement_type=measurement,
+                    protocol=protocol,
+                    group=dev_name,
+                    extra=extra,
+                )
+                if isinstance(row.get("Enable"), bool):
+                    reg.enabled = row["Enable"]
+                if row.get("Comment"):
+                    reg.description = str(row["Comment"])
+
+                dev.store("registers", reg)
 
 
 SELRTAC.ip_methods = [

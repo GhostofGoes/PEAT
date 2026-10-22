@@ -142,6 +142,123 @@ To manually extract them without using PEAT:
    zlib-flate -uncompress < ./SET_61850.CID > SET_61850.xml
 
 
+RTACs
+-----
+
+PEAT can pull data from a live RTAC (over HTTP/HTTPS and PostgreSQL), and parse an RTAC project that was exported from ACSELERATOR RTAC (SEL-5033). This section is about parsing project exports.
+
+.. _sel-rtac-project-exports:
+
+RTAC project exports
+^^^^^^^^^^^^^^^^^^^^
+PEAT can't parse the project files that ACSELERATOR RTAC saves. To get files that PEAT can parse, export the project from ACSELERATOR RTAC. The export is a directory of XML files, with one XML file for each item in the project tree. A typical export looks like this:
+
+- ``Project Info.xml``: the RTACs in the project (model and export schema version), and the project description.
+- ``Navigator Layout.xml``: the layout of the project tree in the editor. PEAT ignores this file.
+- ``SEL_RTAC/``: the items of the RTAC (the name of this directory is the ``FolderName`` in ``Project Info.xml``).
+
+  - ``Tag Processor.xml``: the tag mappings.
+  - ``System/Main Controller.xml``: the task cycle times, and the programs that each task runs.
+  - ``System/Contact I_O.xml``: the physical contact inputs and outputs.
+  - ``System/SystemTags.xml``: the RTAC system tags (alarms, diagnostics, LEDs, etc.).
+  - ``System/System_Time_Control.xml``: the time source and time zone settings.
+  - ``Advanced Read-in Items/``: device settings, such as ``Ethernet Settings.xml`` (IP addresses and MAC addresses) and ``Website Settings.xml`` (host name). These are only in some exports.
+  - One XML file for each device connection, GOOSE message, tag list, program (POU), global variable list (GVL), data type, and user library. These can be in any subdirectory, because the user can make folders in the project tree.
+
+- ``POUs/``: the shared user logic of the project (objects that are not inside an RTAC), such as the ``Library Manager``.
+
+PEAT can parse these inputs:
+
+- The export directory: ``peat parse -d selrtac -- ./MyProject/``
+- A tarball of the export directory (``.tar``, ``.tar.gz`` or ``.tgz``): ``peat parse -d selrtac -- ./myproject-rtac.tar.gz``. The file name must match one of the patterns in :attr:`~peat.modules.sel.sel_rtac.SELRTAC.filename_patterns` (e.g. it contains ``rtac``) for PEAT to find it without ``-d selrtac``.
+- A single XML file from an export: ``peat parse -d selrtac -- "./MyProject/SEL_RTAC/System/Main Controller.xml"``. Without ``-d``, PEAT finds RTAC XML files by their ``<RTACModule>`` root element.
+
+XML file format
+^^^^^^^^^^^^^^^
+Every file has a ``<RTACModule>`` root element with one child element. The tag of the child is the type of the item. Most items start with an ``<ExportSource>`` element:
+
+.. code-block:: xml
+
+   <RTACModule>
+     <Device>
+       <ExportSource>
+         <Schema>22</Schema>
+         <DeviceMOT>3530</DeviceMOT>
+       </ExportSource>
+       <Name>CB101</Name>
+       ...
+     </Device>
+   </RTACModule>
+
+- ``Schema`` is the version of the export format. It increases with the version of ACSELERATOR RTAC. Public exports have schemas from 18 to 36.
+- ``DeviceMOT`` is the model option table of the RTAC. It can be the model (``3530``, ``3555``) or the full part number (e.g. ``3530HB0AX313X1XXXXXX``). PEAT uses the first four digits as the model, and a full part number as the part number. ``Project Info.xml`` has the ``DeviceMOT`` of each RTAC in the project, and PEAT uses it first. If the default host name in ``Website Settings.xml`` has a more specific model (e.g. ``SEL3530-4-0030A702E165``), PEAT uses it.
+
+Some files start with a UTF-8 byte order mark (BOM), and some have an XML declaration. PEAT reads the files with the ``utf-8-sig`` encoding, which removes the BOM.
+
+Settings and tags are in ``<SettingPages>``. Each ``<SettingPage>`` has a ``<Name>`` and ``<Row>`` elements, and each row has ``<Setting>`` elements (cells) with a ``<Column>`` and a ``<Value>``. There are two forms of page:
+
+- A list of single settings, with the columns ``Setting``, ``Value`` and ``Comment``. This is the form of the ``Settings`` page of a device, e.g. ``Server IP Address`` and ``Server IP Port``.
+- A table, with one row for each tag, register, poll, or similar. For example the ``Binary Inputs`` page of a DNP3 client, or the ``Holding Registers`` page of a Modbus client.
+
+A cell can have the attribute ``enabled="false"``. This means the cell is read-only in the editor, NOT that the setting is disabled. PEAT includes these cells. The ``POU Pin Settings`` page describes the function block the editor makes for the item, so PEAT ignores it.
+
+Item types that PEAT parses, and where the results are in the device data (``extra``):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Item (XML tag)
+     - Key in ``extra``
+     - Notes
+   * - ``ProjectInfo``
+     - ``ProjectInfo``
+     - RTACs in the project and the project description (also :attr:`~peat.data.models.Logic.description`)
+   * - ``Device``
+     - ``Devices``
+     - Device connections (Modbus, DNP3, C37.118, access points, etc.). Settings, plus one key for each other page (e.g. ``binary_inputs``), with the column names as keys. The channels of each PMU of a C37.118 client are under ``pmus``. Tags with a protocol address are also added to ``registers``. Remote IP addresses (not multicast groups), ports, device names and protocols are added to ``related``. Names, aliases, comments and other identifier columns are kept as text, other values are converted to numbers and booleans.
+   * - ``GooseDevice``
+     - ``GooseDevices``
+     - IEC 61850 GOOSE subscriptions (``GooseRx``) and publications (``GooseTx``). The GOOSE control block is under ``Message``. The IED names are added to ``related.hosts``.
+   * - ``TagList``
+     - ``TagLists``
+     - Virtual tag lists and C37.118 data streams
+   * - ``TagProcessor``
+     - ``TagProcessor``
+     - Rows are keyed by ``SolveOrder_<n>``
+   * - ``ContactIO``, ``SystemTags``, ``SystemTimeControl``, ``MainController``
+     - Same as the tag
+     -
+   * - ``POU``, ``LogicEngineObject``, ``GVL``, ``DataType``
+     - ``POU``, ``LogicEngineObjects``, ``GVL``, ``DataTypes``
+     - Structured Text code. PEAT combines it into one file, ``logic.st``, and into :attr:`~peat.data.models.Logic.formats` (``structured_text``). POUs in graphical languages (and in older exports) only have ``<ArchivedContent>``, a CODESYS archive, which PEAT doesn't convert to code.
+   * - ``UserLibrary``
+     - ``UserLibraries``
+     - Name, company, version and parameters
+   * - ``RTACBackupableObject``
+     - ``AdvancedSettings``
+     - "Advanced Read-in Items". Ethernet interfaces are added to ``interface``, and the host name to ``hostname``.
+   * - ``IEC61850Info``
+     - ``IEC61850Info``
+     - The IEC 61850 IED name of the RTAC (also the device ``name``)
+   * - ``Visualization``, ``VisualizationManager``
+     - ``Visualizations``
+     - Names only
+   * - ``AccessPointRouter``
+     - ``AccessPointRouters``
+     -
+
+The models and schema versions of all of the files are in ``extra.ExportSource``. If a file can't be parsed, PEAT logs an error, adds the file name to ``extra.parse_errors``, and continues with the other files.
+
+PEAT uses the same protocol names as for relays in ``related.protocols`` and in ``registers``: for example ``modbus``, ``dnp3``, ``c37.118``, and ``iec61850`` (for GOOSE and MMS).
+
+Limitations:
+
+- A project can have more than one RTAC, with one folder for each RTAC. PEAT parses an export as one device, so items with the same name in different RTACs overwrite each other, and PEAT logs a warning. Parse the folder of each RTAC on its own to keep the data separate.
+- The IP address, MAC address and host name of the first Ethernet interface in ``Ethernet Settings.xml`` become the address of the parsed device (the same as for Rockwell L5X project files). Two exports of RTACs with the same configured address (e.g. a factory default) are then merged into one device in the results.
+- POUs that only have ``<ArchivedContent>`` are not converted to code.
+
+The test data for RTAC parsing is in ``tests/modules/sel/data_files/rtac/``. It has six public, openly licensed project exports (SEL-3530, SEL-3530-4 and SEL-3555, schemas 22 to 36). ``SOURCES.md`` in that directory has the source and license of each export.
+
 Developer notes on SEL communications
 -------------------------------------
 SEL relays can communicate over Telnet, serial connection (e.g. RS-232), or a "engineering tunnel" through a SEL 3530 RTAC (I'm not aware of any relays that support SSH yet, but there might be some newer ones that do). The messages sent are part of what they call "SEL ASCII" commands, and those commands are transport-agnostic, which means the "id" command sent over Telnet will have the same response as one sent over serial or an engineering tunnel. The commands and responses are basic ASCII text, except in certain cases, where it's "Compressed ASCII" (this is rare).
