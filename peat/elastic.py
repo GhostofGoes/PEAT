@@ -33,7 +33,6 @@ from peat import (
     __version__,
     config,
     consts,
-    es_mappings,
     exit_handler,
     log,
     state,
@@ -41,7 +40,7 @@ from peat import (
 )
 from peat.protocols import HTTP
 
-from .es_mappings import PEAT_INDICES
+from .es_mappings import peat_index_mappings
 
 
 def _serialize_value(data, default_func: Callable):
@@ -213,10 +212,6 @@ class Elastic:
 
             try:
                 if self.is_opensearch:
-                    # TODO: instead of mutating global state...do this on the class
-                    es_mappings.FLATTENED["type"] = "flat_object"
-                    if "ignore_above" in es_mappings.FLATTENED:
-                        del es_mappings.FLATTENED["ignore_above"]
                     es_klass = OpenSearch
                 else:
                     es_klass = Elasticsearch
@@ -367,9 +362,9 @@ class Elastic:
                 },
             }
 
-            if remapped_name in PEAT_INDICES:
-                index_type_mapping = PEAT_INDICES[remapped_name]
-                body["mappings"] = index_type_mapping
+            index_mappings = peat_index_mappings(opensearch=self.is_opensearch)
+            if remapped_name in index_mappings:
+                body["mappings"] = index_mappings[remapped_name]
             else:
                 self.log.warning(
                     f"No index mapping defined for '{remapped_name}'."

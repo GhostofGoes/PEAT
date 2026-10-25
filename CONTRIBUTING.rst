@@ -609,7 +609,7 @@ Python source code for the ``peat`` module.
 - ``consts.py``  Constants (global variables) such as system information, as well as functions that need to be "import-safe" without cross-dependencies on other PEAT modules
 - ``device.py``  Defines the :class:`~peat.device.DeviceModule` base class used (subclassed) by all PEAT device modules (everything in ``peat/modules/``)
 - ``elastic.py``  Elasticsearch interface implementation, including :class:`~peat.elastic.Elastic`
-- ``es_mappings.py``  Elasticsearch type mappings
+- ``es_mappings.py``  Elasticsearch type mappings, generated from the data models in ``peat/data/models.py``
 - ``init.py``  Initialization functions, including loading of configurations and Elasticsearch initialization
 - ``log_utils.py``  Logging-related functions
 - ``module_manager.py``  The special sauce behind PEAT's dynamic device module API (``peat.module_api``). The :class:`~peat.module_manager.ModuleManager` manages all imported PEAT :class:`~peat.device.DeviceModule` modules and provides methods to lookup a module or import a new module.
@@ -729,7 +729,7 @@ Areas of note:
 - ``peat/init.py`` : :func:`~peat.init.initialize_peat` is a workaround for the fact we support multiple independent ways of using PEAT (the CLI, the HTTP server, and as a Python package).
 - Multiple classes use the Python ``@property`` feature, read the official documentation for details: `Python docs - Property <https://docs.python.org/3/library/functions.html#property>`__
 - Multiple classes implement Python built-in methods, commonly known as "magic" or "dunder" methods. These include ``__str__``, ``__repr__``, and others. Check the Python documentation for more details and a full listing: `Python docs - Data Model <https://docs.python.org/3/reference/datamodel.html>`__
-- ``peat/data/*`` : the data models use Pydantic to provide a nice interface for working with data from devices. They process, store and manage device data and provide the structure/schema and associated documentation for said data. **Changes here have the potential to affect every module in PEAT**. Therefore, as with anything critical, think twice, write tests, and ask questions.
+- ``peat/data/*`` : the data models use Pydantic to provide a nice interface for working with data from devices. They process, store and manage device data and provide the structure/schema and associated documentation for said data. **Changes here have the potential to affect every module in PEAT**. Therefore, as with anything critical, think twice, write tests, and ask questions. The Elasticsearch type mappings are generated from the models (see :mod:`peat.es_mappings`), so a new field gets a type inferred from its annotation. If the inferred type isn't right (e.g. an IP address string, which should be ``ip``, or a ``dict``, which has no inferred type), set ``elastic_type`` on the field, e.g. ``Field(default="", elastic_type="ip")``.
 
 Class hierarchy
 ---------------
