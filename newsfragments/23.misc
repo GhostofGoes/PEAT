@@ -1,0 +1,1 @@
+CI now runs the unit tests, container tests, and Linux executable build on GitHub's Linux ARM64 (``ubuntu-24.04-arm``) runner in addition to x86_64 (`#8 <https://github.com/sandialabs/PEAT/issues/8>`_). staticx is updated to 0.14.2, whose source build (needed on ARM64, which has no staticx wheel) works with current setuptools.

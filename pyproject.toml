@@ -302,7 +302,7 @@ test = [
 ]
 exe = [
     "pyinstaller==6.15.0",
-    "staticx==0.14.1;platform_system=='Linux'",
+    "staticx==0.14.2;platform_system=='Linux'",
     "setuptools<70.0.0",  # Fix various issues with setuptools lately
 ]
 dev = [

@@ -4,8 +4,8 @@
 [metadata]
 groups = ["default", "dev", "docs", "exe", "lint", "test"]
 strategy = []
-lock_version = "4.5.0"
-content_hash = "sha256:6f6962681be193db32aa6af1c9e02449931741863f7ffe65d3603ab1efe7f169"
+lock_version = "4.5.1"
+content_hash = "sha256:e2dc7737d3b431762c5986e122cf5e049f9300fb213e49e9d57c548aec48be9f"
 
 [[metadata.targets]]
 requires_python = ">=3.11,<3.14"
@@ -2351,15 +2351,17 @@ files = [
 
 [[package]]
 name = "staticx"
-version = "0.14.1"
+version = "0.14.2"
 requires_python = ">=3.7"
 summary = "Build static self-extracting app from dynamic executable"
 dependencies = [
+    "importlib-metadata; python_version < \"3.8\"",
+    "importlib-resources; python_version < \"3.9\"",
     "pyelftools",
 ]
 files = [
-    {file = "staticx-0.14.1-py3-none-manylinux1_x86_64.whl", hash = "sha256:bd34ee12e2d97d9c88970855817a70750745ce6bddc616c42fb318bb5a422e89"},
-    {file = "staticx-0.14.1.tar.gz", hash = "sha256:dbf18c1016b0be4000f480095ed3ef335b512a7d992b469cb094fbc40921a218"},
+    {file = "staticx-0.14.2-py3-none-manylinux1_x86_64.whl", hash = "sha256:28c00af00bfc57f35861d6824de0a4f6c334d57788815726de5d47140f864c73"},
+    {file = "staticx-0.14.2.tar.gz", hash = "sha256:bf7d5d35d5777a72b2d4c408eb25f9c61049b28b94a388a012122dba00fffa93"},
 ]
 
 [[package]]
