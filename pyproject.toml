@@ -219,9 +219,17 @@ dependencies = [
 
     # Library for SSH handling
     # Required for: Sage, Idirect, ION, Fortigate
-    # TODO: do NOT update to paramiko 3.0+, need to test code after updating
-    "paramiko==2.12.0",
-    "cryptography==38.0.4",
+    # NOTE: paramiko 3.4.1+ is needed to avoid TripleDES deprecation warnings
+    # (and crashes once it's removed) with newer versions of cryptography.
+    # 3.5.1 is the version that has been tested.
+    # Do NOT update to paramiko 4.0+ without testing against real devices.
+    # 4.0 removes DSA keys, and 5.0 removes SHA-1 RSA signatures ("ssh-rsa")
+    # and SHA-1 key exchanges, which older OT devices may still require.
+    "paramiko>=3.5.1,<4",
+
+    # Cryptographic primitives, used by paramiko and PEAT's config encryption
+    # 48.0.1+ is required to fix GHSA-537c-gmf6-5ccf
+    "cryptography>=48.0.1",
 
     # SCP over SSH, leveraging paramiko
     # Required for: Fortigate
