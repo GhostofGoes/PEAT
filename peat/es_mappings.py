@@ -8,7 +8,19 @@ Schema reference: :ref:`database-schema`
 .. note::
    Type is only required for individual fields, NOT documents
 
-Data structure
+Mappings for the PEAT data models (e.g. :class:`~peat.data.models.DeviceData`)
+are generated from the models by :func:`model_mapping`, so the models are the
+single source of truth for those types. The type of a field is inferred from
+its type annotation (``str`` is ``keyword``, ``int`` is ``long``, ``datetime``
+is ``date``, nested models become ``properties``, etc.). Set ``elastic_type``
+on the field to override the inferred type, either with the name of a type
+(e.g. ``Field(default="", elastic_type="ip")``) or a full mapping
+(e.g. ``Field(default="", elastic_type=KEYWORD_AND_TEXT)``).
+
+Fields that aren't part of a data model, such as the ECS ``agent`` and
+``observer`` fields or the summary fields, are defined in this module.
+
+Data structure of :func:`peat_index_mappings`
 
 - Key: Name of the index (e.g. ``ot-device-hosts-timeseries``).
 - Value: The field mapping for the index, including field types
@@ -24,7 +36,17 @@ Official Elasticsearch documentation and references
 
 """
 
-from typing import Final
+from __future__ import annotations
+
+import copy
+import datetime
+from collections.abc import Collection
+from functools import cache
+from pathlib import PurePath
+from typing import Any, Final, Literal, get_origin
+
+from pydantic import BaseModel
+from pydantic.fields import MAPPING_LIKE_SHAPES, ModelField
 
 EsTypeType = dict[str, str | int]
 MappingType = dict[str, EsTypeType]
@@ -44,8 +66,7 @@ LONG: Final[EsTypeType] = {"type": "long"}
 DOUBLE: Final[EsTypeType] = {"type": "double"}
 NESTED: Final[EsTypeType] = {"type": "nested"}
 
-# NOTE: flattened is not "Final" due to a hack in elastic.py
-FLATTENED: EsTypeType = {
+FLATTENED: Final[EsTypeType] = {
     "type": "flattened",
     "ignore_above": 4096,
 }
@@ -57,307 +78,117 @@ KEYWORD_AND_TEXT: Final[NestedMappingType] = {
 }
 
 
-# -- Reusable mapping definitions based on ECS --
-VENDOR_FIELDS: Final[MappingType] = {
-    "name": KEYWORD,
-    "id": KEYWORD,
+# Named types that can be used as "elastic_type" on a model field and
+# have a mapping with more than just the type, e.g. "ignore_above".
+NAMED_TYPES: Final[dict[str, EsTypeType]] = {
+    "flattened": FLATTENED,
 }
 
-DESCRIPTION_FIELDS: Final[NestedMappingType] = {
-    "brand": KEYWORD,
-    "contact_info": KEYWORD_AND_TEXT,
-    "description": KEYWORD_AND_TEXT,
-    "full": KEYWORD_AND_TEXT,
-    "model": KEYWORD,
-    "product": KEYWORD_AND_TEXT,
-    "vendor": {"properties": VENDOR_FIELDS},
-}
 
-HARDWARE_FIELDS: Final[NestedMappingType] = {
-    "cpu": {"properties": DESCRIPTION_FIELDS},
-    "id": KEYWORD,
-    "storage_available": LONG,
-    "storage_usage": LONG,
-    "storage_total": LONG,
-    "storage_type": KEYWORD,
-    "memory_available": LONG,
-    "memory_usage": LONG,
-    "memory_total": LONG,
-    "memory_type": KEYWORD,
-    "revision": KEYWORD,
-    "version": KEYWORD,
-}
+# -- Mapping generation from the data models --
+def _type_mapping(field: ModelField) -> EsTypeType:
+    """Infer the Elasticsearch type of a model field from its type annotation."""
+    field_type = field.type_
 
-HASH_FIELDS: Final[MappingType] = {
-    "md5": KEYWORD,
-    "sha1": KEYWORD,
-    "sha256": KEYWORD,
-    "sha512": KEYWORD,
-}
+    if field.shape in MAPPING_LIKE_SHAPES or field_type is dict:
+        raise TypeError(
+            f"Field '{field.name}' is a dict, which has no inferable Elasticsearch "
+            f"type. Set 'elastic_type' on the field (e.g. elastic_type=\"flattened\")."
+        )
 
-USER_FIELDS: Final[NestedMappingType] = {
-    "description": KEYWORD_AND_TEXT,
-    "domain": KEYWORD,
-    "email": KEYWORD,
-    "full_name": KEYWORD_AND_TEXT,
-    "id": KEYWORD,
-    "name": KEYWORD_AND_TEXT,
-    "permissions": KEYWORD,
-    "roles": KEYWORD,
-    "uid": KEYWORD,
-    "gid": KEYWORD,
-    "extra": FLATTENED,
-}
+    if get_origin(field_type) is Literal:
+        return KEYWORD
 
-RELATED_FIELDS: Final[MappingType] = {
-    "emails": KEYWORD,
-    "files": KEYWORD,
-    "hash": KEYWORD,
-    "hosts": KEYWORD,
-    "ip": IP,
-    "mac": KEYWORD,
-    "ports": LONG,
-    "protocols": KEYWORD,
-    "process": KEYWORD,
-    "roles": KEYWORD,
-    "urls": KEYWORD,
-    "user": KEYWORD,
-}
+    if isinstance(field_type, type):
+        # NOTE: bool is a subclass of int, so it must be checked first
+        if issubclass(field_type, bool):
+            return BOOL
+        if issubclass(field_type, int):
+            return LONG
+        if issubclass(field_type, float):
+            return DOUBLE
+        if issubclass(field_type, (str, PurePath)):
+            return KEYWORD
+        if issubclass(field_type, bytes):
+            return BINARY
+        if issubclass(field_type, datetime.datetime):
+            return DATE
+        # timedelta is exported as the total number of seconds
+        if issubclass(field_type, datetime.timedelta):
+            return LONG
 
-FILE_FIELDS: Final[NestedMappingType] = {
-    "created": DATE,
-    "description": KEYWORD_AND_TEXT,
-    "device": KEYWORD,
-    "directory": KEYWORD,
-    "extension": KEYWORD,
-    "hash": {"properties": HASH_FIELDS},
-    "local_path": KEYWORD,
-    "path": KEYWORD,
-    "peat_module": KEYWORD,
-    "gid": KEYWORD,
-    "group": KEYWORD,
-    "mime_type": KEYWORD,
-    "mode": KEYWORD,
-    "mtime": DATE,
-    "name": KEYWORD,
-    "original": BINARY,
-    "owner": KEYWORD,
-    "size": LONG,
-    "target_path": KEYWORD,
-    "type": KEYWORD,
-    "uid": KEYWORD,
-    "extra": FLATTENED,
-}
+    raise TypeError(
+        f"Unable to infer the Elasticsearch type of field '{field.name}' "
+        f"with type '{field_type}'. Set 'elastic_type' on the field."
+    )
 
-FIRMWARE_FIELDS: Final[NestedMappingType] = {
-    "checksum": KEYWORD,
-    "extra": FLATTENED,
-    "file": {"properties": FILE_FIELDS},
-    "hash": {"properties": HASH_FIELDS},
-    "id": KEYWORD,
-    "last_updated": DATE,
-    "original": BINARY,
-    "revision": KEYWORD,
-    "release_date": DATE,
-    "timestamp": DATE,
-    "version": KEYWORD,
-}
 
-LOGIC_FIELDS: Final[NestedMappingType] = {
-    "author": KEYWORD_AND_TEXT,
-    "created": DATE,
-    "description": KEYWORD_AND_TEXT,
-    "file": {"properties": FILE_FIELDS},
-    "formats": NESTED,
-    "hash": {"properties": HASH_FIELDS},
-    "id": KEYWORD,
-    "last_updated": DATE,
-    "name": KEYWORD_AND_TEXT,
-    "original": TEXT,
-    "parsed": TEXT,
-}
+def model_mapping(
+    model: type[BaseModel],
+    include: Collection[str] | None = None,
+    _parents: tuple[type[BaseModel], ...] = (),
+) -> NestedMappingType:
+    """
+    Generate the Elasticsearch field mapping for a data model.
 
-CERTENTITY_FIELDS: Final[MappingType] = {
-    "common_name": KEYWORD,
-    "country": KEYWORD,
-    "distinguished_name": KEYWORD,
-    "locality": KEYWORD,
-    "organization": KEYWORD,
-    "organizational_unit": KEYWORD,
-    "state_or_province": KEYWORD,
-}
+    Fields with a nested model (e.g. ``File.hash``) or list of models
+    (e.g. ``DeviceData.interface``) are mapped as ``properties`` with the
+    mapping of that model. A model that contains itself (e.g. ``DeviceData.module``)
+    is expanded one level deep.
 
-X509_FIELDS: Final[NestedMappingType] = {
-    "alternative_names": KEYWORD,
-    "hash": {"properties": HASH_FIELDS},
-    "issuer": {"properties": CERTENTITY_FIELDS},
-    "not_after": DATE,
-    "not_before": DATE,
-    "original": KEYWORD,
-    "public_key_algorithm": KEYWORD,
-    "public_key_curve": KEYWORD,
-    "public_key_exponent": LONG,
-    "public_key_size": LONG,
-    "serial_number": KEYWORD,
-    "signature_algorithm": KEYWORD,
-    "subject": {"properties": CERTENTITY_FIELDS},
-    "version_number": KEYWORD,
-}
+    Args:
+        model: The model class to generate the mapping for,
+            e.g. :class:`~peat.data.models.File`
+        include: Names of the fields to include in the mapping.
+            If :obj:`None`, all fields are included.
 
-SERVICE_FIELDS: Final[MappingType] = {
-    "configured_port": LONG,
-    "enabled": BOOL,
-    "extra": FLATTENED,
-    "listen_address": IP,
-    "listen_interface": KEYWORD,
-    "process_name": KEYWORD,
-    "process_pid": LONG,
-    "port": LONG,
-    "protocol": KEYWORD,
-    "protocol_id": KEYWORD,
-    "role": KEYWORD,
-    "status": KEYWORD,
-    "transport": KEYWORD,
-}
+    Returns:
+        The field mapping, which can be used as the value of ``properties``
 
-INTERFACE_FIELDS: Final[NestedMappingType] = {
-    "alias": KEYWORD,
-    "application": KEYWORD,
-    "connected": BOOL,
-    "description": {"properties": DESCRIPTION_FIELDS},
-    "duplex": KEYWORD,
-    "enabled": BOOL,
-    "extra": FLATTENED,
-    "name": KEYWORD,
-    "type": KEYWORD,
-    "hostname": KEYWORD,
-    "mac": KEYWORD,
-    "mac_vendor": KEYWORD_AND_TEXT,
-    "mtu": INTEGER,
-    "physical": BOOL,
-    "promiscuous_mode": BOOL,
-    "speed": INTEGER,
-    "uptime": LONG,
-    "hardware_mac": KEYWORD,
-    "id": KEYWORD,
-    "ip": IP,
-    "subnet_mask": IP,
-    "gateway": IP,
-    "serial_port": KEYWORD,
-    "baudrate": INTEGER,
-    "data_bits": BYTE,
-    "parity": KEYWORD,
-    "stop_bits": BYTE,
-    "flow_control": KEYWORD,
-    "services": {"properties": SERVICE_FIELDS},
-    "version": KEYWORD,
-}
+    Raises:
+        TypeError: The type of a field can't be inferred and the field
+            does not have ``elastic_type`` set.
+    """
+    mapping = {}
 
-REGISTER_FIELDS: Final[MappingType] = {
-    "address": KEYWORD,
-    "data_type": KEYWORD,
-    "description": TEXT,
-    "enabled": BOOL,
-    "extra": FLATTENED,
-    "group": KEYWORD,
-    "io": KEYWORD,
-    "measurement_type": KEYWORD,
-    "name": KEYWORD,
-    "protocol": KEYWORD,
-    "read_write": KEYWORD,
-    "tag": KEYWORD,
-}
+    for name, field in model.__fields__.items():
+        if include is not None and name not in include:
+            continue
 
-TAG_FIELDS: Final[MappingType] = {
-    "address": KEYWORD,
-    "description": TEXT,
-    "io": KEYWORD,
-    "name": KEYWORD,
-    "type": KEYWORD,
-}
+        elastic_type = field.field_info.extra.get("elastic_type")
+        if isinstance(elastic_type, str):
+            mapping[name] = NAMED_TYPES.get(elastic_type, {"type": elastic_type})
+        elif elastic_type is not None:
+            mapping[name] = elastic_type
+        elif (
+            field.shape not in MAPPING_LIKE_SHAPES
+            and isinstance(field.type_, type)
+            and issubclass(field.type_, BaseModel)
+        ):
+            if field.type_ in _parents:
+                continue
+            mapping[name] = {"properties": model_mapping(field.type_, _parents=(*_parents, model))}
+        else:
+            mapping[name] = _type_mapping(field)
 
-IO_FIELDS: Final[MappingType] = {
-    "address": KEYWORD,
-    "description": TEXT,
-    "direction": KEYWORD,
-    "extra": FLATTENED,
-    "id": KEYWORD,
-    "name": KEYWORD,
-    "type": KEYWORD,
-    "slot": KEYWORD,
-}
+    return mapping
 
-ERROR_FIELDS: Final[MappingType] = {
-    "code": KEYWORD,
-    "id": KEYWORD,
-    "message": TEXT,
-    "stack_trace": TEXT,
-    "type": KEYWORD,
-}
 
-GEO_FIELDS: Final[MappingType] = {
-    "city_name": KEYWORD,
-    "country_name": KEYWORD,
-    "location": {"type": "geo_point"},
-    "name": KEYWORD,
-    "timezone": KEYWORD,
-}
+def to_opensearch(mapping: Any) -> Any:
+    """
+    Convert a mapping to be compatible with OpenSearch.
 
-EVENT_FIELDS: Final[NestedMappingType] = {
-    "action": KEYWORD,
-    "category": KEYWORD,
-    "created": DATE,
-    "dataset": KEYWORD,
-    "extra": FLATTENED,
-    "hash": {"properties": HASH_FIELDS},
-    "id": KEYWORD,
-    "ingested": DATE,
-    "kind": KEYWORD,
-    "message": KEYWORD_AND_TEXT,
-    "module": KEYWORD,
-    "original": TEXT,
-    "outcome": KEYWORD,
-    "provider": KEYWORD,
-    "sequence": LONG,
-    "severity": LONG,
-    "timezone": KEYWORD,
-    "type": KEYWORD,
-}
+    OpenSearch uses ``flat_object`` instead of ``flattened``,
+    and doesn't support ``ignore_above`` on it.
+    """
+    if not isinstance(mapping, dict):
+        return mapping
+    if mapping.get("type") == "flattened":
+        return {"type": "flat_object"}
+    return {key: to_opensearch(value) for key, value in mapping.items()}
 
-OS_FIELDS: Final[NestedMappingType] = {
-    "family": KEYWORD,
-    "full": KEYWORD,
-    "kernel": KEYWORD,
-    "name": KEYWORD,
-    "timestamp": DATE,
-    "vendor": {"properties": VENDOR_FIELDS},
-    "version": KEYWORD,
-}
 
-MEMORY_FIELDS: Final[MappingType] = {
-    "address": KEYWORD,
-    "created": DATE,
-    "dataset": KEYWORD,
-    "device": KEYWORD,
-    "process": KEYWORD,
-    "size": LONG,
-    "value": {
-        "type": "keyword",
-        "ignore_above": 4096,  # memory values can be quite large
-    },
-    "extra": FLATTENED,
-}
-
-SSHKEY_FIELDS: Final[NestedMappingType] = {
-    "description": KEYWORD_AND_TEXT,
-    "file": {"properties": FILE_FIELDS},
-    "host": KEYWORD,
-    "id": KEYWORD,
-    "original": KEYWORD_AND_TEXT,
-    "type": KEYWORD,
-    "user": KEYWORD,
-}
-
+# -- Mapping definitions for fields that aren't in the data models, based on ECS --
 AGENT_FIELDS: Final[MappingType] = {
     "id": KEYWORD,
     "type": KEYWORD,
@@ -366,97 +197,12 @@ AGENT_FIELDS: Final[MappingType] = {
 
 ECS_FIELDS: Final[MappingType] = {"version": KEYWORD}
 
-OBSERVER_FIELDS: Final[NestedMappingType] = {
-    "geo": {"properties": GEO_FIELDS},
-    "hostname": KEYWORD,
-    "interface": {"properties": {"name": KEYWORD, "egress": {"properties": {"name": KEYWORD}}}},
-    "ip": IP,
-    "mac": KEYWORD,
-    "os": {"properties": OS_FIELDS},
-    "user": {"properties": USER_FIELDS},
-}
-
-BASE_FIELDS: Final[NestedMappingType] = {
-    "@timestamp": DATE,
-    "agent": {"properties": AGENT_FIELDS},
-    "ecs": {"properties": ECS_FIELDS},
+ERROR_FIELDS: Final[MappingType] = {
+    "code": KEYWORD,
+    "id": KEYWORD,
     "message": TEXT,
-    "observer": {"properties": OBSERVER_FIELDS},
-    "tags": KEYWORD,
-}
-UEFI_FILE_FIELD: Final[MappingType] = {
-    # Define all Fields
+    "stack_trace": TEXT,
     "type": KEYWORD,
-    "subtype": KEYWORD,
-    "base": KEYWORD,
-    "size": KEYWORD,
-    "crc32": KEYWORD,
-    "guid": KEYWORD,
-    "name": KEYWORD,
-    "path": KEYWORD,
-    "created": DATE,
-}
-
-UEFI_HASH_FIELD: Final[MappingType] = {
-    "file_system": KEYWORD,
-    "pathname": KEYWORD,
-    "hash": KEYWORD,
-}
-BASIC_HOST_FIELDS: Final[NestedMappingType] = {
-    "description": {"properties": DESCRIPTION_FIELDS},
-    "hostname": KEYWORD,
-    "id": KEYWORD,
-    "ip": IP,
-    "mac": KEYWORD,
-    "serial_port": KEYWORD,
-    "name": KEYWORD,
-    "type": KEYWORD,
-    "slot": KEYWORD,
-    "geo": {"properties": GEO_FIELDS},
-}
-
-HOST_FIELDS: Final[NestedMappingType] = {
-    "architecture": KEYWORD,
-    "boot_firmware": {"properties": FIRMWARE_FIELDS},
-    "description": {"properties": DESCRIPTION_FIELDS},
-    "endian": KEYWORD,
-    "firmware": {"properties": FIRMWARE_FIELDS},
-    "hardware": {"properties": HARDWARE_FIELDS},
-    "hostname": KEYWORD,
-    "id": KEYWORD,
-    "ip": IP,
-    "mac": KEYWORD,
-    "mac_vendor": KEYWORD_AND_TEXT,
-    "serial_port": KEYWORD,
-    "name": KEYWORD,
-    "label": KEYWORD,
-    "comment": KEYWORD_AND_TEXT,
-    "part_number": KEYWORD,
-    "type": KEYWORD,
-    "serial_number": KEYWORD,
-    "manufacturing_date": DATE,
-    "run_mode": KEYWORD,
-    "slot": KEYWORD,
-    "start_time": DATE,
-    "status": KEYWORD,
-    "uptime": LONG,
-    "os": {"properties": OS_FIELDS},
-    "geo": {"properties": GEO_FIELDS},
-    "logic": {"properties": LOGIC_FIELDS},
-    "interface": {"properties": INTERFACE_FIELDS},
-    "service": {"properties": SERVICE_FIELDS},
-    "ssh_keys": {"properties": SSHKEY_FIELDS},
-    "related": {"properties": RELATED_FIELDS},
-    "registers": {"properties": REGISTER_FIELDS},
-    "tag": {"properties": TAG_FIELDS},
-    "io": {"properties": IO_FIELDS},
-    "event": {"properties": EVENT_FIELDS},
-    "memory": {"properties": MEMORY_FIELDS},
-    "users": {"properties": USER_FIELDS},
-    "x509": {"properties": X509_FIELDS},
-    "extra": FLATTENED,
-    "uefi_image": {"properties": UEFI_FILE_FIELD},
-    "uefi_hashes": {"properties": UEFI_HASH_FIELD},
 }
 
 PROCESS_FIELDS: Final[NestedMappingType] = {
@@ -474,182 +220,185 @@ PROCESS_FIELDS: Final[NestedMappingType] = {
     "working_directory": KEYWORD_AND_TEXT,
 }
 
-PARSE_RESULT: Final[dict[str, NestedMappingType]] = {
-    "properties": {
-        "name": KEYWORD,
-        "path": KEYWORD,
-        "module": KEYWORD,
-        "results": {"properties": {**HOST_FIELDS, "module": {"properties": HOST_FIELDS}}},
-    }
-}
-
 
 # -- PEAT index mappings --
-PEAT_INDICES: Final[dict[str, dict]] = {
-    "peat-logs": {
+def peat_index_mappings(opensearch: bool = False) -> dict[str, dict]:
+    """
+    Generate the mappings for the PEAT Elasticsearch indices.
+
+    Args:
+        opensearch: If the mappings are for OpenSearch instead of Elasticsearch
+
+    Returns:
+        Mapping of index names to the mapping for the index. This is a copy,
+        so it can be modified without affecting other callers.
+    """
+    return copy.deepcopy(_peat_index_mappings(opensearch))
+
+
+@cache
+def _peat_index_mappings(opensearch: bool) -> dict[str, dict]:
+    # Imported here since the models import this module
+    from peat.data import models
+
+    observer_fields = {
+        "geo": {"properties": model_mapping(models.Geo)},
+        "hostname": KEYWORD,
+        "interface": {
+            "properties": {"name": KEYWORD, "egress": {"properties": {"name": KEYWORD}}}
+        },
+        "ip": IP,
+        "mac": KEYWORD,
+        "os": {"properties": model_mapping(models.OS)},
+        "user": {"properties": model_mapping(models.User)},
+    }
+
+    base_fields = {
+        "@timestamp": DATE,
+        "agent": {"properties": AGENT_FIELDS},
+        "ecs": {"properties": ECS_FIELDS},
+        "message": TEXT,
+        "observer": {"properties": observer_fields},
+        "tags": KEYWORD,
+    }
+
+    event_fields = model_mapping(models.Event)
+    host_fields = model_mapping(models.DeviceData)
+    basic_host_fields = model_mapping(models.DeviceData, include=models.BASE_HOST_FIELD_NAMES)
+
+    parse_result = {
         "properties": {
-            **BASE_FIELDS,
-            "error": {"properties": ERROR_FIELDS},
-            "event": {"properties": EVENT_FIELDS},
-            "log": {
-                "properties": {
-                    "level": KEYWORD,
-                    "logger": KEYWORD,
-                    "original": KEYWORD,
-                    "origin": {
-                        "properties": {
-                            "function": KEYWORD,
-                            "file": {"properties": {"line": LONG, "name": KEYWORD}},
-                        }
-                    },
-                }
-            },
-            "peat": {
-                "properties": {
-                    "containerized": BOOL,
-                    "debug_level": LONG,
-                    "entrypoint": KEYWORD,
-                    "podman": BOOL,
-                    "python_version": KEYWORD,
-                }
-            },
-            "process": {"properties": PROCESS_FIELDS},
+            "name": KEYWORD,
+            "path": KEYWORD,
+            "module": KEYWORD,
+            "results": {"properties": host_fields},
         }
-    },
-    "peat-scan-summaries": {
-        "properties": {
-            **BASE_FIELDS,
-            "peat_version": KEYWORD,
-            "peat_run_id": KEYWORD,
-            "scan_duration": DOUBLE,
-            "scan_modules": KEYWORD,
-            "scan_type": KEYWORD,
-            # Targets could be IPs, IP ranges, serial ports, MACs, etc.
-            # Therefore, we just use a plain ole' "keyword" type.
-            "scan_targets": KEYWORD,
-            "scan_original_targets": KEYWORD,
-            "num_hosts_active": LONG,
-            "num_hosts_online": LONG,
-            "num_hosts_verified": LONG,
-            "hosts_online": KEYWORD,
-            "hosts_verified": FLATTENED,
+    }
+
+    indices = {
+        "peat-logs": {
+            "properties": {
+                **base_fields,
+                "error": {"properties": ERROR_FIELDS},
+                # PEAT log events use the numeric log level as the severity
+                "event": {"properties": {**event_fields, "severity": LONG}},
+                "log": {
+                    "properties": {
+                        "level": KEYWORD,
+                        "logger": KEYWORD,
+                        "original": KEYWORD,
+                        "origin": {
+                            "properties": {
+                                "function": KEYWORD,
+                                "file": {"properties": {"line": LONG, "name": KEYWORD}},
+                            }
+                        },
+                    }
+                },
+                "peat": {
+                    "properties": {
+                        "containerized": BOOL,
+                        "debug_level": LONG,
+                        "entrypoint": KEYWORD,
+                        "podman": BOOL,
+                        "python_version": KEYWORD,
+                    }
+                },
+                "process": {"properties": PROCESS_FIELDS},
+            }
+        },
+        "peat-scan-summaries": {
+            "properties": {
+                **base_fields,
+                "peat_version": KEYWORD,
+                "peat_run_id": KEYWORD,
+                "scan_duration": DOUBLE,
+                "scan_modules": KEYWORD,
+                "scan_type": KEYWORD,
+                # Targets could be IPs, IP ranges, serial ports, MACs, etc.
+                # Therefore, we just use a plain ole' "keyword" type.
+                "scan_targets": KEYWORD,
+                "scan_original_targets": KEYWORD,
+                "num_hosts_active": LONG,
+                "num_hosts_online": LONG,
+                "num_hosts_verified": LONG,
+                "hosts_online": KEYWORD,
+                "hosts_verified": FLATTENED,
+            }
+        },
+        "peat-pull-summaries": {
+            "properties": {
+                **base_fields,
+                "peat_version": KEYWORD,
+                "peat_run_id": KEYWORD,
+                "pull_duration": DOUBLE,
+                "pull_modules": KEYWORD,
+                # Targets could be IPs, IP ranges, serial ports, MACs, etc.
+                # Therefore, we just use a plain ole' "keyword" type.
+                "pull_targets": KEYWORD,
+                "pull_original_targets": KEYWORD,
+                "pull_devices": KEYWORD,
+                "pull_comm_type": KEYWORD,
+                "num_pull_results": LONG,
+                "pull_results": FLATTENED,
+            }
+        },
+        "peat-parse-summaries": {
+            "properties": {
+                **base_fields,
+                "peat_version": KEYWORD,
+                "peat_run_id": KEYWORD,
+                "parse_duration": DOUBLE,
+                "parse_modules": KEYWORD,
+                "input_paths": KEYWORD,
+                "files_parsed": KEYWORD,
+                "num_files_parsed": LONG,
+                "num_parse_successes": LONG,
+                "num_parse_failures": LONG,
+                "parse_failures": parse_result,
+                "parse_results": parse_result,
+            }
+        },
+        "peat-configs": {
+            "properties": {
+                **base_fields,
+            }
+        },
+        "peat-state": {
+            "properties": {
+                **base_fields,
+            }
+        },
+        "ot-device-hosts-timeseries": {
+            "properties": {
+                **base_fields,
+                "host": {"properties": host_fields},
+            }
+        },
+    }
+
+    # Indices for models that are pushed to their own index,
+    # e.g. "ot-device-files" with the File in "file"
+    for index_name, key, model in [
+        ("ot-device-events", "", None),
+        ("ot-device-files", "file", models.File),
+        ("ot-device-registers", "register", models.Register),
+        ("ot-device-tags", "tag", models.Tag),
+        ("ot-device-io", "io", models.IO),
+        ("ot-device-memory", "memory", models.Memory),
+        ("uefi-files", "uefi", models.UEFIFile),
+        ("uefi-hashes", "uefi", models.UEFIHash),
+    ]:
+        properties = {
+            **base_fields,
+            "event": {"properties": event_fields},
+            "host": {"properties": basic_host_fields},
         }
-    },
-    "peat-pull-summaries": {
-        "properties": {
-            **BASE_FIELDS,
-            "peat_version": KEYWORD,
-            "peat_run_id": KEYWORD,
-            "pull_duration": DOUBLE,
-            "pull_modules": KEYWORD,
-            # Targets could be IPs, IP ranges, serial ports, MACs, etc.
-            # Therefore, we just use a plain ole' "keyword" type.
-            "pull_targets": KEYWORD,
-            "pull_original_targets": KEYWORD,
-            "pull_devices": KEYWORD,
-            "pull_comm_type": KEYWORD,
-            "num_pull_results": LONG,
-            "pull_results": FLATTENED,
-        }
-    },
-    "peat-parse-summaries": {
-        "properties": {
-            **BASE_FIELDS,
-            "peat_version": KEYWORD,
-            "peat_run_id": KEYWORD,
-            "parse_duration": DOUBLE,
-            "parse_modules": KEYWORD,
-            "input_paths": KEYWORD,
-            "files_parsed": KEYWORD,
-            "num_files_parsed": LONG,
-            "num_parse_successes": LONG,
-            "num_parse_failures": LONG,
-            "parse_failures": PARSE_RESULT,
-            "parse_results": PARSE_RESULT,
-        }
-    },
-    "peat-configs": {
-        "properties": {
-            **BASE_FIELDS,
-        }
-    },
-    "peat-state": {
-        "properties": {
-            **BASE_FIELDS,
-        }
-    },
-    "ot-device-hosts-timeseries": {
-        "properties": {
-            **BASE_FIELDS,
-            "host": {
-                "properties": {
-                    **HOST_FIELDS,
-                    "module": {"properties": HOST_FIELDS},
-                }
-            },
-        }
-    },
-    "ot-device-files": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-            "file": {"properties": FILE_FIELDS},
-        }
-    },
-    "ot-device-registers": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-            "register": {"properties": REGISTER_FIELDS},
-        }
-    },
-    "ot-device-tags": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-            "tag": {"properties": TAG_FIELDS},
-        }
-    },
-    "ot-device-io": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-            "io": {"properties": IO_FIELDS},
-        }
-    },
-    "ot-device-events": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-        }
-    },
-    "ot-device-memory": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-            "memory": {"properties": MEMORY_FIELDS},
-        }
-    },
-    "uefi-files": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-            "uefi": {"properties": UEFI_FILE_FIELD},
-        }
-    },
-    "uefi-hashes": {
-        "properties": {
-            **BASE_FIELDS,
-            "event": {"properties": EVENT_FIELDS},
-            "host": {"properties": BASIC_HOST_FIELDS},
-            "uefi": {"properties": UEFI_HASH_FIELD},
-        }
-    },
-}
+        if model is not None:
+            properties[key] = {"properties": model_mapping(model)}
+        indices[index_name] = {"properties": properties}
+
+    if opensearch:
+        indices = to_opensearch(indices)
+
+    return indices

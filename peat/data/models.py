@@ -7,7 +7,7 @@ import mimetypes
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path, PurePath
-from typing import Any, AnyStr, Literal
+from typing import Any, AnyStr, Final, Literal
 
 from pydantic import (
     Field,
@@ -2551,7 +2551,11 @@ class Memory(BaseModel):
     Size of the memory read, in bytes.
     """
 
-    value: str = ""
+    value: str = Field(
+        default="",
+        # memory values can be quite large
+        elastic_type={"type": "keyword", "ignore_above": 4096},
+    )
     """
     The value read from memory, as a hexadecimal string.
 
@@ -2624,7 +2628,7 @@ class SSHKey(BaseModel):
     SSH keys (public or private).
     """
 
-    description: constr(strip_whitespace=True) = ""
+    description: constr(strip_whitespace=True) = Field(default="", elastic_type=KEYWORD_AND_TEXT)
     """
     Description of the SSH key and/or any comments.
     """
@@ -2644,7 +2648,7 @@ class SSHKey(BaseModel):
     Unique identifier for the key, if any.
     """
 
-    original: constr(strip_whitespace=True) = ""
+    original: constr(strip_whitespace=True) = Field(default="", elastic_type=KEYWORD_AND_TEXT)
     """
     Complete contents of the key, with any trailing whitespace removed.
     """
@@ -2677,6 +2681,28 @@ class SSHKey(BaseModel):
                 dev.related.ip.add(self.host)
             else:
                 dev.related.hosts.add(self.host)
+
+
+BASE_HOST_FIELD_NAMES: Final[tuple[str, ...]] = (
+    "hostname",
+    "id",
+    "ip",
+    "mac",
+    "mac_vendor",
+    "serial_port",
+    "name",
+    "label",
+    "comment",
+    "type",
+    "serial_number",
+    "slot",
+    "description",
+    "geo",
+)
+"""
+Fields of :class:`DeviceData` included in the ``host`` field of documents
+for data in other indices, such as files and events.
+"""
 
 
 class DeviceData(BaseModel):
@@ -2729,7 +2755,7 @@ class DeviceData(BaseModel):
        of this use case (a :class:`list` of :class:`~peat.data.models.DeviceData`).
     """
 
-    successful_pulls: dict = Field(default={})
+    successful_pulls: dict = Field(default={}, elastic_type="flattened")
     """
     Indicates the success of the peat pull per protocol
     """
@@ -2824,7 +2850,7 @@ class DeviceData(BaseModel):
     shouldn't write to this field.
     """
 
-    comment: str = ""
+    comment: str = Field(default="", elastic_type=KEYWORD_AND_TEXT)
     """
     User-specified comment from the PEAT configuration file.
 
@@ -3659,22 +3685,7 @@ class DeviceData(BaseModel):
     def gen_base_host_fields_content(self) -> dict:
         """Populate ``host`` field values for new indices."""
         content = {}
-        for key in [
-            "hostname",
-            "id",
-            "ip",
-            "mac",
-            "mac_vendor",
-            "serial_port",
-            "name",
-            "label",
-            "comment",
-            "type",
-            "serial_number",
-            "slot",
-            "description",
-            "geo",
-        ]:
+        for key in BASE_HOST_FIELD_NAMES:
             if not self.is_default(key) and getattr(self, key):
                 value = getattr(self, key)
                 if isinstance(value, BaseModel):

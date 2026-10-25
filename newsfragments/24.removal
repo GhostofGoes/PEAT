@@ -1,0 +1,1 @@
+Removed ``peat.es_mappings.PEAT_INDICES`` and the per-model ``*_FIELDS`` mapping constants in ``peat.es_mappings``. Use :func:`peat.es_mappings.peat_index_mappings` or :func:`peat.es_mappings.model_mapping` instead.
