@@ -19,6 +19,7 @@ Supported platforms
    - `Kali Linux <https://www.kali.org/>`__
       - 2018+ : ``peat`` executable
    - Other distributions: Debian, Debian-based distributions, and RHEL-based distributions (e.g. Fedora and CentOS) should work with the ``peat`` executable, but are not regularly tested. It has been known to work under Debian 9.
+   - ARM64 (aarch64): PEAT's unit tests, container tests, and Linux executable build run on Ubuntu 24.04 ARM64 in CI. The ``peat`` executable attached to releases is x86_64 only, so on ARM64 Linux use the Python package or build the executable with ``pdm run build-linux-exe``.
 - Windows
    - Windows 7 SP2+: While Windows 7 has been tested with the pre-built executable, it's not regularly tested and support is not maintained. Your Mileage May Vary.
    - Windows 10 1809+/Windows Server 2019+ (build 17763): ``peat.exe`` executable, development, and Python API are fully supported and regularly tested on Windows desktop and server build 17763 and newer. 1703+ may work, but hasn't been tested in a while.
@@ -39,7 +40,7 @@ Hardware
 ========
 The system hardware requirements for running PEAT are minimal. The limits vary slightly by system.
 
-- Minimum 64-bit x86 CPU (Linux) or 32-bit x86 CPU (Windows); Dual-core 2.4Ghz 64-bit x86 CPU is recommended. Additional cores will not noticeably improve performance.
+- Minimum 64-bit x86 CPU (Linux) or 32-bit x86 CPU (Windows), or a 64-bit ARM (aarch64) CPU on Linux when running from source (see :ref:`platforms-section`); Dual-core 2.4Ghz 64-bit CPU is recommended. Additional cores will not noticeably improve performance.
 - Minimum of 64MB available memory (RAM); 256MB is recommended for scanning very large networks or when running PEAT as a container.
 - Minimum of 50MB disk space in the platform's temporary directory (``/tmp`` on Linux or ``AppData`` on Windows). This is needed to extract and execute the Python code.
 - Minimum of ~100MB disk space in the configured output directory; 1Gb is recommended for storing multiple runs and increased output verbosity, 5-10GB is recommended if pulling from 100+ devices, especially if those devices have significant amounts of logic or configuration.

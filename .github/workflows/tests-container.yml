@@ -11,8 +11,13 @@ permissions:
 
 jobs:
   openplcv4-tests:
-    name: OpenPLC Runtime v4
-    runs-on: ubuntu-24.04
+    name: OpenPLC Runtime v4 (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The container images are multi-arch, so they run natively on the ARM64 runner
+        platform: ["ubuntu-24.04", "ubuntu-24.04-arm"]
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -67,13 +72,18 @@ jobs:
       - name: Upload Test Results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: openplcv4-test-results
+          name: openplcv4-test-results-${{ matrix.platform }}
           path: pytest_files/
           if-no-files-found: ignore
 
   mysql-tests:
-    name: MySQL
-    runs-on: ubuntu-24.04
+    name: MySQL (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The container images are multi-arch, so they run natively on the ARM64 runner
+        platform: ["ubuntu-24.04", "ubuntu-24.04-arm"]
     services:
       mysql:
         image: mysql:8.0
@@ -110,6 +120,6 @@ jobs:
       - name: Upload Test Results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mysql-test-results
+          name: mysql-test-results-${{ matrix.platform }}
           path: pytest_files/
           if-no-files-found: ignore
