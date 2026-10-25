@@ -560,10 +560,13 @@ PEAT_INDICES: Final[dict[str, dict]] = {
             "parse_duration": DOUBLE,
             "parse_modules": KEYWORD,
             "input_paths": KEYWORD,
+            "disk_images": KEYWORD,
             "files_parsed": KEYWORD,
             "num_files_parsed": LONG,
             "num_parse_successes": LONG,
             "num_parse_failures": LONG,
+            "files_collected": KEYWORD,
+            "num_files_collected": LONG,
             "parse_failures": PARSE_RESULT,
             "parse_results": PARSE_RESULT,
         }

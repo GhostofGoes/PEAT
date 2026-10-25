@@ -459,3 +459,12 @@ def test_cli_config_file_json(run_peat, tmp_path, datapath):
     written_files = sorted(state_data["written_files"])
     actual_files = sorted([x.as_posix() for x in tmp_path.rglob("*.*")])
     assert written_files == actual_files
+
+
+def test_parse_collect_args():
+    """--collect takes one pattern each time, so it doesn't swallow the paths to parse."""
+    parser = cli_args.build_argument_parser()
+    args = parser.parse_args(["parse", "--collect", "*.mc7", "--collect", "x.dat", "disk.vmdk"])
+    assert args.collect_file_patterns == ["*.mc7", "x.dat"]
+    assert args.input_source == ["disk.vmdk"]
+    assert parser.parse_args(["parse", "--no-recursive", "d"]).parse_recursive is False

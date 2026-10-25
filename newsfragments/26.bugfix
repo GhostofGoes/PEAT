@@ -1,0 +1,1 @@
+List configuration options set with a string, such as from an environment variable (e.g. ``PEAT_HASH_ALGORITHMS=md5,sha256``), are now split on commas, instead of into single characters.

@@ -46,6 +46,7 @@ elastic_dir: !JOIN [*RUNDIR, "elastic_data/"]
 meta_dir: !JOIN [*RUNDIR, "peat_metadata/"]
 log_dir: !JOIN [*RUNDIR, "logs/"]
 temp_dir: !JOIN [*RUNDIR, "temp/"]
+parse_files_dir: !JOIN [*RUNDIR, "parse_files/"]
 zeek_logdir: !JOIN [*RUNDIR, "zeek_logs/"]
 
 elastic_server: null
@@ -85,48 +86,15 @@ no_run_zeek: false
 zeek_dir: null
 formatted_output: true
 
-pillage:
-  auto_copy: true
-  recursive: true
-  default:
-    locations: []
-    filenames: []
-    extensions: []
-  brands:
-    Siemens:
-      locations: []
-      filenames: []
-      extensions:
-        - mc7
-    SEL:
-      locations: []
-      filenames:
-        - set_all.txt
-        - cfg.txt
-        - ser.txt
-        - history.txt
-        - cser.txt
-        - chistory.txt
-      extensions:
-        - rdb
-        - cid
-    Modicon:
-      extensions:
-        - apx
-    L5X:
-      extensions:
-        - l5x
-    ION:
-      filenames:
-        - DEVINFO.DAT
-        - SITEINFO.DAT
-        - 61850_log.txt
-      extensions:
-        - upg
-    Woodward:
-      extensions:
-        - wset
-        - tc
+parse_copy_files: false
+parse_recursive: true
+collect_file_patterns:
+  - "*.mc7"
+  - DEVINFO.DAT
+  - SITEINFO.DAT
+  - 61850_log.txt
+  - "*.upg"
+pillage: {}
 
 device_options:
   baudrates: []

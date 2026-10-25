@@ -154,6 +154,9 @@ def test_typecast(tmp_path):
         "/some/path/",
         "somefile.txt",
     ]
+    # Lists in strings (e.g. from environment variables) are split on commas
+    assert inst.typecast("PATHS", "*.mc7") == ["*.mc7"]
+    assert inst.typecast("PATHS", "*.mc7, DEVINFO.DAT,") == ["*.mc7", "DEVINFO.DAT"]
     assert inst.typecast("OPTS", None) is None
     assert inst.typecast("OPTS", "{'one': 1}") == "{'one': 1}"
 

@@ -1,7 +1,7 @@
 ********
 PEAT API
 ********
-The general :term:`API` provides a generalized interface to execute the PEAT "verbs": scan, parse, pull, push, pillage, and heat. The purpose of this API is to "wrap" the device module API and provide a consistent and well-tested set of powerful interfaces into PEAT's core functionality and device modules. It is used for implementing the PEAT :term:`CLI`, as well as integration with other :term:`SNL`-developed capabilities.
+The general :term:`API` provides a generalized interface to execute the PEAT "verbs": scan, parse, pull, push, and heat (and the deprecated pillage). The purpose of this API is to "wrap" the device module API and provide a consistent and well-tested set of powerful interfaces into PEAT's core functionality and device modules. It is used for implementing the PEAT :term:`CLI`, as well as integration with other :term:`SNL`-developed capabilities.
 
 High-level API
 ==============
@@ -21,7 +21,7 @@ High-level API
    :members: parse
    :noindex:
 
-.. automodule:: peat.api.pillage_api
+.. automodule:: peat.api.parse_api
    :members: pillage
    :noindex:
 

@@ -8,12 +8,15 @@
     "input_paths": [
         "./examples/example_peat_module/awesome_output.json"
     ],
+    "disk_images": [],
     "files_parsed": [
         "/home/cegoes/peat/examples/example_peat_module/awesome_output.json"
     ],
     "num_files_parsed": 1,
     "num_parse_successes": 1,
     "num_parse_failures": 0,
+    "files_collected": [],
+    "num_files_collected": 0,
     "parse_failures": [],
     "parse_results": [
         {

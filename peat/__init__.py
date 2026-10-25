@@ -104,8 +104,7 @@ from .modules import *
 from .module_manager import module_api
 from .init import setup_logging, initialize_peat
 from .api.scan_api import scan
-from .api.parse_api import parse
-from .api.pillage_api import pillage
+from .api.parse_api import parse, pillage
 from .api.pull_api import pull
 from .api.push_api import push
 from .api.heat_api import heat_main

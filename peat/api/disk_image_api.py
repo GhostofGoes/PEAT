@@ -1,3 +1,10 @@
+"""
+Mount disk images read-only and find the files on their volumes, for ``peat parse``.
+
+Disk images are mounted with ``qemu-nbd`` on Linux, ``Mount-DiskImage`` on Windows,
+and ``hdiutil`` on macOS.
+"""
+
 import contextlib
 import errno
 import getpass
@@ -11,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -26,11 +33,10 @@ try:
 except (ImportError, OSError):
     KMODPY_INSTALLED = False
 
-from peat import config, consts, log, utils
+from peat import consts, log, utils
 
-# Keep track if the nbd module was already loaded when pillage started
-# don't remove it if it was.  Keep the system in the same state when done
-# pillaging
+# Keep track if the nbd module was already loaded before mounting an image,
+# and don't remove it if it was. Keep the system in the same state when done.
 NBD_ALREADY_LOADED = False
 
 #: Disk image formats that Windows can mount natively (with ``Mount-DiskImage``).
@@ -87,7 +93,7 @@ MACOS_EXCLUDED_DIRS: Final[tuple[str, ...]] = (
 
 #: Directories in the root of a live macOS system (``/``) that other filesystems are
 #: mounted on (other drives, disk images, network shares, and devices), which are
-#: skipped when searching ``/``. To search them, pillage them directly.
+#: skipped when searching ``/``. To search them, parse them directly.
 MACOS_ROOT_EXCLUDED_DIRS: Final[tuple[str, ...]] = ("Volumes", "dev", "Network", "net", "home")
 
 #: Where the macOS Data volume is mounted, relative to ``/``. Everything on it is also
@@ -167,7 +173,7 @@ MACOS_ATTACH_TIMEOUT: Final[float] = 600.0
 
 _PS_ATTACHED_SCRIPT: Final[str] = r"""
 $ErrorActionPreference = 'Stop'
-[bool](Get-DiskImage -ImagePath $env:PEAT_PILLAGE_IMAGE).Attached
+[bool](Get-DiskImage -ImagePath $env:PEAT_DISK_IMAGE).Attached
 """
 
 # Mounts the disk image read-only (unless it's already attached), waits for
@@ -177,7 +183,7 @@ $ErrorActionPreference = 'Stop'
 _PS_MOUNT_SCRIPT: Final[str] = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$imagePath = $env:PEAT_PILLAGE_IMAGE
+$imagePath = $env:PEAT_DISK_IMAGE
 $alreadyAttached = (Get-DiskImage -ImagePath $imagePath).Attached
 if (-not $alreadyAttached) {
     Mount-DiskImage -ImagePath $imagePath -Access ReadOnly | Out-Null
@@ -231,7 +237,7 @@ ConvertTo-Json -InputObject $result -Depth 3 -Compress
 
 _PS_UNMOUNT_SCRIPT: Final[str] = r"""
 $ErrorActionPreference = 'Stop'
-$imagePath = $env:PEAT_PILLAGE_IMAGE
+$imagePath = $env:PEAT_DISK_IMAGE
 if ((Get-DiskImage -ImagePath $imagePath).Attached) {
     Dismount-DiskImage -ImagePath $imagePath | Out-Null
 }
@@ -240,100 +246,120 @@ if ((Get-DiskImage -ImagePath $imagePath).Attached) {
 #: Seconds to wait for a PowerShell command used for mounting images to finish
 POWERSHELL_TIMEOUT: Final[float] = 120.0
 
-# TODO: integrate pillage with parse. Pillage results should go in peat_results.
+#: Called with the path of each volume on a mounted disk image, to search it.
+#: Returns if the volume was searched successfully.
+VolumeHandler = Callable[[str], bool]
+
+#: File extensions of disk images that ``peat parse`` mounts and searches, if no
+#: device module parses the file. ``.bin`` isn't included, even though raw disk
+#: images sometimes use it, since it's much more common for firmware.
+DISK_IMAGE_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {
+        ".img",
+        ".raw",
+        ".dd",
+        ".vmdk",
+        ".qcow2",
+        ".qcow",
+        ".vhd",
+        ".vhdx",
+        ".vdi",
+        ".iso",
+        ".dmg",
+        ".sparseimage",
+        ".sparsebundle",
+        ".cdr",
+    }
+)
 
 
-def pillage(source: str, password_file: Path | str | None = None) -> bool:
+def is_disk_image(path: Path | str) -> bool:
     """
-    peat pillage.
+    If a path looks like a disk image that can be mounted, from its file extension.
+
+    macOS sparse bundles (``.sparsebundle``) are directories, and are only
+    treated as disk images on macOS, since they can only be mounted there.
+    """
+    path = Path(path)
+    if path.suffix.lower() not in DISK_IMAGE_SUFFIXES:
+        return False
+    return path.is_file() or _is_image_bundle(path)
+
+
+def search_image(
+    source: Path | str, handler: VolumeHandler, password_file: Path | str | None = None
+) -> bool:
+    """
+    Mount a disk image read-only, search each of its volumes, then unmount it.
+
+    Images are mounted with ``qemu-nbd`` on Linux (as root), ``Mount-DiskImage``
+    on Windows (as Administrator, except for ISO images), and ``hdiutil`` on macOS.
+    Refer to the "Disk images" section of the parse documentation for details.
 
     Args:
-        source: Path of a directory or disk image to pillage
+        source: Path of the disk image to search
+        handler: Called with the path of each mounted volume, to search it.
+            The volume is only mounted until the handler returns.
         password_file: File with passwords to unlock encrypted disk images
             and volumes, one per line (see :class:`UnlockSecrets`)
 
     Returns:
-        If pillaging was successful
+        If at least one volume on the image was searched successfully
     """
-    if not config.PILLAGE:
-        log.error(
-            "No Pillage config specified! Make sure the 'pillage' section "
-            "is included in the peat config file!"
-        )
+    source_path = Path(source)
+    if not is_disk_image(source_path):
+        log.error(f"'{source}' isn't a disk image PEAT can mount, or doesn't exist")
         return False
 
-    results_path = Path("pillage_results")
-    if not results_path.exists():
-        results_path.mkdir()
+    secrets = UnlockSecrets(password_file)
+    if not secrets.load():
+        return False
 
-    log.info(f"Pillage source path: {source}")
-    source_path = Path(source)
+    if password_file and not consts.MACOS:
+        log.warning(
+            "Ignoring the password file, since unlocking encrypted volumes "
+            "is only supported on macOS (encrypted DMG and APFS volumes)"
+        )
 
-    # Validate source exists
-    if source_path.exists():
-        if source_path.is_dir() and not _is_image_bundle(source_path):
-            log.info(f"Pillaging directory {source}")
-            if password_file:
-                log.warning("Ignoring the password file, since the source is a directory")
-            return search(source_path, results_path)
+    if consts.WINDOWS:
+        return search_image_windows(source_path, handler)
 
-        elif source_path.is_file() or _is_image_bundle(source_path):
-            secrets = UnlockSecrets(password_file)
-            if not secrets.load():
-                return False
+    if consts.MACOS:
+        return search_image_macos(source_path, handler, secrets)
 
-            if password_file and not consts.MACOS:
-                log.warning(
-                    "Ignoring the password file, since unlocking encrypted volumes "
-                    "is only supported on macOS (encrypted DMG and APFS volumes)"
-                )
+    # TODO: build in support for images made of up smaller image files
+    if not validate_image_mounting():
+        return False
 
-            if consts.WINDOWS:
-                return pillage_image_windows(source_path, results_path)
+    log.info(f"Searching disk image {source}")
 
-            if consts.MACOS:
-                return pillage_image_macos(source_path, results_path, secrets)
+    # Temporary directory to mount the image to
+    temp_path = Path(tempfile.mkdtemp(prefix="peat_image_"))
 
-            # TODO: build in support for images made of up smaller image files
-            if not validate_image_mounting():
-                return False
-
-            log.info(f"Pillaging image {source}")
-
-            # Create temporary directory to mount image to in current directory
-            temp_path = Path("pillage_temp")
-            if temp_path.exists():
-                try:
-                    shutil.rmtree(temp_path)
-                except OSError:
-                    unmount_image(temp_path)
-            temp_path.mkdir()
-
-            # Mount image
-            log.debug(f"Mount image to {temp_path}")
-            success = False
-            if mount_image(source_path, temp_path):
-                try:
-                    success = search(temp_path, results_path, exclude_system_dirs=True)
-                except (Exception, KeyboardInterrupt) as ex:
-                    log.critical(f"Failed pillage search: {ex}")
-                # remove Mount
-                if unmount_image(temp_path):
-                    log.debug(f"Unmout image from '{temp_path}'")
-            else:
-                log.error("Failed to mount image")
-
-            if temp_path.exists():
-                shutil.rmtree(temp_path)
-                log.debug(f"Deleted temp directory '{temp_path}'")
-
-            return success
+    # Mount image
+    log.debug(f"Mount image to {temp_path}")
+    success = False
+    mounted = False
+    try:
+        mounted = mount_image(source_path, temp_path)
+        if mounted:
+            success = handler(str(temp_path))
         else:
-            log.error("Unsupported source type")
-            return False
+            log.error("Failed to mount image")
+    except Exception as ex:
+        log.critical(f"Failed to search disk image: {ex}")
+    finally:
+        # Unmount, even if the search was interrupted (e.g. with Ctrl+C)
+        if mounted and unmount_image(temp_path):
+            log.debug(f"Unmounted image from '{temp_path}'")
 
-    log.error(f"Source ({source}) does not exist")
-    return False
+        try:
+            temp_path.rmdir()
+            log.debug(f"Deleted temp directory '{temp_path}'")
+        except OSError as ex:
+            log.warning(f"Failed to delete temp directory '{temp_path}': {ex}")
+
+    return success
 
 
 def _is_image_bundle(path: Path) -> bool:
@@ -426,7 +452,7 @@ class UnlockSecrets:
 def _locked_volume_message(name: str, label: str) -> str:
     return (
         f"Skipping volume {name}, it's encrypted with {label} and locked. To search "
-        f"it, run pillage with '--password-file FILE', where FILE has the password "
+        f"it, run parse with '--password-file FILE', where FILE has the password "
         f"or recovery password on a line, or run it in a terminal to be prompted "
         f"for the password."
     )
@@ -538,15 +564,16 @@ def mount_image(source: Path, mount_point: Path) -> bool:
     if is_bitlocker(read_volume_header("/dev/nbd1p1")):
         log.error(
             "The first partition of the image is encrypted with BitLocker, which "
-            "pillage can't search. To search it, unlock and mount it yourself "
+            "PEAT can't search. To search it, unlock and mount it yourself "
             "(e.g. with 'cryptsetup open --type bitlk --readonly' or dislocker), "
-            "then pillage the mount point."
+            "then parse the mount point."
         )
         remove_nbd_device()
         remove_nbd_module()
         return False
 
-    mnt_args = ["mount", "-o", "ro", "/dev/nbd1p1", str(mount_point)]
+    # The image's contents are untrusted: no device files, setuid, or executables
+    mnt_args = ["mount", "-o", "ro,nodev,nosuid,noexec", "/dev/nbd1p1", str(mount_point)]
     mnt_result = subprocess.call(mnt_args)
     if mnt_result != 0:
         log.error(f"Failed to run '{' '.join(mnt_args)}' (return code: {mnt_result})")
@@ -603,20 +630,20 @@ def list_loaded_modules() -> list[str]:
     return result
 
 
-def pillage_image_windows(source: Path, results: Path) -> bool:
+def search_image_windows(source: Path, handler: VolumeHandler) -> bool:
     """
     Mount a disk image read-only on Windows, search its volumes, then unmount it.
 
     VHD, VHDX, and ISO images are mounted natively with ``Mount-DiskImage``.
     Other formats (raw, VMDK, qcow2, etc.) are first converted to a temporary
-    VHDX file in a ``pillage_temp_*`` directory using ``qemu-img``, which must
-    be installed. Images that were attached before pillage started are left
+    VHDX file in a ``peat_image_*`` directory using ``qemu-img``, which must
+    be installed. Images that were attached before PEAT started are left
     attached and aren't modified.
     """
     if not validate_image_mounting_windows(source):
         return False
 
-    log.info(f"Pillaging image {source}")
+    log.info(f"Searching disk image {source}")
 
     # Not resolve(), which turns mapped network drives into UNC paths,
     # and those may not be visible from an Administrator terminal.
@@ -628,7 +655,7 @@ def pillage_image_windows(source: Path, results: Path) -> bool:
 
     try:
         if image.suffix.lower() not in WINDOWS_NATIVE_IMAGE_FORMATS:
-            temp_path = Path(tempfile.mkdtemp(prefix="pillage_temp_", dir=os.getcwd()))
+            temp_path = Path(tempfile.mkdtemp(prefix="peat_image_", dir=os.getcwd()))
             converted = convert_image(image, temp_path, "vhdx")
             if not converted:
                 return False
@@ -645,14 +672,14 @@ def pillage_image_windows(source: Path, results: Path) -> bool:
             log.error("Failed to mount image")
         else:
             try:
-                success = search_volumes_windows(volumes, results)
-            except (Exception, KeyboardInterrupt) as ex:
-                log.critical(f"Failed pillage search: {ex}")
+                success = search_volumes_windows(volumes, handler)
+            except Exception as ex:
+                log.critical(f"Failed to search disk image: {ex}")
     finally:
-        # Leave the image attached if it was attached before pillage started.
+        # Leave the image attached if it was attached before PEAT started.
         # Otherwise, always unmount it, even if mounting failed part way.
         if mount_attempted and already_attached:
-            log.info(f"Leaving '{image}' attached, since it was attached before pillage started")
+            log.info(f"Leaving '{image}' attached, since it was attached before PEAT started")
         elif mount_attempted and unmount_image_windows(image):
             log.debug(f"Unmounted image '{image}'")
 
@@ -663,7 +690,7 @@ def pillage_image_windows(source: Path, results: Path) -> bool:
             except OSError as ex:
                 log.warning(
                     f"Failed to delete temp directory '{temp_path}', delete it "
-                    f"manually (see 'Cleanup' in the pillage documentation): {ex}"
+                    f"manually (see 'Disk images' in the parse documentation): {ex}"
                 )
 
     return success
@@ -699,7 +726,7 @@ def validate_image_mounting_windows(source: Path) -> bool:
             f"images. Install QEMU (https://qemu.weilnetz.de/w64/) and add "
             f"'qemu-img.exe' to the PATH so PEAT can convert the image, convert it "
             f"to VHDX yourself ('qemu-img convert -O vhdx {source.name} image.vhdx'), "
-            f"or mount it with another tool and pillage the drive letter instead."
+            f"or mount it with another tool and parse the drive letter instead."
         )
     else:
         return True
@@ -819,7 +846,7 @@ def _run_powershell(script: str, image: Path) -> subprocess.CompletedProcess:
     # own modules. Without PSModulePath, it uses its default module directories.
     # (os.environ keys are upper case on Windows, so compare case-insensitively)
     env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
-    env["PEAT_PILLAGE_IMAGE"] = str(image)
+    env["PEAT_DISK_IMAGE"] = str(image)
     args = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
 
     try:
@@ -913,7 +940,7 @@ def unmount_image_windows(image: Path) -> bool:
     return True
 
 
-def search_volumes_windows(volumes: list[dict], results: Path) -> bool:
+def search_volumes_windows(volumes: list[dict], handler: VolumeHandler) -> bool:
     """
     Search the volumes of a mounted disk image.
 
@@ -941,7 +968,7 @@ def search_volumes_windows(volumes: list[dict], results: Path) -> bool:
                     f"Skipping volume '{name}', it's encrypted with BitLocker and "
                     f"locked. To search it, attach the image with Mount-DiskImage, "
                     f"unlock the volume (e.g. in File Explorer or with 'manage-bde "
-                    f"-unlock'), then run pillage again. Images that are already "
+                    f"-unlock'), then run parse again. Images that are already "
                     f"attached are searched as they are."
                 )
                 continue
@@ -949,7 +976,7 @@ def search_volumes_windows(volumes: list[dict], results: Path) -> bool:
         if not fs or fs.lower() in ["unknown", "raw"]:
             log.warning(
                 f"Skipping volume '{name}', its filesystem isn't readable by Windows. "
-                f"To pillage it, run PEAT on Linux, which supports more filesystems."
+                f"To search it, run PEAT on Linux, which supports more filesystems."
             )
             continue
 
@@ -964,8 +991,8 @@ def search_volumes_windows(volumes: list[dict], results: Path) -> bool:
             log.warning(f"Skipping volume '{name}', it doesn't have a path")
             continue
 
-        log.info(f"Pillaging volume '{vol_path}' ({fs}, label: '{vol.get('label', '')}')")
-        if search(vol_path, results, exclude_system_dirs=True):
+        log.info(f"Searching volume '{vol_path}' ({fs}, label: '{vol.get('label', '')}')")
+        if handler(vol_path):
             searched += 1
 
     if not searched:
@@ -977,28 +1004,30 @@ def search_volumes_windows(volumes: list[dict], results: Path) -> bool:
 
 @dataclass
 class _MacOSImage:
-    """What was set up to pillage a disk image on macOS, so it can be cleaned up."""
+    """What was set up to search a disk image on macOS, so it can be cleaned up."""
 
     #: Whole disk device the image was attached as (e.g. ``/dev/disk4``), to detach.
-    #: Empty if the image was attached before pillage started, so it's left attached.
+    #: Empty if the image was attached before PEAT started, so it's left attached.
     device: str = ""
     #: Device and mount point of each volume to search
     mounts: list[tuple[str, str]] = field(default_factory=list)
 
 
-def pillage_image_macos(source: Path, results: Path, secrets: UnlockSecrets | None = None) -> bool:
+def search_image_macos(
+    source: Path, handler: VolumeHandler, secrets: UnlockSecrets | None = None
+) -> bool:
     """
     Attach a disk image read-only on macOS, search its volumes, then detach it.
 
     DMG, sparse image and bundle, ISO, and raw images are attached natively with
     ``hdiutil``, which doesn't require root. Other formats (VMDK, VHD, VHDX,
     qcow2, etc.) are first converted to a temporary raw image in a
-    ``pillage_temp_*`` directory using ``qemu-img``, which must be installed.
+    ``peat_image_*`` directory using ``qemu-img``, which must be installed.
     Every volume macOS can read is searched, including all the volumes in APFS
     containers. Encrypted DMG images and locked APFS volumes are unlocked using
     the passwords in ``secrets``. BitLocker and LUKS encrypted volumes, and
     filesystems macOS can't read (e.g. ext4), are skipped. Images that were
-    attached before pillage started are searched as they are, and left attached.
+    attached before PEAT started are searched as they are, and left attached.
     """
     if secrets is None:
         secrets = UnlockSecrets()
@@ -1007,7 +1036,7 @@ def pillage_image_macos(source: Path, results: Path, secrets: UnlockSecrets | No
     if not validate_image_mounting_macos(source, kind):
         return False
 
-    log.info(f"Pillaging image {source}")
+    log.info(f"Searching disk image {source}")
 
     image_path = Path(os.path.abspath(source))
     temp_path = None
@@ -1018,7 +1047,7 @@ def pillage_image_macos(source: Path, results: Path, secrets: UnlockSecrets | No
 
     try:
         if kind == "convert":
-            temp_path = Path(tempfile.mkdtemp(prefix="pillage_temp_", dir=os.getcwd()))
+            temp_path = Path(tempfile.mkdtemp(prefix="peat_image_", dir=os.getcwd()))
             converted = convert_image(image_path, temp_path, "raw")
             if not converted:
                 return False
@@ -1031,14 +1060,14 @@ def pillage_image_macos(source: Path, results: Path, secrets: UnlockSecrets | No
         already_attached = find_attached_image_macos(image_path, attached)
         if already_attached is not None:
             log.info(
-                f"'{image_path}' was attached before pillage started, so its mounted "
+                f"'{image_path}' was attached before PEAT started, so its mounted "
                 f"volumes are searched as they are, and it's left attached"
             )
             for entity in already_attached.get("system-entities", []):
                 if entity.get("mount-point"):
                     image.mounts.append((entity.get("dev-entry", ""), entity["mount-point"]))
         else:
-            mount_root = Path(tempfile.mkdtemp(prefix="peat_pillage_", dir=_mount_root_parent()))
+            mount_root = Path(tempfile.mkdtemp(prefix="peat_image_", dir=_mount_root_parent()))
             attach_attempted = True
             entities = attach_image_macos(image_path, mount_root, kind == "raw", secrets, image)
             if entities is None:
@@ -1053,11 +1082,11 @@ def pillage_image_macos(source: Path, results: Path, secrets: UnlockSecrets | No
         searched = 0
         try:
             for device, mount_point in image.mounts:
-                log.info(f"Pillaging volume '{device}' (mounted at '{mount_point}')")
-                if search(mount_point, results, exclude_system_dirs=True):
+                log.info(f"Searching volume '{device}' (mounted at '{mount_point}')")
+                if handler(mount_point):
                     searched += 1
-        except (Exception, KeyboardInterrupt) as ex:
-            log.critical(f"Failed pillage search: {ex}")
+        except Exception as ex:
+            log.critical(f"Failed to search disk image: {ex}")
 
         success = searched > 0
     finally:
@@ -1129,7 +1158,7 @@ def validate_image_mounting_macos(source: Path, kind: str) -> bool:
             f"image, sparse bundle, ISO, and raw images. Install QEMU ('brew install "
             f"qemu') so PEAT can convert the image, convert it to a raw image yourself "
             f"('qemu-img convert -O raw {source.name} image.img'), or mount it with "
-            f"another tool and pillage the mount point instead."
+            f"another tool and parse the mount point instead."
         )
     else:
         return True
@@ -1272,7 +1301,7 @@ def attach_image_macos(
     else:
         log.error(
             f"Couldn't attach disk image '{image_path.name}', it's encrypted. To search "
-            f"it, run pillage with '--password-file FILE', where FILE has the password "
+            f"it, run parse with '--password-file FILE', where FILE has the password "
             f"on a line, or run it in a terminal to be prompted for the password."
         )
     return None
@@ -1464,17 +1493,17 @@ def mount_volumes_macos(
         if is_bitlocker(header):
             log.warning(
                 f"Skipping volume '{device}', it's encrypted with BitLocker, which macOS "
-                f"can't unlock. To pillage it, run PEAT on Linux or Windows instead."
+                f"can't unlock. To search it, run PEAT on Linux or Windows instead."
             )
         elif is_luks(header):
             log.warning(
                 f"Skipping volume '{device}', it's encrypted with LUKS, which macOS "
-                f"can't unlock. To pillage it, run PEAT on Linux instead."
+                f"can't unlock. To search it, run PEAT on Linux instead."
             )
         else:
             log.warning(
                 f"Skipping volume '{device}' ({hint or 'unknown type'}), macOS can't mount "
-                f"its filesystem (e.g. ext4, Btrfs, XFS, or swap). To pillage it, run "
+                f"its filesystem (e.g. ext4, Btrfs, XFS, or swap). To search it, run "
                 f"PEAT on Linux, which supports more filesystems."
             )
 
@@ -1544,8 +1573,8 @@ def cleanup_image_macos(
 
     if not result:
         log.warning(
-            "Failed to clean up after pillaging the image. Clean up manually "
-            "(see 'When things go wrong' in the pillage documentation)."
+            "Failed to clean up after searching the image. Clean up manually "
+            "(see 'Disk images' in the parse documentation)."
         )
 
     return result
@@ -1647,41 +1676,53 @@ def _search_errors_hint(errors: list[OSError]) -> str:
     return "Run PEAT as Administrator or root to search them."
 
 
-def search(source: Path | str, results: Path, exclude_system_dirs: bool | None = None) -> bool:
+def find_files(
+    source: Path | str,
+    exclude_system_dirs: bool | None = None,
+    recursive: bool = True,
+    skip_dirs: Iterable[Path | str] = (),
+) -> list[str] | None:
     """
-    Search a directory for files to pillage, and copy them to the results directory.
+    Find the files in a directory, such as a drive, mount point, or volume on a disk image.
 
-    On macOS, files that are placeholders for files in iCloud Drive or other cloud
-    storage that haven't been downloaded are skipped, since copying them would
-    download them. When searching ``/`` on macOS, ``/System/Volumes/Data`` is always
-    skipped, since everything in it is also in ``/``, through firmlinks.
+    Directory junctions on Windows are skipped, so the same files aren't found twice.
+    On macOS, directories that are placeholders for iCloud Drive or other cloud storage
+    that haven't been downloaded are skipped, and when searching ``/``,
+    ``/System/Volumes/Data`` is always skipped, since everything in it is also in
+    ``/``, through firmlinks. Use :func:`remove_dataless_files` to skip files that
+    haven't been downloaded, since reading them would download them.
 
     Args:
         source: Directory to search
-        results: Directory to copy pillaged files to
         exclude_system_dirs: Skip system directories in the root of the source
             that won't have project files in them, e.g. ``Windows`` or ``System``
             (see :data:`EXCLUDED_DIRS` and :data:`MACOS_EXCLUDED_DIRS`), and on macOS,
             directories in ``/`` that other filesystems are mounted on
             (see :data:`MACOS_ROOT_EXCLUDED_DIRS`). By default, they're only skipped
             if the source is the root of a drive or mounted filesystem.
+        recursive: Search sub-directories of the source
+        skip_dirs: Directories to skip, e.g. PEAT's own output directory
 
     Returns:
-        If the search was successful
+        Paths of the regular files that were found (not FIFOs, devices, or sockets,
+        which can't be parsed and may block when read), or :obj:`None` if the
+        source couldn't be read
     """
     source = str(source)
     if not os.path.isdir(source):
-        log.error(f"Failed pillage search: source path '{source}' is not a valid directory.")
-        return False
+        log.error(f"Failed to search '{source}': it's not a valid directory")
+        return None
 
     if exclude_system_dirs is None:
         exclude_system_dirs = os.path.ismount(source)
 
     excluded = _excluded_paths(source, exclude_system_dirs)
+    skipped = {os.path.normcase(os.path.abspath(d)) for d in skip_dirs}
     exclude_counter = 0
     junction_counter = 0
     dataless_counter = 0
     errors: list[OSError] = []
+    files: list[str] = []
 
     def _walk_error(err: OSError) -> None:
         # Common on live Windows systems, e.g. for folders only SYSTEM can read,
@@ -1700,6 +1741,9 @@ def search(source: Path | str, results: Path, exclude_system_dirs: bool | None =
                 log.trace2(f"Skipping excluded dir '{dir_path}'")
                 dirnames.remove(dirname)
                 exclude_counter += 1
+            elif skipped and os.path.normcase(os.path.abspath(dir_path)) in skipped:
+                log.debug(f"Skipping directory '{dir_path}'")
+                dirnames.remove(dirname)
             elif consts.WINDOWS and _is_junction(dir_path):
                 log.debug(f"Skipping directory junction '{dir_path}'")
                 dirnames.remove(dirname)
@@ -1710,49 +1754,14 @@ def search(source: Path | str, results: Path, exclude_system_dirs: bool | None =
                 dataless_counter += 1
 
         for filename in filenames:
-            src_file = Path(root) / filename
-            is_valid, config_type = is_valid_file(src_file)
+            file_path = os.path.join(root, filename)
+            # Follows symbolic links, so links to regular files are kept
+            if os.path.isfile(file_path):
+                files.append(file_path)
+            else:
+                log.debug(f"Skipping '{file_path}', it's not a regular file")
 
-            if is_valid and consts.MACOS and _is_dataless(src_file):
-                log.warning(
-                    f"[Pillage] Skipping {src_file}, it's in iCloud Drive or another cloud "
-                    f"storage provider and hasn't been downloaded, and copying it would "
-                    f"download it. To pillage it, download it (e.g. with 'Download Now' "
-                    f"in Finder), then run pillage again."
-                )
-                dataless_counter += 1
-                continue
-
-            if is_valid:
-                dst_file = Path(results) / config_type / filename
-
-                # If a file with that name already exists in the results folder
-                # increment a counter and append that counter to the file name
-                name_only = dst_file.stem
-                ext_only = dst_file.suffix
-                count = 1
-                while dst_file.exists():
-                    dst_file = Path(results) / config_type / f"{name_only}{ext_only}.{count}"
-                    count += 1
-
-                # Prompt user if they want to copy each file
-                if not config.PILLAGE["auto_copy"]:
-                    auto_copy = input(
-                        f"Found {src_file}, do you want to copy it to {dst_file} (Y or N):"
-                    )
-                    print(auto_copy, file=sys.stderr, flush=True)  # noqa: T201
-
-                    if auto_copy == "Y":
-                        copy_file(src_file, dst_file)
-                    else:
-                        log.warning(
-                            f"[Pillage] Declined to copy {src_file} to "
-                            f"{dst_file} (auto_copy is false)"
-                        )
-                else:
-                    copy_file(src_file, dst_file)
-
-        if not config.PILLAGE["recursive"]:
+        if not recursive:
             break
 
     if exclude_counter:
@@ -1760,132 +1769,51 @@ def search(source: Path | str, results: Path, exclude_system_dirs: bool | None =
     if junction_counter:
         log.info(
             f"Skipped {junction_counter} directory junctions, which point to other "
-            f"directories. To search where a junction points, pillage that directory."
+            f"directories. To search where a junction points, parse that directory."
         )
     if dataless_counter:
         log.info(
-            f"Skipped {dataless_counter} files and directories in iCloud Drive or other "
+            f"Skipped {dataless_counter} directories in iCloud Drive or other "
             f"cloud storage that haven't been downloaded"
         )
 
     if errors and errors[0].filename == source:
         log.error(
-            f"Failed pillage search: couldn't read '{source}': {errors[0].strerror}"
+            f"Failed to search '{source}': couldn't read it: {errors[0].strerror}"
             + (f". {_search_errors_hint(errors)}" if errors[0].errno == errno.EPERM else "")
         )
-        return False
+        return None
     elif errors:
         log.warning(
             f"Couldn't search {len(errors)} directories, e.g. '{errors[0].filename}' "
             f"({errors[0].strerror}). {_search_errors_hint(errors)}"
         )
 
-    return True
+    return files
 
 
-# TODO: function not used yet, still need to decide how to search through specific locations
-#   How to search through specific directories?  Only search those listed?
-#   Search through all but only validate a file if its one of those specified?
-#   How to handle if one brand says search through everything and ones
-#       says only a specific directory?
-#   Searching through everything and then validating at a file level
-#       would be easiest to implement but not be the quickest way to search.
-#       If only a single location is specified that search will take the same
-#       amount of time as a search with all directories.
-# def create_location_list():
-#     locations = []
-#     all_dirs = False
-#     if 'brands' in config.PILLAGE:
-#         for brand_data in config.PILLAGE['brands'].values():
-#             if 'locations' in brand_data:
-#                 if len(brand_data['locations']) > 0:
-#                     locations.append(brand_data['locations'])
-#                 else:
-#                     # if there is a location entry but no locations defined then look
-#                     # through all directories
-#                     all_dirs = True
-#     if 'default' in config.PILLAGE:
-#         if 'locations' in config.PILLAGE['default']:
-#             if len(config.PILLAGE['default']) > 0:
-#                 locations.append(config.PILLAGE['default']['locations'])
-#             else:
-#                 # if there is a location entry but no locations defined then look
-#                 # through all directories
-#                 all_dirs = True
-#     return all_dirs, locations
-
-
-def copy_file(src: Path, dst: Path) -> None:
-    if not dst.parent.exists():
-        dst.parent.mkdir(exist_ok=True, parents=True)
-
-    try:
-        shutil.copyfile(str(src), str(dst))
-    except OSError as ex:
-        # e.g. the file is locked by another program on Windows
-        log.error(f"[Pillage] Failed to copy {src} to {dst}: {ex}")
-        return
-
-    log.info(f"[Pillage] Copied {src} to {dst}")
-
-
-def is_valid_file(_file: Path):
+def remove_dataless_files(files: list[Path]) -> list[Path]:
     """
-    Determine if a file is valid based on the search criteria
-    in the Pillage configuration.
+    Remove files that are placeholders for files in iCloud Drive or other cloud
+    storage that haven't been downloaded, since reading them would download them.
+    This only applies to macOS, on other systems the files are returned as they are.
     """
-    brand_list = []
-    valid_file = False
-    config_type = ""
+    if not consts.MACOS:
+        return files
 
-    if "brands" in config.PILLAGE:
-        for brand, brand_data in config.PILLAGE["brands"].items():
-            valid_file, condition = check_file_conditions(_file, brand_data)
-            if valid_file:
-                brand_list.append((brand, condition))
-
-        if len(brand_list) > 0:
-            brand_str = ""
-            for brand, condition in brand_list:
-                brand_str += f"{brand} ({condition}), "
-
-            log.info(
-                f"[Pillage] {_file} is valid for the following "
-                f"brands and conditions: {brand_str[:-2]}"
+    kept = []
+    for file in files:
+        if _is_dataless(file):
+            log.warning(
+                f"Skipping {file}, it's in iCloud Drive or another cloud storage "
+                f"provider and hasn't been downloaded, and reading it would download "
+                f"it. To parse it, download it (e.g. with 'Download Now' in Finder), "
+                f"then run parse again."
             )
-            valid_file = True
-            config_type = brand_list[0][0]
-            if len(brand_list) > 1:
-                config_type = "MULTIPLE"
+        else:
+            kept.append(file)
 
-    # If a valid file wasn't found using the specific brand conditions check for default files
-    if not valid_file and "default" in config.PILLAGE:
-        valid_file, condition = check_file_conditions(_file, config.PILLAGE["default"])
-        if valid_file:
-            log.info(f"[Pillage] {_file} is valid for DEFAULT condition {condition}")
-            config_type = "DEFAULT"
-
-    return valid_file, config_type
+    return kept
 
 
-def check_file_conditions(_file: Path, conditions: dict[str, list]) -> tuple:
-    found = False
-    condition_type = ""
-
-    if conditions.get("filenames"):
-        for cond_fname in conditions["filenames"]:
-            if _file.name.lower() == cond_fname.lower():
-                condition_type = "FILENAME"
-                found = True
-                break
-
-    if not found and conditions.get("extensions"):
-        for cond_ext in conditions["extensions"]:
-            if _file.suffix[1:].lower() == cond_ext.lower():
-                condition_type = "EXTENSION"
-                found = True
-                break
-
-    # TODO: Check for magic number
-
-    return found, condition_type
+__all__ = ["DISK_IMAGE_SUFFIXES", "find_files", "is_disk_image", "search_image"]

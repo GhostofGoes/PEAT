@@ -11,38 +11,66 @@ from pathlib import Path
 
 import pytest
 
-from peat import config, consts, utils
-from peat.api import pillage_api
-from peat.api.pillage_api import (
+from peat import config, consts, datastore, utils
+from peat.api import disk_image_api
+from peat.api.disk_image_api import (
     UnlockSecrets,
-    check_file_conditions,
-    copy_file,
+    find_files,
     is_bitlocker,
+    is_disk_image,
     is_image_attached_windows,
     is_luks,
-    is_valid_file,
     mount_image_windows,
-    pillage,
     read_volume_header,
-    search,
+    remove_dataless_files,
+    search_image,
     search_volumes_windows,
     validate_image_mounting_macos,
     validate_image_mounting_windows,
 )
-
-PILLAGE_CONFIG = {
-    "auto_copy": True,
-    "recursive": True,
-    "default": {"locations": [], "filenames": [], "extensions": []},
-    "brands": {
-        "SEL": {"locations": [], "filenames": ["set_all.txt"], "extensions": ["rdb"]},
-    },
-}
+from peat.api.parse_api import parse
 
 
-@pytest.fixture
-def pillage_config(monkeypatch):
-    monkeypatch.setattr(config, "PILLAGE", PILLAGE_CONFIG)
+def _is_project_file(path: str | Path) -> bool:
+    """The files the tests look for: SEL relay settings (SET_ALL.TXT) and databases (.rdb)."""
+    name = Path(path).name.lower()
+    return name == "set_all.txt" or name.endswith(".rdb")
+
+
+def _search_dir(
+    source: Path | str,
+    results: Path,
+    exclude_system_dirs: bool | None = None,
+    recursive: bool = True,
+) -> bool:
+    """
+    Find the project files in a directory with :func:`find_files`, and copy them to
+    ``results``, adding a number to the name of files with the same name.
+    """
+    files = find_files(source, exclude_system_dirs, recursive)
+    if files is None:
+        return False
+
+    for file in remove_dataless_files([Path(f) for f in files if _is_project_file(f)]):
+        dest = results / file.name
+        count = 1
+        while dest.exists():
+            dest = results / f"{file.name}.{count}"
+            count += 1
+        results.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(file, dest)
+
+    return True
+
+
+def _handler(results: Path) -> disk_image_api.VolumeHandler:
+    """Handler for :func:`search_image` that copies the project files on each volume."""
+    return lambda volume: _search_dir(volume, results, exclude_system_dirs=True)
+
+
+def _search_image(source: str | Path, password_file: str | Path | None = None) -> bool:
+    """Search a disk image, and copy the project files on it to ``./found``."""
+    return search_image(source, _handler(Path.cwd() / "found"), password_file)
 
 
 def _make_source(source: Path) -> None:
@@ -60,36 +88,117 @@ def _make_source(source: Path) -> None:
     (source / "Projects" / "Windows" / "nested.rdb").write_text("nested", encoding="utf-8")
 
 
-def test_pillage_bad_args():
-    assert pillage("") is False
+def test_search_image_bad_args(tmp_path):
+    assert _search_image("") is False
+    assert _search_image(tmp_path) is False  # Directories aren't disk images
+    (tmp_path / "notes.txt").write_text("not an image", encoding="utf-8")
+    assert _search_image(tmp_path / "notes.txt") is False
 
 
-def test_search():
-    assert search(Path("NONEXISTENT"), None) is False
+def test_is_disk_image(tmp_path, monkeypatch):
+    for name in ["disk.vmdk", "DISK.VHDX", "disk.img", "disk.qcow2", "disk.iso", "disk.bin"]:
+        (tmp_path / name).write_bytes(b"")
+    assert is_disk_image(tmp_path / "disk.vmdk") is True
+    assert is_disk_image(tmp_path / "DISK.VHDX") is True
+    assert is_disk_image(str(tmp_path / "disk.img")) is True
+    assert is_disk_image(tmp_path / "disk.qcow2") is True
+    assert is_disk_image(tmp_path / "disk.iso") is True
+    assert is_disk_image(tmp_path / "disk.bin") is False  # Usually firmware
+    assert is_disk_image(tmp_path / "nonexistent.vmdk") is False
+
+    # Sparse bundles are directories, and are only disk images on macOS
+    (tmp_path / "disk.sparsebundle").mkdir()
+    (tmp_path / "dir.vmdk").mkdir()
+    monkeypatch.setattr(consts, "MACOS", False)
+    assert is_disk_image(tmp_path / "disk.sparsebundle") is False
+    monkeypatch.setattr(consts, "MACOS", True)
+    assert is_disk_image(tmp_path / "disk.sparsebundle") is True
+    assert is_disk_image(tmp_path / "dir.vmdk") is False
 
 
-def test_search_files(tmp_path, pillage_config):  # noqa: ARG001
+def test_find_files_bad_args():
+    assert find_files(Path("NONEXISTENT")) is None
+
+
+def test_find_files_skip_dirs(tmp_path):
+    _make_source(tmp_path)
+    found = find_files(tmp_path, skip_dirs=[tmp_path / "Projects" / "relay1", tmp_path / "x"])
+    assert str(tmp_path / "Projects" / "relay2.rdb") in found
+    assert not any("relay1" in f for f in found)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="Needs FIFOs (POSIX-only)")
+def test_find_files_only_regular_files(tmp_path):
+    """FIFOs would block forever when they're read, e.g. to check file signatures."""
+    _make_source(tmp_path)
+    os.mkfifo(tmp_path / "Projects" / "pipe.rdb")
+    os.symlink(tmp_path / "Projects" / "relay2.rdb", tmp_path / "link.rdb")
+    found = [Path(f).name for f in find_files(tmp_path)]
+    assert "pipe.rdb" not in found
+    assert "link.rdb" in found  # Links to regular files are kept
+
+
+def _fake_linux_mount(monkeypatch, calls: list) -> None:
+    monkeypatch.setattr(consts, "WINDOWS", False)
+    monkeypatch.setattr(consts, "MACOS", False)
+    monkeypatch.setattr(disk_image_api, "validate_image_mounting", lambda: True)
+    monkeypatch.setattr(disk_image_api, "mount_image", lambda *_: calls.append("mount") or True)
+    monkeypatch.setattr(
+        disk_image_api, "unmount_image", lambda *_: calls.append("unmount") or True
+    )
+
+
+def test_search_image_linux(tmp_path, monkeypatch):
+    image = tmp_path / "disk.vmdk"
+    image.write_bytes(b"")
+    calls = []
+    _fake_linux_mount(monkeypatch, calls)
+    mounts = []
+
+    assert search_image(image, lambda volume: mounts.append(volume) or True) is True
+    assert calls == ["mount", "unmount"]
+    assert not Path(mounts[0]).exists()  # The temporary mount point is deleted
+
+
+def test_search_image_linux_interrupted(tmp_path, monkeypatch):
+    image = tmp_path / "disk.img"
+    image.write_bytes(b"")
+    calls = []
+    _fake_linux_mount(monkeypatch, calls)
+    mounts = []
+
+    def _interrupt(volume):
+        mounts.append(volume)
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        search_image(image, _interrupt)
+    assert calls == ["mount", "unmount"]  # Unmounted, even though it was interrupted
+    assert not Path(mounts[0]).exists()
+
+
+def test_search_files(tmp_path):
     source = tmp_path / "source"
     results = tmp_path / "results"
     _make_source(source)
 
-    assert search(source, results, exclude_system_dirs=True) is True
+    assert _search_dir(source, results, exclude_system_dirs=True) is True
     found = sorted(p.relative_to(results).as_posix() for p in results.rglob("*") if p.is_file())
-    assert found == ["SEL/SET_ALL.TXT", "SEL/nested.rdb", "SEL/relay2.rdb"]
+    assert found == ["SET_ALL.TXT", "nested.rdb", "relay2.rdb"]
 
 
-def test_search_not_mount_point(tmp_path, pillage_config):  # noqa: ARG001
+def test_search_not_mount_point(tmp_path):
     # System directories are only skipped by default in the root of a drive or mount
     source = tmp_path / "source"
     results = tmp_path / "results"
     _make_source(source)
 
-    assert search(source, results) is True
+    assert _search_dir(source, results) is True
     found = sorted(p.name for p in results.rglob("*") if p.is_file())
     assert found == ["SET_ALL.TXT", "deleted.rdb", "excluded.rdb", "nested.rdb", "relay2.rdb"]
 
 
-def test_search_junctions(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def test_search_junctions(tmp_path, monkeypatch):
     source = tmp_path / "source"
     results = tmp_path / "results"
     _make_source(source)
@@ -105,70 +214,42 @@ def test_search_junctions(tmp_path, monkeypatch, pillage_config):  # noqa: ARG00
     monkeypatch.setattr(consts, "WINDOWS", True)
     monkeypatch.setattr(os, "lstat", lambda p: _Stat() if str(p) == junction else real_lstat(p))
 
-    assert search(source, results) is True
-    assert not (results / "SEL" / "SET_ALL.TXT").exists()
-    assert (results / "SEL" / "relay2.rdb").is_file()
+    assert _search_dir(source, results) is True
+    assert not (results / "SET_ALL.TXT").exists()
+    assert (results / "relay2.rdb").is_file()
 
 
-def test_search_unreadable_root(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def test_search_unreadable_root(tmp_path, monkeypatch):
     def _scandir(path):
         raise PermissionError(13, "Permission denied", path)
 
     monkeypatch.setattr(os, "scandir", _scandir)
-    assert search(tmp_path, tmp_path / "results") is False
+    assert _search_dir(tmp_path, tmp_path / "results") is False
 
 
-def test_search_not_recursive(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "PILLAGE", {**PILLAGE_CONFIG, "recursive": False})
+def test_search_not_recursive(tmp_path):
     (tmp_path / "top.rdb").write_text("top", encoding="utf-8")
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "sub.rdb").write_text("sub", encoding="utf-8")
     results = tmp_path / "results"
 
-    assert search(tmp_path, results) is True
+    assert _search_dir(tmp_path, results, recursive=False) is True
     assert [p.name for p in results.rglob("*.rdb")] == ["top.rdb"]
 
 
-def test_search_duplicate_names(tmp_path, pillage_config):  # noqa: ARG001
-    source = tmp_path / "source"
-    for name in ["a", "b"]:
-        (source / name).mkdir(parents=True)
-        (source / name / "set_all.txt").write_text(name, encoding="utf-8")
-    results = tmp_path / "results"
+def test_remove_dataless_files(tmp_path, monkeypatch):
+    files = [tmp_path / "a.rdb", tmp_path / "b.rdb"]
+    for file in files:
+        file.write_text("x", encoding="utf-8")
 
-    assert search(source, results) is True
-    assert sorted(p.name for p in (results / "SEL").iterdir()) == ["set_all.txt", "set_all.txt.1"]
+    # Only macOS has dataless files
+    monkeypatch.setattr(consts, "MACOS", False)
+    monkeypatch.setattr(disk_image_api, "_is_dataless", lambda _: True)
+    assert remove_dataless_files(files) == files
 
-
-def test_pillage_directory(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
-    source = tmp_path / "source"
-    _make_source(source)
-    monkeypatch.chdir(tmp_path)
-
-    assert pillage(str(source)) is True
-    assert (tmp_path / "pillage_results" / "SEL" / "relay2.rdb").is_file()
-
-
-def test_copy_file_error(tmp_path):
-    # Failing to copy one file (e.g. it's locked on Windows) shouldn't stop pillage
-    copy_file(tmp_path / "nonexistent.rdb", tmp_path / "results" / "nonexistent.rdb")
-    assert not (tmp_path / "results" / "nonexistent.rdb").exists()
-
-
-def test_is_valid_file(tmp_path):
-    assert is_valid_file(tmp_path) == (False, "")
-
-
-def test_check_file_conditions(tmp_path):
-    assert check_file_conditions(tmp_path, {}) == (False, "")
-    assert check_file_conditions(Path("SET_ALL.txt"), {"filenames": ["set_all.TXT"]}) == (
-        True,
-        "FILENAME",
-    )
-    assert check_file_conditions(Path("relay.RDB"), {"extensions": ["rdb"]}) == (
-        True,
-        "EXTENSION",
-    )
+    monkeypatch.setattr(consts, "MACOS", True)
+    monkeypatch.setattr(disk_image_api, "_is_dataless", lambda p: p == files[0])
+    assert remove_dataless_files(files) == files[1:]
 
 
 @pytest.mark.parametrize(
@@ -200,22 +281,22 @@ def _fake_powershell(
     def _run(script, image):
         if calls is not None:
             calls.append((script, image))
-        if script == pillage_api._PS_MOUNT_SCRIPT:
+        if script == disk_image_api._PS_MOUNT_SCRIPT:
             returncode, stdout = mount
-        elif script == pillage_api._PS_ATTACHED_SCRIPT:
+        elif script == disk_image_api._PS_ATTACHED_SCRIPT:
             returncode, stdout = 0, attached
         else:
             returncode, stdout = 0, ""
         return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="error")
 
-    monkeypatch.setattr(pillage_api, "_run_powershell", _run)
+    monkeypatch.setattr(disk_image_api, "_run_powershell", _run)
 
 
 def _scripts(calls: list) -> list[str]:
     names = {
-        pillage_api._PS_ATTACHED_SCRIPT: "attached",
-        pillage_api._PS_MOUNT_SCRIPT: "mount",
-        pillage_api._PS_UNMOUNT_SCRIPT: "unmount",
+        disk_image_api._PS_ATTACHED_SCRIPT: "attached",
+        disk_image_api._PS_MOUNT_SCRIPT: "mount",
+        disk_image_api._PS_UNMOUNT_SCRIPT: "unmount",
     }
     return [names[c[0]] for c in calls]
 
@@ -255,10 +336,10 @@ def test_run_powershell_timeout(monkeypatch):
         raise subprocess.TimeoutExpired("powershell", 1)
 
     monkeypatch.setattr(subprocess, "run", _timeout)
-    assert pillage_api._run_powershell("", Path("disk.vhdx")).returncode == 1
+    assert disk_image_api._run_powershell("", Path("disk.vhdx")).returncode == 1
 
 
-def test_search_volumes_windows(tmp_path, pillage_config):  # noqa: ARG001
+def test_search_volumes_windows(tmp_path):
     source = tmp_path / "volume"
     _make_source(source)
     results = tmp_path / "results"
@@ -267,10 +348,10 @@ def test_search_volumes_windows(tmp_path, pillage_config):  # noqa: ARG001
         {"drive_letter": "", "path": str(source), "filesystem": "NTFS", "label": "DATA"},
     ]
 
-    assert search_volumes_windows(volumes, results) is True
-    assert (results / "SEL" / "relay2.rdb").is_file()
-    assert search_volumes_windows(volumes[:1], results) is False
-    assert search_volumes_windows([], results) is False
+    assert search_volumes_windows(volumes, _handler(results)) is True
+    assert (results / "relay2.rdb").is_file()
+    assert search_volumes_windows(volumes[:1], _handler(results)) is False
+    assert search_volumes_windows([], _handler(results)) is False
 
 
 def _setup_image_windows(tmp_path, monkeypatch, name: str = "disk.vhdx") -> tuple[Path, str]:
@@ -280,7 +361,7 @@ def _setup_image_windows(tmp_path, monkeypatch, name: str = "disk.vhdx") -> tupl
     image.write_bytes(b"")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(consts, "WINDOWS", True)
-    monkeypatch.setattr(pillage_api, "validate_image_mounting_windows", lambda _: True)
+    monkeypatch.setattr(disk_image_api, "validate_image_mounting_windows", lambda _: True)
 
     vol = {"drive_letter": "", "path": str(volume), "filesystem": "NTFS", "label": ""}
     return image, json.dumps({"volumes": [vol]})
@@ -304,7 +385,7 @@ def test_read_volume_header(tmp_path):
 
 def test_search_volumes_windows_bitlocker(tmp_path, monkeypatch, caplog):
     headers = {"\\\\?\\Volume{locked}": BITLOCKER_HEADER}
-    monkeypatch.setattr(pillage_api, "read_volume_header", lambda p: headers.get(p, b""))
+    monkeypatch.setattr(disk_image_api, "read_volume_header", lambda p: headers.get(p, b""))
     volumes = [
         {
             "drive_letter": "E",
@@ -320,7 +401,7 @@ def test_search_volumes_windows_bitlocker(tmp_path, monkeypatch, caplog):
         },
     ]
 
-    assert search_volumes_windows(volumes, tmp_path / "results") is False
+    assert search_volumes_windows(volumes, _handler(tmp_path / "results")) is False
     assert "encrypted with BitLocker" in caplog.text
     assert caplog.text.count("encrypted with BitLocker") == 1
     assert "filesystem isn't readable by Windows" in caplog.text
@@ -328,18 +409,18 @@ def test_search_volumes_windows_bitlocker(tmp_path, monkeypatch, caplog):
     # Lock status from Get-BitLockerVolume
     caplog.clear()
     volumes[1]["bitlocker"] = "Locked"
-    assert search_volumes_windows(volumes[1:], tmp_path / "results") is False
+    assert search_volumes_windows(volumes[1:], _handler(tmp_path / "results")) is False
     assert "encrypted with BitLocker" in caplog.text
 
 
 @pytest.mark.parametrize("already_attached", [False, True])
-def test_pillage_image_windows(tmp_path, monkeypatch, pillage_config, already_attached):  # noqa: ARG001
+def test_search_image_windows(tmp_path, monkeypatch, already_attached):
     image, out = _setup_image_windows(tmp_path, monkeypatch)
     calls = []
     _fake_powershell(monkeypatch, (0, out), str(already_attached), calls)
 
-    assert pillage(str(image)) is True
-    results = tmp_path / "pillage_results" / "SEL"
+    assert _search_image(str(image)) is True
+    results = tmp_path / "found"
     assert (results / "SET_ALL.TXT").is_file()
     assert not (results / "excluded.rdb").exists()  # System directories are skipped
 
@@ -350,23 +431,22 @@ def test_pillage_image_windows(tmp_path, monkeypatch, pillage_config, already_at
     assert all(c[1] == image for c in calls)
 
 
-@pytest.mark.usefixtures("pillage_config")
 @pytest.mark.parametrize("already_attached", [False, True])
-def test_pillage_image_windows_mount_fails(tmp_path, monkeypatch, already_attached):
+def test_search_image_windows_mount_fails(tmp_path, monkeypatch, already_attached):
     # Mounting can fail after the image was attached, so it's always unmounted,
-    # unless it was attached before pillage started
+    # unless it was attached before PEAT started
     image, _ = _setup_image_windows(tmp_path, monkeypatch)
     calls = []
     _fake_powershell(monkeypatch, (1, ""), str(already_attached), calls)
 
-    assert pillage(str(image)) is False
+    assert _search_image(str(image)) is False
     if already_attached:
         assert _scripts(calls) == ["attached", "mount"]
     else:
         assert _scripts(calls) == ["attached", "mount", "unmount"]
 
 
-def test_pillage_image_windows_interrupted(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def test_search_image_windows_interrupted(tmp_path, monkeypatch):
     image, _ = _setup_image_windows(tmp_path, monkeypatch)
     calls = []
     _fake_powershell(monkeypatch, calls=calls)
@@ -374,22 +454,22 @@ def test_pillage_image_windows_interrupted(tmp_path, monkeypatch, pillage_config
     def _interrupt(*args):  # noqa: ARG001
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(pillage_api, "mount_image_windows", _interrupt)
+    monkeypatch.setattr(disk_image_api, "mount_image_windows", _interrupt)
     with pytest.raises(KeyboardInterrupt):
-        pillage(str(image))
+        _search_image(str(image))
     assert _scripts(calls) == ["attached", "unmount"]
 
 
-def test_pillage_image_windows_not_an_image(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def test_search_image_windows_not_an_image(tmp_path, monkeypatch):
     image, _ = _setup_image_windows(tmp_path, monkeypatch)
     calls = []
     _fake_powershell(monkeypatch, attached="", calls=calls)
 
-    assert pillage(str(image)) is False
+    assert _search_image(str(image)) is False
     assert _scripts(calls) == ["attached"]  # Nothing to unmount
 
 
-def test_pillage_image_windows_converts(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def test_search_image_windows_converts(tmp_path, monkeypatch):
     image, out = _setup_image_windows(tmp_path, monkeypatch, "disk.img")
 
     def _qemu_img(args):
@@ -401,15 +481,15 @@ def test_pillage_image_windows_converts(tmp_path, monkeypatch, pillage_config): 
     calls = []
     _fake_powershell(monkeypatch, (0, out), calls=calls)
 
-    assert pillage(str(image)) is True
+    assert _search_image(str(image)) is True
     converted = calls[0][1]
     assert converted.name == "disk.vhdx"
     assert converted.parent.parent == tmp_path
-    assert converted.parent.name.startswith("pillage_temp_")
-    assert not list(tmp_path.glob("pillage_temp*"))  # Cleaned up
+    assert converted.parent.name.startswith("peat_image_")
+    assert not list(tmp_path.glob("peat_image_*"))  # Cleaned up
 
 
-def test_pillage_image_windows_convert_interrupted(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def test_search_image_windows_convert_interrupted(tmp_path, monkeypatch):
     image, _ = _setup_image_windows(tmp_path, monkeypatch, "disk.img")
 
     def _qemu_img(args):
@@ -421,9 +501,9 @@ def test_pillage_image_windows_convert_interrupted(tmp_path, monkeypatch, pillag
     _fake_powershell(monkeypatch, calls=calls)
 
     with pytest.raises(KeyboardInterrupt):
-        pillage(str(image))
+        _search_image(str(image))
     assert not calls  # Nothing was mounted
-    assert not list(tmp_path.glob("pillage_temp*"))  # Cleaned up
+    assert not list(tmp_path.glob("peat_image_*"))  # Cleaned up
 
 
 def _diskpart(script: str, tmp_path: Path) -> None:
@@ -441,12 +521,12 @@ def _diskpart(script: str, tmp_path: Path) -> None:
 
 @pytest.mark.slow
 @pytest.mark.skipif(not consts.WINDOWS, reason="Windows-only")
-def test_pillage_vhdx_windows(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
-    """Create a real VHDX image with diskpart, then pillage it."""
+def test_search_vhdx_windows(tmp_path, monkeypatch, caplog):
+    """Create a real VHDX image with diskpart, then search it."""
     if not utils.are_we_superuser():
         pytest.skip("Mounting VHDX images requires Administrator")
 
-    image = tmp_path / "pillage_test.vhdx"
+    image = tmp_path / "peat_test.vhdx"
     mount_dir = tmp_path / "mnt"
     mount_dir.mkdir()
 
@@ -477,13 +557,13 @@ def test_pillage_vhdx_windows(tmp_path, monkeypatch, caplog, pillage_config):  #
     monkeypatch.chdir(work_dir)
 
     caplog.set_level("DEBUG")
-    assert pillage(str(image)) is True, caplog.text
-    results = work_dir / "pillage_results"
+    assert _search_image(str(image)) is True, caplog.text
+    results = work_dir / "found"
     found = sorted(p.relative_to(results).as_posix() for p in results.rglob("*") if p.is_file())
-    assert found == ["SEL/SET_ALL.TXT", "SEL/nested.rdb", "SEL/relay2.rdb"]
-    assert (results / "SEL" / "relay2.rdb").read_text(encoding="utf-8") == "relay2"
+    assert found == ["SET_ALL.TXT", "nested.rdb", "relay2.rdb"]
+    assert (results / "relay2.rdb").read_text(encoding="utf-8") == "relay2"
 
-    # The image is unmounted when pillage finishes
+    # The image is unmounted when the search finishes
     proc = subprocess.run(
         [
             "powershell",
@@ -528,28 +608,28 @@ def _make_macos_source(source: Path) -> None:
 
 
 MACOS_EXPECTED = [
-    "SEL/SET_ALL.TXT",
-    "SEL/etc.rdb",
-    "SEL/nested.rdb",
-    "SEL/relay2.rdb",
-    "SEL/user.rdb",
+    "SET_ALL.TXT",
+    "etc.rdb",
+    "nested.rdb",
+    "relay2.rdb",
+    "user.rdb",
 ]
 
 
-def test_search_macos_system_dirs(tmp_path, pillage_config):  # noqa: ARG001
+def test_search_macos_system_dirs(tmp_path):
     source = tmp_path / "source"
     results = tmp_path / "results"
     _make_macos_source(source)
 
-    assert search(source, results, exclude_system_dirs=True) is True
+    assert _search_dir(source, results, exclude_system_dirs=True) is True
     assert _found(results) == MACOS_EXPECTED
 
     # Not skipped by default when the source isn't the root of a mounted volume
-    assert search(source, tmp_path / "results2") is True
+    assert _search_dir(source, tmp_path / "results2") is True
     assert len(_found(tmp_path / "results2")) == 12
 
 
-def test_search_macos_root(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def test_search_macos_root(tmp_path, monkeypatch):
     """The root of a live macOS system ("/") also skips mount points and the Data volume."""
     source = tmp_path / "source"
     _make_macos_source(source)
@@ -558,31 +638,22 @@ def test_search_macos_root(tmp_path, monkeypatch, pillage_config):  # noqa: ARG0
         (source / mount_dir / "excluded.rdb").write_text("x", encoding="utf-8")
     (source / "System" / "Library").mkdir(parents=True)
     (source / "System" / "Library" / "system.rdb").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(pillage_api, "_is_macos_root", lambda s: s == str(source))
+    monkeypatch.setattr(disk_image_api, "_is_macos_root", lambda s: s == str(source))
 
     results = tmp_path / "results"
-    assert search(source, results, exclude_system_dirs=True) is True
+    assert _search_dir(source, results, exclude_system_dirs=True) is True
     assert _found(results) == MACOS_EXPECTED
 
     # The Data volume is never searched as part of "/", since it would be searched
     # twice, through the firmlinks in "/" (e.g. "/Users"), and in the Data volume
-    results = tmp_path / "results_all"
     data_volume_file = str(source / "System" / "Volumes" / "Data" / "Users" / "peat")
-    searched = []
-    real_is_valid_file = pillage_api.is_valid_file
-
-    def _is_valid_file(path):
-        searched.append(str(path))
-        return real_is_valid_file(path)
-
-    monkeypatch.setattr(pillage_api, "is_valid_file", _is_valid_file)
-    assert search(source, results, exclude_system_dirs=False) is True
-    assert "SEL/system.rdb" in _found(results)
-    assert not any(p.startswith(data_volume_file) for p in searched)
-    assert len(_found(results)) == 15  # Everything but the Data volume
+    files = find_files(source, exclude_system_dirs=False)
+    assert "system.rdb" in [Path(f).name for f in files]
+    assert not any(f.startswith(data_volume_file) for f in files)
+    assert len([f for f in files if _is_project_file(f)]) == 15  # Everything but the Data volume
 
 
-def test_search_macos_full_disk_access(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
+def test_search_macos_full_disk_access(tmp_path, monkeypatch, caplog):
     source = tmp_path / "source"
     _make_source(source)
     protected = str(source / "Projects")
@@ -596,24 +667,24 @@ def test_search_macos_full_disk_access(tmp_path, monkeypatch, caplog, pillage_co
     monkeypatch.setattr(os, "scandir", _scandir)
     monkeypatch.setattr(consts, "MACOS", True)
 
-    assert search(source, tmp_path / "results") is True
+    assert _search_dir(source, tmp_path / "results") is True
     assert "Full Disk Access" in caplog.text
     assert "Administrator" not in caplog.text
 
     # The source itself is protected
     caplog.clear()
-    assert search(protected, tmp_path / "results") is False
+    assert _search_dir(protected, tmp_path / "results") is False
     assert "Full Disk Access" in caplog.text
 
     # Regular permission errors, and other platforms
     caplog.clear()
     monkeypatch.setattr(consts, "MACOS", False)
-    assert search(source, tmp_path / "results") is True
+    assert _search_dir(source, tmp_path / "results") is True
     assert "Full Disk Access" not in caplog.text
     assert "Administrator or root" in caplog.text
 
 
-def test_search_macos_dataless(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
+def test_search_macos_dataless(tmp_path, monkeypatch, caplog):
     """Files in iCloud Drive that haven't been downloaded are skipped."""
     source = tmp_path / "source"
     _make_source(source)
@@ -623,16 +694,16 @@ def test_search_macos_dataless(tmp_path, monkeypatch, caplog, pillage_config):  
     real_lstat = os.lstat
 
     class _Stat:
-        st_flags = pillage_api.SF_DATALESS
+        st_flags = disk_image_api.SF_DATALESS
 
     monkeypatch.setattr(consts, "MACOS", True)
     monkeypatch.setattr(os, "lstat", lambda p: _Stat() if str(p) in dataless else real_lstat(p))
 
     results = tmp_path / "results"
-    assert search(source, results, exclude_system_dirs=True) is True
-    assert _found(results) == ["SEL/SET_ALL.TXT", "SEL/nested.rdb"]
+    assert _search_dir(source, results, exclude_system_dirs=True) is True
+    assert _found(results) == ["SET_ALL.TXT", "nested.rdb"]
     assert "hasn't been downloaded" in caplog.text
-    assert "Skipped 2 files and directories" in caplog.text
+    assert "Skipped 1 directories in iCloud Drive" in caplog.text
 
 
 def test_is_luks():
@@ -658,7 +729,7 @@ def test_unlock_secrets(tmp_path, monkeypatch):
     # Prompts in a terminal, if there isn't a password file
     monkeypatch.setattr(UnlockSecrets, "can_prompt", staticmethod(lambda: True))
     answers = iter(["typed", ""])
-    monkeypatch.setattr(pillage_api.getpass, "getpass", lambda _prompt: next(answers))
+    monkeypatch.setattr(disk_image_api.getpass, "getpass", lambda _prompt: next(answers))
     assert list(UnlockSecrets().candidates("vol")) == ["typed"]
     monkeypatch.setattr(UnlockSecrets, "can_prompt", staticmethod(lambda: False))
     assert list(UnlockSecrets().candidates("vol")) == []
@@ -667,11 +738,11 @@ def test_unlock_secrets(tmp_path, monkeypatch):
 def test_parse_plist():
     data = {"system-entities": [{"dev-entry": "/dev/disk4"}]}
     text = plistlib.dumps(data).decode()
-    assert pillage_api._parse_plist(text) == data
-    assert pillage_api._parse_plist("expected CRC32 $12345678\n" + text) == data
-    assert pillage_api._parse_plist("hdiutil: attach failed") is None
-    assert pillage_api._parse_plist("<?xml version='1.0'?><plist><dict>") is None
-    assert pillage_api._parse_plist(plistlib.dumps([1, 2]).decode()) is None
+    assert disk_image_api._parse_plist(text) == data
+    assert disk_image_api._parse_plist("expected CRC32 $12345678\n" + text) == data
+    assert disk_image_api._parse_plist("hdiutil: attach failed") is None
+    assert disk_image_api._parse_plist("<?xml version='1.0'?><plist><dict>") is None
+    assert disk_image_api._parse_plist(plistlib.dumps([1, 2]).decode()) is None
 
 
 # Output of "hdiutil attach -plist" for a DMG with a GUID partition table and an APFS
@@ -760,12 +831,12 @@ class FakeMacOS:
 
         monkeypatch.setattr(consts, "MACOS", True)
         monkeypatch.setattr(consts, "WINDOWS", False)
-        monkeypatch.setattr(pillage_api, "MACOS_MOUNT_ROOT_PARENT", str(tmp_path))
-        monkeypatch.setattr(pillage_api, "MACOS_DETACH_RETRY_DELAY", 0)
+        monkeypatch.setattr(disk_image_api, "MACOS_MOUNT_ROOT_PARENT", str(tmp_path))
+        monkeypatch.setattr(disk_image_api, "MACOS_DETACH_RETRY_DELAY", 0)
         monkeypatch.setattr(
             shutil, "which", lambda cmd: cmd if cmd in ["hdiutil", "diskutil"] else None
         )
-        monkeypatch.setattr(pillage_api, "_run_command", self.run)
+        monkeypatch.setattr(disk_image_api, "_run_command", self.run)
 
     @staticmethod
     def _result(args, returncode=0, stdout="", stderr=""):
@@ -835,7 +906,7 @@ class FakeMacOS:
 
 
 @pytest.fixture
-def fake_macos(tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+def fake_macos(tmp_path, monkeypatch):
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     monkeypatch.chdir(work_dir)
@@ -856,19 +927,19 @@ def _assert_no_secrets(fake: FakeMacOS, caplog, *secrets: str) -> None:
         assert secret not in caplog.text
 
 
-def test_pillage_image_macos(tmp_path, fake_macos, caplog):
+def test_search_image_macos(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path)
     fake_macos.apfs_volumes += [
         {"DeviceIdentifier": "disk5s2", "Name": "Second", "Roles": []},
         {"DeviceIdentifier": "disk5s3", "Name": "Preboot", "Roles": ["Preboot"]},
     ]
 
-    assert pillage(str(image)) is True, caplog.text
+    assert _search_image(str(image)) is True, caplog.text
     # Both volumes are searched: the one hdiutil mounted, and the one PEAT mounted
-    found = _found(tmp_path / "work" / "pillage_results")
-    assert "SEL/user.rdb" in found
-    assert "SEL/disk5s2.rdb" in found
-    assert "SEL/disk5s3.rdb" not in found
+    found = _found(tmp_path / "work" / "found")
+    assert "user.rdb" in found
+    assert "disk5s2.rdb" in found
+    assert "disk5s3.rdb" not in found
     assert not any("excluded" in f for f in found)
 
     attach = fake_macos.args_of("hdiutil attach")[0]
@@ -878,7 +949,7 @@ def test_pillage_image_macos(tmp_path, fake_macos, caplog):
     assert "-imagekey" not in attach
     mount_root = Path(attach[attach.index("-mountrandom") + 1])
     assert mount_root.parent == tmp_path
-    assert mount_root.name.startswith("peat_pillage_")
+    assert mount_root.name.startswith("peat_image_")
     assert not mount_root.exists()  # Cleaned up
 
     mounts = fake_macos.args_of("diskutil mount readOnly")
@@ -887,7 +958,7 @@ def test_pillage_image_macos(tmp_path, fake_macos, caplog):
     assert fake_macos.commands()[-1] == "hdiutil detach"
 
 
-def test_pillage_image_macos_already_attached(tmp_path, fake_macos):
+def test_search_image_macos_already_attached(tmp_path, fake_macos):
     image = _macos_image(tmp_path)
     fake_macos.attached_images = [
         {
@@ -899,47 +970,47 @@ def test_pillage_image_macos_already_attached(tmp_path, fake_macos):
         }
     ]
 
-    assert pillage(str(image)) is True
-    assert "SEL/user.rdb" in _found(tmp_path / "work" / "pillage_results")
+    assert _search_image(str(image)) is True
+    assert "user.rdb" in _found(tmp_path / "work" / "found")
     # Not attached again, and left attached
     assert fake_macos.commands() == ["hdiutil info"]
 
 
-def test_pillage_image_macos_raw(tmp_path, fake_macos):
+def test_search_image_macos_raw(tmp_path, fake_macos):
     image = _macos_image(tmp_path, "disk.img")
 
-    assert pillage(str(image)) is True
+    assert _search_image(str(image)) is True
     attach = fake_macos.args_of("hdiutil attach")[0]
     assert attach[-3:] == ["-imagekey", "diskimage-class=CRawDiskImage", str(image)]
     assert "hdiutil isencrypted" not in fake_macos.commands()
 
 
-def test_pillage_image_macos_encrypted_dmg(tmp_path, fake_macos, caplog):
+def test_search_image_macos_encrypted_dmg(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path)
     fake_macos.encrypted = True
     password_file = tmp_path / "passwords.txt"
     password_file.write_text(f"wrong password\n{fake_macos.dmg_password}\n", encoding="utf-8")
 
-    assert pillage(str(image), password_file) is True, caplog.text
+    assert _search_image(str(image), password_file) is True, caplog.text
     attaches = [c for c in fake_macos.calls if c[0][:2] == ["hdiutil", "attach"]]
     assert [c[1] for c in attaches] == [b"wrong password\0", b"dmg password\0"]
     assert all("-stdinpass" in c[0] for c in attaches)
-    assert "SEL/user.rdb" in _found(tmp_path / "work" / "pillage_results")
+    assert "user.rdb" in _found(tmp_path / "work" / "found")
     assert fake_macos.args_of("hdiutil detach") == [["hdiutil", "detach", "/dev/disk4"]]
     _assert_no_secrets(fake_macos, caplog, "wrong password", fake_macos.dmg_password)
 
 
-def test_pillage_image_macos_encrypted_dmg_no_password(tmp_path, fake_macos, caplog):
+def test_search_image_macos_encrypted_dmg_no_password(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path)
     fake_macos.encrypted = True
 
-    assert pillage(str(image)) is False
+    assert _search_image(str(image)) is False
     assert "--password-file" in caplog.text
     assert "hdiutil attach" not in fake_macos.commands()
     assert "hdiutil detach" not in fake_macos.commands()
 
 
-def test_pillage_image_macos_locked_apfs(tmp_path, fake_macos, caplog):
+def test_search_image_macos_locked_apfs(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path)
     fake_macos.apfs_volumes.append(
         {"DeviceIdentifier": "disk5s2", "Name": "Secret", "Roles": [], "Locked": True}
@@ -947,16 +1018,16 @@ def test_pillage_image_macos_locked_apfs(tmp_path, fake_macos, caplog):
     password_file = tmp_path / "passwords.txt"
     password_file.write_text(f"{fake_macos.apfs_password}\n", encoding="utf-8")
 
-    assert pillage(str(image), str(password_file)) is True, caplog.text
+    assert _search_image(str(image), str(password_file)) is True, caplog.text
     assert fake_macos.unlocked == {"/dev/disk5s2"}
     assert fake_macos.args_of("diskutil apfs unlockVolume") == [
         ["diskutil", "apfs", "unlockVolume", "/dev/disk5s2", "-stdinpassphrase", "-nomount"]
     ]
-    assert "SEL/disk5s2.rdb" in _found(tmp_path / "work" / "pillage_results")
+    assert "disk5s2.rdb" in _found(tmp_path / "work" / "found")
     _assert_no_secrets(fake_macos, caplog, fake_macos.apfs_password)
 
 
-def test_pillage_image_macos_encrypted_apfs_without_locked_key(tmp_path, fake_macos):
+def test_search_image_macos_encrypted_apfs_without_locked_key(tmp_path, fake_macos):
     """Volumes that are encrypted and not mounted are locked, if diskutil doesn't say."""
     image = _macos_image(tmp_path)
     fake_macos.apfs_volumes.append(
@@ -965,11 +1036,11 @@ def test_pillage_image_macos_encrypted_apfs_without_locked_key(tmp_path, fake_ma
     password_file = tmp_path / "passwords.txt"
     password_file.write_text(f"{fake_macos.apfs_password}\n", encoding="utf-8")
 
-    assert pillage(str(image), str(password_file)) is True
+    assert _search_image(str(image), str(password_file)) is True
     assert fake_macos.unlocked == {"/dev/disk5s2"}
 
 
-def test_pillage_image_macos_locked_apfs_wrong_password(tmp_path, fake_macos, caplog):
+def test_search_image_macos_locked_apfs_wrong_password(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path)
     fake_macos.apfs_volumes.append(
         {"DeviceIdentifier": "disk5s2", "Name": "Secret", "Roles": [], "Locked": True}
@@ -978,14 +1049,14 @@ def test_pillage_image_macos_locked_apfs_wrong_password(tmp_path, fake_macos, ca
     password_file.write_text("wrong\n", encoding="utf-8")
 
     # The other volume is still searched
-    assert pillage(str(image), str(password_file)) is True
+    assert _search_image(str(image), str(password_file)) is True
     assert "none of the 1 passwords tried unlocked it" in caplog.text
     assert "diskutil mount readOnly" not in fake_macos.commands()
-    assert "SEL/user.rdb" in _found(tmp_path / "work" / "pillage_results")
+    assert "user.rdb" in _found(tmp_path / "work" / "found")
 
     # Without a password, it's skipped
     caplog.clear()
-    assert pillage(str(image)) is True
+    assert _search_image(str(image)) is True
     assert "Skipping volume 'Secret' (/dev/disk5s2), it's encrypted with APFS" in caplog.text
 
 
@@ -998,7 +1069,7 @@ def test_pillage_image_macos_locked_apfs_wrong_password(tmp_path, fake_macos, ca
     ],
     ids=["bitlocker", "luks", "ext4"],
 )
-def test_pillage_image_macos_unreadable_volumes(
+def test_search_image_macos_unreadable_volumes(
     tmp_path, fake_macos, monkeypatch, caplog, header, message
 ):
     image = _macos_image(tmp_path)
@@ -1013,9 +1084,9 @@ def test_pillage_image_macos_unreadable_volumes(
         }
     ).decode()
     read = []
-    monkeypatch.setattr(pillage_api, "read_volume_header", lambda p: read.append(p) or header)
+    monkeypatch.setattr(disk_image_api, "read_volume_header", lambda p: read.append(p) or header)
 
-    assert pillage(str(image)) is False
+    assert _search_image(str(image)) is False
     assert read == ["/dev/rdisk4s1"]
     assert message in caplog.text
     assert "run PEAT on Linux" in caplog.text
@@ -1023,36 +1094,36 @@ def test_pillage_image_macos_unreadable_volumes(
     assert fake_macos.args_of("hdiutil detach") == [["hdiutil", "detach", "/dev/disk4"]]
 
 
-def test_pillage_image_macos_detach_retries(tmp_path, fake_macos, caplog):
+def test_search_image_macos_detach_retries(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path)
-    fake_macos.detach_failures = pillage_api.MACOS_DETACH_ATTEMPTS - 1
+    fake_macos.detach_failures = disk_image_api.MACOS_DETACH_ATTEMPTS - 1
 
-    assert pillage(str(image)) is True
+    assert _search_image(str(image)) is True
     detaches = fake_macos.args_of("hdiutil detach")
-    assert len(detaches) == pillage_api.MACOS_DETACH_ATTEMPTS
+    assert len(detaches) == disk_image_api.MACOS_DETACH_ATTEMPTS
     assert detaches[-1] == ["hdiutil", "detach", "/dev/disk4", "-force"]
     assert all("-force" not in d for d in detaches[:-1])
 
     # It still fails when forced
     caplog.clear()
     fake_macos.calls.clear()
-    fake_macos.detach_failures = pillage_api.MACOS_DETACH_ATTEMPTS
-    assert pillage(str(image)) is True  # The search succeeded
+    fake_macos.detach_failures = disk_image_api.MACOS_DETACH_ATTEMPTS
+    assert _search_image(str(image)) is True  # The search succeeded
     assert "hdiutil detach /dev/disk4 -force" in caplog.text
-    assert "When things go wrong" in caplog.text
+    assert "Disk images" in caplog.text
 
 
-def test_pillage_image_macos_attach_fails(tmp_path, fake_macos):
+def test_search_image_macos_attach_fails(tmp_path, fake_macos):
     image = _macos_image(tmp_path)
     fake_macos.attach_output = "hdiutil: attach failed - not recognized"
 
-    assert pillage(str(image)) is False
+    assert _search_image(str(image)) is False
     # The output couldn't be parsed, and it isn't attached, so there's nothing to detach
     assert "hdiutil detach" not in fake_macos.commands()
-    assert not list(tmp_path.glob("peat_pillage_*"))
+    assert not list(tmp_path.glob("peat_image_*"))
 
 
-def test_pillage_image_macos_attach_interrupted(tmp_path, fake_macos):
+def test_search_image_macos_attach_interrupted(tmp_path, fake_macos):
     image = _macos_image(tmp_path)
     fake_macos.attach_error = KeyboardInterrupt()
 
@@ -1065,26 +1136,27 @@ def test_pillage_image_macos_attach_interrupted(tmp_path, fake_macos):
     fake_macos.on_attach = _attached
 
     with pytest.raises(KeyboardInterrupt):
-        pillage(str(image))
+        _search_image(str(image))
     assert fake_macos.args_of("hdiutil detach") == [["hdiutil", "detach", "/dev/disk4"]]
-    assert not list(tmp_path.glob("peat_pillage_*"))
+    assert not list(tmp_path.glob("peat_image_*"))
 
 
-def test_pillage_image_macos_search_interrupted(tmp_path, fake_macos, monkeypatch):
+def test_search_image_macos_search_interrupted(tmp_path, fake_macos):
     image = _macos_image(tmp_path)
 
     def _interrupt(*args, **kwargs):  # noqa: ARG001
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(pillage_api, "search", _interrupt)
-    assert pillage(str(image)) is False
+    with pytest.raises(KeyboardInterrupt):
+        search_image(str(image), _interrupt)
+    # Detached, even though the search was interrupted
     assert fake_macos.args_of("hdiutil detach") == [["hdiutil", "detach", "/dev/disk4"]]
 
 
-def test_pillage_image_macos_converts(tmp_path, fake_macos, monkeypatch):
+def test_search_image_macos_converts(tmp_path, fake_macos, monkeypatch):
     image = _macos_image(tmp_path, "disk.vmdk")
     info = {"format": "vmdk", "virtual-size": 64 * 1024**2, "actual-size": 1024**2}
-    monkeypatch.setattr(pillage_api, "qemu_img_info", lambda _: info)
+    monkeypatch.setattr(disk_image_api, "qemu_img_info", lambda _: info)
     monkeypatch.setattr(
         shutil, "which", lambda cmd: cmd if cmd in ["hdiutil", "diskutil", "qemu-img"] else None
     )
@@ -1096,18 +1168,18 @@ def test_pillage_image_macos_converts(tmp_path, fake_macos, monkeypatch):
 
     monkeypatch.setattr(subprocess, "call", _qemu_img)
 
-    assert pillage(str(image)) is True
+    assert _search_image(str(image)) is True
     attach = fake_macos.args_of("hdiutil attach")[0]
     converted = Path(attach[-1])
     assert converted.name == "disk.img"
-    assert converted.parent.name.startswith("pillage_temp_")
+    assert converted.parent.name.startswith("peat_image_")
     assert attach[-3:-1] == ["-imagekey", "diskimage-class=CRawDiskImage"]
-    assert not list((tmp_path / "work").glob("pillage_temp*"))  # Cleaned up
+    assert not list((tmp_path / "work").glob("peat_image_*"))  # Cleaned up
 
 
-def test_pillage_image_macos_needs_qemu_img(tmp_path, fake_macos, caplog):
+def test_search_image_macos_needs_qemu_img(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path, "disk.qcow2")
-    assert pillage(str(image)) is False
+    assert _search_image(str(image)) is False
     assert "brew install qemu" in caplog.text
     assert not fake_macos.calls
 
@@ -1129,8 +1201,8 @@ def test_pillage_image_macos_needs_qemu_img(tmp_path, fake_macos, caplog):
     ],
 )
 def test_image_kind_macos(monkeypatch, name, info, expected):
-    monkeypatch.setattr(pillage_api, "qemu_img_info", lambda _: info)
-    assert pillage_api.image_kind_macos(Path(name)) == expected
+    monkeypatch.setattr(disk_image_api, "qemu_img_info", lambda _: info)
+    assert disk_image_api.image_kind_macos(Path(name)) == expected
 
 
 def test_validate_image_mounting_macos(monkeypatch):
@@ -1152,13 +1224,13 @@ def test_qemu_img_info(monkeypatch):
         assert args == ["qemu-img", "info", "--output=json", "disk.img"]
         return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
 
-    monkeypatch.setattr(pillage_api, "_run_command", _run)
-    assert pillage_api.qemu_img_info(Path("disk.img"))["format"] == "qcow2"
+    monkeypatch.setattr(disk_image_api, "_run_command", _run)
+    assert disk_image_api.qemu_img_info(Path("disk.img"))["format"] == "qcow2"
 
     output = "not json"
-    assert pillage_api.qemu_img_info(Path("disk.img")) is None
+    assert disk_image_api.qemu_img_info(Path("disk.img")) is None
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    assert pillage_api.qemu_img_info(Path("disk.img")) is None
+    assert disk_image_api.qemu_img_info(Path("disk.img")) is None
 
 
 def test_check_conversion_space(tmp_path, monkeypatch, caplog):
@@ -1167,44 +1239,36 @@ def test_check_conversion_space(tmp_path, monkeypatch, caplog):
     source = Path("disk.qcow2")
 
     big = {"format": "qcow2", "virtual-size": 10 * 1024**3, "actual-size": 50 * 1024**2}
-    assert pillage_api.check_conversion_space(source, tmp_path, big) is True
+    assert disk_image_api.check_conversion_space(source, tmp_path, big) is True
     assert "may need up to" in caplog.text
 
     full = {"format": "qcow2", "virtual-size": 10 * 1024**3, "actual-size": 200 * 1024**2}
-    assert pillage_api.check_conversion_space(source, tmp_path, full) is False
+    assert disk_image_api.check_conversion_space(source, tmp_path, full) is False
     assert "Not enough free disk space" in caplog.text
 
     # Unknown, e.g. qemu-img isn't installed
-    monkeypatch.setattr(pillage_api, "qemu_img_info", lambda _: None)
-    assert pillage_api.check_conversion_space(source, tmp_path) is True
+    monkeypatch.setattr(disk_image_api, "qemu_img_info", lambda _: None)
+    assert disk_image_api.check_conversion_space(source, tmp_path) is True
 
 
-def test_pillage_password_file_directory(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
-    source = tmp_path / "source"
-    _make_source(source)
-    monkeypatch.chdir(tmp_path)
-    assert pillage(str(source), tmp_path / "nonexistent.txt") is True
-    assert "Ignoring the password file" in caplog.text
-
-
-def test_pillage_image_password_file_missing(tmp_path, fake_macos, caplog):
+def test_search_image_password_file_missing(tmp_path, fake_macos, caplog):
     image = _macos_image(tmp_path)
-    assert pillage(str(image), tmp_path / "nonexistent.txt") is False
+    assert _search_image(str(image), tmp_path / "nonexistent.txt") is False
     assert "Failed to read password file" in caplog.text
     assert not fake_macos.calls
 
 
-def test_pillage_sparsebundle_is_an_image(tmp_path, fake_macos):
+def test_search_sparsebundle_is_an_image(tmp_path, fake_macos):
     bundle = tmp_path / "disk.sparsebundle"
     (bundle / "bands").mkdir(parents=True)
-    assert pillage(str(bundle)) is True
+    assert _search_image(str(bundle)) is True
     assert fake_macos.args_of("hdiutil attach")[0][-1] == str(bundle)
 
 
 @pytest.mark.slow
 @pytest.mark.skipif(not consts.MACOS, reason="macOS-only")
 @pytest.mark.parametrize("exclude_system_dirs", [None, False])
-def test_search_macos_live_root(tmp_path, monkeypatch, pillage_config, exclude_system_dirs):  # noqa: ARG001
+def test_search_macos_live_root(monkeypatch, exclude_system_dirs):
     """
     Search "/" on a real Mac, without going deeper than two directories down.
     The Data volume (/System/Volumes/Data) is never searched, since everything
@@ -1216,14 +1280,13 @@ def test_search_macos_live_root(tmp_path, monkeypatch, pillage_config, exclude_s
     def _walk(top, *args, **kwargs):
         for root, dirnames, filenames in real_walk(top, *args, **kwargs):
             yield root, dirnames, filenames
-            visited[root] = list(dirnames)  # After search() pruned it
+            visited[root] = list(dirnames)  # After find_files() pruned it
             if root != "/" and root.count("/") >= 2:
                 dirnames.clear()
 
     monkeypatch.setattr(os, "walk", _walk)
-    monkeypatch.setattr(pillage_api, "is_valid_file", lambda _: (False, ""))
 
-    assert search("/", tmp_path / "results", exclude_system_dirs=exclude_system_dirs) is True
+    assert find_files("/", exclude_system_dirs=exclude_system_dirs) is not None
     assert "/Users" in visited
     assert "/System/Volumes/Data" not in visited
     assert "Data" not in visited.get("/System/Volumes", [])
@@ -1255,7 +1318,7 @@ def _run(args: list[str], input_data: bytes | None = None) -> str:
 
 
 def _run_plist(args: list[str], input_data: bytes | None = None) -> dict:
-    data = pillage_api._parse_plist(_run(args, input_data))
+    data = disk_image_api._parse_plist(_run(args, input_data))
     assert data is not None, args
     return data
 
@@ -1269,7 +1332,7 @@ def _attach(image: Path, password: str = "", readonly: bool = False) -> tuple[st
         args.append("-stdinpass")
     entities = _run_plist([*args, str(image)], password.encode() or None)["system-entities"]
     mounts = [e["mount-point"] for e in entities if e.get("mount-point")]
-    return pillage_api._whole_disk(entities), mounts
+    return disk_image_api._whole_disk(entities), mounts
 
 
 def _detach(device: str) -> None:
@@ -1289,7 +1352,7 @@ def _writable(mount_point: Path) -> None:
 
 def _is_attached(image: Path) -> bool:
     images = _run_plist(["hdiutil", "info", "-plist"]).get("images", [])
-    return pillage_api.find_attached_image_macos(image, images) is not None
+    return disk_image_api.find_attached_image_macos(image, images) is not None
 
 
 def _create_image(
@@ -1324,17 +1387,53 @@ def _convert_to_raw(image: Path, raw: Path) -> Path:
     return raw
 
 
-def _pillage_real(image, tmp_path, monkeypatch, caplog, password_file=None) -> list[str]:
-    """Pillage an image, check it was detached, and return what was found."""
-    # A new directory each time, since some tests pillage the same image twice
+def _search_real(image, tmp_path, monkeypatch, caplog, password_file=None) -> list[str]:
+    """Search an image, check it was detached, and return what was found."""
+    # A new directory each time, since some tests search the same image twice
     work_dir = Path(tempfile.mkdtemp(prefix=f"work_{image.name}_", dir=tmp_path))
     monkeypatch.chdir(work_dir)
     caplog.clear()
     caplog.set_level("DEBUG")
 
-    assert pillage(str(image), password_file) is True, caplog.text
+    assert _search_image(str(image), password_file) is True, caplog.text
     assert not _is_attached(image), "The image is still attached"
-    return _found(work_dir / "pillage_results")
+    return _found(work_dir / "found")
+
+
+@macos_image_test
+@pytest.mark.slow
+def test_parse_macos_real_dmg(tmp_path, monkeypatch, mocker, caplog):
+    """Parse the SCEPTRE configs from sceptre-bennu on a real DMG image with peat parse."""
+    data_files = Path(__file__).resolve().parent.parent / "modules" / "sandia" / "data_files"
+    image = _create_image(
+        tmp_path / "sceptre.dmg",
+        "APFS",
+        source=lambda volume: shutil.copytree(data_files, volume / "Projects"),
+    )
+    parse_files = tmp_path / "parse_files"
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+            "PARSE_FILES_DIR": parse_files,
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("DEBUG")
+
+    summary = parse(image, ["SCEPTRE"])
+    assert summary["disk_images"] == [image.as_posix()], caplog.text
+    assert summary["num_parse_successes"] == 3, caplog.text
+    assert not _is_attached(image), "The image is still attached"
+    assert _found(parse_files / "sceptre.dmg") == [
+        "volume_1/Projects/bp/dnp3-client.xml",
+        "volume_1/Projects/ep/bacnet-client.xml",
+        "volume_1/Projects/ep/sunspec-server.xml",
+    ]
 
 
 @macos_image_test
@@ -1349,45 +1448,45 @@ def _pillage_real(image, tmp_path, monkeypatch, caplog, password_file=None) -> l
         ("APFS", "NONE"),
     ],
 )
-def test_pillage_macos_real_dmg(tmp_path, monkeypatch, caplog, pillage_config, fs, layout):  # noqa: ARG001
-    image = _create_image(tmp_path / "pillage_test.dmg", fs, layout)
-    assert _pillage_real(image, tmp_path, monkeypatch, caplog) == MACOS_EXPECTED
+def test_search_macos_real_dmg(tmp_path, monkeypatch, caplog, fs, layout):
+    image = _create_image(tmp_path / "peat_test.dmg", fs, layout)
+    assert _search_real(image, tmp_path, monkeypatch, caplog) == MACOS_EXPECTED
 
 
 @macos_image_test
 @pytest.mark.slow
 @pytest.mark.parametrize("suffix", [".img", ".cdr", ".dd"])
-def test_pillage_macos_real_raw(tmp_path, monkeypatch, caplog, pillage_config, suffix):  # noqa: ARG001
+def test_search_macos_real_raw(tmp_path, monkeypatch, caplog, suffix):
     dmg = _create_image(tmp_path / "base.dmg", "MS-DOS FAT32", "MBRSPUD")
     raw = _convert_to_raw(dmg, tmp_path / f"raw{suffix}")
-    assert _pillage_real(raw, tmp_path, monkeypatch, caplog) == MACOS_EXPECTED
+    assert _search_real(raw, tmp_path, monkeypatch, caplog) == MACOS_EXPECTED
 
 
 @macos_image_test
 @pytest.mark.slow
-def test_pillage_macos_real_iso(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
+def test_search_macos_real_iso(tmp_path, monkeypatch, caplog):
     source = tmp_path / "iso_source"
     _make_source(source)
-    image = tmp_path / "pillage_test.iso"
+    image = tmp_path / "peat_test.iso"
     _run(["hdiutil", "makehybrid", "-iso", "-joliet", "-o", str(image), str(source)])
-    found = _pillage_real(image, tmp_path, monkeypatch, caplog)
+    found = _search_real(image, tmp_path, monkeypatch, caplog)
     # Plain ISO 9660 names are upper case, Joliet names keep their case
     assert sorted(f.lower() for f in found) == [
-        "sel/nested.rdb",
-        "sel/relay2.rdb",
-        "sel/set_all.txt",
+        "nested.rdb",
+        "relay2.rdb",
+        "set_all.txt",
     ]
 
 
 @macos_image_test
 @pytest.mark.slow
-def test_pillage_macos_real_already_attached(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
+def test_search_macos_real_already_attached(tmp_path, monkeypatch, caplog):
     image = _create_image(tmp_path / "attached.dmg", "APFS")
     device, _ = _attach(image, readonly=True)
     try:
         monkeypatch.chdir(tmp_path)
-        assert pillage(str(image)) is True, caplog.text
-        assert _found(tmp_path / "pillage_results") == MACOS_EXPECTED
+        assert _search_image(str(image)) is True, caplog.text
+        assert _found(tmp_path / "found") == MACOS_EXPECTED
         assert _is_attached(image), "An image that was already attached was detached"
     finally:
         _detach(device)
@@ -1395,19 +1494,19 @@ def test_pillage_macos_real_already_attached(tmp_path, monkeypatch, caplog, pill
 
 @macos_image_test
 @pytest.mark.slow
-def test_pillage_macos_real_encrypted_dmg(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
-    password = "PEAT pillage test"
+def test_search_macos_real_encrypted_dmg(tmp_path, monkeypatch, caplog):
+    password = "PEAT disk image test"
     image = _create_image(tmp_path / "encrypted.dmg", "APFS", password=password)
 
     # Without a password (there's no terminal to prompt in)
     monkeypatch.chdir(tmp_path)
-    assert pillage(str(image)) is False
+    assert _search_image(str(image)) is False
     assert "it's encrypted" in caplog.text
     assert not _is_attached(image)
 
     password_file = tmp_path / "passwords.txt"
     password_file.write_text(f"wrong password\n{password}\n", encoding="utf-8")
-    found = _pillage_real(image, tmp_path, monkeypatch, caplog, password_file)
+    found = _search_real(image, tmp_path, monkeypatch, caplog, password_file)
     assert found == MACOS_EXPECTED
     assert password not in caplog.text
 
@@ -1424,7 +1523,7 @@ def _apfs_container(device: str) -> str:
 
 @macos_image_test
 @pytest.mark.slow
-def test_pillage_macos_real_encrypted_apfs_volume(tmp_path, monkeypatch, caplog, pillage_config):  # noqa: ARG001
+def test_search_macos_real_encrypted_apfs_volume(tmp_path, monkeypatch, caplog):
     password = "PEAT APFS test"
     # APFS only allows one volume per 512 MiB of container, so the container has
     # to be bigger than that to add a second volume. A sparse image keeps the file small.
@@ -1479,12 +1578,12 @@ def test_pillage_macos_real_encrypted_apfs_volume(tmp_path, monkeypatch, caplog,
         _detach(device)
 
     # Without a password, only the unencrypted (empty) volume is searched
-    assert _pillage_real(image, tmp_path, monkeypatch, caplog) == []
+    assert _search_real(image, tmp_path, monkeypatch, caplog) == []
     assert "it's encrypted with APFS encryption and locked" in caplog.text
 
     password_file = tmp_path / "passwords.txt"
     password_file.write_text(f"wrong password\n{password}\n", encoding="utf-8")
-    found = _pillage_real(image, tmp_path, monkeypatch, caplog, password_file)
+    found = _search_real(image, tmp_path, monkeypatch, caplog, password_file)
     assert found == MACOS_EXPECTED
     assert "Unlocked encrypted APFS volume 'PEATENC'" in caplog.text
     assert password not in caplog.text
@@ -1497,13 +1596,12 @@ def test_pillage_macos_real_encrypted_apfs_volume(tmp_path, monkeypatch, caplog,
     ("qemu_format", "suffix"),
     [("qcow2", ".qcow2"), ("vmdk", ".vmdk"), ("vhdx", ".vhdx"), ("vpc", ".vhd")],
 )
-@pytest.mark.usefixtures("pillage_config")
-def test_pillage_macos_real_qemu(tmp_path, monkeypatch, caplog, qemu_format, suffix):
+def test_search_macos_real_qemu(tmp_path, monkeypatch, caplog, qemu_format, suffix):
     dmg = _create_image(tmp_path / "base.dmg", "MS-DOS FAT32", "MBRSPUD")
     raw = _convert_to_raw(dmg, tmp_path / "base.img")
     image = tmp_path / f"disk{suffix}"
     _run(["qemu-img", "convert", "-f", "raw", "-O", qemu_format, str(raw), str(image)])
 
-    assert _pillage_real(image, tmp_path, monkeypatch, caplog) == MACOS_EXPECTED
+    assert _search_real(image, tmp_path, monkeypatch, caplog) == MACOS_EXPECTED
     assert "Converting" in caplog.text
-    assert not list((tmp_path / f"work_{image.name}").glob("pillage_temp_*"))
+    assert not list((tmp_path / f"work_{image.name}").glob("peat_image_*"))

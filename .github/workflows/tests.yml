@@ -215,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           sw_vers
-          pdm run pytest -p no:cacheprovider --basetemp=./pytest_images --run-slow -v -rs -k "macos_real or macos_live_root" tests/api/test_pillage_api.py 2>&1 | tee pytest_images.txt
+          pdm run pytest -p no:cacheprovider --basetemp=./pytest_images --run-slow -v -rs -k "macos_real or macos_live_root" tests/api/test_disk_image_api.py 2>&1 | tee pytest_images.txt
           if grep -q "SKIPPED" pytest_images.txt; then
             echo "::error ::macOS disk image tests were skipped"
             exit 1

@@ -207,7 +207,7 @@ dependencies = [
     # Required for: MySQL protocol
     "PyMySQL>=1.1.0",
 
-    # Library to load kernel modules for PEAT Pillage
+    # Library to load kernel modules, for mounting disk images in "peat parse" on Linux
     "kmodpy~=0.1.13;platform_system=='Linux'",
 
     # Library for initial parsing of L5X files
