@@ -12,7 +12,7 @@ from typing import Final, Literal
 
 import urllib3
 from bs4 import BeautifulSoup
-from requests import Response, Session
+from requests import PreparedRequest, Response, Session
 from requests.exceptions import SSLError
 
 import peat  # Avoid circular imports
@@ -129,14 +129,49 @@ def resolve_tls_verify(
     return False
 
 
+#: Backslashes, whitespace and control characters, which aren't allowed in
+#: redirect targets or links that are followed. URL parsers disagree about
+#: them (e.g. :mod:`urllib.parse` and urllib3 on ``http://a\@b/``), so they
+#: can make a URL look like it's for one host when the request goes to another.
+_UNSAFE_URL_RE: Final[re.Pattern[str]] = re.compile(r"[\\\s\x00-\x1f\x7f-\x9f]")
+
+
+def is_safe_url(url: str) -> bool:
+    """
+    If a URL (e.g. a ``Location`` header or a link from a device) has no
+    backslashes, whitespace or control characters, which URL parsers disagree about.
+    """
+    return not _UNSAFE_URL_RE.search(url)
+
+
+def _normalize_host(host: str) -> str:
+    return host.lower().strip("[]").rstrip(".")
+
+
 def url_hostname(url: str) -> str:
     """
-    Host name of a URL (lowercase, without the port or IPv6 brackets),
-    or an empty string if the URL doesn't have one or can't be parsed.
+    Host name that :mod:`requests` (urllib3) connects to for a URL (lowercase,
+    without the port, IPv6 brackets or a trailing dot), or an empty string
+    if the URL doesn't have one or can't be parsed.
+
+    This is computed the same way :mod:`requests` does when sending a request,
+    since :mod:`urllib.parse` disagrees with it for some URLs.
     """
     try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except ValueError:
+        prepared = PreparedRequest()
+        prepared.prepare_url(url, None)
+        host = urllib3.util.parse_url(prepared.url).host or ""
+    except Exception:
+        return ""
+    return _normalize_host(host)
+
+
+def _urllib_hostname(url: str) -> str:
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+        # Same IDNA encoding as requests, so internationalized names compare equal
+        return _normalize_host(host.encode("idna").decode("ascii"))
+    except (ValueError, UnicodeError):
         return ""
 
 
@@ -144,9 +179,20 @@ def is_same_host(url: str, other: str) -> bool:
     """
     If two URLs are for the same host. The scheme and port can differ,
     e.g. a redirect from ``http://host/`` to ``https://host/`` is the same host.
+
+    URLs with backslashes, whitespace or control characters are never the
+    same host (refer to :func:`is_safe_url`), and both :mod:`requests` and
+    :mod:`urllib.parse` must agree on the host of each URL, so a URL crafted
+    to be parsed differently by them can't pass the check.
     """
+    if not is_safe_url(url) or not is_safe_url(other):
+        return False
+
     host = url_hostname(url)
-    return bool(host) and host == url_hostname(other)
+    if not host or host != url_hostname(other):
+        return False
+
+    return _urllib_hostname(url) == host and _urllib_hostname(other) == host
 
 
 class SameHostSession(Session):
@@ -171,7 +217,9 @@ class SameHostSession(Session):
         if target is None or resp.request is None or not resp.request.url:
             return target
 
-        if not is_same_host(urllib.parse.urljoin(resp.request.url, target), resp.request.url):
+        if not is_safe_url(target) or not is_same_host(
+            urllib.parse.urljoin(resp.request.url, target), resp.request.url
+        ):
             return None
 
         return target
@@ -411,10 +459,10 @@ class HTTP:
         while follow_redirects and response.is_redirect:
             # Don't read the body of redirect responses, they're discarded
             response.close()
-            target = Session.get_redirect_target(self.session, response) or ""
-            target = urllib.parse.urljoin(response.url, target)
+            location = Session.get_redirect_target(self.session, response) or ""
+            target = urllib.parse.urljoin(response.url, location)
 
-            if not is_same_host(target, url):
+            if not is_safe_url(location) or not is_same_host(target, url):
                 raise consts.CommError(
                     f"refusing to follow redirect from '{response.url}' "
                     f"to a different host: '{target}'"
@@ -959,6 +1007,7 @@ __all__ = [
     "TLS_VERIFY_HINT",
     "PageCache",
     "SameHostSession",
+    "is_safe_url",
     "is_same_host",
     "resolve_tls_verify",
     "url_hostname",

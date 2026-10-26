@@ -1,5 +1,8 @@
+import re
+
 import pytest
 import requests
+import requests_mock as requests_mock_module
 
 from peat import config, datastore
 from peat.modules.sel.sel_http import SELHTTP
@@ -78,3 +81,38 @@ def test_sel_http_view_syslog_short_line(sel_env, requests_mock):  # noqa: ARG00
     assert len(result["web_syslog_events"]) == 1
     assert result["web_syslog_events"][0]["device_name"] == "rtac1"
     assert "admin" in dev.related.user
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "http://127.0.0.1\\@192.0.2.10/cert.pem",
+        "//127.0.0.1\\@192.0.2.10/cert.pem",
+        "http://127.0.0.1/cert.pem",
+        "/cert\t.pem",
+    ],
+)
+def test_sel_http_cert_export_skips_off_host_links(sel_env, requests_mock, href):  # noqa: ARG001
+    requests_mock.post(
+        "http://192.0.2.10:80/X509.sel",
+        text=f'<a class="listButton" href="{href}">Export</a>',
+    )
+    other = requests_mock.register_uri(
+        requests_mock_module.ANY, re.compile(r"^https?://127\.0\.0\.1"), text="secret"
+    )
+    cert = requests_mock.post(re.compile(r"^http://192\.0\.2\.10:80/cert"), text="x")
+
+    dev = datastore.get("192.0.2.10")
+    assert SELHTTP("192.0.2.10", 80).gateway_cert_export(dev) == {"x509_certificates": {}}
+    assert not other.called
+    assert not cert.called
+
+
+@pytest.mark.parametrize("href", ["/N1234\\@127.0.0.1/ver.html", "/N1234 /ver.html"])
+def test_sel_http_login_rejects_unsafe_session_link(sel_env, requests_mock, href):  # noqa: ARG001
+    requests_mock.get("http://192.0.2.10:80/", text=LOGIN_PAGE)
+    requests_mock.post("http://192.0.2.10:80/login", text=f'<a href="{href}">x</a>')
+
+    sel = SELHTTP("192.0.2.10", 80)
+    assert sel.login() is False
+    assert sel._session_url == ""

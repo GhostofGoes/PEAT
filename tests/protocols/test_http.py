@@ -1,9 +1,11 @@
 import io
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import requests_mock as requests_mock_module
 from requests import Response
 
 from peat import config, consts, datastore
@@ -355,3 +357,85 @@ def test_page_cache_is_bounded():
 
     cache["huge"] = resp(1000)  # larger than the whole cache, not cached
     assert "huge" not in cache
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://127.0.0.1:8080\\@192.0.2.10/internal",
+        "http://127.0.0.1\\@192.0.2.10/",
+        "//127.0.0.1\\@192.0.2.10/",
+        "http://127.0.0.1#@192.0.2.10/",
+        "http://127.0.0.1?@192.0.2.10/",
+        "http://192.0.2.10 .127.0.0.1/",
+        "http://192.0.2.10\t.127.0.0.1/",
+        "http://127.0.0.1\x00@192.0.2.10/",
+        "http://192.0.2.10:99999/",
+    ],
+)
+def test_is_same_host_parser_differentials(target):
+    assert not http_module.is_same_host(target, "http://192.0.2.10:80/login")
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://192.0.2.10/x",
+        "https://192.0.2.10:8443/x",
+        "http://192.0.2.10./x",
+        "http://192.0.2.10/?next=http://127.0.0.1/",
+        "http://192.0.2.10/#@127.0.0.1",
+    ],
+)
+def test_is_same_host_accepts_same_host(target):
+    assert http_module.is_same_host(target, "http://192.0.2.10:80/login")
+
+
+def test_url_hostname_matches_requests():
+    assert http_module.url_hostname("http://127.0.0.1:80\\@192.0.2.10/") == "127.0.0.1"
+    assert http_module.url_hostname("http://[::1]:80/") == "::1"
+    assert http_module.url_hostname("http://EXAMPLE.com./") == "example.com"
+    assert http_module.url_hostname("not a url") == ""
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://127.0.0.1:8080\\@192.0.2.10:80/internal",
+        "//127.0.0.1\\@192.0.2.10/internal",
+        "http://127.0.0.1:8080#@192.0.2.10:80/internal",
+        "/internal\\x",
+        "/internal page",
+    ],
+)
+def test_http_get_refuses_redirect_parser_differential(
+    http_env,  # noqa: ARG001
+    requests_mock,
+    location,
+):
+    requests_mock.get(
+        "http://192.0.2.10:80/redir", status_code=302, headers={"Location": location}
+    )
+    other = requests_mock.register_uri(
+        requests_mock_module.ANY, re.compile(r"^https?://127\.0\.0\.1"), text="secret"
+    )
+    internal = requests_mock.get(re.compile(r"^http://192\.0\.2\.10:80/internal"), text="x")
+
+    assert HTTP("192.0.2.10").get("redir", use_cache=False, auth=("user", "pw")) is None
+    assert not other.called
+    assert not internal.called
+
+
+def test_same_host_session_refuses_backslash_redirect(requests_mock):
+    requests_mock.get(
+        "http://192.0.2.10/login",
+        status_code=302,
+        headers={"Location": "http://127.0.0.1\\@192.0.2.10/"},
+    )
+    other = requests_mock.register_uri(
+        requests_mock_module.ANY, re.compile(r"^https?://127\.0\.0\.1"), text="secret"
+    )
+
+    response = HTTP.gen_session(verify=False).get("http://192.0.2.10/login")
+    assert response.status_code == 302
+    assert not other.called

@@ -26,7 +26,7 @@ from peat import DeviceData, Event, PeatError, config, consts, datastore, log, u
 from peat.data.models import User
 from peat.data.validators import validate_hash
 from peat.protocols import HTTP, split_ipv4_cidr
-from peat.protocols.http import is_same_host
+from peat.protocols.http import is_safe_url, is_same_host
 
 from .relay_parse import (
     parse_and_process_events,
@@ -164,7 +164,7 @@ class SELHTTP(HTTP):
 
             # Only accept a path on the device, not a URL for another host
             parsed_href = urlsplit(href)
-            if not href or parsed_href.scheme or parsed_href.netloc:
+            if not href or parsed_href.scheme or parsed_href.netloc or not is_safe_url(href):
                 self.log.error(f"Login failed: unexpected session link in response: {href!r}")
                 return False
 
@@ -2424,7 +2424,7 @@ class SELHTTP(HTTP):
         for href in view_pages:
             # A 5-second timeout sometimes fails, device can be slow
             cert_url = urljoin(self.url, href)
-            if not is_same_host(cert_url, self.url):
+            if not is_safe_url(href) or not is_same_host(cert_url, self.url):
                 self.log.warning(f"Skipping certificate link to a different host: {href!r}")
                 continue
 
