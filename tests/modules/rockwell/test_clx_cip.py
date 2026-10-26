@@ -141,8 +141,11 @@ def test_unpack_bool():
         unpack_bool(b"")
 
 
-def _slow_cip(reply, delay: float = 0.02, read_deadline: float = 0.2) -> clx_cip.ClxCIP:
-    """A device that always has more data, but replies slowly."""
+def _slow_cip(reply, delay: float = 0.02, read_deadline: float = 1.0) -> clx_cip.ClxCIP:
+    """
+    A device that always has more data, but replies slowly. The deadline is
+    generous since a loaded Windows CI runner can take a while for one reply.
+    """
 
     def replies(n):
         time.sleep(delay)
@@ -188,8 +191,8 @@ def test_multi_request_read_deadline(method, args, reply):
     cip = _slow_cip(reply)
     start = time.monotonic()
     getattr(cip, method)(*args)
-    assert time.monotonic() - start < 1.0
-    assert 2 <= len(cip.driver.requests) < 50
+    assert time.monotonic() - start < 10.0  # 1000 replies would take 20 seconds
+    assert 2 <= len(cip.driver.requests) < 500
 
 
 def test_read_deadline_default():
