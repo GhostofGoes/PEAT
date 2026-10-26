@@ -137,3 +137,51 @@ def test_redact_secrets_encoded_variants(secrets):  # noqa: ARG001
         redacted = log_utils.redact_secrets(text)
         assert "vent" not in redacted.lower(), text
         assert "<redacted>" in redacted, text
+
+
+def _fail_login(pw: str) -> None:
+    raise ValueError(f"login failed with password {pw}")
+
+
+@pytest.mark.parametrize("debug", [0, 3])
+def test_setup_logging_redacts_exceptions(secrets, mocker, tmp_path, capsys, debug):  # noqa: ARG001
+    password = "Exc-UNIQUE-pw-7f3a!"
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "LOG_DIR": tmp_path,
+            "QUIET": False,
+            "NO_COLOR": True,
+            "VERBOSE": bool(debug),
+            "DEBUG": debug,  # with DEBUG, loguru's "diagnose" shows local variables
+            "ELASTIC_SERVER": None,
+            "DEVICE_OPTIONS": {},
+            "HOSTS": [],
+        },
+    )
+    log_utils.setup_logging(file=tmp_path / "peat.log", json_file=tmp_path / "json-log.jsonl")
+    # Registered after logging is set up, e.g. a default password used for a login
+    log_utils.register_secret(password)
+
+    try:
+        _fail_login(password)
+    except ValueError:
+        logger.exception("Login failed")
+    logger.complete()
+
+    stderr = capsys.readouterr().err
+    logs = {
+        "stderr": stderr,
+        "peat.log": (tmp_path / "peat.log").read_text(encoding="utf-8"),
+        "json-log.jsonl": (tmp_path / "json-log.jsonl").read_text(encoding="utf-8"),
+    }
+    for name, text in logs.items():
+        assert password not in text, name
+        assert "Exc-UNIQUE" not in text, name
+        assert "_fail_login" in text, name  # The traceback is still logged
+    for name in ["stderr", "peat.log"]:
+        assert "ValueError: login failed with password <redacted>" in logs[name], name
+
+    record = json.loads(logs["json-log.jsonl"].splitlines()[-1])
+    assert record["error"]["message"] == "login failed with password <redacted>"
+    assert "_fail_login" in record["error"]["stack_trace"]

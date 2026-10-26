@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from datetime import UTC
 from pathlib import Path
 from pprint import pformat
-from traceback import format_tb
+from traceback import format_exception, format_tb
 from typing import Any, Final
 
 import loguru
@@ -184,9 +184,30 @@ def register_secrets_from_config() -> None:
 
 
 def patch_redact_secrets(record: loguru.Record) -> None:
-    """Loguru patcher that redacts registered secrets from the message."""
-    if _secrets_re is not None:
-        record["message"] = redact_secrets(record["message"])
+    """
+    Loguru patcher that redacts registered secrets from the message and exception.
+
+    If any secrets are registered, an exception is formatted here, without the
+    values of local variables (loguru's ``diagnose``), and stored redacted in
+    ``record["extra"]["redacted_exception"]``, which the formatters log
+    instead of the exception.
+    """
+    if _secrets_re is None:
+        return
+
+    record["message"] = redact_secrets(record["message"])
+
+    exc = record["exception"]
+    if exc is not None and exc.type is not None:
+        formatted = "".join(format_exception(exc.type, exc.value, exc.traceback))
+        record["extra"]["redacted_exception"] = redact_secrets(formatted)
+
+
+def _exception_field(record: loguru.Record) -> str:
+    # The redacted exception if secrets are registered, see patch_redact_secrets()
+    if "redacted_exception" in record["extra"]:
+        return "{extra[redacted_exception]}"
+    return "{exception}"
 
 
 class ElasticLogSink:
@@ -316,8 +337,8 @@ def generate_log_dict(record: loguru.Record) -> dict[str, dict | str | None]:
     if record["exception"]:
         content["error"] = {
             "type": record["exception"].type.__name__,
-            "message": str(record["exception"].value),
-            "stack_trace": "".join(format_tb(record["exception"].traceback)),
+            "message": redact_secrets(str(record["exception"].value)),
+            "stack_trace": redact_secrets("".join(format_tb(record["exception"].traceback))),
         }
 
     return content
@@ -347,9 +368,9 @@ def terminal_formatter(record: loguru.Record) -> str:
         fmt += "<bold>{extra[target]: <12}</bold> | "
 
     if record["level"].name in ["WARNING", "ERROR", "CRITICAL"]:
-        fmt += "<level>{level}: {message}\n{exception}</level>"
+        fmt += "<level>{level}: {message}\n" + _exception_field(record) + "</level>"
     else:
-        fmt += "<level>{message}\n{exception}</level>"
+        fmt += "<level>{message}\n" + _exception_field(record) + "</level>"
 
     return fmt
 
@@ -370,7 +391,7 @@ def file_formatter(record: loguru.Record) -> str:
     if "target" in record["extra"]:
         fmt += "Target: {extra[target]} | "
 
-    fmt += "{message}\n{exception}"
+    fmt += "{message}\n" + _exception_field(record)
     return fmt
 
 
