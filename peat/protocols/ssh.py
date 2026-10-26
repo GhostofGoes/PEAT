@@ -268,7 +268,9 @@ class SSH:
     LINE_TERMINATOR: str = "\n"
     MAX_BYTES: int = 60000
     #: Maximum number of bytes returned by one :meth:`read` or :meth:`read_until`,
-    #: so a device that keeps sending data can't exhaust memory (16 MiB)
+    #: so a device that keeps sending data can't exhaust memory (16 MiB).
+    #: NOTE: deliberately not :data:`~typing.Final`, since it's a class attribute
+    #: that a subclass, an instance, or a test may override (like ``MAX_BYTES``).
     MAX_READ_SIZE: int = 16 * 1024 * 1024
 
     def __init__(

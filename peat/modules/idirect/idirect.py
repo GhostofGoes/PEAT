@@ -14,7 +14,7 @@ from typing import Literal
 
 from paramiko.ssh_exception import AuthenticationException
 
-from peat import DeviceData, DeviceModule, IPMethod, exit_handler, log, state, utils
+from peat import CommError, DeviceData, DeviceModule, IPMethod, exit_handler, log, state, utils
 from peat.data.data_utils import merge_models
 from peat.parsing.command_parsers import (
     ArpParser,
@@ -328,7 +328,15 @@ class Idirect(DeviceModule):
             dev._cache["idirect_ssh_session"] = conn
             exit_handler.register(dev._cache["idirect_ssh_session"].disconnect, "CONNECTION")
             conn.test_connection()
-            conn.read()
+            try:
+                # The banner and prompt, which SSH.read() requires (it raises
+                # CommError if the device sends nothing within the timeout)
+                conn.read()
+            except CommError as ex:
+                cls.log.error(f"Failed to read the SSH banner from {dev.ip}:{port}: {ex}")
+                conn.disconnect()
+                dev._cache.pop("idirect_ssh_session", None)
+                return False
             dev.related.user.add(dev.options["ssh"]["user"])
 
         # TODO: get and parse public and private SSH keys in /etc/ssh/
