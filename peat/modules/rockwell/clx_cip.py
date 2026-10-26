@@ -12,6 +12,7 @@ Authors
 
 from __future__ import annotations
 
+import time
 from typing import Any, Final
 
 from peat import config, log
@@ -25,6 +26,11 @@ from .clx_const import *
 #: or a tag that doesn't fit in one reply). The device decides when a read is
 #: complete, so this keeps a hostile or broken device from looping forever.
 MAX_REQUESTS_PER_READ: Final[int] = 10_000
+
+#: Default maximum number of seconds for one multi-request read. Each request
+#: is limited by the timeout, but a device that replies slowly (just under the
+#: timeout) to the maximum number of requests could otherwise take many hours.
+READ_DEADLINE: Final[float] = 60.0
 
 PathType = tuple | tuple[int, Any]
 TagData = int | bytes
@@ -51,7 +57,24 @@ class ClxCIP:
     Allen-Bradley ControlLogix devices.
     """
 
-    def __init__(self, ip: str, port: int, timeout: float = 5.0, cpu_slot: int = 0):
+    def __init__(
+        self,
+        ip: str,
+        port: int,
+        timeout: float = 5.0,
+        cpu_slot: int = 0,
+        read_deadline: float = READ_DEADLINE,
+    ):
+        """
+        Args:
+            ip: IP address of the device
+            port: ENIP port of the device
+            timeout: Number of seconds to wait for each reply
+            cpu_slot: Slot of the CPU in the chassis
+            read_deadline: Maximum number of seconds for one multi-request read
+                (e.g. an instance list or a large tag)
+        """
+        self.read_deadline: float = read_deadline
         self.enip_socket = EnipSocket(ip, port, timeout)
         self.driver = EnipDriver(self.enip_socket, cpu_slot)
         self.log = log.bind(
@@ -437,6 +460,7 @@ class ClxCIP:
         tag_buffer = []
         next_instance = 0
         requests = 0
+        deadline = time.monotonic() + self.read_deadline
 
         while next_instance != -1:
             path_string = path_to_string((*class_path, next_instance))
@@ -457,6 +481,10 @@ class ClxCIP:
                     f"requests: invalid next instance {new_next_instance} from device "
                     f"(previous: {next_instance})"
                 )
+                break
+            if new_next_instance != -1 and not _read_time_left(
+                self, f"instance list read of {class_path}", requests, deadline
+            ):
                 break
             next_instance = new_next_instance
 
@@ -489,6 +517,7 @@ class ClxCIP:
         path_string = path_to_string(instance_path)
 
         requests = 0
+        deadline = time.monotonic() + self.read_deadline
 
         while attribute_reads != -1:
             attribute_reads_total += attribute_reads
@@ -501,6 +530,10 @@ class ClxCIP:
                     f"Stopping attribute read of {instance_path} after {requests} "
                     f"requests: invalid attribute count {attribute_reads} from device"
                 )
+                break
+            if requests and not _read_time_left(
+                self, f"attribute read of {instance_path}", requests, deadline
+            ):
                 break
             requests += 1
             attribute_list_remaining = attribute_list[attribute_reads_total:]
@@ -537,9 +570,10 @@ class ClxCIP:
         tag_size = 0
         requests = 0
         path_string = path_to_string(instance_path)
+        deadline = time.monotonic() + self.read_deadline
 
         while tag_size != -1:
-            if requests and not _read_progress(self, instance_path, tag_size, requests):
+            if requests and not _read_progress(self, instance_path, tag_size, requests, deadline):
                 break
             requests += 1
             reply = self.driver.send_connected_command(
@@ -579,9 +613,10 @@ class ClxCIP:
         requests = 0
         tag_address = b""
         path_string = path_to_string(instance_path)
+        deadline = time.monotonic() + self.read_deadline
 
         while tag_size != -1:
-            if requests and not _read_progress(self, instance_path, tag_size, requests):
+            if requests and not _read_progress(self, instance_path, tag_size, requests, deadline):
                 break
             requests += 1
             reply = self.driver.send_connected_command(
@@ -626,9 +661,10 @@ class ClxCIP:
         tag_size = 0
         requests = 0
         path_string = path_to_string(instance_path)
+        deadline = time.monotonic() + self.read_deadline
 
         while tag_size != -1:
-            if requests and not _read_progress(self, instance_path, tag_size, requests):
+            if requests and not _read_progress(self, instance_path, tag_size, requests, deadline):
                 break
             requests += 1
             reply = self.driver.send_connected_command(
@@ -682,18 +718,35 @@ class ClxCIP:
         return tag_buffer
 
 
-def _read_progress(cip: ClxCIP, instance_path: PathType, size: int, requests: int) -> bool:
+def _read_progress(
+    cip: ClxCIP, instance_path: PathType, size: int, requests: int, deadline: float
+) -> bool:
     """
     Check if a multi-request tag read should continue: the previous reply had
-    to contain data (otherwise the same request would be sent forever), and
-    the number of requests is limited by :data:`MAX_REQUESTS_PER_READ`.
+    to contain data (otherwise the same request would be sent forever), the
+    number of requests is limited by :data:`MAX_REQUESTS_PER_READ`, and the
+    time by :attr:`ClxCIP.read_deadline` (``deadline``).
     """
-    if size > 0 and requests < MAX_REQUESTS_PER_READ:
+    if not (size > 0 and requests < MAX_REQUESTS_PER_READ):
+        cip.log.warning(
+            f"Stopping read of tag {instance_path} after {requests} requests: "
+            f"reply size {size} from device"
+        )
+        return False
+
+    return _read_time_left(cip, f"read of tag {instance_path}", requests, deadline)
+
+
+def _read_time_left(cip: ClxCIP, what: str, requests: int, deadline: float) -> bool:
+    """
+    Check if a multi-request read should continue: it must end by ``deadline``
+    (a :func:`time.monotonic` time, :attr:`ClxCIP.read_deadline` after it started).
+    """
+    if time.monotonic() < deadline:
         return True
 
     cip.log.warning(
-        f"Stopping read of tag {instance_path} after {requests} requests: "
-        f"reply size {size} from device"
+        f"Stopping {what} after {requests} requests: it took more than {cip.read_deadline} seconds"
     )
     return False
 

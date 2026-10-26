@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from peat import config
@@ -53,3 +55,23 @@ def test_snmp_walk_explicit_limits(mocker):
     calls = _endless_agent(mocker)
     SNMP(ip="127.0.0.1", timeout=0.01).get("1.3.6.1.2.1.1", single_query=False, query_limit=0)
     assert calls["count"] == 20_001  # 0 is no limit: until the agent stops
+
+
+def test_snmp_walk_deadline(mocker):
+    """10,000 queries just under the timeout each could take many hours."""
+    calls = _endless_agent(mocker)
+    real_next = snmp_module.nextCmd.side_effect
+
+    def _slow(*args, **kwargs):
+        for response in real_next(*args, **kwargs):
+            time.sleep(0.01)
+            yield response
+
+    mocker.patch("peat.protocols.snmp.nextCmd", side_effect=_slow)
+    snmp = SNMP(ip="127.0.0.1", timeout=0.01, walk_deadline=0.2)
+    start = time.monotonic()
+    snmp.get("1.3.6.1.2.1.1", single_query=False, query_limit=0)
+    assert time.monotonic() - start < 1.0
+    assert 2 <= calls["count"] < 100
+
+    assert SNMP(ip="127.0.0.1").walk_deadline == snmp_module.DEFAULT_WALK_DEADLINE

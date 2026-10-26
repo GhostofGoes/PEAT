@@ -6,7 +6,7 @@ import time
 import pytest
 
 from peat import CommError, DeviceError, config, datastore
-from peat.modules.schneider.m340 import m340
+from peat.modules.schneider.m340 import m340, umas_packets
 from peat.modules.schneider.m340.m340 import M340
 
 
@@ -144,3 +144,54 @@ def test_pull_apx_file_connection_closed_mid_frame(m340_dev):
 
     with pytest.raises(CommError, match="Connection closed"):
         M340.pull_apx_file("127.0.0.1")
+
+
+def _drip(sock: socket.socket, header: bytes, count: int, delay: float) -> None:
+    try:
+        sock.sendall(header)
+        for _ in range(count):
+            time.sleep(delay)
+            sock.sendall(b"\x00")
+    except OSError:
+        pass  # the reader gave up and closed its socket
+
+
+def test_recv_modbus_frame_slow_drip():
+    """One byte just under the socket timeout each time took hours for a 64 KB frame."""
+    reader, writer = socket.socketpair()
+    with reader, writer:
+        reader.settimeout(1.0)
+        args = (writer, struct.pack(">HHH", 1, 0, 30), 30, 0.1)
+        threading.Thread(target=_drip, args=args, daemon=True).start()
+
+        start = time.monotonic()
+        with pytest.raises(CommError, match="Timed out after receiving"):
+            umas_packets.recv_modbus_frame(reader, max_seconds=0.5)
+        assert time.monotonic() - start < 2.0
+        assert reader.gettimeout() == 1.0  # restored
+
+
+def test_recv_modbus_frame_default_deadline(mocker):
+    mocker.patch.object(umas_packets, "RECV_DEADLINE", 0.3)
+    reader, writer = socket.socketpair()
+    with reader, writer:
+        args = (writer, struct.pack(">HHH", 1, 0, 30), 30, 0.05)
+        threading.Thread(target=_drip, args=args, daemon=True).start()
+        with pytest.raises(CommError, match="Timed out"):
+            umas_packets.recv_exact(reader, 36)
+        assert reader.gettimeout() is None  # restored (blocking)
+
+
+def test_recv_modbus_frame_complete_and_invalid_length():
+    reader, writer = socket.socketpair()
+    with reader, writer:
+        reader.settimeout(1.0)
+        frame = _frame(b"\x00\xfe")
+        writer.sendall(frame[:3])
+        threading.Timer(0.05, writer.sendall, args=(frame[3:],)).start()
+        assert umas_packets.recv_modbus_frame(reader) == frame
+
+        for length in [0, 1]:
+            writer.sendall(struct.pack(">HHH", 1, 0, length) + b"\x00" * length)
+            with pytest.raises(CommError, match="Invalid length"):
+                umas_packets.recv_modbus_frame(reader)

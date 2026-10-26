@@ -12,6 +12,7 @@ Authors
 import binascii
 import socket
 import struct
+import time
 from typing import Final
 
 from scapy.all import (
@@ -31,6 +32,11 @@ from peat import log as peat_logger
 #: Length of the Modbus/TCP (MBAP) header before the length field's data:
 #: transaction ID (2 bytes), protocol ID (2 bytes), and length (2 bytes)
 MBAP_HEADER_LENGTH: Final[int] = 6
+
+#: Maximum number of seconds to receive one Modbus/TCP frame. Each ``recv()``
+#: is limited by the socket timeout, but a device that sends one byte at a
+#: time (just under the timeout) could otherwise take hours for one frame.
+RECV_DEADLINE: Final[float] = 60.0
 
 # TODO: refactor the UMAS packets to properly implement the UMAS protocol
 #   based on what we know now about it. hopefully improve reliability.
@@ -216,36 +222,71 @@ def send_umas_packet(
     return data
 
 
-def recv_exact(sock: socket.socket, length: int) -> bytes:
+def recv_exact(sock: socket.socket, length: int, deadline: float | None = None) -> bytes:
     """
     Receive exactly ``length`` bytes from a socket.
 
+    Args:
+        sock: Socket to receive from. Each ``recv()`` waits at most the socket
+            timeout (and at most until ``deadline``), the timeout is restored after.
+        length: Number of bytes to receive
+        deadline: :func:`time.monotonic` time by which all the data must be received
+            (default: :data:`RECV_DEADLINE` seconds from now)
+
     Raises:
-        CommError: The connection was closed before all the data was received
+        CommError: The connection was closed, or the deadline passed,
+            before all the data was received
     """
+    if deadline is None:
+        deadline = time.monotonic() + RECV_DEADLINE
+    timeout = sock.gettimeout()
     data = bytearray()
-    while len(data) < length:
-        part = sock.recv(length - len(data))
-        if not part:
-            raise CommError(
-                f"Connection closed after receiving {len(data)} of {length} "
-                f"bytes of a UMAS response"
-            )
-        data += part
+    try:
+        while len(data) < length:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CommError(
+                    f"Timed out after receiving {len(data)} of {length} bytes of a UMAS response"
+                )
+            sock.settimeout(remaining if timeout is None else min(timeout, remaining))
+            try:
+                part = sock.recv(length - len(data))
+            except TimeoutError as ex:
+                if time.monotonic() < deadline:
+                    raise  # the socket timeout, as before
+                raise CommError(
+                    f"Timed out after receiving {len(data)} of {length} bytes of a UMAS response"
+                ) from ex
+            if not part:
+                raise CommError(
+                    f"Connection closed after receiving {len(data)} of {length} "
+                    f"bytes of a UMAS response"
+                )
+            data += part
+    finally:
+        sock.settimeout(timeout)
     return bytes(data)
 
 
-def recv_modbus_frame(sock: socket.socket) -> bytes:
+def recv_modbus_frame(sock: socket.socket, max_seconds: float = RECV_DEADLINE) -> bytes:
     """
     Receive one complete Modbus/TCP frame, using the length in the MBAP header
     (a response may arrive in multiple TCP segments).
 
+    Args:
+        sock: Socket to receive from
+        max_seconds: Maximum number of seconds to receive the whole frame
+
     Raises:
-        CommError: The connection was closed before the frame was received
+        CommError: The connection was closed or the time ran out before the
+            frame was received, or the length in the MBAP header is invalid
     """
-    header = recv_exact(sock, MBAP_HEADER_LENGTH)
+    deadline = time.monotonic() + max_seconds
+    header = recv_exact(sock, MBAP_HEADER_LENGTH, deadline)
     (length,) = struct.unpack(">H", header[4:6])  # unit ID and PDU
-    return header + recv_exact(sock, length)
+    if length < 2:  # unit ID and function code
+        raise CommError(f"Invalid length {length} in the MBAP header of a UMAS response")
+    return header + recv_exact(sock, length, deadline)
 
 
 def update_tracker(

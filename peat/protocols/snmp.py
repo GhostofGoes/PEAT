@@ -35,6 +35,7 @@ Authors:
 """
 
 import os.path
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Final
@@ -60,6 +61,11 @@ from peat import config, consts, exit_handler, log, state, utils
 #: values can't keep PEAT walking forever.
 DEFAULT_QUERY_LIMIT: Final[int] = 10_000
 
+#: Default maximum number of seconds for one :meth:`SNMP.get` (e.g. a walk).
+#: Each query is limited by the timeout, but an agent that replies slowly
+#: (just under the timeout) to every query could otherwise take many hours.
+DEFAULT_WALK_DEADLINE: Final[float] = 300.0
+
 # https://www.iana.org/assignments/ianaiftype-mib/ianaiftype-mib
 INTERFACE_MAP: Final[dict[int, str]] = {
     1: "other",
@@ -81,6 +87,7 @@ class SNMP:
         community: str = "public",
         snmp_version: int = 1,
         mib_paths: list[str | Path] | None = None,
+        walk_deadline: float | None = DEFAULT_WALK_DEADLINE,
     ) -> None:
         """
         Args:
@@ -92,10 +99,13 @@ class SNMP:
             snmp_version: Version of SNMP to use (1 = v1 | 2 = v2c)
             mib_paths: List of paths to MIB files to use for lookups.
                 These ``.py`` files compiled from a MIB by PySNMP.
+            walk_deadline: Maximum number of seconds for one :meth:`get`
+                (e.g. a walk), :obj:`None` for no limit.
         """
         self.ip: str = ip
         self.port: int = port
         self.timeout: float = timeout
+        self.walk_deadline: float | None = walk_deadline
         self.community: str = community
         self.snmp_version: int = snmp_version
         self.log = log.bind(
@@ -274,6 +284,7 @@ class SNMP:
         values = []
         finished = False
         query_counter = 0
+        deadline = time.monotonic() + self.walk_deadline if self.walk_deadline else None
 
         # Keep querying nextCmd until it's exhausted
         # For getCmd, it'll usually just iterate once and finish
@@ -342,6 +353,12 @@ class SNMP:
                         f"Stopped SNMP walk of {identity} after {query_counter} "
                         f"queries (query_limit: {query_limit})"
                     )
+            elif not finished and deadline is not None and time.monotonic() >= deadline:
+                finished = True
+                self.log.warning(
+                    f"Stopped SNMP walk of {identity} after {query_counter} "
+                    f"queries: it took more than {self.walk_deadline} seconds"
+                )
 
         self.all_output[utils.utc_now().isoformat()] = deepcopy(values)
 

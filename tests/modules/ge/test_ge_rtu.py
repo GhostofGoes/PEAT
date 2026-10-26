@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from peat.modules.ge import ge_rtu
@@ -44,3 +46,23 @@ def test_digital_inputs_endless_or_closed(mocker, endless):
     sock = _FakeSock([b"DI 1  ON", b"garbage"], endless=endless)
     _telnet(sock).get_data_digital_io("I")
     assert len(sock.sent) <= 101
+
+
+def test_digital_inputs_deadline(mocker):
+    """500 pages just under the timeout each (plus the menu sleeps) could take hours."""
+    sock = _FakeSock([b"DI 1  ON", b"garbage"], endless=b"DI 9  ON")
+    original_recv = sock.recv
+
+    def slow_recv(size: int) -> bytes:
+        time.sleep(0.01)
+        return original_recv(size)
+
+    mocker.patch.object(sock, "recv", side_effect=slow_recv)
+    telnet = D25Telnet("127.0.0.1", menu_sleep_seconds=0, menu_read_deadline=0.2)
+    telnet.sock = sock
+
+    start = time.monotonic()
+    telnet.get_data_digital_io("I")
+    assert time.monotonic() - start < 1.0
+    assert 2 <= len(sock.sent) < 100
+    assert D25Telnet("127.0.0.1").menu_read_deadline == ge_rtu.MENU_READ_DEADLINE

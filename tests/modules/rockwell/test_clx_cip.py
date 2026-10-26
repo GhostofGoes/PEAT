@@ -1,4 +1,5 @@
 import struct
+import time
 
 import pytest
 
@@ -138,3 +139,58 @@ def test_unpack_bool():
     assert unpack_bool(b"\x00") == 0
     with pytest.raises(struct.error):
         unpack_bool(b"")
+
+
+def _slow_cip(reply, delay: float = 0.02, read_deadline: float = 0.2) -> clx_cip.ClxCIP:
+    """A device that always has more data, but replies slowly."""
+
+    def replies(n):
+        time.sleep(delay)
+        return reply(n)
+
+    cip = clx_cip.ClxCIP("127.0.0.1", 44818, read_deadline=read_deadline)
+    cip.driver = _MockDriver(replies, max_requests=1000)
+    return cip
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "reply"),
+    [
+        (
+            "get_instance_list_tag_buffer",
+            ((0x6B,),),
+            lambda n: _reply(0xCB, INSUFFICIENT_SPACE, _ids(n)),
+        ),
+        (
+            "get_attributes_tag_buffer",
+            ((0x6B, 1), list(range(1000))),
+            lambda _n: _reply(0x83, INSUFFICIENT_SPACE, b"\x01\x00\xaa\xaa"),
+        ),
+        (
+            "read_tag",
+            ((0x6B, 1),),
+            lambda _n: _reply(0xCC, INSUFFICIENT_SPACE, b"\x00" * 4 + b"\xaa" * 4),
+        ),
+        (
+            "read_tag_fragmented",
+            ((0x6B, 1),),
+            lambda _n: _reply(0xD2, INSUFFICIENT_SPACE, b"\x00" * 8 + b"\xaa" * 4),
+        ),
+        (
+            "read_template",
+            ((0x6C, 1), 0xFFFF),
+            lambda _n: _reply(0xCC, INSUFFICIENT_SPACE, b"\x00" * 4 + b"\xaa" * 4),
+        ),
+    ],
+)
+def test_multi_request_read_deadline(method, args, reply):
+    """Up to 10,000 requests just under the timeout each could take many hours."""
+    cip = _slow_cip(reply)
+    start = time.monotonic()
+    getattr(cip, method)(*args)
+    assert time.monotonic() - start < 1.0
+    assert 2 <= len(cip.driver.requests) < 50
+
+
+def test_read_deadline_default():
+    assert clx_cip.ClxCIP("127.0.0.1", 44818).read_deadline == clx_cip.READ_DEADLINE == 60.0
