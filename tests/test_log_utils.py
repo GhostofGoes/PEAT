@@ -314,3 +314,53 @@ def test_debug_info_file_redacts_config(secrets, mocker, tmp_path):  # noqa: ARG
     assert "Telnet-UNIQUE-pw" not in text
     assert "Es-UNIQUE-pw" not in text
     assert '"user": "Admin"' in text
+
+
+def _fail_parse(value: str) -> None:
+    raise ValueError(f"bad value {value}")
+
+
+@pytest.mark.parametrize("no_color", [False, True])
+def test_setup_logging_strips_control_chars_from_exceptions(
+    secrets,  # noqa: ARG001
+    mocker,
+    tmp_path,
+    capfd,
+    no_color,
+):
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "LOG_DIR": tmp_path,
+            "QUIET": False,
+            "NO_COLOR": no_color,
+            "DEBUG": 0,
+            "ELASTIC_SERVER": None,
+            "DEVICE_OPTIONS": {},
+            "HOSTS": [],
+        },
+    )
+    log_utils.setup_logging(file=tmp_path / "peat.log", json_file=tmp_path / "json-log.jsonl")
+
+    # Not in the call, since the traceback includes the source line
+    device_value = "\x1b]0;PWNED-EXC\x07\x1b[2Jdata"
+    try:
+        _fail_parse(device_value)
+    except ValueError:
+        logger.exception("Failed to parse artifact")
+    logger.complete()
+
+    logs = {
+        "stderr": capfd.readouterr().err,
+        "peat.log": (tmp_path / "peat.log").read_text(encoding="utf-8"),
+        "json-log.jsonl": (tmp_path / "json-log.jsonl").read_text(encoding="utf-8"),
+    }
+    for name, text in logs.items():
+        assert "PWNED-EXC" not in text, name
+        assert "\x07" not in text, name
+        assert "\\u001b" not in text, name
+        assert "_fail_parse" in text, name  # The traceback is still logged
+    assert "\x1b" not in logs["peat.log"]
+    assert "ValueError: bad value data" in logs["peat.log"]
+    if no_color:
+        assert "\x1b" not in logs["stderr"]

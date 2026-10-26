@@ -256,26 +256,29 @@ def redact_config(value: Any, _is_secret: bool = False) -> Any:
 
 def patch_redact_secrets(record: loguru.Record) -> None:
     """
-    Loguru patcher that redacts registered secrets from the message and exception.
+    Loguru patcher that redacts registered secrets from the message and exception,
+    and removes terminal control sequences from the exception.
 
-    If any secrets are registered, an exception is formatted here, without the
-    values of local variables (loguru's ``diagnose``), and stored redacted in
-    ``record["extra"]["redacted_exception"]``, which the formatters log
-    instead of the exception.
+    If any secrets are registered, or the exception contains control sequences
+    (e.g. an exception message with device data in it), the exception is
+    formatted here, without the values of local variables (loguru's
+    ``diagnose``), and stored redacted and stripped (refer to
+    :func:`strip_control_chars`) in ``record["extra"]["redacted_exception"]``,
+    which the formatters log instead of the exception.
     """
-    if _secrets_re is None:
-        return
-
-    record["message"] = redact_secrets(record["message"])
+    if _secrets_re is not None:
+        record["message"] = redact_secrets(record["message"])
 
     exc = record["exception"]
     if exc is not None and exc.type is not None:
         formatted = "".join(format_exception(exc.type, exc.value, exc.traceback))
-        record["extra"]["redacted_exception"] = redact_secrets(formatted)
+        cleaned = strip_control_chars(redact_secrets(formatted))
+        if _secrets_re is not None or cleaned != formatted:
+            record["extra"]["redacted_exception"] = cleaned
 
 
 def _exception_field(record: loguru.Record) -> str:
-    # The redacted exception if secrets are registered, see patch_redact_secrets()
+    # The redacted exception if needed, see patch_redact_secrets()
     if "redacted_exception" in record["extra"]:
         return "{extra[redacted_exception]}"
     return "{exception}"
@@ -410,8 +413,10 @@ def generate_log_dict(record: loguru.Record) -> dict[str, dict | str | None]:
     if record["exception"]:
         content["error"] = {
             "type": record["exception"].type.__name__,
-            "message": redact_secrets(str(record["exception"].value)),
-            "stack_trace": redact_secrets("".join(format_tb(record["exception"].traceback))),
+            "message": strip_control_chars(redact_secrets(str(record["exception"].value))),
+            "stack_trace": strip_control_chars(
+                redact_secrets("".join(format_tb(record["exception"].traceback)))
+            ),
         }
 
     return content
