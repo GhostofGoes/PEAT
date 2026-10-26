@@ -109,6 +109,10 @@ class ClxHTTP(HTTP):
     @classmethod
     def _extract_rows(cls, text: str, start: int, **kwargs) -> list[list]:
         table = cls.gen_soup(text).find("table", **kwargs)
+        if table is None:
+            log.warning("No table found in page")
+            return []
+
         rows = table.find_all("tr")[start:]
         return [r.find_all("td") for r in rows]
 
@@ -121,6 +125,9 @@ class ClxHTTP(HTTP):
         the column names and values being the values from that row.
         """
         rows = cls._extract_rows(text, start, **kwargs)
+        if not rows:
+            return []
+
         labels = [str(column.string) if column.string else str(column.text) for column in rows[0]]
 
         return [

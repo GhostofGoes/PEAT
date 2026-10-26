@@ -273,9 +273,12 @@ def parse_check_stack_response(check_stack_response: str) -> dict[str, Any]:
     tasks = {}
     for task_row in check_stack_lines[2:]:
         if "0x" in task_row:
-            tid_dict = {}
-            for index, col_name in enumerate(column_names):
-                tid_dict[col_name] = task_row.split()[index]
+            values = task_row.split()
+            if len(values) < len(column_names) or "TID" not in column_names:
+                log.warning(f"Skipping malformed checkStack row: {task_row!r}")
+                continue
+
+            tid_dict = dict(zip(column_names, values, strict=False))
             tasks[tid_dict["TID"]] = tid_dict
         elif "INTERRUPT" in task_row:
             break

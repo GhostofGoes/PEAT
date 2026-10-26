@@ -779,6 +779,7 @@ class SELHTTP(HTTP):
 
         if not response or not response.text:
             self.log.error("No response or data for Sequence of Events (SOE) log (soe.csv)")
+            return {}
 
         dev.write_file(
             data=response.text,
@@ -803,10 +804,22 @@ class SELHTTP(HTTP):
                     continue
                 raw = {}
                 line = [x.strip('"') for x in syslog_lines[i].split('",') if x]
+                if len(line) < len(labels):
+                    self.log.warning(
+                        f"Skipping SOE line {i} with {len(line)} columns "
+                        f"(expected {len(labels)}): {syslog_lines[i]!r}"
+                    )
+                    continue
+
                 # For each event column, fill in details, and populate event
                 for col_idx in range(len(labels)):
                     trim_label = labels[col_idx][1:-1]
                     raw[trim_label] = line[col_idx]
+
+                if "message" not in raw:
+                    self.log.warning(f"Skipping SOE line {i} with no message: {syslog_lines[i]!r}")
+                    continue
+
                 web_syslog_events.append(raw)
 
                 # Process the event into the data model

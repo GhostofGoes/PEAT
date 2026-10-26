@@ -1,7 +1,11 @@
 import pytest
 
 from peat import DeviceData, config
-from peat.modules.schneider.sage.sage_commands import SageCommands, save_memory_reads_to_disk
+from peat.modules.schneider.sage.sage_commands import (
+    SageCommands,
+    parse_check_stack_response,
+    save_memory_reads_to_disk,
+)
 
 
 @pytest.fixture
@@ -58,3 +62,16 @@ def test_query_response_file_contained(dev, tmp_path, command):
     written = _files_under(tmp_path)
     assert len(written) == 1
     assert written[0].is_relative_to(dev.get_sub_dir("telnet_responses"))
+
+
+def test_parse_check_stack_response_short_row():
+    response = (
+        "NAME        ENTRY        TID       SIZE   CUR  HIGH  MARGIN\n"
+        "------------ ------------ -------- ----- ----- ----- ------\n"
+        "tExcTask    0x1a2b3c   0x1d2e3f   8192   240  1104   7088\n"
+        "tShort      0x1a2b3c\n"
+    )
+    tasks = parse_check_stack_response(response)
+    assert list(tasks) == ["0x1d2e3f"]
+    assert tasks["0x1d2e3f"]["NAME"] == "tExcTask"
+    assert tasks["0x1d2e3f"]["MARGIN"] == "7088"

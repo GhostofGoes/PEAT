@@ -139,10 +139,11 @@ class Idirect(DeviceModule):
         """
 
         if protocol not in ["ssh", "telnet"]:
-            raise ValueError("Protocol {protocol} not supported!")
+            raise ValueError(f"Protocol {protocol} not supported!")
         if protocol == "telnet":
             raise NotImplementedError("telnet verify isn't implemented yet")
 
+        conn = None
         try:
             conn = cls._login_ssh(dev)
 
@@ -150,7 +151,6 @@ class Idirect(DeviceModule):
                 cls.log.debug(
                     f"Failed {protocol.capitalize()} verify for {dev.ip}: connection failed"
                 )
-                conn.disconnect()
                 return False
 
             dev.related.user.add(dev.options[protocol]["user"])
@@ -184,7 +184,8 @@ class Idirect(DeviceModule):
             return True
         except Exception as ex:
             cls.log.trace(f"Failed {protocol.capitalize()} verify due to exception: {ex}")
-            conn.disconnect()
+            if conn:
+                conn.disconnect()
             return False
 
     @classmethod
@@ -229,10 +230,10 @@ class Idirect(DeviceModule):
         # ** Telnet/SSH pulling **
         for pull_type in ["ssh"]:
             pull_type_cap = pull_type.capitalize()
-            if pull_type not in dev.options["sage"]["pull_methods"]:
+            if pull_type not in dev.options["idirect"]["pull_methods"]:
                 cls.log.warning(
                     f"Skipping method '{pull_type_cap}' for pull from {dev.ip}: "
-                    f"'{pull_type_cap}' not listed in 'sage.pull_methods' option"
+                    f"'{pull_type_cap}' not listed in 'idirect.pull_methods' option"
                 )
             elif (
                 dev.service_status({"protocol": pull_type, "port": dev.options[pull_type]["port"]})

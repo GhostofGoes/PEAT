@@ -544,6 +544,10 @@ def process_header_data(dev: DeviceData, header: list) -> None:
             dev.extra["product_identifier"] = prod
             dev.description.model = prod.partition(" ")[0]
 
+    if len(header) < 2:
+        log.warning(f"Unexpected GE page header, no relay name or IP: {header!r}")
+        return
+
     name_ip = header[1].partition("IP Address: ")
 
     ip = name_ip[2].strip()
@@ -631,6 +635,10 @@ def parse_ge_html(text: str, key_value_pairs: bool = False) -> dict[str, list[di
 
         header = []  # type: list[str]
         for tbl_idx, table in enumerate(tables):
+            if table["index"] + 1 >= len(rows):  # Table name with no rows after it
+                results[table["name"]] = []
+                continue
+
             header_row = rows[table["index"] + 1]
             if not header:
                 header = [convert_key(h) for h in header_row]

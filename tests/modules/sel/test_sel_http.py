@@ -62,3 +62,19 @@ def test_sel_http_login_relative_session_link(sel_env, requests_mock):  # noqa: 
     sel = SELHTTP("192.0.2.10", 80)
     assert sel.login() is True
     assert sel._session_url == "http://192.0.2.10:80/protected/N1234/"
+
+
+def test_sel_http_view_syslog_short_line(sel_env, requests_mock):  # noqa: ARG001
+    soe = (
+        '"message","t_value","device_name"\n'
+        '"admin logged on device via Web","2024-01-02 03:04:05","rtac1"\n'
+        '"truncated line"\n'
+    )
+    requests_mock.get("http://192.0.2.10:80/soe.csv", text=soe)
+    dev = datastore.get("192.0.2.10")
+
+    # Previously, IndexError
+    result = SELHTTP("192.0.2.10", 80).view_syslog(dev)
+    assert len(result["web_syslog_events"]) == 1
+    assert result["web_syslog_events"][0]["device_name"] == "rtac1"
+    assert "admin" in dev.related.user
