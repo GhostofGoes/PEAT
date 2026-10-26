@@ -1,3 +1,4 @@
+import ssl
 from unittest.mock import MagicMock
 
 import pytest
@@ -271,3 +272,60 @@ def test_subclass_enumerate_returned(mocker):
     c = CustomMySQL("127.0.0.1")
     c.connect()
     assert c.enumerate() == {"custom_table": [{"row": 1}]}
+
+
+@pytest.fixture
+def tls_config(mocker):
+    from peat import config
+
+    mocker.patch.dict(config["CONFIG"], {"TLS_VERIFY": True, "TLS_CA_BUNDLE": None})
+    return config
+
+
+def test_connect_uses_verified_tls(mocker, tls_config):  # noqa: ARG001
+    connect = mocker.patch("pymysql.connect", return_value=MagicMock(get_server_info=lambda: "8"))
+    assert MySQL("127.0.0.1").connect()
+
+    context = connect.call_args.kwargs["ssl"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+
+
+def test_connect_tls_ca_bundle(mocker, tls_config, https_server):
+    tls_config["CONFIG"]["TLS_CA_BUNDLE"] = https_server.cert_path
+    connect = mocker.patch("pymysql.connect", return_value=MagicMock(get_server_info=lambda: "8"))
+    assert MySQL("127.0.0.1").connect()
+
+    context = connect.call_args.kwargs["ssl"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    # The CA bundle's certificate is trusted
+    assert any(c["subject"] == ((("commonName", "127.0.0.1"),),) for c in context.get_ca_certs())
+
+
+def test_connect_tls_verify_disabled(mocker, tls_config):
+    tls_config["CONFIG"]["TLS_VERIFY"] = False
+    connect = mocker.patch("pymysql.connect", return_value=MagicMock(get_server_info=lambda: "8"))
+    assert MySQL("127.0.0.1").connect()
+    assert connect.call_args.kwargs["ssl"].verify_mode == ssl.CERT_NONE
+    assert connect.call_args.kwargs["ssl"].minimum_version == ssl.TLSVersion.TLSv1_2
+
+    # Per-connection override
+    assert MySQL("127.0.0.2", tls_verify=True).connect()
+    assert connect.call_args.kwargs["ssl"].verify_mode == ssl.CERT_REQUIRED
+
+
+def test_get_tables_quotes_identifier(connected_mysql):
+    m, cursor = connected_mysql([])
+    m.get_tables("app`; DROP DATABASE x; --")
+    assert cursor.execute.call_args.args == ("SHOW TABLES FROM `app``; DROP DATABASE x; --`", None)
+
+
+def test_get_grants_parametrized(connected_mysql):
+    m, cursor = connected_mysql([])
+    m.get_grants("root' OR '1", "local'host")
+    assert cursor.execute.call_args.args == (
+        "SHOW GRANTS FOR %s@%s",
+        ("root' OR '1", "local'host"),
+    )

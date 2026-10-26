@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import socket
+import ssl
 from typing import Any
 
 import pymysql
 import pymysql.cursors
 
 from peat import CommError, log
+
+
+def quote_identifier(name: str) -> str:
+    """
+    Quote a MySQL identifier (e.g. a database or table name) with backticks,
+    escaping any backticks in it, so it can be safely used in a query.
+    """
+    return "`" + str(name).replace("`", "``") + "`"
 
 
 class MySQL:
@@ -26,6 +35,17 @@ class MySQL:
         password: MySQL password.
         database: Default database to connect to (optional).
         timeout: Connection and query timeout in seconds.
+        tls_verify: If the server's TLS certificate should be verified, or the
+            path to a CA bundle to verify it with. If :obj:`None` (the default),
+            this is determined by :func:`~peat.protocols.http.resolve_tls_verify`
+            (the :attr:`TLS_VERIFY <peat.settings.Configuration.TLS_VERIFY>` and
+            :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>`
+            settings).
+
+    .. note::
+       TLS is used if the server supports it. PyMySQL doesn't support
+       requiring TLS, so if the server doesn't support it, the connection
+       (including authentication) is unencrypted.
     """
 
     def __init__(
@@ -36,6 +56,7 @@ class MySQL:
         password: str = "",
         database: str = "",
         timeout: float = 10.0,
+        tls_verify: bool | str | None = None,
     ) -> None:
         self.ip = ip
         self.port = port
@@ -43,6 +64,7 @@ class MySQL:
         self.password = password
         self.database = database
         self.timeout = timeout
+        self.tls_verify = tls_verify
         self._conn = None
         self.server_info: str = ""
         self.server_version: tuple[int, ...] = ()
@@ -101,6 +123,28 @@ class MySQL:
         except ValueError:
             return None
 
+    def ssl_context(self) -> ssl.SSLContext:
+        """
+        SSL context for the connection, that verifies the server's certificate
+        unless verification has been disabled (refer to ``tls_verify``).
+        """
+        verify = self.tls_verify
+        if verify is None:
+            # Imported here to avoid a circular import
+            from peat.protocols.http import resolve_tls_verify
+
+            verify = resolve_tls_verify(host=f"{self.ip}:{self.port}")
+
+        if verify is False:
+            context = ssl._create_unverified_context()
+        else:
+            context = ssl.create_default_context(
+                cafile=verify if isinstance(verify, str) else None
+            )
+        # Same minimum as the SSL contexts built in peat.protocols.http
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return context
+
     @property
     def connected(self) -> bool:
         """True if currently connected to a MySQL server."""
@@ -128,6 +172,7 @@ class MySQL:
                 read_timeout=int(self.timeout),
                 write_timeout=int(self.timeout),
                 autocommit=True,
+                ssl=self.ssl_context(),
             )
 
             self.server_info = self._conn.get_server_info()
@@ -236,7 +281,7 @@ class MySQL:
         Returns:
             List of table name strings.
         """
-        rows = self.query(f"SHOW TABLES FROM `{database}`")
+        rows = self.query(f"SHOW TABLES FROM {quote_identifier(database)}")
         key = f"Tables_in_{database}"
         return [r[key] for r in rows if key in r]
 
@@ -281,7 +326,7 @@ class MySQL:
         Returns:
             List of GRANT statement strings, or empty list if none found.
         """
-        rows = self.query(f"SHOW GRANTS FOR '{user}'@'{host}'")
+        rows = self.query("SHOW GRANTS FOR %s@%s", (user, host))
         if not rows:
             return []
 
