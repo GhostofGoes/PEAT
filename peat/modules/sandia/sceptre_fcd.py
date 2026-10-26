@@ -57,16 +57,20 @@ isn't reachable over FTP.
 Listening services
 
 - FTP (TCP 21)
+- brash shell (TCP 1337), only with the "shell" firmware variants
 
 Data collected
 
 - Full device configuration file (``config.xml``)
-- Device firmware binary image (``bennu-field-deviced``)
+- Device firmware binary image (``bennu-field-deviced``), if
+  ``bennu-watcherd`` accepts it, and if it enables the brash shell
+  (an alert event and a brash service are added if so)
+- FTP account, as a user (the password isn't stored)
 - Device type (e.g. "Relay", "RTU", or "FEP")
 - Device name (e.g. "relay-louie")
 - Cycle time
 - Logic
-- Tags (external and internal)
+- Tags (external and internal, with initial values)
 - Protocol data points (registers), with point options, linked to I/O
 - Protocol servers and clients, including client connections to remote servers
 - Network and serial interfaces, including the simulation I/O interface
@@ -80,6 +84,7 @@ Authors
 
 import hashlib
 import ipaddress
+import re
 from pathlib import Path, PurePosixPath
 from random import randint
 from typing import Final
@@ -95,13 +100,14 @@ from peat import (
     Register,
     Service,
     Tag,
+    User,
     config,
     consts,
     datastore,
 )
 from peat.data.data_utils import match_all
 from peat.file_signature import FileSignature
-from peat.protocols import FTP
+from peat.protocols import FTP, check_tcp_port
 
 # Protocol data point elements: (measurement_type, read_write)
 POINT_TYPES: Final[dict[str, tuple[str, str]]] = {
@@ -131,10 +137,24 @@ INTERNAL_TAG_TYPES: Final[dict[str, str]] = {
     "string": "string",
 }
 
+# Boolean strings accepted by bennu's config parser (boost property_tree)
+BOOL_VALUES: Final[dict[str, bool]] = {"true": True, "1": True, "false": False, "0": False}
+
+# Numbers a C++ stream reads as a double (not "nan", "inf", or "1_0", unlike Python's float())
+DOUBLE_PATTERN: Final[re.Pattern] = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+
 FIRMWARE_PREFIX: Final[str] = "bennu-field-deviced"
 
 # bennu-watcherd installs valid firmware uploaded with this name
 FIRMWARE_UPLOAD_NAME: Final[str] = f"{FIRMWARE_PREFIX}.firmware"
+
+# bennu-field-deviced starts the brash shell if its "START_SHELL_0" string is
+# changed to "START_SHELL_1" (the "shell" firmware variants bennu-watcherd accepts)
+SHELL_ENABLED_MARKER: Final[bytes] = b"START_SHELL_1"
+SHELL_DISABLED_MARKER: Final[bytes] = b"START_SHELL_0"
+
+# socat serves the brash shell on this TCP port
+BRASH_PORT: Final[int] = 1337
 
 
 class SCEPTRE(DeviceModule):
@@ -213,7 +233,7 @@ class SCEPTRE(DeviceModule):
         if not dev.options["ftp"].get("pass"):
             dev._options["ftp"]["pass"] = password
 
-        dev.related.user.add(username)
+        cls._store_ftp_user(dev, username, password)
         if welcome:
             dev.extra["ftp_welcome"] = welcome
 
@@ -221,6 +241,23 @@ class SCEPTRE(DeviceModule):
         dev.store("service", svc, interface_lookup={"ip": dev.ip})
 
         return True
+
+    @classmethod
+    def _store_ftp_user(cls, dev: DeviceData, username: str, password: str) -> None:
+        """
+        Record the FTP account PEAT logged in with. The password isn't stored,
+        only if the login used the default credentials.
+        """
+        dev.related.user.add(username)
+        user = User(
+            name=username,
+            description="FTP login (vsftpd local account)",
+            extra={
+                "default_credentials": username == cls.default_options["ftp"]["user"]
+                and password == cls.default_options["ftp"]["pass"]
+            },
+        )
+        dev.store("users", user, lookup="name")
 
     @classmethod
     def _download_ftp(
@@ -259,7 +296,7 @@ class SCEPTRE(DeviceModule):
                 if not ftp.login(username, password):
                     return None, None, ""
 
-                dev.related.user.add(username)
+                cls._store_ftp_user(dev, username, password)
 
                 # NLST can return names with or without the directory prefix
                 listing = {PurePosixPath(f).name: f for f in ftp.nlst_files("/")}
@@ -352,11 +389,16 @@ class SCEPTRE(DeviceModule):
         uploaded, uploaded_path, uploaded_name = cls._download_ftp(dev, [FIRMWARE_UPLOAD_NAME])
         original, original_path, original_name = cls._download_ftp(dev, [FIRMWARE_PREFIX])
 
-        if uploaded is not None and (
-            original is None
-            or hashlib.sha256(uploaded).hexdigest() in accepted_firmware_hashes(original)
-        ):
+        # If bennu-watcherd accepts the uploaded firmware (None if it can't be checked)
+        accepted = None
+        if uploaded is not None and original is not None:
+            accepted = hashlib.sha256(uploaded).hexdigest() in accepted_firmware_hashes(original)
+
+        # If the firmware is known to be the one that's installed
+        verified = True
+        if uploaded is not None and accepted is not False:
             data, file_path, filename = uploaded, uploaded_path, uploaded_name
+            verified = accepted is True
         elif original is not None:
             if uploaded is not None:
                 cls.log.warning(
@@ -366,6 +408,7 @@ class SCEPTRE(DeviceModule):
             data, file_path, filename = original, original_path, original_name
         else:
             data, file_path, filename = cls._download_ftp(dev, [], FIRMWARE_PREFIX)
+            verified = False
 
         # Both files are saved, since a rejected upload is useful evidence
         dev.related.files.update(name for name in (uploaded_name, original_name) if name)
@@ -375,6 +418,8 @@ class SCEPTRE(DeviceModule):
             return b""
 
         dev.firmware.original = data
+        if accepted is not None:
+            dev.firmware.extra["watcher_accepted"] = accepted
 
         # If file output is disabled there won't be a file on disk
         if file_path:
@@ -387,8 +432,77 @@ class SCEPTRE(DeviceModule):
         dev.firmware.file.path = PurePosixPath("/", filename)
         dev.related.files.add(filename)
 
+        cls._check_shell(dev, data, verified)
+
         dev.populate_fields()
         return data
+
+    @classmethod
+    def _check_shell(cls, dev: DeviceData, firmware: bytes, verified: bool = True) -> None:
+        """
+        Check if the firmware starts the brash shell.
+
+        The "shell" firmware variants that ``bennu-watcherd`` accepts change the
+        binary's ``START_SHELL_0`` string to ``START_SHELL_1``, which makes the
+        field device serve brash, a bennu command shell, on TCP 1337 using socat.
+        SCEPTRE scenarios use these variants as malicious firmware.
+
+        Sets ``firmware.extra.shell_enabled``. If the shell is enabled, this also
+        checks if TCP 1337 is open, then adds a brash service and an alert event.
+
+        PEAT can't read the watcher's hashes, so it computes them from the
+        original binary on the FTP server, which the FTP account can overwrite.
+        If ``verified`` is False, the firmware couldn't be checked against
+        them at all, so it may not be the one installed, and the event says so.
+        """
+        if SHELL_ENABLED_MARKER in firmware:
+            shell_enabled = True
+        elif SHELL_DISABLED_MARKER in firmware:
+            shell_enabled = False
+        else:
+            cls.log.debug(f"No shell marker found in the firmware from {dev.ip}")
+            return
+
+        dev.firmware.extra["shell_enabled"] = shell_enabled
+        if not shell_enabled:
+            return
+
+        port_open = check_tcp_port(dev.ip, BRASH_PORT, dev.options["ftp"]["timeout"])
+        cls.log.warning(
+            f"Firmware on {dev.ip} has the brash shell enabled "
+            f"(TCP {BRASH_PORT} is {'open' if port_open else 'closed'})"
+        )
+        svc = Service(
+            protocol="brash",
+            port=BRASH_PORT,
+            transport="tcp",
+            enabled=True,
+            status="open" if port_open else "closed",
+        )
+        dev.store("service", svc, interface_lookup={"ip": dev.ip})
+
+        message = (
+            f"Firmware has the brash shell enabled ({SHELL_ENABLED_MARKER.decode()}), "
+            f"which serves a command shell on TCP {BRASH_PORT}"
+        )
+        if not verified:
+            message += (
+                ". The firmware couldn't be checked against the hashes bennu-watcherd "
+                "accepts, so it may not be installed"
+            )
+        # Pulling again doesn't add the same alert again
+        if not any(e.action == "shell-firmware" and e.message == message for e in dev.event):
+            dev.store(
+                "event",
+                Event(
+                    action="shell-firmware",
+                    category={"intrusion_detection"},
+                    kind={"alert"},
+                    type={"indicator"},
+                    message=message,
+                ),
+                append=True,
+            )
 
     @classmethod
     def _push(
@@ -492,7 +606,7 @@ class SCEPTRE(DeviceModule):
                     cls.log.error(f"Failed to upload {filename} to {dev.ip}: login failed")
                     return False
 
-                dev.related.user.add(username)
+                cls._store_ftp_user(dev, username, password)
                 ftp.upload_binary(filename, content)
 
                 try:
@@ -581,15 +695,13 @@ class SCEPTRE(DeviceModule):
                 dev.store("tag", tag, lookup="name")
 
             for tag_element in tags_element.findall("internal-tag"):
-                tag = Tag(name=_ele(tag_element, "name") or "")
+                tag = Tag(name=_ele(tag_element, "name") or "", description="Internal tag")
                 for key, tag_type in INTERNAL_TAG_TYPES.items():
                     initial = _ele(tag_element, key)
                     if initial is not None:
                         tag.type = tag_type
-                        tag.description = f"Internal tag, initial value: {initial}"
+                        tag.extra["initial_value"] = _initial_value(initial, tag_type)
                         break
-                else:
-                    tag.description = "Internal tag"
                 dev.store("tag", tag, lookup="name")
         else:
             cls.log.warning(f"No tags found in config for {dev.get_id()}")
@@ -888,6 +1000,21 @@ def accepted_firmware_hashes(original: bytes) -> set[str]:
         hashlib.sha256(original.replace(b"_SHELL_0", b"_SHELL_1")).hexdigest(),  # shellhashA
         hashlib.sha256(original.replace(b"SHELL_0", b"SHELL_1")).hexdigest(),  # shellhashB
     }
+
+
+def _initial_value(value: str, tag_type: str) -> bool | float | str:
+    """
+    Convert the initial value of an internal tag the way bennu reads it.
+
+    bennu reads ``status`` as a boolean (``true``, ``false``, ``1`` or ``0``)
+    and ``value`` as a double. Values bennu can't read are kept as strings.
+    """
+    value = value.strip()
+    if tag_type == "binary" and value in BOOL_VALUES:
+        return BOOL_VALUES[value]
+    if tag_type == "analog" and DOUBLE_PATTERN.fullmatch(value):
+        return float(value)
+    return value
 
 
 def _store_interface(dev: DeviceData, protocol: str, ip: str = "", serial_port: str = "") -> dict:

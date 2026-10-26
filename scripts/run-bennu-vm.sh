@@ -9,7 +9,8 @@
 # (served by vsftpd), and bennu-watcherd starts the field device.
 #
 # FTP is forwarded to 127.0.0.1:2121, and the vsftpd passive ports 30000-30009
-# are forwarded to the same ports on 127.0.0.1.
+# are forwarded to the same ports on 127.0.0.1. So is TCP 1337, where the field
+# device serves the brash shell if its firmware enables it.
 #
 # Requirements: curl, python3, qemu-system-x86_64, qemu-img, and virt-customize
 # (libguestfs-tools). KVM is used if /dev/kvm is accessible.
@@ -137,7 +138,7 @@ EOF
     fi
 
     local hostfwd="hostfwd=tcp:127.0.0.1:${FTP_PORT}-:21"
-    for port in $(seq "${PASV_MIN}" "${PASV_MAX}"); do
+    for port in 1337 $(seq "${PASV_MIN}" "${PASV_MAX}"); do
         hostfwd="${hostfwd},hostfwd=tcp:127.0.0.1:${port}-:${port}"
     done
 

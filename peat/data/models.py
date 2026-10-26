@@ -1883,6 +1883,12 @@ class Tag(BaseModel):
     - ``binary``
     """
 
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """
+    Additional unstructured information about the tag,
+    such as its initial value.
+    """
+
     _es_index_varname: str = PrivateAttr(default="ELASTIC_TAGS_INDEX")
     _sort_by_fields: tuple[str] = PrivateAttr(default=("type", "address", "name", "io"))
 

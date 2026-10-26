@@ -271,6 +271,7 @@ REGISTER_FIELDS: Final[MappingType] = {
 TAG_FIELDS: Final[MappingType] = {
     "address": KEYWORD,
     "description": TEXT,
+    "extra": FLATTENED,
     "io": KEYWORD,
     "name": KEYWORD,
     "type": KEYWORD,
