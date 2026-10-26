@@ -303,3 +303,107 @@ def test_ssh_known_hosts_errors(ssh_server, known_hosts, log_messages, mocker, p
     with pytest.raises(CommError, match="has CHANGED"):
         _connect(ssh_server)
     assert len(ssh_server.creds) == 2
+
+
+class _FakeChannel:
+    """Stands in for paramiko.Channel, with the behavior of a hostile or broken device."""
+
+    def __init__(self, data: bytes = b"", endless: bool = False, closed: bool = False):
+        self.data = data
+        self.endless = endless  # recv() always returns more data
+        self.closed = closed
+        self.recv_calls = 0
+
+    def settimeout(self, timeout):
+        pass
+
+    def exit_status_ready(self):
+        return self.closed
+
+    def recv_ready(self):
+        return self.endless or bool(self.data)
+
+    def recv(self, nbytes):
+        self.recv_calls += 1
+        if self.endless:
+            return self.data[:nbytes]
+        # Like paramiko: b"" (no exception) once the remote side closed the channel
+        part, self.data = self.data[:nbytes], self.data[nbytes:]
+        return part
+
+
+def _run_with_watchdog(func, seconds: float = 10.0):
+    """Run func in a thread, so a hang fails the test instead of hanging it."""
+    result = {}
+
+    def _target():
+        try:
+            result["value"] = func()
+        except Exception as ex:
+            result["error"] = ex
+
+    thread = threading.Thread(target=_target, daemon=True)
+    start = time.monotonic()
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), f"still running after {seconds} seconds"
+    return result, time.monotonic() - start
+
+
+def test_ssh_read_silent_device_times_out():
+    ssh = SSH("127.0.0.1", timeout=0.5)
+    ssh.channel = _FakeChannel()  # never sends anything
+    result, duration = _run_with_watchdog(lambda: ssh.read(delay=0))
+    assert isinstance(result.get("error"), CommError)
+    assert "within 0.5 seconds" in str(result["error"])
+    assert duration < 5
+
+
+def test_ssh_read_closed_channel():
+    ssh = SSH("127.0.0.1", timeout=60.0)
+    ssh.channel = _FakeChannel(closed=True)
+    result, duration = _run_with_watchdog(lambda: ssh.read(delay=0))
+    assert isinstance(result.get("error"), CommError)
+    assert "closed" in str(result["error"])
+    assert duration < 5
+
+
+def test_ssh_read_endless_data_limited():
+    ssh = SSH("127.0.0.1", timeout=60.0)
+    ssh.MAX_READ_SIZE = 50_000
+    ssh.channel = _FakeChannel(b"A" * 1000, endless=True)
+    result, _ = _run_with_watchdog(lambda: ssh.read(delay=0, sleep_between_recvs=False))
+    assert 50_000 <= len(result["value"]) < 52_000
+
+
+def test_ssh_read_normal():
+    ssh = SSH("127.0.0.1", timeout=1.0)
+    ssh.channel = _FakeChannel(b"  hello\r\n")
+    assert ssh.read(delay=0, sleep_between_recvs=False) == "hello"
+    ssh.channel = _FakeChannel(b"login: ok\r\n# ")
+    assert ssh.read_until("# ", delay=0) == "login: ok\r\n#"
+
+
+def test_ssh_read_until_closed_channel():
+    ssh = SSH("127.0.0.1", timeout=60.0)
+    channel = _FakeChannel(b"partial output", closed=True)
+    ssh.channel = channel
+    result, duration = _run_with_watchdog(lambda: ssh.read_until("#", delay=0))
+    assert result["value"] == "partial output"
+    assert duration < 5
+    assert channel.recv_calls == 2  # previously a busy loop: millions of calls
+
+
+def test_ssh_read_until_never_matches():
+    """A device sending data that never matches must not keep the read going forever."""
+    ssh = SSH("127.0.0.1", timeout=0.5)
+    ssh.channel = _FakeChannel(b".", endless=True)
+    result, duration = _run_with_watchdog(lambda: ssh.read_until("#", delay=0))
+    assert set(result["value"]) == {"."}
+    assert duration < 5
+
+    ssh = SSH("127.0.0.1", timeout=60.0)
+    ssh.MAX_READ_SIZE = 50_000
+    ssh.channel = _FakeChannel(b"A" * 1000, endless=True)
+    result, _ = _run_with_watchdog(lambda: ssh.read_until("#", delay=0))
+    assert 50_000 <= len(result["value"]) < 52_000

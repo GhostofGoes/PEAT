@@ -1,10 +1,11 @@
 import json
+import sys
 import urllib.parse
 
 import pytest
 from loguru import logger
 
-from peat import config, log_utils
+from peat import config, log_utils, state
 
 
 @pytest.fixture
@@ -185,3 +186,32 @@ def test_setup_logging_redacts_exceptions(secrets, mocker, tmp_path, capsys, deb
     record = json.loads(logs["json-log.jsonl"].splitlines()[-1])
     assert record["error"]["message"] == "login failed with password <redacted>"
     assert "_fail_login" in record["error"]["stack_trace"]
+
+
+def test_json_log_redacts_command_line(secrets, mocker, tmp_path):  # noqa: ARG001
+    password = "Marker-PW-2d9b"
+    mocker.patch.dict(
+        config["CONFIG"],
+        {"LOG_DIR": tmp_path, "QUIET": True, "DEBUG": 0, "ELASTIC_SERVER": None},
+    )
+    mocker.patch.dict(state["CONFIG"], {"entrypoint": "CLI"})
+    argv = ["peat", "scan", "-e", f"http://elastic:{password}@localhost:9200/", "-p", password]
+    mocker.patch.object(sys, "argv", argv)
+
+    json_file = tmp_path / "json-log.jsonl"
+    log_utils.setup_logging(file=tmp_path / "peat.log", json_file=json_file)
+    logger.info("hello")
+    logger.complete()
+
+    text = json_file.read_text(encoding="utf-8")
+    assert password not in text
+    record = json.loads(text.splitlines()[-1])
+    assert record["process"]["args"] == [
+        "peat",
+        "scan",
+        "-e",
+        "http://elastic:<redacted>@localhost:9200/",
+        "-p",
+        "<redacted>",
+    ]
+    assert record["process"]["command_line"] == " ".join(record["process"]["args"])

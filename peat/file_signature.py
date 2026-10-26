@@ -327,27 +327,36 @@ class FileSignature(BaseModel):
         """
         Checks this signature against a path-like, bytes-like, or binary file-like `source`.
 
+        Checks are run cheapest first (magic number, substrings, XML tags, then the
+        custom check), and checking stops at the first check that fails, so e.g. an
+        expensive custom check isn't run on a file with the wrong magic number.
+        Checks that aren't configured (:data:`None`) are skipped.
+
         Returns:
             - :data:`True` if this signature matches (all patterns)
             - :data:`False` otherwise (failures or no valid checks)
         """
         if not source:
             return False
+        checks: tuple[Callable[[BinaryIO], bool | None], ...] = (
+            lambda s: self._matches_magic_number(s, self._magic_number),
+            lambda s: self._matches_substrings(s, self.substrings),
+            lambda s: self._matches_xml_tags(s, self.xml_tags),
+            lambda s: self._matches_custom_check(s, self.custom_check),
+        )
         try:
             results = []
             with _as_byte_stream(source) as stream:
-                results.append(self._matches_magic_number(stream, self._magic_number))
-                stream.seek(0)
-                results.append(self._matches_xml_tags(stream, self.xml_tags))
-                stream.seek(0)
-                results.append(self._matches_substrings(stream, self.substrings))
-                stream.seek(0)
-                results.append(self._matches_custom_check(stream, self.custom_check))
-                stream.seek(0)
+                for check in checks:
+                    result = check(stream)
+                    stream.seek(0)
+                    results.append(result)
+                    if result is False:
+                        break
 
             log.debug(f"Signature results: {results}")
             return (
-                bool(results)  # test not all None (at least one ran)
+                any(r is not None for r in results)  # test not all None (at least one ran)
                 and all(r is not False for r in results)  # test no False (no failures)
             )
         except Exception as e:

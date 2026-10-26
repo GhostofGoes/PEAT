@@ -129,6 +129,16 @@ dependencies = [
     # due to how old some of the devices PEAT interacts with are). For now,
     # leave it pinned at 2.29
     # Details: https://urllib3.readthedocs.io/en/latest/v2-migration-guide.html
+    #
+    # WARNING: requests 2.29.0 and urllib3 1.26.x have open advisories that are
+    # only fixed in requests 2.31-2.33 and urllib3 2.5-2.8, notably decompression
+    # and chunked-encoding denial of service in urllib3, which a hostile device
+    # can use to exhaust memory during a scan or pull.
+    # - urllib3: CVE-2025-50181, CVE-2025-66418, CVE-2025-66471, CVE-2026-21441,
+    #   CVE-2026-44431, CVE-2026-97687, CVE-2026-97689
+    # - requests: CVE-2023-32681, CVE-2024-35195, CVE-2024-47081, CVE-2026-25645
+    # They're ignored by the pip-audit step in .github/workflows/tests.yml
+    # until PEAT is migrated to requests 2.33+ and urllib3 2.x.
     "requests==2.29.0",
 
     # Get local network interface configuration and status
@@ -148,7 +158,8 @@ dependencies = [
     # XML parsing
     # Required for: PLCOpen parser, M340, GERelay
     # This also is used by BeautifulSoup4 for improved HTML parsing
-    "lxml==5.4.0",
+    # NOTE: 6.1.0+ fixes CVE-2026-41066 (external entities resolved by default)
+    "lxml==6.1.3",
 
     # HTML parsing
     # Required for: GERelay
@@ -172,8 +183,11 @@ dependencies = [
     # "pysnmp-lextudio==6.1.2",
     # TODO: https://pypi.org/project/pysnmp-sync-adapter/
     "pysnmp-lextudio==5.0.34",
-    # NOTE: pyasn1 0.6.1 breaks this version of pysnmp.
+    # NOTE: pyasn1 0.6.1 breaks this version of pysnmp (pyasn1.compat.octets was removed).
     # It can be unpinned once pysnmp is updated.
+    # WARNING: pyasn1 0.6.0 has BER decoder denial of service advisories that are
+    # fixed in 0.6.3 and 0.6.4 (CVE-2026-30922, CVE-2026-59884, CVE-2026-59885,
+    # CVE-2026-59886), which are reachable with SNMP responses from hostile devices.
     "pyasn1<=0.6.0",
 
     # Advanced HTML parsing for effective web interface scraping
@@ -219,9 +233,11 @@ dependencies = [
 
     # Library for SSH handling
     # Required for: Sage, Idirect, ION, Fortigate
-    # TODO: do NOT update to paramiko 3.0+, need to test code after updating
-    "paramiko==2.12.0",
-    "cryptography==38.0.4",
+    # NOTE: 3.4.0+ fixes the Terrapin attack (CVE-2023-48795).
+    # paramiko 4.0 removed support for DSA (ssh-dss) keys, which some older
+    # devices still use, so test with devices before updating to 4.0+.
+    "paramiko==3.5.1",
+    "cryptography==50.0.2",
 
     # SCP over SSH, leveraging paramiko
     # Required for: Fortigate

@@ -51,6 +51,7 @@ from .validators import (
     validate_ecs,
     validate_hash,
     validate_hex,
+    validate_identifier,
     validate_ip,
     validate_mac,
 )
@@ -3155,6 +3156,10 @@ class DeviceData(BaseModel):
     # Validators
     _validate_ip = validator("ip", allow_reuse=True)(validate_ip)
     _validate_mac = validator("mac", allow_reuse=True)(validate_mac)
+    # These are used to name the device's output directory
+    _validate_identifier = validator("name", "id", "hostname", "label", allow_reuse=True)(
+        validate_identifier
+    )
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -3751,8 +3756,10 @@ class DeviceData(BaseModel):
         associated with this device.
         """
         if not self._out_dir:
+            # The ID may come from the device or a parsed file, so ensure the
+            # directory is inside the devices directory
             dir_name = address_to_pathname(self.get_id())
-            self._out_dir = config.DEVICE_DIR / dir_name
+            self._out_dir = utils.safe_join(config.DEVICE_DIR, dir_name)
 
         return self._out_dir
 
@@ -3760,8 +3767,11 @@ class DeviceData(BaseModel):
         """
         Generate a directory path for specific file output, for example FTP files.
         The path will be a sub-dir in the device's results directory.
+
+        ``basename`` is sanitized with :func:`~peat.consts.sanitize_filepath`,
+        so it can't be used to create a directory outside the device's results directory.
         """
-        return self.get_out_dir() / basename
+        return utils.safe_join(self.get_out_dir(), consts.sanitize_filepath(basename))
 
     def populate_fields(self, network_only: bool = False) -> None:
         """

@@ -1,9 +1,8 @@
 import copy
 import csv
 import re
-import zlib
 from pathlib import PurePath, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import olefile
 from dateutil.parser import parse as date_parse
@@ -1363,6 +1362,33 @@ def parse_fid(id_string: str) -> dict[str, str]:
     return info
 
 
+#: Maximum length of status output lines matched with regular expressions.
+#: Real lines are less than 100 characters.
+MAX_STATUS_LINE_LENGTH: Final[int] = 512
+
+# Words separated by spaces. The words can't contain whitespace and the
+# match can't start inside a word, so there is only one way to match a
+# given string, avoiding catastrophic backtracking (ReDoS) with the
+# following whitespace. "(?: +...)*" is not possessive since it must give
+# back the last word if it's e.g. "Date" of "Date:". The words are optional
+# (there may only be whitespace before "Date:").
+_STATUS_WORDS: Final[str] = r"(?<![\w\-.])[\w\-.]++(?: +[\w\-.]++)*"
+
+#: "FEEDER 1                 Date: 03/11/2021  Time: 13:03:22.123"
+STATUS_ID_TIME_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?P<dev_id>{_STATUS_WORDS})?\s++"
+    r"Date: (?P<date>\d+/\d+/\d{2,4})\s+"
+    r"Time: (?P<time>\d+:\d+:[\d.]+)",
+    re.ASCII,
+)
+
+#: "GENERATOR RELAY                          Time Source: Internal"
+STATUS_NAME_TIME_SOURCE_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?P<dev_name>{_STATUS_WORDS})?\s++Time Source: (?P<time_source>\w+)",
+    re.ASCII,
+)
+
+
 def parse_status_output(lines: list[str]) -> dict:
     """
     Parse status command output.
@@ -1406,31 +1432,23 @@ def parse_status_output(lines: list[str]) -> dict:
         info["FID"] = lines[0].split("=")[1].strip()
         return info
 
-    id_time = re.search(
-        r"(?P<dev_id>[\w\-. ]+)\s+"
-        r"Date: (?P<date>\d+/\d+/\d{2,4})\s+"
-        r"Time: (?P<time>\d+:\d+:[\d.]+)",
-        lines[0],
-        re.ASCII,
-    )
+    # NOTE: the line is truncated and the identifier can't start or end with
+    # whitespace, to avoid catastrophic backtracking (ReDoS) on hostile input.
+    id_time = STATUS_ID_TIME_RE.search(lines[0][:MAX_STATUS_LINE_LENGTH])
 
     if id_time:
         # "THERMOMETER", "FEEDER 1", "SEL-700G", "Relay 1"
-        info["device_identifier"] = id_time["dev_id"].strip()
+        info["device_identifier"] = (id_time["dev_id"] or "").strip()
         info["device_time"] = date_parse(f"{id_time['date']} {id_time['time']}")
     else:
         log.debug(f"Failed to match 'sta' output for line {repr(lines[0])}")
 
     if "Time Source" in lines[1]:
         # "GENERATOR RELAY                          Time Source: Internal"
-        name_ts = re.search(
-            r"(?P<dev_name>[\w\-. ]+)\s+Time Source: (?P<time_source>\w+)",
-            lines[1],
-            re.ASCII,
-        )
+        name_ts = STATUS_NAME_TIME_SOURCE_RE.search(lines[1][:MAX_STATUS_LINE_LENGTH])
 
         if name_ts:
-            info["device_name"] = name_ts["dev_name"].strip()
+            info["device_name"] = (name_ts["dev_name"] or "").strip()
             info["time_source"] = name_ts["time_source"].strip()
     else:
         # "STATION A"
@@ -1905,7 +1923,8 @@ def extract_cid_content(data: bytes) -> str:
     if not data:
         return ""
 
-    decompressed = zlib.decompress(data)
+    # Limit the decompressed size, the file may be a decompression bomb
+    decompressed = utils.bounded_decompress(data)
 
     # NOTE utf-8-sig is required to remove the
     # Byte Order Mark (BOM) that gets prepended in some cases.

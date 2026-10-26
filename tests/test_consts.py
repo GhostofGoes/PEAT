@@ -118,3 +118,231 @@ def test_sanitize_filename():
     assert consts.sanitize_filename("") == ""
     assert consts.sanitize_filename("hardware-info.html") == "hardware-info.html"
     assert consts.sanitize_filename("01:01:01-hardware-info.html") == "01_01_01-hardware-info.html"
+
+
+MARKER = "Marker-PW-8c1e"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            f"https://elastic:{MARKER}@localhost:9200/",
+            "https://elastic:<redacted>@localhost:9200/",
+        ),
+        (f"http://{MARKER}@host/mapi/opensearch", "http://<redacted>@host/mapi/opensearch"),
+        (f"http://user:{MARKER}@host", "http://user:<redacted>@host"),
+        # The password may contain "@"
+        (f"http://user:a@{MARKER}@host/", "http://user:<redacted>@host/"),
+        ("http://localhost:9200/", "http://localhost:9200/"),
+        ("http://host/path@notuserinfo", "http://host/path@notuserinfo"),
+        # The password may contain "/" (urlsplit() leaves it in the path)
+        (f"https://u:{MARKER}/{MARKER}@h", "https://u:<redacted>@h"),
+        (f"https://u:a/b@{MARKER}@h:9200/x", "https://u:<redacted>@h:9200/x"),
+        # A token containing "/" can't be told apart from a path (see above)
+        (f"https://{MARKER}/x@h", f"https://{MARKER}/x@h"),
+        ("http://u@h/p@q", "http://<redacted>@h/p@q"),
+        (f"not a URL {MARKER}@", f"not a URL {MARKER}@"),
+        ("user@example.com", "user@example.com"),
+        ("", ""),
+    ],
+)
+def test_redact_url(url, expected):
+    assert consts.redact_url(url) == expected
+
+
+def test_redact_url_without_scheme():
+    url = f"elastic:{MARKER}@localhost:9200"
+    assert consts.redact_url(url) == url
+    assert consts.redact_url(url, require_scheme=False) == "elastic:<redacted>@localhost:9200"
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["peat", "encrypt", "-p", MARKER], ["peat", "encrypt", "-p", "<redacted>"]),
+        (
+            ["peat", "encrypt", "--password", MARKER],
+            ["peat", "encrypt", "--password", "<redacted>"],
+        ),
+        (
+            ["peat", "encrypt", f"--password={MARKER}"],
+            ["peat", "encrypt", "--password=<redacted>"],
+        ),
+        (["peat", "encrypt", f"--pass={MARKER}"], ["peat", "encrypt", "--pass=<redacted>"]),
+        (["peat", "encrypt", "--pass", MARKER], ["peat", "encrypt", "--pass", "<redacted>"]),
+        (["peat", "encrypt", f"-p{MARKER}"], ["peat", "encrypt", "-p<redacted>"]),
+        (["peat", "encrypt", f"-p={MARKER}"], ["peat", "encrypt", "-p<redacted>"]),
+        # Bundled short options, which argparse accepts ("-Vp secret")
+        (["peat", "encrypt", "-Vp", MARKER], ["peat", "encrypt", "-Vp", "<redacted>"]),
+        (["peat", "encrypt", "-vp", MARKER], ["peat", "encrypt", "-vp", "<redacted>"]),
+        (["peat", "encrypt", f"-vp{MARKER}"], ["peat", "encrypt", "-vp<redacted>"]),
+        (["peat", "encrypt", f"-Vqp{MARKER}"], ["peat", "encrypt", "-Vqp<redacted>"]),
+        # Clusters without the password option aren't changed
+        (["peat", "scan", "-Vvq", "-i", "192.0.2.1"], ["peat", "scan", "-Vvq", "-i", "192.0.2.1"]),
+        (
+            ["peat", "scan", "-e", f"elastic:{MARKER}@localhost:9200"],
+            ["peat", "scan", "-e", "elastic:<redacted>@localhost:9200"],
+        ),
+        (
+            ["peat", "scan", f"--elastic-server=http://elastic:{MARKER}@localhost:9200"],
+            ["peat", "scan", "--elastic-server=http://elastic:<redacted>@localhost:9200"],
+        ),
+        (
+            ["peat", "heat", "--heat-elastic-server", f"https://u:{MARKER}@h/"],
+            ["peat", "heat", "--heat-elastic-server", "https://u:<redacted>@h/"],
+        ),
+        (
+            ["peat", "pull", f"ftp://user:{MARKER}@192.0.2.1/"],
+            ["peat", "pull", "ftp://user:<redacted>@192.0.2.1/"],
+        ),
+        # Other arguments aren't changed
+        (
+            ["peat", "pull", "-i", "192.0.2.1", "--pull-skip-scan", "-d", "sel"],
+            ["peat", "pull", "-i", "192.0.2.1", "--pull-skip-scan", "-d", "sel"],
+        ),
+        (["peat", "pillage", "-P", "/dev/sdb"], ["peat", "pillage", "-P", "/dev/sdb"]),
+    ],
+)
+def test_redact_argv(argv, expected):
+    original = list(argv)
+    assert consts.redact_argv(argv) == expected
+    assert argv == original  # not modified
+
+
+def test_omit_secrets():
+    data = {
+        "DEVICE_OPTIONS": {
+            "ssh": {"user": "admin", "pass": MARKER, "port": 22, "passphrase": ""},
+            "snmp": {"community": MARKER, "communities": [MARKER, MARKER]},
+            "sel": {"creds": [["acc", MARKER], ("2ac", MARKER)], "passwords": [MARKER]},
+            "telnet": {"meter_pass": 1234, "Password": MARKER},
+        },
+        "HOSTS": [{"identifier": "192.0.2.1", "options": {"web": {"pass": MARKER}}}],
+        "ELASTIC_SERVER": f"https://elastic:{MARKER}@localhost:9200/",
+        "OTHER_SERVER": f"https://{MARKER}@localhost:9200/",
+        "DEBUG": 1,
+        "VERBOSE": True,
+        "PILLAGE": None,
+    }
+
+    result, omitted = consts.omit_secrets(data)
+
+    assert MARKER not in str(result)
+    assert consts.REDACTED not in str(result)
+    assert MARKER in str(data)  # not modified
+    assert result["DEVICE_OPTIONS"] == {
+        "ssh": {"user": "admin", "port": 22},
+        "snmp": {},
+        "sel": {},
+        "telnet": {},
+    }
+    assert result["HOSTS"] == [{"identifier": "192.0.2.1", "options": {"web": {}}}]
+    assert result["ELASTIC_SERVER"] == "https://elastic@localhost:9200/"
+    assert result["OTHER_SERVER"] == "https://localhost:9200/"
+    assert result["DEBUG"] == 1
+    assert result["VERBOSE"] is True
+    assert result["PILLAGE"] is None
+    assert omitted == [
+        "DEVICE_OPTIONS.ssh.pass",
+        "DEVICE_OPTIONS.ssh.passphrase",
+        "DEVICE_OPTIONS.snmp.community",
+        "DEVICE_OPTIONS.snmp.communities",
+        "DEVICE_OPTIONS.sel.creds",
+        "DEVICE_OPTIONS.sel.passwords",
+        "DEVICE_OPTIONS.telnet.meter_pass",
+        "DEVICE_OPTIONS.telnet.Password",
+        "HOSTS[0].options.web.pass",
+        "ELASTIC_SERVER (password)",
+        "OTHER_SERVER (password)",
+    ]
+
+
+def test_drop_redacted():
+    r = consts.REDACTED
+    data = {
+        "sel": {"pass": r, "user": "acc", "creds": [["a", r], ("b", "pw"), ["c", "d"]]},
+        "snmp": {"communities": [r, r], "port": 161},
+        "ssh": {"pass": r},
+        "url": f"http://elastic:{r}@host:9200/",
+        "token_url": f"https://{r}@host/",
+        "other": f"not a URL {r}@",
+        "empty": {},
+    }
+    result, dropped = consts.drop_redacted(data)
+    assert result == {
+        "sel": {"user": "acc", "creds": [("b", "pw"), ["c", "d"]]},
+        "snmp": {"port": 161},
+        "other": f"not a URL {r}@",
+        "empty": {},
+    }
+    assert dropped == [
+        "sel.pass",
+        "sel.creds[0]",
+        "snmp.communities[0]",
+        "snmp.communities[1]",
+        "ssh.pass",
+        "url",
+        "token_url",
+    ]
+    assert consts.drop_redacted(r) == (consts.DROPPED, [""])
+    assert consts.drop_redacted([r]) == (consts.DROPPED, ["[0]"])
+    assert consts.drop_redacted("value") == ("value", [])
+    assert consts.drop_redacted(data["empty"]) == ({}, [])
+
+
+def test_platform_info_redacts_argv(mocker):
+    mocker.patch.object(
+        consts.sys,
+        "argv",
+        ["peat", "encrypt", "-f", "c.yaml", "-p", MARKER, "-e", f"http://e:{MARKER}@h:9200"],
+    )
+    info = consts.get_platform_info()
+    assert MARKER not in str(info)
+    assert info["cli_arguments"] == "encrypt -f c.yaml -p <redacted> -e http://e:<redacted>@h:9200"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["encrypt", "-p", MARKER, "-f", "c.yaml"],
+        ["encrypt", f"-p{MARKER}", "-f", "c.yaml"],
+        ["encrypt", "-Vp", MARKER, "-f", "c.yaml"],
+        ["encrypt", "-vp", MARKER, "-f", "c.yaml"],
+        ["encrypt", f"-vp{MARKER}", "-f", "c.yaml"],
+        ["encrypt", "--password", MARKER, "-f", "c.yaml"],
+        ["encrypt", f"--pass={MARKER}", "-f", "c.yaml"],
+    ],
+)
+def test_redact_argv_covers_what_argparse_accepts(argv):
+    """Every spelling argparse accepts for the password must be redacted."""
+    from peat import cli_args
+
+    parsed = cli_args.build_argument_parser(version="0.0.0").parse_args(argv)
+    assert vars(parsed)["user-password"] == MARKER  # argparse accepts it
+    assert MARKER not in str(consts.redact_argv(["peat", *argv]))
+
+
+def test_url_password():
+    assert consts.url_password(f"https://elastic:{MARKER}@host:9200/") == MARKER
+    assert consts.url_password(f"https://u:{MARKER}/x@host/") == f"{MARKER}/x"
+    assert consts.url_password(f"https://{MARKER}@host/") == MARKER
+    assert consts.url_password(f"elastic:{MARKER}@host") == MARKER
+    assert consts.url_password(f"elastic:{MARKER}@host", require_scheme=True) is None
+    assert consts.url_password("https://host:9200/") is None
+    assert consts.url_password("https://u:@host/") is None
+    assert consts.url_password(None) is None
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["token", "api_key", "apikey", "API_KEY", "private_key", "secret_key", "sel_creds", "_creds"],
+)
+def test_is_secret_key(key):
+    assert consts.is_secret_key(key)
+    assert consts.omit_secrets({"options": {key: MARKER}}) == ({"options": {}}, [f"options.{key}"])
+
+
+@pytest.mark.parametrize("key", ["user", "port", "key", "creds_file", "tokens", "secret"])
+def test_is_not_secret_key(key):
+    assert not consts.is_secret_key(key)

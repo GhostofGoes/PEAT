@@ -4,6 +4,7 @@ import re
 import socket
 import time
 from pathlib import Path
+from typing import Final
 
 from peat import (
     IO,
@@ -16,6 +17,16 @@ from peat import (
     state,
     utils,
 )
+
+#: Maximum number of pages read from a menu with multiple pages (e.g. Digital
+#: Inputs). The device decides when the last page is reached, so this keeps
+#: a hostile or broken device from keeping PEAT reading forever.
+MAX_MENU_PAGES: Final[int] = 500
+
+#: Default maximum number of seconds to read the pages of a menu (including
+#: the ``menu_sleep_seconds`` after each page), since each page is only limited
+#: by the timeout, and a device that replies slowly could otherwise take hours.
+MENU_READ_DEADLINE: Final[float] = 600.0
 
 
 # TODO: record all data sent and received via telnet
@@ -34,11 +45,14 @@ class D25Telnet:
         timeout: float = 5.0,
         menu_sleep_seconds: float = 5.0,
         raw_dir: Path | None = None,
+        menu_read_deadline: float = MENU_READ_DEADLINE,
     ):
         self.ip: str = ip
         self.port: int = port
         self.timeout: float = timeout
         self.menu_sleep_seconds: float = menu_sleep_seconds
+        #: Maximum number of seconds to read the pages of a menu
+        self.menu_read_deadline: float = menu_read_deadline
 
         self.raw_dir: Path | None = raw_dir
         if self.raw_dir:
@@ -173,10 +187,28 @@ class D25Telnet:
             self.select_menu_option("b")
             self.sock.recv(8192)  # skip garbage
             chunk = ""
+            pages = 0
+            deadline = time.monotonic() + self.menu_read_deadline
             while chunk != ",":
+                if pages >= MAX_MENU_PAGES:
+                    self.log.warning(
+                        f"Stopped reading Digital Input pages after {pages} pages "
+                        f"(limit: {MAX_MENU_PAGES})"
+                    )
+                    break
+                if time.monotonic() >= deadline:
+                    self.log.warning(
+                        f"Stopped reading Digital Input pages after {pages} pages: "
+                        f"it took more than {self.menu_read_deadline} seconds"
+                    )
+                    break
+                pages += 1
                 self.select_menu_option("n")
-                chunk = self.sock.recv(8192)
-                chunk = clean_up_data(chunk)
+                raw_chunk = self.sock.recv(8192)
+                if not raw_chunk:  # connection closed
+                    self.log.warning("Connection closed while reading Digital Input pages")
+                    break
+                chunk = clean_up_data(raw_chunk)
                 data += chunk
         elif io == "O":
             self.select_menu_option("n")

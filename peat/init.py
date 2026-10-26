@@ -1,7 +1,12 @@
+import json
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
 from pprint import pformat
+from typing import Final
+
+import yaml
 
 from peat import (
     DeviceData,
@@ -20,7 +25,83 @@ from peat import (
 )
 from peat.data.default_options import DEFAULT_OPTIONS
 
-from .log_utils import print_logo, setup_logging
+from .log_utils import print_logo, register_secret, setup_logging
+
+#: CLI commands that only encrypt or decrypt files. These don't create a
+#: results directory or log files (which would record the command line).
+CRYPTO_COMMANDS: Final[frozenset[str]] = frozenset(
+    {"encrypt_config", "decrypt_config", "encrypt_results", "decrypt_results"}
+)
+
+#: umask set by the PEAT CLI before the run directory (RUN_DIR) is created:
+#: files are created as 0600 and directories as 0700 (only accessible by
+#: the user running PEAT)
+RESULTS_UMASK: Final[int] = 0o077
+
+
+def restrict_results_permissions() -> None:
+    """
+    Only allow the user running PEAT to access files and directories created
+    in the results, since they may contain sensitive data (e.g. device
+    configurations and logs).
+
+    The directory the run directory (``RUN_DIR``) is created in (by default,
+    ``OUT_DIR``) is created first with the default permissions, since it may
+    be shared by multiple runs and users. With ``sudo``, the owner of the run
+    directory is changed to the user that ran ``sudo`` when PEAT exits
+    (:func:`~peat.utils.fix_file_owners`).
+
+    Skipped on Windows (umask has no effect on access to files) and in
+    containers, where the results are usually accessed from the host
+    through a volume mount by a different user.
+    """
+    if not consts.POSIX or consts.SYSINFO["containerized"]:
+        return
+
+    if config.RUN_DIR:
+        config.RUN_DIR.parent.mkdir(parents=True, exist_ok=True)
+
+    os.umask(RESULTS_UMASK)
+
+
+def copy_config_file(src: Path, dest: Path) -> bool:
+    """
+    Copy a configuration file to the results, with secrets (e.g. device passwords
+    and SNMP communities, and passwords in Elasticsearch server URLs) omitted
+    by :func:`~peat.consts.omit_secrets`. Encrypted configuration files are
+    copied as-is.
+
+    .. note::
+       Comments and formatting of YAML files aren't kept. A comment listing
+       the secrets that were omitted is added to YAML files.
+
+    Returns:
+        If the file was copied
+    """
+    try:
+        text = src.read_text(encoding="utf-8")
+        if config_crypto.check_header(text):
+            utils.copy_file(src, dest)
+            return True
+
+        is_json = src.suffix.lower() == ".json"
+        data = json.loads(text) if is_json else yaml.safe_load(text)
+        if not isinstance(data, dict):
+            raise ValueError("not a dictionary")
+    except (OSError, ValueError, yaml.YAMLError) as ex:
+        log.warning(f"Not saving a copy of config file '{src.name}' to the results: {ex}")
+        return False
+
+    without_secrets, omitted = consts.omit_secrets(data)
+    if is_json:  # write_file() formats the data as JSON
+        return utils.write_file(without_secrets, dest)
+
+    content = (
+        f"# Copy of {src.name} with secrets omitted by PEAT: "
+        f"{', '.join(omitted) if omitted else '(none)'}\n"
+        f"{yaml.safe_dump(without_secrets, sort_keys=False)}"
+    )
+    return utils.write_file(content, dest)
 
 
 def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -> None:
@@ -108,8 +189,17 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         if conf.get(list_arg):
             return
 
+    # Commands that only encrypt or decrypt files don't need a results directory.
+    # Their command line may include the password ("-p"), and the log files
+    # would otherwise be written in plaintext next to the encrypted files.
+    if entrypoint == "CLI" and conf.get("func") in CRYPTO_COMMANDS:
+        register_secret(conf.get("user-password"))
+        config.OUT_DIR = None  # type: ignore[assignment]
+        config.fixup_dirs(None, "OUT_DIR", override_all=True)
+        config.RUN_DIR = None  # type: ignore[assignment]
+        config.fixup_dirs(None, "RUN_DIR", override_all=True)
     # Hack to configure output directories
-    if conf.get("out_dir"):
+    elif conf.get("out_dir"):
         config.fixup_dirs(config.OUT_DIR, "OUT_DIR", override_all=True)
     elif entrypoint == "Package" and "out_dir" in conf and conf["out_dir"] is None:
         config.OUT_DIR = None
@@ -149,6 +239,9 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         config.RUN_DIR = config.OUT_DIR / run_name
         config.fixup_dirs(config.RUN_DIR, "RUN_DIR", override_all=True)
 
+    if entrypoint == "CLI":
+        restrict_results_permissions()
+
     # Fancy startup logo, printed to stderr
     if state.entrypoint == "CLI" and not (config.QUIET or config.NO_LOGO):
         print_logo()
@@ -168,10 +261,10 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         debug_info_file=debug_info_file,
     )
 
-    # Copy original config file
+    # Copy original config file (with any secrets redacted)
     if conf.get("config_file") and config.META_DIR:
         config_path = Path(conf["config_file"]).resolve()
-        utils.copy_file(config_path, config.META_DIR / config_path.name)
+        copy_config_file(config_path, config.META_DIR / config_path.name)
 
     # Output messages to user now that logging is configured
     config_name = ""

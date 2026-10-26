@@ -106,6 +106,30 @@ def validate_ip(v: str) -> str:
     return str(ipaddress.ip_address(v))
 
 
+def validate_identifier(v: str) -> str:
+    """
+    Validate a device identifier (e.g. ``name``, ``id``, ``hostname``, or ``label``).
+
+    These may come from a device or a parsed file, and are used to name the
+    device's output directory, so values that are a path traversal are rejected:
+    a value or path component (separated by ``/`` or ``\\``) made up of only
+    dots (e.g. ``..``), or a value with a NUL character. Other values, including
+    ones with path separators, are allowed (they're made safe when converted to
+    a directory name by :func:`~peat.protocols.addresses.address_to_pathname`).
+    """
+    if not v:
+        return v
+
+    if "\x00" in v:
+        raise ValueError(f"invalid identifier {v!r}: contains a NUL character")
+
+    for part in v.replace("\\", "/").split("/"):
+        if "." in part and not part.strip(". "):
+            raise ValueError(f"invalid identifier {v!r}: path traversal ('{part}')")
+
+    return v
+
+
 def validate_mac(v: str) -> str:
     if not v:
         return ""

@@ -477,3 +477,57 @@ def test_device_data_label_autopopulate(mocker, examples_path):
     assert not DeviceData(ip="192.168.0.2").comment
     assert not DeviceData().label
     assert not DeviceData().comment
+
+
+@pytest.mark.parametrize("attr", ["name", "id", "hostname", "label"])
+@pytest.mark.parametrize(
+    "value", ["..", ".", "../..", "../devices2", "x/../../y", "..\\..\\x", "a\x00b"]
+)
+def test_device_data_identifier_path_traversal_rejected(attr, value):
+    with pytest.raises(ValueError, match="invalid identifier"):
+        DeviceData(**{attr: value})
+
+    dev = DeviceData()
+    with pytest.raises(ValueError, match="invalid identifier"):
+        setattr(dev, attr, value)
+
+
+@pytest.mark.parametrize(
+    "value", ["STATION A", "FEEDER 1/2", "Relay\\1", "SEL-351-5", "proj.v2", "a..b", "x."]
+)
+def test_device_data_identifier_allowed(value):
+    assert DeviceData(name=value).name == value
+    assert DeviceData(id=value).id == value
+
+
+@pytest.mark.parametrize(
+    "value", ["../../../../etc/cron.d", "/etc/cron.d", "..\\..\\..\\Users\\Public\\x", "a/b/c"]
+)
+def test_device_data_get_out_dir_contained(mocker, tmp_path, value):
+    """Content-derived identifiers must not escape the devices directory."""
+    dev_dir = tmp_path / "run" / "devices"
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": dev_dir})
+    # Bypass validation, as if the value was set some other way
+    dev = DeviceData()
+    object.__setattr__(dev, "label", value)
+
+    out_dir = dev.get_out_dir()
+    assert out_dir.parent == dev_dir
+    assert out_dir.resolve().parent == dev_dir.resolve()
+
+    sub_dir = dev.get_sub_dir(f"openplc_project_{value}")
+    assert sub_dir.resolve().is_relative_to(out_dir.resolve())
+
+
+def test_device_data_get_out_dir_dotdot_name(mocker, tmp_path):
+    """<name>..</name> in a parsed file previously made RUN_DIR the device directory."""
+    dev_dir = tmp_path / "run" / "devices"
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": dev_dir})
+    dev = DeviceData()
+    object.__setattr__(dev, "name", "..")
+
+    assert dev.get_out_dir().parent == dev_dir
+    assert dev.get_out_dir().name.startswith("unsafe-id-")
+    written = dev.write_file("data", "device-file.txt")
+    assert written.resolve().is_relative_to(dev_dir.resolve())
+    assert not (tmp_path / "run" / "device-file.txt").exists()

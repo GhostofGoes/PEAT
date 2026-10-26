@@ -11,7 +11,7 @@ import zlib
 from collections.abc import Callable
 from typing import Final
 
-from peat import ParseError, log
+from peat import ParseError, log, utils
 from peat.modules.rockwell.clx_const import LOGIC_LANGUAGE
 from peat.protocols.cip import *
 from peat.protocols.data_packing import *
@@ -240,8 +240,9 @@ def format_logic_string_fbd(logic_string_raw: bytes) -> bytes:
 
     try:
         val = b"".join(bytes([x]) for x in logic_string_formatted)
-        logic_string = zlib.decompress(val)
-    except zlib.error as err:
+        # NOTE: the logic string is from the device, refuse to inflate a bomb
+        logic_string = utils.bounded_decompress(val)
+    except (zlib.error, ValueError) as err:
         error_message = f"error while decompressing FBD logic string: {err}"
         log.warning(error_message)
         raise DisassembleStringLogicError(error_message) from err
@@ -262,8 +263,9 @@ def format_logic_string_sfc(logic_string_raw: bytes) -> bytes:
     """
     try:
         val = b"".join(bytes([x]) for x in logic_string_raw)
-        logic_string = zlib.decompress(val)
-    except zlib.error as err:
+        # NOTE: the logic string is from the device, refuse to inflate a bomb
+        logic_string = utils.bounded_decompress(val)
+    except (zlib.error, ValueError) as err:
         error_message = f"error while decompressing SFC logic string: {err}"
         log.warning(error_message)
         raise DisassembleStringLogicError(error_message) from err
@@ -308,8 +310,9 @@ def format_logic_string_st(logic_string_raw: bytes) -> bytes:
 
     try:
         val = b"".join(bytes([x]) for x in logic_string_formatted)
-        logic_string = zlib.decompress(val)
-    except zlib.error as err:
+        # NOTE: the logic string is from the device, refuse to inflate a bomb
+        logic_string = utils.bounded_decompress(val)
+    except (zlib.error, ValueError) as err:
         error_message = f"error while decompressing ST logic string: {err}"
         log.warning(error_message)
         raise DisassembleStringLogicError(error_message) from err

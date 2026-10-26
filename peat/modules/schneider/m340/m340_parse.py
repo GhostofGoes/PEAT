@@ -26,19 +26,24 @@ ALLOWED_TYPES: Final[set[str]] = {type_pair[0] for type_pair in TypeHierarchy_li
 # TODO: process LD blocks to TC6
 
 
-def extract_logic_blocks(logic_blob: bytes) -> dict[str, dict | list]:
+def extract_logic_blocks(
+    logic_blob: bytes, project_blocks: ChunksType | None = None
+) -> dict[str, dict | list]:
     """
     Extracts the process logic blocks from a Schneider M340 APX project file blob.
 
     Args:
         logic_blob: Logic blob pulled from the PLC
+        project_blocks: Output of :func:`chunkify` for ``logic_blob``, if it's
+            already been called (to avoid decompressing the blob again)
 
     Returns:
         Logic blocks extracted from the blob
     """
     # This will decompress and extract portions of
     # the project file that are zlib-compressed.
-    project_blocks = chunkify(bytes(logic_blob))
+    if project_blocks is None:
+        project_blocks = chunkify(bytes(logic_blob))
     extracted_blocks = {"ST": [], "FBD": [], "LD": [], "vars": {}}
 
     # TODO: need some comments explaining what's going on here
@@ -122,9 +127,15 @@ def chunkify(blob: bytes) -> ChunksType:
 
     Returns:
         The extracted chunks
+
+    Raises:
+        ValueError: The decompressed data of all chunks is larger than
+            :data:`~peat.utils.MAX_INFLATE` (likely a decompression bomb)
     """
     chunks = {}
     i = 0
+    # Limit on the total size of decompressed data of all chunks
+    inflate_budget = utils.MAX_INFLATE
 
     if not isinstance(blob, bytes):
         log.warning(f"chunkify got a non-bytes blob with type {type(blob).__name__}")
@@ -160,7 +171,8 @@ def chunkify(blob: bytes) -> ChunksType:
             head = blob[i : i + 32]
             chunks[i]["head"] = head
             data = blob[i + 32 : i + 32 + length]
-            chunks[i]["data"] = extract_chunk(data)
+            chunks[i]["data"] = extract_chunk(data, limit=inflate_budget)
+            inflate_budget -= len(chunks[i]["data"])
             i += 32 + length
         else:
             log.warning(f"Unknown chunk tag at index {i}. Terminating chunkify early.")
@@ -169,10 +181,21 @@ def chunkify(blob: bytes) -> ChunksType:
     return chunks
 
 
-def extract_chunk(data: bytes) -> bytes:
+def extract_chunk(data: bytes, limit: int | None = None) -> bytes:
     """
     Extract and decompress data from a chunk.
+
+    Args:
+        data: Raw chunk data
+        limit: Maximum size of the extracted data
+            (default: :data:`~peat.utils.MAX_INFLATE`)
+
+    Raises:
+        ValueError: The extracted data is larger than ``limit``
+            (likely a decompression bomb)
     """
+    if limit is None:
+        limit = utils.MAX_INFLATE
     extracted = bytearray()
     z_header_len = 46  # Zip header length
     i = 0
@@ -183,12 +206,19 @@ def extract_chunk(data: bytes) -> bytes:
         if b"\x78\xda" == data[i : i + 2] or b"\x78\x9c" in data[i : i + 2]:
             try:
                 zo = zlib.decompressobj()
-                extracted.extend(zo.decompress(data[i:]))
+                extracted.extend(
+                    utils.bounded_decompress(
+                        data[i:], limit=limit - len(extracted), decompressor=zo
+                    )
+                )
 
                 if len(zo.unused_data) == 0:
                     break
 
-                i = data.find(zo.unused_data)
+                # NOTE: the offset of the unused data, not data.find(), which
+                # finds an earlier copy of it (e.g. of a repeated stream) and
+                # would move backwards forever
+                i = len(data) - len(zo.unused_data)
             except zlib.error:
                 extracted.append(data[i])
                 i += 1
@@ -203,6 +233,8 @@ def extract_chunk(data: bytes) -> bytes:
             while i < len(data):
                 try:
                     decomp.extend(zo.decompress(bytes([data[i]])))
+                    if len(extracted) + len(decomp) > limit:
+                        raise ValueError(f"compressed data inflates to more than {limit} bytes")
                     if data[i] == decomp[-1:]:
                         if last != i - 1:
                             end = i
@@ -219,6 +251,9 @@ def extract_chunk(data: bytes) -> bytes:
         else:
             extracted.append(data[i])
             i += 1
+
+    if len(extracted) > limit:
+        raise ValueError(f"chunk data is larger than {limit} bytes")
 
     return bytes(extracted)  # bytearray -> bytes
 
@@ -325,7 +360,9 @@ def set_init_vals(var: dict[str, dict], init: dict) -> dict[str, dict]:
     return var
 
 
-def parse_config_to_dict(config_blob: bytes) -> dict[str, str | dict]:
+def parse_config_to_dict(
+    config_blob: bytes, project_blocks: ChunksType | None = None
+) -> dict[str, str | dict]:
     """
     Extracts configuration information from a M340 APX project file blob.
 
@@ -336,6 +373,8 @@ def parse_config_to_dict(config_blob: bytes) -> dict[str, str | dict]:
 
     Args:
         config_blob: Schneider project file
+        project_blocks: Output of :func:`chunkify` for ``config_blob``, if it's
+            already been called (to avoid decompressing the blob again)
 
     Returns:
         A dictionary containing information parsed from the project file
@@ -346,7 +385,8 @@ def parse_config_to_dict(config_blob: bytes) -> dict[str, str | dict]:
         "module_names": [],
     }
 
-    project_blocks = chunkify(config_blob)
+    if project_blocks is None:
+        project_blocks = chunkify(config_blob)
     if project_blocks in ({}, {0: {}}):
         log.error("No chunks were returned from chunkify. Config was not parsed.")
         return device_info

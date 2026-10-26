@@ -337,7 +337,7 @@ def oneshot_main(args: dict[str, Any]) -> bool:
             return export_device_data(args)
 
         elif args["func"] == "pillage":
-            return pillage(args["pillage_source"])
+            return pillage(args["pillage_source"], args.get("image_format"))
 
         else:
             log.critical(f"Unknown func: {args['func']}")
@@ -714,6 +714,15 @@ variables were configured, e.g. `OUT_DIR`, `ELASTIC_DIR` or `LOG_DIR`.
 
     if not readme_path.is_file():
         log.debug(f"Writing README to {readme_path.as_posix()}")
-        return utils.write_file(readme_text, readme_path)
+        if not utils.write_file(readme_text, readme_path):
+            return False
+
+        # The README has no sensitive data, so allow anyone to read it
+        # (files in the results are only readable by the owner by default)
+        if consts.POSIX:
+            try:
+                readme_path.chmod(0o644)
+            except OSError as ex:
+                log.debug(f"Failed to change permissions of README: {ex}")
 
     return True

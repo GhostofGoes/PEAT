@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -40,16 +42,42 @@ _COPY_OPEN_FLAGS: Final[int] = (
 #: Size of the chunks files are copied in (1 MiB)
 _COPY_CHUNK_SIZE: Final[int] = 1024 * 1024
 
+
+#: Disk image formats for the ``image_format`` Pillage option (``qemu-nbd -f``),
+#: in addition to ``auto``. ``vpc`` is the VHD format.
+IMAGE_FORMATS: Final[tuple[str, ...]] = ("raw", "qcow2", "vmdk", "vhdx", "vdi", "vpc")
+
+#: Image format for file extensions, used if the ``image_format`` option is ``auto``
+IMAGE_FORMAT_EXTENSIONS: Final[dict[str, str]] = {
+    ".qcow2": "qcow2",
+    ".qcow": "qcow2",
+    ".vmdk": "vmdk",
+    ".vhdx": "vhdx",
+    ".vdi": "vdi",
+    ".vhd": "vpc",
+}
+
+#: Seconds to wait for ``qemu-img info`` to check an image
+QEMU_IMG_TIMEOUT: Final[float] = 60.0
+
+#: Directory with the block devices of the system (Linux sysfs)
+SYS_BLOCK_DIR: Final[Path] = Path("/sys/block")
+
+# The Network Block Device (e.g. "/dev/nbd0") the image is connected to.
+# NOTE: not Final, it's set by mount_image() and cleared by remove_nbd_device().
+NBD_DEVICE: str | None = None
+
 # TODO: integrate pillage with parse. Pillage results should go in peat_results.
 
 
-def pillage(source: str) -> bool:
+def pillage(source: str, image_format: str | None = None) -> bool:
     """
     peat pillage.
 
     Args:
-        config_file: Path to pillage config file
-        source: Path of directory to pillage
+        source: Path of the directory or disk image to pillage
+        image_format: Format of the disk image, overrides the ``image_format``
+            Pillage option (refer to :func:`get_image_format`)
 
     Returns:
         If pillaging was successful
@@ -91,7 +119,7 @@ def pillage(source: str) -> bool:
                 # Mount image
                 log.debug(f"Mount image to {temp_path}")
                 success = False
-                if mount_image(source_path, temp_path):
+                if mount_image(source_path, temp_path, image_format):
                     try:
                         success = search(temp_path, results_path)
                     except (Exception, KeyboardInterrupt) as ex:
@@ -150,8 +178,156 @@ def validate_image_mounting() -> bool:
     return False
 
 
-def mount_image(source: Path, mount_point: Path) -> bool:
-    global NBD_ALREADY_LOADED
+def get_image_format(source: Path, image_format: str | None = None) -> str | None:
+    """
+    Get the format of a disk image from the ``image_format`` Pillage option.
+
+    The format is never probed from the contents of the image, since a crafted
+    raw image can pretend to be another format (e.g. qcow2) that references a
+    "backing file" on the system running PEAT, which qemu would then open.
+    If the option is ``auto`` (the default), the format is determined by the
+    file extension (:data:`IMAGE_FORMAT_EXTENSIONS`, e.g. ``.qcow2``), and is
+    ``raw`` for other extensions.
+
+    Args:
+        source: Path of the disk image
+        image_format: Format to use instead of the ``image_format`` Pillage option
+
+    Returns:
+        The image format to pass to ``qemu-nbd -f``, or :obj:`None` if the option is invalid
+    """
+    if not image_format:
+        image_format = config.PILLAGE.get("image_format") or "auto"
+    image_format = str(image_format).strip().lower()
+
+    if image_format == "auto":
+        image_format = IMAGE_FORMAT_EXTENSIONS.get(source.suffix.lower(), "raw")
+        log.info(f"Using image format '{image_format}' for '{source.name}' (from file extension)")
+
+    if image_format not in IMAGE_FORMATS:
+        log.error(
+            f"Invalid 'image_format' Pillage option '{image_format}'. "
+            f"Valid formats: auto, {', '.join(IMAGE_FORMATS)}"
+        )
+        return None
+
+    return image_format
+
+
+def _is_own_extent(source: Path, filename: str) -> bool:
+    """
+    If a VMDK extent file is part of the image: the image itself, or a file next
+    to it named after it (e.g. ``disk-s001.vmdk`` or ``disk-flat.vmdk`` for a
+    "split" ``disk.vmdk``) that is a regular file and not a symbolic link.
+    """
+    extent = Path(filename)
+    if not extent.is_absolute():
+        extent = source.parent / extent
+    try:
+        if extent.resolve() == source.resolve():
+            return True
+        return (
+            extent.parent.resolve() == source.parent.resolve()
+            and extent.name.startswith(f"{source.stem}-")
+            and not extent.is_symlink()
+            and extent.is_file()
+        )
+    except OSError:
+        return False
+
+
+def has_backing_file(source: Path, image_format: str) -> bool:
+    """
+    Check if a disk image references other files that qemu would open (e.g.
+    files or devices on the system running PEAT), using ``qemu-img info``:
+    a backing file, a qcow2 external data file (``data-file``), or VMDK
+    extents that aren't part of the image (refer to :func:`_is_own_extent`).
+
+    Raw images can't reference other files. If the image can't be checked,
+    it's treated as if it references other files.
+    """
+    if image_format == "raw":
+        return False
+
+    info_args = ["qemu-img", "info", "--output=json", "-f", image_format, str(source)]
+    try:
+        info = json.loads(
+            subprocess.check_output(info_args, stderr=subprocess.DEVNULL, timeout=QEMU_IMG_TIMEOUT)
+        )
+        format_specific = info.get("format-specific", {})
+        data = format_specific.get("data", {})
+        extents = data.get("extents", [])
+        if not isinstance(extents, list):
+            raise ValueError("invalid VMDK extents")
+        extent_files = [str(e.get("filename") or "") for e in extents]
+    except (
+        OSError,
+        ValueError,
+        AttributeError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as ex:
+        log.error(f"Failed to check image '{source}' with '{' '.join(info_args)}': {ex}")
+        return True
+
+    if info.get("backing-filename") or info.get("full-backing-filename"):
+        log.error(
+            f"Refusing to mount image '{source}': it references a backing file "
+            f"'{info.get('backing-filename')}', which could be a file on this system"
+        )
+        return True
+
+    if data.get("data-file"):
+        log.error(
+            f"Refusing to mount image '{source}': it references an external data "
+            f"file '{data.get('data-file')}', which could be a file on this system"
+        )
+        return True
+
+    for extent_file in extent_files:
+        if not extent_file or not _is_own_extent(source, extent_file):
+            log.error(
+                f"Refusing to mount image '{source}': it references an extent "
+                f"file '{extent_file}', which could be a file on this system"
+            )
+            return True
+
+    return False
+
+
+def find_free_nbd_device() -> str | None:
+    """
+    Find a Network Block Device (``/dev/nbdN``) that isn't in use. The ``nbd``
+    kernel module must be loaded. A device is in use if it has a ``pid`` file
+    (the process serving it) or a non-zero size in ``/sys/block/nbdN``.
+
+    Returns:
+        The path of the device (e.g. ``/dev/nbd0``), or :obj:`None` if none are free
+    """
+    devices = []
+    for path in SYS_BLOCK_DIR.glob("nbd*"):
+        if match := re.fullmatch(r"nbd(\d+)", path.name):
+            devices.append((int(match.group(1)), path))
+
+    for _, path in sorted(devices):
+        if (path / "pid").exists():
+            continue
+        try:
+            if int((path / "size").read_text(encoding="utf-8").strip() or "0") != 0:
+                continue
+        except (OSError, ValueError):
+            continue
+        return f"/dev/{path.name}"
+
+    return None
+
+
+def mount_image(source: Path, mount_point: Path, image_format: str | None = None) -> bool:
+    global NBD_ALREADY_LOADED, NBD_DEVICE
+
+    image_format = get_image_format(source, image_format)
+    if not image_format or has_backing_file(source, image_format):
+        return False
 
     if "nbd" not in list_loaded_modules():
         try:
@@ -163,19 +339,27 @@ def mount_image(source: Path, mount_point: Path) -> bool:
     else:
         NBD_ALREADY_LOADED = True
 
-    nbd_args = ["qemu-nbd", "-r", "-c", "/dev/nbd1", str(source)]
+    nbd_device = find_free_nbd_device()
+    if not nbd_device:
+        log.error("No free Network Block Devices (/dev/nbdN) to connect the image to")
+        remove_nbd_module()
+        return False
+
+    # NOTE: the format is always given, so qemu doesn't probe it from the image
+    nbd_args = ["qemu-nbd", "-r", "-f", image_format, "-c", nbd_device, str(source)]
     nbd_result = subprocess.call(nbd_args)
     if nbd_result != 0:
         log.error(f"Failed to run '{' '.join(nbd_args)}' (return code: {nbd_result})")
         remove_nbd_module()
         return False
+    NBD_DEVICE = nbd_device
 
     # Give the system time to mount device before attempting to mount to folder
     time.sleep(0.5)
 
     # The image is untrusted: don't honor device files or setuid/setgid bits,
     # and don't allow anything on it to be executed.
-    mnt_args = ["mount", "-o", "ro,nodev,nosuid,noexec", "/dev/nbd1p1", str(mount_point)]
+    mnt_args = ["mount", "-o", "ro,nodev,nosuid,noexec", f"{nbd_device}p1", str(mount_point)]
     mnt_result = subprocess.call(mnt_args)
     if mnt_result != 0:
         log.error(f"Failed to run '{' '.join(mnt_args)}' (return code: {mnt_result})")
@@ -213,13 +397,20 @@ def remove_nbd_module() -> bool:
 
 
 def remove_nbd_device() -> bool:
-    nbd_args = ["qemu-nbd", "-d", "/dev/nbd1"]
+    global NBD_DEVICE
+
+    # Only disconnect the device PEAT connected, not one used by something else
+    if not NBD_DEVICE:
+        return True
+
+    nbd_args = ["qemu-nbd", "-d", NBD_DEVICE]
     retval = subprocess.call(nbd_args)
 
     if retval != 0:
         log.error(f"Failed to run '{' '.join(nbd_args)}' (return code: {retval})")
         return False
 
+    NBD_DEVICE = None
     return True
 
 

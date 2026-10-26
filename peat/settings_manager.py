@@ -8,7 +8,15 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 import yaml
 from loguru import logger as log
 
-from .consts import PeatError, convert, lower_dict, str_to_bool
+from .consts import (
+    DROPPED,
+    PeatError,
+    convert,
+    drop_redacted,
+    lower_dict,
+    omit_secrets,
+    str_to_bool,
+)
 
 
 # Source: https://github.com/python-discord/bot
@@ -127,7 +135,10 @@ class SettingsManager(dict):
         Read and set configuration values from a input dictionary.
 
         .. note::
-           Any values that are :obj:`None` are skipped and will NOT be loaded
+           Any values that are :obj:`None` are skipped and will NOT be loaded.
+           Values that were redacted (``<redacted>``, e.g. copied from PEAT's
+           logs) are also skipped, with a warning, so the placeholder isn't
+           used as a password. See :func:`~peat.consts.drop_redacted`.
 
         Args:
             conf: Configuration to load
@@ -151,8 +162,17 @@ class SettingsManager(dict):
 
             # Skip values that are None
             if upper_conf.get(key) is not None:
+                value, dropped = drop_redacted(upper_conf[key])
+                if dropped:
+                    log.warning(
+                        f"Ignoring redacted values in config '{key}' "
+                        f"({', '.join(d or key for d in dropped)}). "
+                        f"Set the secrets again to use them."
+                    )
+                if value is DROPPED:
+                    continue
                 try:
-                    self[load_to][set_key] = self.typecast(set_key, upper_conf[key])
+                    self[load_to][set_key] = self.typecast(set_key, value)
                 except Exception as ex:
                     log.critical(f"Failed to load config '{key}': {ex}")
 
@@ -287,7 +307,13 @@ class SettingsManager(dict):
                 yaml_file.parent.mkdir(parents=True, exist_ok=True)
 
             # NOTE: newline argument to Path.write_text() requires Python 3.10+
+            _, omitted = omit_secrets(lower_dict(self.json_dict()))
             with yaml_file.open("w", encoding="utf-8", newline="\n") as outfile:
+                if omitted:
+                    outfile.write(
+                        f"# Secrets omitted by PEAT (set them again to reuse "
+                        f"this file): {', '.join(sorted(omitted))}\n"
+                    )
                 outfile.write(self.yaml())
 
         # JSON format
@@ -309,11 +335,16 @@ class SettingsManager(dict):
         """
         Current values in a deterministic format that can be exported.
 
+        Secrets are omitted with :func:`~peat.consts.omit_secrets`
+        (e.g. device passwords and SNMP communities, and passwords in
+        Elasticsearch server URLs), since the export is saved to files
+        in the results and to Elasticsearch, and may be loaded again.
+
         Returns:
             JSON-serializable :class:`dict` with uppercase keys, sorted
             "alphabetically" by key (well, technically UNICODE order).
         """
-        dict_config = dict(self.json_dict())
+        dict_config, _ = omit_secrets(dict(self.json_dict()))
         sorted_config = sorted(dict_config.items(), key=lambda x: str(x[0]))
 
         return dict(sorted_config)

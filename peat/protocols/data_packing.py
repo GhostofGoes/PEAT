@@ -40,7 +40,9 @@ def pack_real(r: float) -> bytes:
 
 
 def unpack_bool(st: bytes) -> int:
-    if int(struct.unpack("B", st[0])[0]) == 255:
+    """Unpack a 1 byte CIP BOOL to 1 (any non-zero value) or 0."""
+    # NOTE: slice instead of index, st[0] is an int (struct.unpack() requires bytes)
+    if int(struct.unpack("B", st[0:1])[0]) != 0:
         return 1
     return 0
 

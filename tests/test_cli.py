@@ -36,7 +36,7 @@ active_base = ("--host-file FILE", "-i HOSTS", "-s PORTS")
         ("parse", [*all_base, "--peat-modules TYPES"]),
         ("pull", [*all_base, *active_base, "--peat-modules TYPE "]),
         ("push", [*all_base, *active_base, "input_source", "--peat-modules DEVICE "]),
-        ("pillage", [*all_base, "-P SOURCE"]),
+        ("pillage", [*all_base, "-P SOURCE", "--image-format FORMAT"]),
         ("heat", [*all_base, "--heat-file-only"]),
         (
             "decrypt",

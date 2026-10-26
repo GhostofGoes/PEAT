@@ -8,6 +8,7 @@ from base64 import b64encode
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from random import randint
+from string import ascii_letters, digits
 from typing import Any, Final, Literal
 
 import pathvalidate
@@ -190,6 +191,316 @@ def convert(value: Any) -> str | bool | int | float | list | dict | None:
         return str(value)
 
 
+#: Replaces secret values (e.g. passwords) in logs and results
+REDACTED: Final[str] = "<redacted>"
+
+#: Keys (e.g. in device options and configuration files) with values that are
+#: secrets (passwords, SNMP communities, etc.)
+#: NOTE: module authors must add any new option key whose value is a secret,
+#: or it will be saved in the results in plaintext. Keys ending in
+#: :data:`SECRET_KEY_SUFFIXES` (e.g. ``sel_creds``) are secrets as well.
+SECRET_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "pass",
+        "passwd",
+        "password",
+        "passphrase",
+        "community",
+        "communities",
+        "creds",
+        "passwords",
+        "meter_pass",
+        "token",
+        "api_key",
+        "apikey",
+        "private_key",
+        "secret_key",
+    }
+)
+
+#: Suffixes of keys (e.g. in device options and configuration files) with
+#: values that are secrets, in addition to :data:`SECRET_KEYS`
+SECRET_KEY_SUFFIXES: Final[tuple[str, ...]] = ("_creds",)
+
+
+def is_secret_key(key: Any) -> bool:
+    """
+    If the value of this option or configuration key is a secret:
+    it's in :data:`SECRET_KEYS` or ends with one of :data:`SECRET_KEY_SUFFIXES`.
+    """
+    key = str(key).lower()
+    return key in SECRET_KEYS or key.endswith(SECRET_KEY_SUFFIXES)
+
+
+#: Command line options with values that are secrets
+SECRET_CLI_OPTIONS: Final[tuple[str, ...]] = ("-p", "--password")
+
+#: Characters allowed in the host part of a URL (including the port and
+#: IPv6 brackets), used to find the user information in a URL
+_HOST_CHARS: Final[str] = ascii_letters + digits + "-._~%:[]"
+
+#: Command line options with values that are URLs that may include credentials
+URL_CLI_OPTIONS: Final[tuple[str, ...]] = (
+    "-e",
+    "--elastic-server",
+    "--opensearch-server",
+    "--heat-elastic-server",
+)
+
+
+def _split_url_userinfo(url: str, require_scheme: bool) -> tuple[str, str, str, str, str] | None:
+    """
+    Split a URL into (prefix, user, colon, password, suffix), where the user
+    information is everything before the last ``@`` that is followed by a host.
+
+    .. note::
+       The password may contain ``@`` or ``/``, and :func:`urllib.parse.urlsplit`
+       treats everything after the first ``/`` as the path, leaving such a
+       password in the URL.
+
+    Returns:
+        The parts of the URL, or :obj:`None` if it has no user information
+    """
+    if not isinstance(url, str) or "@" not in url:
+        return None
+
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        if require_scheme:
+            return None
+        scheme, rest = "", url
+
+    at = -1
+    for index, char in enumerate(rest):
+        if char != "@":
+            continue
+        userinfo, host_candidate = rest[:index], rest[index + 1 :].split("/", 1)[0]
+        if not host_candidate or host_candidate.strip(_HOST_CHARS):
+            continue  # not a host, e.g. "http://host/path@notuserinfo"
+        if "/" in userinfo and (":" not in userinfo or userinfo.index(":") > userinfo.index("/")):
+            continue  # not user information: it has a path but no password
+        at = index
+
+    if at < 0:
+        return None
+
+    user, colon, password = rest[:at].partition(":")
+    return f"{scheme}{sep}", user, colon, password, rest[at + 1 :]
+
+
+def url_password(url: str, require_scheme: bool = False) -> str | None:
+    """
+    The password (or token) in the user information of a URL, e.g. ``changeme``
+    for ``https://elastic:changeme@localhost:9200/``.
+
+    Returns:
+        The password, or :obj:`None` if the URL doesn't have one
+    """
+    parts = _split_url_userinfo(url, require_scheme)
+    if parts is None:
+        return None
+    _, user, colon, password, _ = parts
+    return (password if colon else user) or None
+
+
+def redact_url(url: str, require_scheme: bool = True, replacement: str | None = REDACTED) -> str:
+    """
+    Redact the password (or token) in the user information of a URL, e.g.
+    ``https://elastic:changeme@localhost:9200/`` becomes
+    ``https://elastic:<redacted>@localhost:9200/``.
+
+    Args:
+        url: The URL to redact
+        require_scheme: Only redact URLs with a scheme (e.g. ``https://``).
+            If :obj:`False`, ``user:password@host`` is also redacted.
+        replacement: What to replace the password with. If :obj:`None`, the
+            password is removed (``https://elastic@localhost:9200/``), and a
+            token without a username is removed with the ``@``.
+
+    Returns:
+        The URL with the password redacted, or the original value if there isn't one
+    """
+    parts = _split_url_userinfo(url, require_scheme)
+    if parts is None:
+        return url
+
+    prefix, user, colon, _, host_and_path = parts
+    if replacement is None:
+        userinfo = f"{user}@" if colon else ""
+    else:
+        userinfo = f"{user}:{replacement}@" if colon else f"{replacement}@"
+
+    return f"{prefix}{userinfo}{host_and_path}"
+
+
+def redact_argv(argv: list[str]) -> list[str]:
+    """
+    Redact secrets in command line arguments, so they can be recorded in logs
+    and results: the values of :data:`SECRET_CLI_OPTIONS` (e.g. ``-p <password>``,
+    including bundled short options such as ``-Vp <password>``) and passwords in
+    URLs (e.g. ``-e https://user:password@host:9200/``).
+    """
+    redacted = []
+    redact_next = False
+    url_next = False
+
+    for arg in argv:
+        if redact_next:
+            redacted.append(REDACTED)
+            redact_next = False
+            continue
+
+        if url_next:
+            redacted.append(redact_url(arg, require_scheme=False))
+            url_next = False
+            continue
+
+        option, eq, _ = arg.partition("=")
+        if arg in SECRET_CLI_OPTIONS:
+            redact_next = True
+        elif arg in URL_CLI_OPTIONS:
+            url_next = True
+        elif (
+            eq and option.startswith("--") and len(option) > 3 and "--password".startswith(option)
+        ):
+            # "--password=secret", including abbreviations argparse accepts ("--pass=")
+            arg = f"{option}={REDACTED}"
+        elif eq and option in URL_CLI_OPTIONS:
+            arg = f"{option}={redact_url(arg[len(option) + 1 :], require_scheme=False)}"
+        elif len(arg) > 2 and arg.startswith("-") and not arg.startswith("--") and "p" in arg:
+            # A cluster of short options ending with the password option, e.g.
+            # "-psecret", "-p=secret", "-Vp secret" or "-vpsecret"
+            cluster, _, value = arg[1:].partition("p")
+            if cluster.isalpha() or not cluster:
+                arg = f"-{cluster}p{REDACTED}" if value else f"-{cluster}p"
+                redact_next = not value
+            else:
+                arg = redact_url(arg)
+        elif arg.startswith("--") and len(arg) > 3 and "--password".startswith(arg):
+            redact_next = True  # "--pass secret"
+        else:
+            arg = redact_url(arg)
+
+        redacted.append(arg)
+
+    return redacted
+
+
+def omit_secrets(value: Any, path: str = "") -> tuple[Any, list[str]]:
+    """
+    Remove secrets from configuration values (e.g. an export of the configuration
+    that may be loaded again): secret keys (:func:`is_secret_key`, at any depth,
+    e.g. in device options) are removed, and passwords are removed from URLs
+    (``https://elastic:pw@host/`` becomes ``https://elastic@host/``).
+
+    Nothing is replaced with :data:`REDACTED`, so loading the result doesn't
+    use a placeholder as a password, and the default values of the removed
+    options (e.g. SNMP communities) are used instead.
+
+    Args:
+        value: The values to remove secrets from
+        path: Path of ``value``, used for the paths returned
+
+    Returns:
+        A copy of the value without secrets (the value isn't modified), and
+        the paths of the values that were removed (e.g. ``device_options.sel.pass``)
+    """
+    omitted: list[str] = []
+
+    if isinstance(value, dict):
+        result = {}
+        for key, val in value.items():
+            key_path = f"{path}.{key}" if path else str(key)
+            if is_secret_key(key):
+                omitted.append(key_path)
+                continue
+            result[key], key_omitted = omit_secrets(val, key_path)
+            omitted.extend(key_omitted)
+        return result, omitted
+
+    if isinstance(value, list | tuple | set):
+        items = []
+        for index, item in enumerate(value):
+            item, item_omitted = omit_secrets(item, f"{path}[{index}]")
+            items.append(item)
+            omitted.extend(item_omitted)
+        return (items if not isinstance(value, tuple) else tuple(items)), omitted
+
+    if isinstance(value, str):
+        without_password = redact_url(value, replacement=None)
+        if without_password != value:
+            omitted.append(f"{path} (password)" if path else "(password)")
+        return without_password, omitted
+
+    return value, omitted
+
+
+#: Returned by :func:`drop_redacted` for a value that was redacted
+DROPPED: Final[object] = object()
+
+
+def _is_redacted(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value == REDACTED:
+        return True
+    # A URL with a redacted password, e.g. "https://elastic:<redacted>@host/"
+    return url_password(value) == REDACTED
+
+
+def drop_redacted(value: Any, path: str = "") -> tuple[Any, list[str]]:
+    """
+    Remove values that were redacted (:data:`REDACTED`, e.g. copied from PEAT's
+    logs or from a configuration saved by a development version of PEAT), so
+    loading a configuration with them doesn't use the placeholder as a password
+    or SNMP community. A ``[username, <redacted>]``
+    pair is removed, as are lists and dicts that are empty once redacted values
+    are removed (so default values are used instead), and URLs with a redacted
+    password.
+
+    Args:
+        value: The values to check
+        path: Path of ``value``, used for the paths returned
+
+    Returns:
+        A copy of the value with redacted values removed (:data:`DROPPED` if the
+        value itself was redacted), and the paths of the values that were removed
+    """
+    if _is_redacted(value):
+        return DROPPED, [path]
+
+    dropped: list[str] = []
+
+    if isinstance(value, dict):
+        result = {}
+        for key, val in value.items():
+            key_path = f"{path}.{key}" if path else str(key)
+            val, key_dropped = drop_redacted(val, key_path)
+            dropped.extend(key_dropped)
+            if val is not DROPPED:
+                result[key] = val
+        if value and not result:
+            return DROPPED, dropped
+        return result, dropped
+
+    if isinstance(value, list | tuple | set):
+        items = []
+        for index, item in enumerate(value):
+            item_path = f"{path}[{index}]"
+            if isinstance(item, list | tuple) and len(item) == 2 and _is_redacted(item[1]):
+                dropped.append(item_path)  # a (username, password) pair
+                continue
+            item, item_dropped = drop_redacted(item, item_path)
+            dropped.extend(item_dropped)
+            if item is not DROPPED:
+                items.append(item)
+        if value and not items:
+            return DROPPED, dropped
+        return (items if not isinstance(value, tuple) else tuple(items)), dropped
+
+    return value, dropped
+
+
 def get_platform_info() -> dict[str, str | int | bool]:
     """
     Collect information about the system PEAT is running on.
@@ -221,8 +532,11 @@ def get_platform_info() -> dict[str, str | int | bool]:
     info["tcpdump"] = str(tcpdump) if tcpdump else ""
 
     if len(sys.argv) > 1:
-        info["cli_exe"] = sys.argv[0]
-        info["cli_arguments"] = " ".join(sys.argv[1:])
+        # NOTE: secrets (e.g. "-p <password>") are redacted, since
+        # this is recorded in the logs and results
+        argv = redact_argv(sys.argv)
+        info["cli_exe"] = argv[0]
+        info["cli_arguments"] = " ".join(argv[1:])
 
     if LINUX:
         try:
