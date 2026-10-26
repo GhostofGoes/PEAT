@@ -14,7 +14,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from traceback import format_exc
 from typing import Any
 
@@ -46,6 +46,50 @@ def clean_replace(to_clean: str, replace_with: str, chars: str) -> str:
     for char in chars:
         clean = clean.replace(char, replace_with)
     return clean
+
+
+def safe_join(base: Path, *untrusted: str | PurePath) -> Path:
+    """
+    Join untrusted path components (e.g. file names from a device or an
+    archive) to a trusted base directory, ensuring the result stays inside it.
+
+    Backslashes are treated as path separators, and empty, ``.`` and ``..``
+    components and any leading root (``/``) are dropped. The joined path is then
+    resolved (following any symbolic links that already exist on disk) and
+    checked to be ``base`` or a path under ``base``.
+
+    .. note::
+       This only does containment. Use :func:`~peat.consts.sanitize_filepath`
+       first if the components also need to be valid file names on Windows.
+
+    Args:
+        base: Trusted directory the result must stay inside
+        untrusted: Untrusted relative path components to join to ``base``
+
+    Returns:
+        The joined path (not resolved, so it's in the same form as ``base``)
+
+    Raises:
+        ValueError: The joined path resolves to a location outside of ``base``
+    """
+    base = Path(base)
+    parts = []
+    for component in untrusted:
+        for part in PurePosixPath(str(component).replace("\\", "/")).parts:
+            if part.strip("/") not in ("", ".", ".."):
+                parts.append(part)
+
+    joined = base.joinpath(*parts)
+    resolved_base = base.resolve()
+    resolved = joined.resolve()
+
+    if resolved != resolved_base and resolved_base not in resolved.parents:
+        raise ValueError(
+            f"Path '{PurePosixPath(*parts).as_posix()}' resolves to '{resolved}', "
+            f"which is outside of '{resolved_base}'"
+        )
+
+    return joined
 
 
 def clean_empty_dirs(to_clean: Path) -> None:

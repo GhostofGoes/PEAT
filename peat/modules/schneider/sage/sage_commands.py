@@ -75,11 +75,13 @@ class SageCommands:
             ts = utils.utc_now().strftime(consts.TIME_FMT)
             filename = f"{command.replace(' ', '_')}_{ts}.txt"
             filename = filename.replace(",", "-")  # remove commas
+            # The command can include values from the device, e.g. task entry points
+            filename = consts.sanitize_filename(filename)
 
             if command.split(" ", maxsplit=1)[0] in ["d", "ti"]:
-                file_path = self.resp_dir / "task_responses" / filename
+                file_path = utils.safe_join(self.resp_dir, "task_responses", filename)
             else:
-                file_path = self.resp_dir / filename
+                file_path = utils.safe_join(self.resp_dir, filename)
 
             utils.write_file(response, file_path)
 
@@ -406,7 +408,9 @@ def save_memory_reads_to_disk(dev: DeviceData, tasks: dict[str, Any]) -> None:
         tasks: Parsed tasks from checkStack
     """
     for t_dict in tasks.values():
+        # NAME and TID come from the device, so sanitize them into a single file name
         task_str = f"{t_dict['NAME']}-{t_dict['TID']}".replace(":", "")
+        task_str = consts.sanitize_filename(task_str)
         mem_dir = dev.get_sub_dir("memory_reads")
 
         # "Hexdump"-style format from the response

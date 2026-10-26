@@ -18,7 +18,7 @@ from typing import Any
 import paramiko
 
 import peat
-from peat import CommError, log
+from peat import CommError, consts, log, utils
 
 
 class SSH:
@@ -227,13 +227,20 @@ class SSH:
         failed = 0
 
         for entry in files:
-            save_path = Path(local_dir, entry["path"].lstrip("/"))
-            Path(save_path.parent).mkdir(parents=True, exist_ok=True)
+            try:
+                # The path comes from the device's file listing,
+                # ensure it can't be used to write outside of local_dir.
+                save_path = utils.safe_join(local_dir, consts.sanitize_filepath(entry["path"]))
+            except ValueError as ex:
+                self.log.warning(f"Skipping download of '{entry['path']}': {ex}")
+                failed += 1
+                continue
 
             if save_path.exists():
                 self.log.debug(f"{save_path} already exists, new file: {entry}")
 
             try:
+                save_path.parent.mkdir(parents=True, exist_ok=True)
                 self.log.debug(f"Downloading {entry['path']}")
                 self.sftp_conn.get(entry["path"], save_path)
                 good += 1

@@ -3701,7 +3701,10 @@ class DeviceData(BaseModel):
 
         Args:
             data: Raw data to write
-            filename: Name including extension of the file
+            filename: Name including extension of the file. This may include
+                sub-directories (e.g. ``"ftp_files/SET_1.TXT"``), and it's
+                sanitized with :func:`~peat.consts.sanitize_filepath`, so it
+                can't be used to write outside of ``out_dir``.
             overwrite_existing: If existing files with the same name should be
                 overwritten instead of being written with a ".<num>" appended
                 to the name.
@@ -3714,7 +3717,12 @@ class DeviceData(BaseModel):
 
         Returns:
             Path to the file that was written
+
+        Raises:
+            ValueError: ``filename`` resolves to a location outside of ``out_dir``
         """
+        # The filename may come from a device or a parsed file, so sanitize
+        # it and ensure it stays inside the output directory.
         filename = consts.sanitize_filepath(filename)
 
         # If device file output is disabled, return the filename as a path
@@ -3725,7 +3733,7 @@ class DeviceData(BaseModel):
         if not out_dir:
             out_dir = self.get_out_dir()
 
-        full_path = out_dir / filename
+        full_path = utils.safe_join(out_dir, filename)
 
         utils.write_file(
             data=data,

@@ -251,6 +251,34 @@ def test_device_data_write_file(mocker, tmp_path):
     assert sub_result.is_file()
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../escape.txt",
+        "../../../escape.txt",
+        "sub/../../escape.txt",
+        "..\\..\\escape.txt",
+        "{tmp_path}/escape.txt",  # absolute path
+    ],
+)
+def test_device_data_write_file_contained(mocker, tmp_path, filename):
+    filename = filename.format(tmp_path=tmp_path.as_posix())
+    dev_dir = tmp_path / "devices"
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": dev_dir})
+    dev = DeviceData(id="write_test")
+
+    written = dev.write_file(b"x", filename)
+    assert written.is_file()
+    assert written.resolve().is_relative_to((dev_dir / "write_test").resolve())
+
+    sub_dir = dev.get_sub_dir("http_files")
+    written = dev.write_file(b"x", filename, out_dir=sub_dir)
+    assert written.resolve().is_relative_to(sub_dir.resolve())
+
+    assert not (tmp_path / "escape.txt").exists()
+    assert not (dev_dir / "escape.txt").exists()
+
+
 @pytest.mark.parametrize("typ", ["logic", "firmware", "boot_firmware"])
 def test_device_data_file_read_original(datapath, text_data, typ):
     dev = DeviceData()

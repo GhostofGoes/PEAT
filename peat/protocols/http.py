@@ -5,7 +5,7 @@ import socket
 import ssl
 import tempfile
 import urllib.parse
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from bs4 import BeautifulSoup
@@ -130,7 +130,10 @@ class HTTP:
                 if cd and "filename" in cd:
                     fn_match = re.findall(r"filename=(.+)", cd)
                     if fn_match:
-                        f_name = fn_match[0].strip('"')
+                        # Only use the final component of the name the server
+                        # suggests, per RFC 6266, so it can't select the directory.
+                        f_name = fn_match[0].split(";")[0].strip().strip("\"'")
+                        f_name = PurePosixPath(f_name.replace("\\", "/")).name
 
                 if not f_name:
                     if not page and url:

@@ -308,3 +308,33 @@ def test_is_mac():
 
     assert not utils.is_mac("")
     assert not utils.is_mac("01:02:03:04:05:0")
+
+
+@pytest.mark.parametrize(
+    ("untrusted", "expected"),
+    [
+        (("a.txt",), "a.txt"),
+        (("sub", "a.txt"), "sub/a.txt"),
+        (("../../escape.txt",), "escape.txt"),
+        (("/etc/passwd",), "etc/passwd"),
+        (("..\\..\\escape.txt",), "escape.txt"),
+        (("a/../../b.txt",), "a/b.txt"),
+        (("",), ""),
+    ],
+)
+def test_safe_join(tmp_path, untrusted, expected):
+    result = utils.safe_join(tmp_path, *untrusted)
+    assert result == (tmp_path.joinpath(*expected.split("/")) if expected else tmp_path)
+    assert result.resolve().is_relative_to(tmp_path.resolve())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks require privileges on Windows")
+def test_safe_join_symlink_escape(tmp_path):
+    base = tmp_path / "base"
+    outside = tmp_path / "outside"
+    base.mkdir()
+    outside.mkdir()
+    (base / "link").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="outside of"):
+        utils.safe_join(base, "link", "x.txt")

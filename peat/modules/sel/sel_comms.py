@@ -2,7 +2,7 @@ import timeit
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 
-from peat import DeviceData, DeviceError, config, log, utils
+from peat import DeviceData, DeviceError, config, consts, log, utils
 from peat.protocols import FTP
 
 from .sel_serial import SELSerial
@@ -102,7 +102,7 @@ def download_files(
             }
 
             if save_dir:
-                local_path = save_dir / filename
+                local_path = utils.safe_join(save_dir, consts.sanitize_filepath(filename))
                 if isinstance(file_data, str) and file_data.strip() == "=>":
                     log.warning(
                         f"File '{filename}' only has '=>' as contents, "
@@ -254,9 +254,10 @@ def pull_files(
 
         # Save files to a sub-directory matching the structure on the device,
         # if file saving is enabled (if configs_dir != None).
+        # NOTE: the directory name comes from the device's file listing
         sub_dir = configs_dir
         if configs_dir and dirname != "/":
-            sub_dir = configs_dir / dirname
+            sub_dir = utils.safe_join(configs_dir, consts.sanitize_filepath(dirname))
 
         try:
             # Change directory if needed for older devices

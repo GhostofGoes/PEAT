@@ -6,7 +6,7 @@ import sys
 import warnings
 from base64 import b64encode
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import PurePosixPath
 from random import randint
 from typing import Any, Final, Literal
 
@@ -249,37 +249,44 @@ def get_platform_info() -> dict[str, str | int | bool]:
 
 
 def sanitize_filepath(path: str) -> str:
-    path_obj = Path(path)
+    """
+    Sanitize an untrusted relative file path, e.g. a file name or path
+    supplied by a device or found in a file being parsed.
 
-    if len(path_obj.parents) <= 1:
-        return sanitize_filename(path)
+    Every component is sanitized with :func:`sanitize_filename`, so characters
+    that are invalid on Windows are replaced with ``_``. Backslashes are treated
+    as path separators. Empty, ``.`` and ``..`` components and any leading root
+    (``/``) are removed, so the result is always a relative path that can't
+    walk out of the directory it's joined to.
 
-    if path_obj.is_absolute():
-        par_obj = Path(*path_obj.parent.parts[1:])
-    else:
-        par_obj = path_obj.parent
+    .. note::
+       An empty input returns an empty string. A non-empty input that has no
+       usable components (e.g. ``"../.."``) returns ``"unnamed"``.
 
-    # The goal is to sanitize filepaths on POSIX systems so they don't
-    # contain characters that are invalid on Windows. We don't care as
-    # much about the other way around.
-    if WINDOWS:
-        platform = "auto"
-    else:
-        platform = "universal"
+    Args:
+        path: The untrusted path to sanitize
 
-    new_parent = pathvalidate.sanitize_filepath(
-        file_path=str(par_obj), replacement_text="_", platform=platform
-    )
+    Returns:
+        The sanitized relative path, in POSIX format (``/`` separators)
+    """
+    if not path:
+        return ""
 
-    if isinstance(new_parent, Path):
-        new_parent = str(new_parent)
+    parts = []
+    for part in PurePosixPath(str(path).replace("\\", "/")).parts:
+        if part.strip("/") in ("", ".", ".."):
+            continue
 
-    if path_obj.is_absolute():
-        new_parent = str(Path(path_obj.parts[0], new_parent))
+        clean = sanitize_filename(part)
+        if clean in ("", ".", ".."):
+            continue
 
-    new_filename = sanitize_filename(path_obj.name)
+        parts.append(clean)
 
-    return Path(new_parent, new_filename).as_posix()
+    if not parts:
+        return "unnamed"
+
+    return PurePosixPath(*parts).as_posix()
 
 
 def sanitize_filename(filename: str) -> str:

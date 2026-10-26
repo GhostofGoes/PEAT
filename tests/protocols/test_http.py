@@ -1,6 +1,7 @@
 import pytest
+from requests import Response
 
-from peat import config, consts
+from peat import config, consts, datastore
 from peat.protocols.http import HTTP
 
 
@@ -57,3 +58,33 @@ def test_http_parse_decoded_ssl_certificate(mocker, json_data, datapath, tmp_pat
     parsed.annotate()  # populate hash fields
     data = consts.convert(parsed.dict(exclude_defaults=True, exclude_none=True))
     assert data == expected
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    [
+        'attachment; filename="../../../../../http_rel_escape.html"',
+        "attachment; filename={tmp_path}/http_abs_escape.html",
+        'attachment; filename="..\\\\..\\\\http_win_escape.html"; size=10',
+    ],
+)
+def test_http_save_response_content_disposition_contained(mocker, tmp_path, disposition):
+    mocker.patch.object(datastore, "objects", [])
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path / "devices"})
+    dev = datastore.get("127.0.0.1")
+
+    response = Response()
+    response.status_code = 200
+    response._content = b"<html>hello</html>"
+    response.headers["Content-Disposition"] = disposition.format(tmp_path=tmp_path.as_posix())
+
+    h = HTTP("127.0.0.1", dev=dev)
+    path = h._save_response_to_file(response, "", "http://127.0.0.1/download", dev)
+
+    http_dir = dev.get_sub_dir("http_files")
+    assert path is not None
+    assert path.parent == http_dir
+    assert path.name.startswith("http_")
+    assert path.name.endswith("_escape.html")
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert written == [path]

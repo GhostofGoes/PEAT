@@ -2,7 +2,7 @@ import ftplib
 
 import pytest
 
-from peat import CommError, DeviceData
+from peat import CommError, DeviceData, config, datastore
 from peat.protocols import FTP
 
 
@@ -49,3 +49,52 @@ def test_ftp_process_vxworks_ftp_welcome_bad_arg():
 
     assert inst.process_vxworks_ftp_welcome("") is None
     assert inst.process_vxworks_ftp_welcome("bad welcome") is None
+
+
+class _FakeFTPLib:
+    """Stands in for ftplib.FTP, returning fixed data for every RETR."""
+
+    def retrbinary(self, cmd, callback, *_args, **_kwargs):
+        callback(b"file data from " + cmd.encode())
+
+    def retrlines(self, cmd, callback):
+        callback(f"line from {cmd}")
+
+
+@pytest.fixture
+def fake_ftp(mocker, tmp_path):
+    mocker.patch.object(datastore, "objects", [])
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path / "devices"})
+    inst = FTP("127.0.0.1")
+    inst.ftp = _FakeFTPLib()
+    return inst
+
+
+def test_ftp_download_files_contained(fake_ftp, tmp_path):
+    local_dir = tmp_path / "devices" / "127.0.0.1" / "ftp_files"
+    # Listing entries as produced by FTP.dir() from a hostile LIST response
+    listing = [
+        {"type": "file", "path": "/ata0a/../../../../../../OUTSIDE_FTP/pwned.txt"},
+        {"type": "file", "path": "/../../../../ftp_abs_escape.txt"},
+        {"type": "file", "path": "/ata0a/rtusetup.xml"},
+    ]
+    fake_ftp.download_files(local_dir, listing)
+
+    written = sorted(p for p in tmp_path.rglob("*") if p.is_file())
+    assert written
+    for path in written:
+        assert path.is_relative_to(local_dir), path
+    assert (local_dir / "ata0a" / "rtusetup.xml").is_file()
+    assert (local_dir / "ata0a" / "OUTSIDE_FTP" / "pwned.txt").is_file()
+
+
+@pytest.mark.parametrize("method", ["download_binary", "download_text"])
+def test_ftp_download_default_path_contained(fake_ftp, tmp_path, method):
+    getattr(fake_ftp, method)("../../../ftp_dl_escape.txt")
+    getattr(fake_ftp, method)("/tmp/../../ftp_dl_escape2.txt")
+
+    ftp_dir = tmp_path / "devices" / "127.0.0.1" / "ftp_files"
+    written = sorted(p for p in tmp_path.rglob("*") if p.is_file())
+    assert len(written) == 2
+    for path in written:
+        assert path.is_relative_to(ftp_dir), path
