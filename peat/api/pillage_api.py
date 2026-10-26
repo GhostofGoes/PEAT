@@ -37,6 +37,9 @@ _COPY_OPEN_FLAGS: Final[int] = (
     | getattr(os, "O_BINARY", 0)
 )
 
+#: Size of the chunks files are copied in (1 MiB)
+_COPY_CHUNK_SIZE: Final[int] = 1024 * 1024
+
 # TODO: integrate pillage with parse. Pillage results should go in peat_results.
 
 
@@ -303,14 +306,14 @@ def search(source: Path, results: Path) -> bool:
                     print(auto_copy, file=sys.stderr, flush=True)  # noqa: T201
 
                     if auto_copy == "Y":
-                        copy_file(src_file, dst_file)
+                        copy_file(src_file, dst_file, max_file_size)
                     else:
                         log.warning(
                             f"[Pillage] Declined to copy {src_file} to "
                             f"{dst_file} (auto_copy is false)"
                         )
                 else:
-                    copy_file(src_file, dst_file)
+                    copy_file(src_file, dst_file, max_file_size)
 
         if not config.PILLAGE["recursive"]:
             break
@@ -353,9 +356,17 @@ def search(source: Path, results: Path) -> bool:
 #     return all_dirs, locations
 
 
-def copy_file(src: Path, dst: Path) -> bool:
+def copy_file(src: Path, dst: Path, max_size: int | None = None) -> bool:
     """
     Copy a regular file, refusing to follow symbolic links or read special files.
+
+    Args:
+        src: File to copy
+        dst: Path to copy the file to
+        max_size: Stop copying and remove the partial copy if the file turns out
+            to be larger than this many bytes (e.g. it grew after it was checked,
+            or it's a pseudo-file that reports a size of 0). :obj:`None` or 0
+            means there's no limit.
 
     Returns:
         If the file was copied
@@ -375,8 +386,21 @@ def copy_file(src: Path, dst: Path) -> bool:
         if not dst.parent.exists():
             dst.parent.mkdir(exist_ok=True, parents=True)
 
+        copied = 0
         with dst.open("wb") as fdst:
-            shutil.copyfileobj(fsrc, fdst)
+            while chunk := fsrc.read(_COPY_CHUNK_SIZE):
+                copied += len(chunk)
+                if max_size and copied > max_size:
+                    break
+                fdst.write(chunk)
+
+    if max_size and copied > max_size:
+        dst.unlink(missing_ok=True)
+        log.warning(
+            f"[Pillage] Skipping {src}: it's larger than the 'max_file_size' "
+            f"option ({max_size} bytes)"
+        )
+        return False
 
     log.info(f"[Pillage] Copied {src} to {dst}")
     return True

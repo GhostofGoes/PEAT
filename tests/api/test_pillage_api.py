@@ -111,3 +111,27 @@ def test_mount_image_hardened_options(mocker, tmp_path):
     mount_args = next(c.args[0] for c in call.call_args_list if c.args[0][0] == "mount")
     options = mount_args[mount_args.index("-o") + 1].split(",")
     assert {"ro", "nodev", "nosuid", "noexec"} <= set(options)
+
+
+def test_search_size_limit_enforced_while_copying(mocker, tmp_path, pillage_config):
+    # e.g. a pseudo-file (procfs/sysfs) that reports a size of 0, or a file
+    # that grows after it's checked
+    pillage_config["max_file_size"] = 10
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "small.rdb").write_bytes(b"x" * 10)
+    (source / "grows.rdb").write_bytes(b"x" * 11)
+
+    real_lstat = os.lstat
+
+    def lstat_reports_zero(path, *args, **kwargs):
+        st = real_lstat(path, *args, **kwargs)
+        if Path(path).name != "grows.rdb":
+            return st
+        return os.stat_result((*tuple(st)[:6], 0, *tuple(st)[7:]))
+
+    mocker.patch("peat.api.pillage_api.os.lstat", side_effect=lstat_reports_zero)
+
+    results = tmp_path / "results"
+    assert search(source, results) is True
+    assert _results(results) == ["SEL/small.rdb"]
