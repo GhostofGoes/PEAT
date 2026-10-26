@@ -28,8 +28,9 @@
 # Source: https://github.com/gurnec/Undo_FFG/blob/master/nrbf.py
 #
 # PEAT changes: counts and lengths read from the stream are checked against the
-# number of bytes remaining in the stream before anything is allocated, so a
-# small crafted file can't exhaust memory; make_unique() is O(1) per name; and
+# number of bytes remaining in the stream before anything is allocated, and the
+# total number of elements allocated is limited, so a small crafted file can't
+# exhaust memory; make_unique() is O(1) per name; and
 # rectangular arrays are indexed directly instead of with eval and exec.
 
 __all__ = ['read_stream', 'serialization', 'JSONEncoder']
@@ -52,6 +53,14 @@ from .namedlist   import namedlist
 #: elements with a few bytes). Larger arrays need at least one byte
 #: in the stream for each element.
 MAX_SPARSE_ARRAY_ELEMENTS: Final = 1024 * 1024
+
+#: Maximum number of array elements and class members that may be allocated
+#: in one serialization beyond the number of bytes in the stream. Each
+#: allocated element is either read from the stream (at least one byte) or
+#: is part of a run of nulls, so this limits the total memory used by many
+#: (e.g. nested) mostly empty arrays, which MAX_SPARSE_ARRAY_ELEMENTS alone
+#: doesn't (it only limits each array).
+MAX_TOTAL_SPARSE_ELEMENTS: Final = 16 * 1024 * 1024
 
 #: Maximum rank (number of dimensions) of a BinaryArray (.NET's limit is 32)
 MAX_ARRAY_RANK: Final = 32
@@ -90,6 +99,7 @@ class serialization:
         self._Class_by_id        = {}    # see _read_ClassInfo()
         self._objects_by_id      = {}    # all referenceable objects indexed by ObjectId
         self._root_id            = None  # the id of the single root object
+        self._allocated_elements = 0     # total elements and members allocated, see _charge_elements()
         self._member_references  = []    # all seen NRBF MemberReferences, see _read_MemberReference()
         self._collection_infos   = []    # _CollectionInfo for each seen .NET collection
         self._add_overwrite_info = can_overwrite_member
@@ -115,6 +125,23 @@ class serialization:
         if count * min_item_size > remaining:
             raise ValueError(f'invalid {what} {count}: larger than the '
                              f'{remaining} bytes remaining in the stream')
+
+    # Raises ValueError if allocating count more elements (array elements or class
+    # members) would make the total allocated by this serialization larger than the
+    # stream size plus MAX_TOTAL_SPARSE_ELEMENTS. This must be called before
+    # allocating any array or object, so many small mostly empty arrays (e.g.
+    # nested ones) can't multiply the memory used.
+    def _charge_elements(self, count, what):
+        self._allocated_elements += count
+        limit = (self._stream_end or 0) + MAX_TOTAL_SPARSE_ELEMENTS
+        if self._allocated_elements > limit:
+            raise ValueError(f'invalid {what} {count}: more than {limit} elements '
+                             f'allocated in total')
+
+    # Creates an instance of a class read from the stream (all members are None)
+    def _new_instance(self, Class):
+        self._charge_elements(len(Class._fields), 'member count')
+        return Class()
 
     # Below are a set of "readers" and other support types, one per defined structure in
     # revisions 10.0-12.0 of the ".NET Remoting: Binary Format Data Structure" specification
@@ -324,30 +351,30 @@ class serialization:
         Class, object_id = self._read_ClassInfo()
         self._read_MemberTypeInfo(Class)
         self._read_Int32()  # LibraryId is ignored
-        return self._read_members_into(Class(), object_id, Class._primitive_types.get)
+        return self._read_members_into(self._new_instance(Class), object_id, Class._primitive_types.get)
 
     @_register_reader(_RecordType_readers, 3)
     def _read_ClassWithMembers(self):
         Class, object_id = self._read_ClassInfo()
         self._read_Int32()  # LibraryId is ignored
-        return self._read_members_into(Class(), object_id, Class._primitive_types.get)
+        return self._read_members_into(self._new_instance(Class), object_id, Class._primitive_types.get)
 
     @_register_reader(_RecordType_readers, 4)
     def _read_SystemClassWithMembersAndTypes(self):
         Class, object_id = self._read_ClassInfo()
         self._read_MemberTypeInfo(Class)
-        return self._read_members_into(Class(), object_id, Class._primitive_types.get)
+        return self._read_members_into(self._new_instance(Class), object_id, Class._primitive_types.get)
 
     @_register_reader(_RecordType_readers, 2)
     def _read_SystemClassWithMembers(self):
         Class, object_id = self._read_ClassInfo()
-        return self._read_members_into(Class(), object_id, Class._primitive_types.get)
+        return self._read_members_into(self._new_instance(Class), object_id, Class._primitive_types.get)
 
     @_register_reader(_RecordType_readers, 1)
     def _read_ClassWithId(self):
         object_id = self._read_Int32()
         Class = self._Class_by_id[self._read_Int32()]  # MetadataId
-        return self._read_members_into(Class(), object_id, Class._primitive_types.get)
+        return self._read_members_into(self._new_instance(Class), object_id, Class._primitive_types.get)
 
     # If primitive_type is not None, read the specified primitive_type with one of the
     # PrimitiveType_readers. Otherwise read the next RecordType in the streamfile with one
@@ -450,6 +477,7 @@ class serialization:
                 self._check_count(size, item_size, 'BinaryArray size')
             else:
                 self._check_count(size, 1, 'BinaryArray size', sparse_ok=True)
+                self._charge_elements(size, 'BinaryArray size')
             if supports_Array:  # if True, a Python Array can be used for the *last* dimension...
                 array_length = lengths.pop()  # ...which is removed from the lengths list here
             array = multidimensional_array(lengths)  # preallocate a list of lists (it's not a Python Array)
@@ -503,6 +531,7 @@ class serialization:
             return array
         # Each element is at least 1 byte, except runs of nulls (ObjectNullMultiple)
         self._check_count(length, 1, 'array length', sparse_ok=not primitive_type)
+        self._charge_elements(length, 'array length')
         return self._read_members_into([None] * length, object_id, lambda i: primitive_type)
 
     def _read_Array_native_elements(self, length, primitive_type):

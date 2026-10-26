@@ -153,3 +153,48 @@ def test_make_unique_same_results():
     assert results == ["a2", "a4", "a5", "b2", "c", "a32"]
     # Without counters, the result is the same (but O(n))
     assert make_unique("a", {"a", "a2"}) == "a3"
+
+
+def _nested_sparse_arrays(children: int, child_length: int) -> bytes:
+    """ArraySingleObject of ``children`` ArraySingleObjects that are all nulls."""
+    data = _header() + b"\x10" + _i32(1) + _i32(children)
+    for k in range(children):
+        data += b"\x10" + _i32(k + 2) + _i32(child_length) + _null_multiple(child_length)
+    return data + MESSAGE_END
+
+
+def test_nested_sparse_arrays_have_a_total_limit():
+    """Each sparse array was limited, but not the total: 1.4 KB allocated 909 MiB."""
+    data = _nested_sparse_arrays(100, 1_000_000)
+    assert len(data) < 1500
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="in total"):
+            _read(data)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # At most MAX_TOTAL_SPARSE_ELEMENTS pointers (128 MiB) are allocated
+    assert peak < 200 * 1024 * 1024
+
+    # A few sparse arrays are still allowed
+    assert _read(_nested_sparse_arrays(3, 1000)) == [[None] * 1000] * 3
+
+
+def test_repeated_class_instances_have_a_total_limit(monkeypatch):
+    """ClassWithId allocates all the members of an earlier class for a few bytes."""
+    monkeypatch.setattr(csharp_reader, "MAX_TOTAL_SPARSE_ELEMENTS", 100_000)
+    members = 1000
+    cls = b"\x02" + _i32(2) + _lps("C") + _i32(members) + _lps("a") * members
+    cls += _null_multiple(members)
+
+    def instances(count: int) -> bytes:
+        data = _header() + b"\x10" + _i32(1) + _i32(count + 1) + cls
+        for k in range(count):
+            data += b"\x01" + _i32(k + 3) + _i32(2) + _null_multiple(members)  # ClassWithId
+        return data + MESSAGE_END
+
+    assert len(_read(instances(10))) == 11
+    with pytest.raises(ValueError, match="in total"):
+        _read(instances(200))
