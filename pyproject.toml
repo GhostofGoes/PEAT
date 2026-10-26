@@ -592,7 +592,7 @@ ignore-path = ["docs/dependencies.rst", "docs/dependencies_table.rst"]
 # check spelling of filenames
 check-filenames = ""
 # NOTE: the ignore words for codespell must be lowercase
-ignore-words-list = "astroid,datas,bre,heros,ser,mot,ot,aci,noe,optin,ro,inh,ardvark,hart,tru,nd,carmel"
+ignore-words-list = "astroid,datas,bre,heros,ser,mot,ot,aci,noe,optin,ro,inh,ardvark,hart,tru,nd,carmel,inout,toi"
 skip = "forked_telnetlib.py,manuf,data_files,htmlcov,.doctrees,_docs_html,_docs_man,built_docs,plc_open,mibs,enip,cip,clx_relay_ladder_parser.py,*.pyc,*.class,*.xsd,*.xml,*.ico,*.apx,*.dmk,*.out,*.stu,*.sta,*.ztx,*.PNG,*.inv,*.png,*.jpg,*.dot,*.ai"
 
 

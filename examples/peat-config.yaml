@@ -596,6 +596,21 @@ device_options:
     # Example: {ethercat: status}
     plugins_to_query: {}
 
+  # Configuration specific to the Siemens S7 PLC module
+  s7:
+    # Rack and slot combinations to try when connecting to the CPU, in order.
+    # S7-300 CPUs are usually in slot 2, S7-1200/1500 CPUs in slot 0 or 1.
+    rack_slots:
+      - [0, 2]
+      - [0, 0]
+      - [0, 1]
+      - [0, 3]
+    # S7comm connection resource type: "pg" (programming device), "op"
+    # (operator panel), or "basic". Some CPUs limit the number of each type.
+    connection_type: "pg"
+    # Read the number of blocks of each type that are loaded on the PLC
+    list_blocks: true
+
   # Configuration specific to the ControlLogix module
   rockwell:
     # What protocols to use for pulling from Rockwell devices
@@ -794,6 +809,13 @@ device_options:
   # "digsi" is used by the following modules: Siprotec
   digsi:
     port: 50000
+    timeout: 5.0
+
+  # Siemens S7 communication protocol (S7comm), over ISO-on-TCP
+  #
+  # "s7comm" is used by the following modules: S7
+  s7comm:
+    port: 102
     timeout: 5.0
 
   ion_protocol:

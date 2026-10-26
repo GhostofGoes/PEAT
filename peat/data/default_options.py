@@ -61,4 +61,9 @@ DEFAULT_OPTIONS: dict[str, dict[str, ConfigVal] | ConfigVal] = {
         "port": 50000,
         "timeout": config.DEFAULT_TIMEOUT,
     },
+    "s7comm": {
+        # Siemens S7 communication protocol, over ISO-on-TCP (RFC 1006)
+        "port": 102,
+        "timeout": config.DEFAULT_TIMEOUT,
+    },
 }

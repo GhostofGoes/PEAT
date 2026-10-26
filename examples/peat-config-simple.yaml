@@ -275,6 +275,9 @@ device_options:
   digsi:
     port: 50000
     timeout: 5.0
+  s7comm:
+    port: 102
+    timeout: 5.0
   ion_protocol:
     port: 7700
     timeout: 5.0
