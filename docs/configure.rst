@@ -172,6 +172,13 @@ PEAT verifies TLS (SSL) certificates for HTTPS connections, including connection
    When verification is disabled, anyone who can intercept the connection can capture credentials PEAT sends over it (e.g. web logins). PEAT logs a warning for each host that verification is disabled for.
 
 
+.. _http-redirects:
+
+HTTP redirects and response sizes
+---------------------------------
+PEAT only follows HTTP redirects from a device to the same host (the scheme and port may change, e.g. ``http://`` to ``https://``), and at most :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. A redirect to a different host is refused and logged as a failed request, so a device can't make PEAT send requests (with its session cookies) to other systems, or have their responses saved and parsed as if they came from the device. Response bodies larger than :data:`~peat.protocols.http.MAX_HTTP_BODY` (64 MiB) are refused.
+
+
 .. _ssh-host-keys:
 
 SSH host keys
