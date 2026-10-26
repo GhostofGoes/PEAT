@@ -392,3 +392,44 @@ def test_tarfile_default_extraction_filter(tmp_path):
         with pytest.raises(tarfile.FilterError):
             tar.extractall(dest)
     assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
+def test_fix_file_owners_does_not_follow_symlinks(mocker, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("owned by root", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    (run_dir / "sub").mkdir(parents=True)
+    (run_dir / "sub" / "file.txt").write_text("x", encoding="utf-8")
+    (run_dir / "sub" / "link.txt").symlink_to(outside)
+    (run_dir / "dirlink").symlink_to(tmp_path, target_is_directory=True)
+
+    calls = []
+
+    def fake_chown(path, uid, gid, *, dir_fd=None, follow_symlinks=True):  # noqa: ARG001
+        calls.append((Path(path), follow_symlinks))
+
+    mocker.patch("os.chown", side_effect=fake_chown)
+    mocker.patch("os.geteuid", return_value=0)
+    mocker.patch("os.getegid", return_value=0)
+    mocker.patch.dict("os.environ", {"SUDO_UID": "1000", "SUDO_GID": "1000"})
+
+    assert utils.fix_file_owners(run_dir) is True
+    chowned = {p for p, _ in calls}
+    assert run_dir / "sub" / "file.txt" in chowned
+    for path, follow_symlinks in calls:
+        assert path.is_relative_to(run_dir), path
+        assert not (path.is_symlink() and follow_symlinks), path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks require privileges on Windows")
+def test_clean_empty_dirs_does_not_follow_symlinks(tmp_path):
+    outside = tmp_path / "outside"
+    (outside / "empty").mkdir(parents=True)
+    to_clean = tmp_path / "to_clean"
+    (to_clean / "empty").mkdir(parents=True)
+    (to_clean / "link").symlink_to(outside, target_is_directory=True)
+
+    utils.clean_empty_dirs(to_clean)
+    assert not (to_clean / "empty").exists()
+    assert (outside / "empty").is_dir()

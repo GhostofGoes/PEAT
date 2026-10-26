@@ -1,9 +1,11 @@
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Final
 
 # Allow module to be imported without errors
 # on non-Linux systems (Windows and OSX).
@@ -20,6 +22,20 @@ from peat import config, consts, log
 # don't remove it if it was.  Keep the system in the same state when done
 # pillaging
 NBD_ALREADY_LOADED = False
+
+#: Default for the ``max_file_size`` Pillage option: files larger than this
+#: many bytes are skipped instead of copied (256 MiB)
+DEFAULT_MAX_FILE_SIZE: Final[int] = 256 * 1024 * 1024
+
+#: Flags used to open files being copied. O_NOFOLLOW refuses symbolic links and
+#: O_NONBLOCK prevents blocking on a FIFO, in case a file is swapped after it's
+#: checked. O_NOFOLLOW isn't available on Windows.
+_COPY_OPEN_FLAGS: Final[int] = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_BINARY", 0)
+)
 
 # TODO: integrate pillage with parse. Pillage results should go in peat_results.
 
@@ -154,7 +170,9 @@ def mount_image(source: Path, mount_point: Path) -> bool:
     # Give the system time to mount device before attempting to mount to folder
     time.sleep(0.5)
 
-    mnt_args = ["mount", "-o", "ro", "/dev/nbd1p1", str(mount_point)]
+    # The image is untrusted: don't honor device files or setuid/setgid bits,
+    # and don't allow anything on it to be executed.
+    mnt_args = ["mount", "-o", "ro,nodev,nosuid,noexec", "/dev/nbd1p1", str(mount_point)]
     mnt_result = subprocess.call(mnt_args)
     if mnt_result != 0:
         log.error(f"Failed to run '{' '.join(mnt_args)}' (return code: {mnt_result})")
@@ -228,20 +246,42 @@ def search(source: Path, results: Path) -> bool:
         "bootmgr",
     ]
     exclude_counter = 0
+    max_file_size = config.PILLAGE.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
 
-    for root, _dirnames, filenames in os.walk(str(source)):
+    # NOTE: os.walk() doesn't follow symbolic links to directories by default
+    for root, dirnames, filenames in os.walk(str(source)):
         log.trace2(f"Searching in: {root}")
 
-        parts = root.split(os.sep)
-
-        if len(parts) >= 2 and parts[1] in excluded:
-            log.trace2(f"Skipping excluded dir '{root}'")
-            exclude_counter += 1
-            continue
+        # Skip excluded directories at the top level of the source
+        if root == str(source):
+            for dirname in [d for d in dirnames if d in excluded]:
+                log.trace2(f"Skipping excluded dir '{Path(root, dirname)}'")
+                dirnames.remove(dirname)
+                exclude_counter += 1
 
         for filename in filenames:
             src_file = Path(root) / filename
+
+            # Only copy regular files. The source is untrusted, and symbolic
+            # links or device files could be used to read files on the host.
+            try:
+                src_stat = os.lstat(src_file)
+            except OSError as ex:
+                log.warning(f"[Pillage] Failed to stat {src_file}: {ex}")
+                continue
+
+            if not stat.S_ISREG(src_stat.st_mode):
+                log.debug(f"[Pillage] Skipping {src_file}: not a regular file")
+                continue
+
             is_valid, config_type = is_valid_file(src_file)
+
+            if is_valid and max_file_size and src_stat.st_size > max_file_size:
+                log.warning(
+                    f"[Pillage] Skipping {src_file}: size {src_stat.st_size} bytes "
+                    f"is larger than the 'max_file_size' option ({max_file_size} bytes)"
+                )
+                continue
 
             if is_valid:
                 dst_file = Path(results) / config_type / filename
@@ -313,12 +353,33 @@ def search(source: Path, results: Path) -> bool:
 #     return all_dirs, locations
 
 
-def copy_file(src: Path, dst: Path) -> None:
-    if not dst.parent.exists():
-        dst.parent.mkdir(exist_ok=True, parents=True)
+def copy_file(src: Path, dst: Path) -> bool:
+    """
+    Copy a regular file, refusing to follow symbolic links or read special files.
 
-    shutil.copyfile(str(src), str(dst))
+    Returns:
+        If the file was copied
+    """
+    try:
+        fd = os.open(src, _COPY_OPEN_FLAGS)
+    except OSError as ex:
+        log.warning(f"[Pillage] Failed to open {src}, skipping it: {ex}")
+        return False
+
+    with os.fdopen(fd, "rb") as fsrc:
+        # Check what was actually opened, in case the file was swapped
+        if not stat.S_ISREG(os.fstat(fsrc.fileno()).st_mode):
+            log.warning(f"[Pillage] Skipping {src}: not a regular file")
+            return False
+
+        if not dst.parent.exists():
+            dst.parent.mkdir(exist_ok=True, parents=True)
+
+        with dst.open("wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+
     log.info(f"[Pillage] Copied {src} to {dst}")
+    return True
 
 
 def is_valid_file(_file: Path):

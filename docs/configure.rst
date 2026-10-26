@@ -179,6 +179,10 @@ Pillage config reference
 ========================
 - ``auto_copy`` [True or False] If ``True`` automatically copy a file to the results directory.  If ``False`` ask for permission to copy first.  This can be helpful in the case when there may be lot of false positives and the user wants to verify prior to copying. For example if you are searching for ``xml`` files.
 - ``recursive`` [True of False] If ``True`` search in the source parent directory and all sub directories.  If ``False`` only search in the source parent directory and ignore all sub directories.
+- ``max_file_size`` [Integer, bytes] Files larger than this are skipped (with a warning) instead of copied. Defaults to ``268435456`` (256 MiB). Set to ``0`` to disable the limit.
+
+.. note::
+   Pillage only copies regular files. Symbolic links, device files, FIFOs, and other special files found in the source are skipped, as are the top-level ``Windows``, ``System Volume Information``, ``PerfLogs``, ``MSOCache``, ``cygwin64``, ``Recovery``, ``Boot``, and ``$Recycle.Bin`` directories. Disk images are mounted read-only with the ``nodev``, ``nosuid``, and ``noexec`` options.
 - Default/Brand specific search criteria:
 
   - ``locations`` [List of strings, each one should be a directory path] If empty search through all directories.  If directories exist only files in those directories will be considered. **Not yet implemented, Pillage currently searches through all directories regardless of what is listed here.**

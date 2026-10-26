@@ -140,14 +140,19 @@ def check_tar_member(
 def clean_empty_dirs(to_clean: Path) -> None:
     """
     Recursively remove all empty directories on the path.
+
+    Symbolic links are not followed.
     """
     try:
+        if to_clean.is_symlink():
+            return
+
         listing = list(to_clean.iterdir())
         if not listing:
             to_clean.rmdir()
         else:
             for item in listing:
-                if item.is_dir():
+                if item.is_dir() and not item.is_symlink():
                     clean_empty_dirs(item)
     except OSError:
         pass
@@ -522,6 +527,8 @@ def check_file(file: Path | str, ext: list | str | None = None) -> str | Path | 
 def fix_file_owners(to_fix: Path) -> bool:
     """
     Change owner of file(s) and directorie(s) to actual user running PEAT instead of root.
+
+    Symbolic links are not followed (the owner of the link itself is changed).
     """
     if not consts.POSIX:
         log.warning("Can't fix file owners on non-POSIX system")
@@ -550,13 +557,17 @@ def fix_file_owners(to_fix: Path) -> bool:
 
         log.info(f"Changing owners of {to_fix} to uid={uid} gid={gid}")
 
-        if to_fix.is_file():
-            shutil.chown(str(to_fix), user=uid, group=gid)
+        # NOTE: follow_symlinks=False so a symbolic link in the results
+        # (e.g. from pillage or an extracted archive) can't be used to
+        # change the owner of an arbitrary file on the system.
+        if to_fix.is_symlink() or not to_fix.is_dir():
+            os.chown(to_fix, uid, gid, follow_symlinks=False)
         else:
-            for dirpath, _, filenames in os.walk(to_fix):
-                shutil.chown(dirpath, user=uid, group=gid)
-                for filename in filenames:
-                    shutil.chown(os.path.join(dirpath, filename), user=uid, group=gid)
+            # os.walk() doesn't descend into symbolic links to directories
+            for dirpath, dirnames, filenames in os.walk(to_fix):
+                os.chown(dirpath, uid, gid, follow_symlinks=False)
+                for name in filenames + dirnames:
+                    os.chown(os.path.join(dirpath, name), uid, gid, follow_symlinks=False)
 
         return True
     except Exception as ex:

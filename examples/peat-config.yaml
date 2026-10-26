@@ -378,6 +378,8 @@ zeek_dir: null
 pillage:
   auto_copy: true
   recursive: true
+  # Skip files larger than this many bytes (256 MiB). Set to 0 to disable.
+  max_file_size: 268435456
   default:
     locations: []
     filenames: []
