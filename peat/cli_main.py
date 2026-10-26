@@ -282,7 +282,11 @@ def oneshot_main(args: dict[str, Any]) -> bool:
     # Call the appropriate PEAT function for the command specified
     try:
         if args["func"] == "parse":
-            parse_results = parse(args["input_source"], sorted_device_types)
+            parse_results = parse(
+                args["input_source"],
+                sorted_device_types,
+                password_file=args.get("parse_password_file"),
+            )
 
             if not parse_results:
                 return False
@@ -337,7 +341,7 @@ def oneshot_main(args: dict[str, Any]) -> bool:
             return export_device_data(args)
 
         elif args["func"] == "pillage":
-            return pillage(args["pillage_source"])
+            return pillage(args["pillage_source"], args.get("pillage_password_file"))
 
         else:
             log.critical(f"Unknown func: {args['func']}")

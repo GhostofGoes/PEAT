@@ -106,6 +106,29 @@ class Configuration(SettingsManager):
         (<1) value will cause this value to stay as default; regardless of what is set.
     """
 
+    PARSE_COPY_FILES: bool = False
+    """
+    Copy the files ``peat parse`` finds in directories to
+    :attr:`~peat.settings.Configuration.PARSE_FILES_DIR`, keeping their paths
+    relative to the directory. Files found on disk images are always copied,
+    since the image is only mounted while it's being searched.
+    """
+
+    PARSE_RECURSIVE: bool = True
+    """
+    Search sub-directories of directories and disk image volumes
+    when finding files to parse with ``peat parse``.
+    """
+
+    COLLECT_FILE_PATTERNS: list[str] = []
+    """
+    Filename patterns of files that ``peat parse`` copies to
+    :attr:`~peat.settings.Configuration.PARSE_FILES_DIR` without parsing them,
+    such as project files for devices PEAT doesn't have a module for.
+    Patterns are matched case-insensitively against the name of the file, and
+    may use wildcards, e.g. ``"*.mc7"`` or ``"DEVINFO.DAT"``.
+    """
+
     DEFAULT_TIMEOUT: float = 5.0
     """
     Default timeout for sockets and potentially other things.
@@ -300,6 +323,16 @@ class Configuration(SettingsManager):
     - scan-summary.json
     - pull-summary.json
     - parse-summary.json
+
+    :meta hide-value:
+    """
+
+    PARSE_FILES_DIR: Path = RUN_DIR / "parse_files"
+    """
+    Directory where ``peat parse`` copies the files it finds on disk images,
+    files that match :attr:`~peat.settings.Configuration.COLLECT_FILE_PATTERNS`,
+    and the files it finds in directories if
+    :attr:`~peat.settings.Configuration.PARSE_COPY_FILES` is enabled.
 
     :meta hide-value:
     """
@@ -517,7 +550,12 @@ class Configuration(SettingsManager):
 
     PILLAGE: dict = {}
     """
-    Configuration for ``peat pillage`` (:ref:`pillage`).
+    Configuration for the old ``peat pillage`` command.
+
+    .. deprecated:: 2026.10
+       Use :attr:`~peat.settings.Configuration.COLLECT_FILE_PATTERNS` instead. The
+       ``filenames`` and ``extensions`` in this section are added to it, and the other
+       options (``auto_copy``, ``recursive``, and ``locations``) are ignored.
     """
 
     DEVICE_OPTIONS: dict = {}

@@ -8,7 +8,7 @@ Requirements for deploying and running PEAT, including platforms it can run on, 
 Supported platforms
 ===================
 .. note::
-   The PEAT "executable" (``peat`` on Linux, ``peat.exe`` on Windows) is the standard method of using PEAT. The executable is distribution-agnostic and should work on most distributions of Linux or releases of Windows. The supported platforms for PEAT development or using the PEAT Python API is far more restricted and is generally recent releases of Ubuntu or Windows.
+   The PEAT "executable" (``peat`` on Linux, ``peat.exe`` on Windows, ``peat_macos_arm64`` or ``peat_macos_x86_64`` on macOS) is the standard method of using PEAT. The executable is distribution-agnostic and should work on most distributions of Linux, releases of Windows, and macOS 15 or newer. The supported platforms for PEAT development or using the PEAT Python API is far more restricted and is generally recent releases of Ubuntu, Windows, or macOS.
 
 - Linux
    - Ubuntu
@@ -20,28 +20,77 @@ Supported platforms
       - 2018+ : ``peat`` executable
    - Other distributions: Debian, Debian-based distributions, and RHEL-based distributions (e.g. Fedora and CentOS) should work with the ``peat`` executable, but are not regularly tested. It has been known to work under Debian 9.
 - Windows
-   - Windows 7 SP2+: While Windows 7 has been tested with the pre-built executable, it's not regularly tested and support is not maintained. Your Mileage May Vary.
-   - Windows 10 1809+/Windows Server 2019+ (build 17763): ``peat.exe`` executable, development, and Python API are fully supported and regularly tested on Windows desktop and server build 17763 and newer. 1703+ may work, but hasn't been tested in a while.
-   - Windows 11: Windows 11 is not currently tested or formally supported. It may not work with the executable, but it may work with a direct Python install.
+   - Windows 10 and Windows 11 (x64): ``peat.exe`` executable, development, and Python API are fully supported. Windows Server 2022 and 2025 are also fully supported. See :ref:`windows-ci-section` for the exact versions tested.
+   - Windows 11 on ARM (e.g. Snapdragon PCs): ``peat.exe`` and the x64 build of Python run under Windows' built-in x64 emulation, and are tested in CI. Native ARM64 Python is not supported, since several of PEAT's dependencies don't publish ARM64 Windows packages.
+   - Windows 10 1809+/Windows Server 2019 (build 17763) and newer should work, but older builds are no longer tested.
+   - Windows 8.1 and older: not supported or tested. Microsoft no longer supports them, and Python 3.9 and newer don't run on Windows 7.
+   - 32-bit (x86) Windows is not supported.
+   - Refer to :ref:`windows-limitations-section` for features that work differently or aren't available on Windows.
 - `Windows Subsystem for Linux (WSL) <https://docs.microsoft.com/en-us/windows/wsl/>`__
-   - PEAT will work in any WSL Linux distro that's supported by PEAT (e.g. Ubuntu, Kali), listed above.
-   - Certain network-related features will not work in WSL, notably MAC address lookups, and a few other functions may not work fully.
+   - PEAT will work in any WSL Linux distro that's supported by PEAT (e.g. Ubuntu, Kali), listed above, in both WSL 1 and WSL 2.
+   - Certain network-related features will not work fully in WSL. MAC address lookups use the Windows host's ``arp.exe`` (or the Linux ARP cache if Windows interop is disabled), and mounting disk images with ``peat parse`` isn't supported.
+   - WSL 2 uses a virtual NAT network by default, so broadcast scans and ARP-based host checks won't reach the Windows host's local network. Use `mirrored networking mode <https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking>`__ or run ``peat.exe`` directly on Windows if you need those.
 - :term:`Docker`
    - Docker 18.03+, Linux host: PEAT is fully supported on Linux-based Docker hosts. PEAT is regularly tested on Docker 20+.
-   - Windows and OSX Docker hosts should work but are untested.
+   - Windows and macOS Docker hosts should work but are untested. Note that Docker Desktop on macOS runs containers in a Linux VM, so the container can't scan the host's networks directly (``--network host`` reaches the VM, not the Mac). Use the native macOS executable or Python package for scanning from a Mac.
    - Versions of Docker older than 18.03 may work, but are unsupported and may not work in recent releases of PEAT.
 - :term:`Podman`
    - Podman 1.0+: Tested on :term:`RHEL` 6 and RHEL 7. Non-RHEL hosts are untested for Podman.
-- MacOS/OSX
-   - OSX is supported on a best-effort basis. There are known issues with some networking components when running on OSX and issues with system dependencies.
+- macOS
+   - macOS is fully supported for the ``peat`` executable, development, and the Python API, on both Apple Silicon (arm64) and Intel (x86_64) Macs.
+   - Tested in CI (GitHub Actions) on every commit:
+      - macOS 15 Sequoia (Apple Silicon): Python 3.11, 3.12, and 3.13
+      - macOS 15 Sequoia (Intel): Python 3.12
+      - macOS 26 Tahoe (Apple Silicon): Python 3.12
+   - The macOS executables are built on macOS 15, and require macOS 15 or newer. Older releases of macOS may work with a direct Python install, but are not tested.
+   - Refer to :ref:`macos-limitations` for the features that are limited or unavailable on macOS.
+
+.. _windows-ci-section:
+
+Windows versions tested in CI
+-----------------------------
+Every pull request and push runs the full unit test suite with Python 3.11, 3.12, and 3.13, and runs the built ``peat.exe`` and ``sneakypeat.exe``, on the following GitHub-hosted runners. The unit tests are part of the ``All Tests Passed`` check, which pull requests must pass before they are merged.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Runner
+     - Windows version
+     - Corresponding desktop release
+   * - ``windows-2022``
+     - Windows Server 2022 (build 20348), x64
+     - Windows 10 and 11 21H2 era (between Windows 10 21H2, build 19044, and Windows 11 21H2, build 22000)
+   * - ``windows-2025``
+     - Windows Server 2025 (build 26100), x64
+     - Windows 11 24H2 (same build and code base)
+   * - ``windows-11-arm``
+     - Windows 11 (build 26100), ARM64, running x64 Python and ``peat.exe`` under emulation
+     - Windows 11 24H2
+
+.. note::
+   GitHub doesn't provide x64 runners with the Windows 10 or Windows 11 desktop editions, so those exact editions are not tested in CI. Windows Server 2025 shares its kernel and networking stack with Windows 11 24H2, Windows Server 2022 is the closest available release to Windows 10, and the ``windows-11-arm`` runner is a Windows 11 desktop image. Windows 10 22H2 itself is supported but only tested manually.
+
+.. _windows-limitations-section:
+
+Windows limitations
+-------------------
+Most of PEAT works the same on Windows as on Linux. These are the known differences, most of which are inherent to Windows.
+
+- **Administrator recommended for active scanning**: :term:`ICMP` pings, :term:`ARP` requests, and other raw socket features require running PEAT from an Administrator terminal. Without it, PEAT falls back to TCP SYN checks, which are slower. Passive commands (``parse`` of files and directories) don't need Administrator.
+- **Npcap is required for Layer 2 features**: ARP requests, broadcast discovery, and packet sniffing use Scapy, which requires `Npcap <https://npcap.com/>`__ on Windows. Install Npcap (or Wireshark or Nmap, which include it) to use these. Everything else works without it.
+- **MAC address lookups**: Linux reads MAC addresses from the local ARP cache. On Windows, if the ``RESOLVE_MAC`` configuration option is enabled, PEAT sends an ARP request (which requires Npcap), and otherwise reads the ARP cache with ``arp.exe``.
+- **Disk images in parse**: ``peat parse`` mounts VHD, VHDX, and ISO images natively, but other formats (raw, VMDK, qcow2) must be converted with ``qemu-img`` first, which PEAT does automatically if it's installed. Mounting VHD and VHDX images requires Administrator, and only filesystems Windows can read (NTFS, FAT, exFAT, ReFS) are searched. Refer to :ref:`parse-disk-images` for details.
+- **No YMODEM serial transfers**: SEL relay serial pulls with ``sel.force_ymodem`` require the ``rz``/``sz`` commands, which aren't available on Windows. Regular serial pulls work. Serial ports are named ``COM1``, ``COM2``, and so on.
+- **No promiscuous mode check**: PEAT doesn't warn if the network interface is in promiscuous mode on Windows.
+- **Output encoding**: when PEAT's console output is redirected to a file or pipe, Windows uses the legacy code page (usually cp1252). Characters it can't represent are escaped (e.g. ``\u2013``) instead of causing an error. Output files PEAT writes (results, logs, JSON) are UTF-8.
 
 Hardware
 ========
 The system hardware requirements for running PEAT are minimal. The limits vary slightly by system.
 
-- Minimum 64-bit x86 CPU (Linux) or 32-bit x86 CPU (Windows); Dual-core 2.4Ghz 64-bit x86 CPU is recommended. Additional cores will not noticeably improve performance.
+- Minimum 64-bit x86 CPU (Linux and Windows), a 64-bit ARM CPU running Windows 11, or an Apple Silicon or 64-bit Intel CPU (macOS); Dual-core 2.4Ghz 64-bit x86 CPU is recommended. Additional cores will not noticeably improve performance.
 - Minimum of 64MB available memory (RAM); 256MB is recommended for scanning very large networks or when running PEAT as a container.
-- Minimum of 50MB disk space in the platform's temporary directory (``/tmp`` on Linux or ``AppData`` on Windows). This is needed to extract and execute the Python code.
+- Minimum of 50MB disk space in the platform's temporary directory (``/tmp`` on Linux, ``$TMPDIR`` on macOS, or ``AppData`` on Windows). This is needed to extract and execute the Python code.
 - Minimum of ~100MB disk space in the configured output directory; 1Gb is recommended for storing multiple runs and increased output verbosity, 5-10GB is recommended if pulling from 100+ devices, especially if those devices have significant amounts of logic or configuration.
 
 Network
@@ -57,7 +106,7 @@ System configuration
 --------------------
 - Access to a terminal is recommended for running PEAT.
 - (Windows-only) PowerShell is the preferred terminal on Windows. PEAT will run fine in a legacy Windows cmd terminal, but some terminal-related functionality may be degraded (e.g. text formatting and colors).
-- **Administrator (Windows) or root (Linux) permissions are required for some network features**. Note that these permissions are *NOT* required for the offline functions of PEAT (parsing, pillage, etc.).
+- **Administrator (Windows) or root (Linux and macOS) permissions are required for some network features**. Note that these permissions are *NOT* required for the offline functions of PEAT (parsing files and directories, etc.).
    - Permissions are required to use of lightweight :term:`ARP` and :term:`ICMP` requests for host status checking. These methods have less impact on the devices being scanned and are significantly faster than using TCP SYNs.
    - Lack of permissions potentially affects PEAT's ability to do broadcast scanning
    - Lack of permissions potentially affects PEAT's ability to use serial devices
@@ -73,6 +122,21 @@ Optional software
    - Firefox: version 60 or newer
    - Edge
 - Containerization: :term:`Docker` or :term:`Podman` are required to run the containerized distribution of PEAT. See :ref:`platforms-section` above for details on specific versions required.
+
+.. _macos-limitations:
+
+macOS limitations
+=================
+PEAT's features work the same on macOS as on Linux, with the following exceptions, most of which are inherent to the platform.
+
+- **Root is required for ARP and ICMP host checks.** Scapy sends and receives raw packets on macOS using Berkeley Packet Filter devices (``/dev/bpf*``), which only root can open by default. Run PEAT with ``sudo`` for the fastest and lightest host discovery. Without it, PEAT falls back to TCP SYN online checks (the same as an unprivileged Linux user) and logs a warning. Installing the "ChmodBPF" launch daemon that ships with `Wireshark <https://www.wireshark.org/>`__ gives members of the ``access_bpf`` group access to the BPF devices without ``sudo``, and PEAT will detect and use that access.
+- **Parse only searches filesystems macOS can read.** ``peat parse`` attaches disk images with ``hdiutil`` (no root needed), and searches APFS, HFS+, FAT32, exFAT, NTFS (read-only), and ISO 9660/UDF volumes. Volumes with Linux filesystems (e.g. ext4) and BitLocker or LUKS encrypted volumes are skipped; use Linux for those. Encrypted DMG images and APFS volumes can be unlocked with a password. Images other than DMG, ISO, and raw images (e.g. VMDK, VHDX, and qcow2) are converted with ``qemu-img`` first, which must be installed (``brew install qemu``). When parsing the live system, give the terminal app Full Disk Access to search folders protected by macOS privacy protections. Refer to :ref:`parse-disk-images` for details.
+- **Serial port names are different.** macOS names serial devices after the adapter (e.g. ``/dev/cu.usbserial-1410``) instead of numbering them. Pass ``--serial-ports`` (``-s``) the device path (``/dev/cu.usbserial-1410``) or the device name (``usbserial-1410``) to select a specific device. Port numbers and ranges (e.g. ``0`` or ``0-4``) also work, and on macOS they're an index into the sorted list of ``/dev/cu.*`` devices (``0`` is the first device, excluding the built-in Bluetooth and debug console ports). Use the ``/dev/cu.*`` "callout" devices, not ``/dev/tty.*``, since opening a ``tty`` device waits for a carrier detect signal that most devices never send.
+- **YMODEM transfers to SEL relays need lrzsz.** Install it with `Homebrew <https://brew.sh/>`__: ``brew install lrzsz``.
+- **ARP cache lookups use the** ``arp`` **command.** macOS doesn't have ``/proc/net/arp``, so MAC address resolution runs ``arp -an``. This is slightly slower than on Linux, but otherwise works the same.
+- **The default macOS filesystem (APFS) is case-insensitive.** Files that differ only by case (e.g. ``CONFIG.TXT`` and ``config.txt`` pulled from a device) will overwrite each other in PEAT's output. If this matters for your use case, set the output directory (``-o``) to a case-sensitive APFS volume.
+- **The local firewall may prompt.** If the macOS Application Firewall is enabled, it may ask whether to allow the ``peat`` executable (or Python) to accept incoming connections the first time PEAT listens for broadcast responses. Allow it, or broadcast scanning may not find devices.
+- **The executables are not signed or notarized.** The installer script and ``curl`` downloads are not affected, but if the executable is downloaded with a web browser, macOS Gatekeeper will block it. Remove the quarantine attribute to run it: ``xattr -d com.apple.quarantine ./peat_macos_arm64``.
 
 Virtual Machine (VM) requirements and limitations
 =================================================

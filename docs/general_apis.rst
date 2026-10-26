@@ -36,9 +36,9 @@ Parse API
    :members:
    :undoc-members:
 
-Pillage API
-^^^^^^^^^^^
-.. automodule:: peat.api.pillage_api
+Disk Image API
+^^^^^^^^^^^^^^
+.. automodule:: peat.api.disk_image_api
    :members:
    :undoc-members:
 

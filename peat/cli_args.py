@@ -286,6 +286,32 @@ peat pull -q -E -d selrtac -i 192.0.2.2 | jq '.event | length'
 # Upload results to a Elasticsearch server running on localhost
 peat parse -e -d selrelay ./SET_ALL.TXT
 
+# Find and parse files in a disk image of a engineering workstation (Linux: run as root)
+# The files found on the image are copied to "peat_results/<run-dir>/parse_files/"
+peat parse ./eng_workstation.vmdk
+peat parse ./raw_disk.img ./disk.qcow2
+
+# Windows: parse files in a VHDX image (requires Administrator)
+peat.exe parse C:\\images\\eng_workstation.vhdx
+
+# Windows: parse files on the C: drive of the local system, and copy them to parse_files/
+peat.exe parse --copy-files C:\\
+
+# macOS: parse files in a DMG image (doesn't require root)
+peat parse ~/images/eng_workstation.dmg
+
+# macOS: parse an encrypted DMG image, or an image with encrypted APFS volumes,
+# trying each password in passwords.txt (one per line). Without --password-file,
+# PEAT prompts for the password of each encrypted image or volume.
+peat parse --password-file passwords.txt encrypted.dmg
+
+# Also copy files PEAT doesn't have a module for (Siemens .mc7 files and ION DEVINFO.DAT),
+# without parsing them. This can also be set with "collect_file_patterns" in a config file.
+peat parse --collect '*.mc7' --collect DEVINFO.DAT ./eng_workstation.vmdk
+
+# Only parse the files in a directory, not in its sub-directories
+peat parse --no-recursive ./folder/
+
 # Send results to a Malcolm instance running on localhost
 # Malcolm uses OpenSearch instead of Elasticsearch
 peat parse -d selrelay -e https://user:pass@localhost/mapi/opensearch ./SET_ALL.TXT
@@ -347,24 +373,16 @@ peat push --dry-run -d selrelay -i 192.0.2.21 -c peat-config.yaml -- ./examples/
 
 
 pillage_examples = """
-# See the "Pillage" section in the PEAT documentation
-# for a detailed explanation of the PILLAGE config,
-# or refer to the example PEAT config YAML file.
+# NOTE: "peat pillage" is deprecated, use "peat parse" instead,
+# which mounts and parses disk images (run "peat parse --examples").
+# "peat pillage -P SOURCE" is the same as "peat parse --copy-files SOURCE".
+# The parsed files are copied to "peat_results/<run-dir>/parse_files/".
 
-# NOTE: the pillage output and extracted files
-# are copied to the "pillage_results/" directory.
+# Parse files from a raw disk image
+peat parse ./raw_disk.img
 
-# Pillage files from a raw disk image
-peat pillage -c peat-config.json -P raw_disk.img
-
-# Pillage files from a mounted drive or local directory
-peat pillage -c peat-config.json -P /home/user/pillage_this
-
-# Pillage files from a VMDK image and upload results to a local Elasticsearch server
-peat pillage -c peat-config.json -P raw_disk.vmdk -e
-
-# Pillage files from a qcow2 image and upload results to a remote Elasticsearch server
-peat pillage -c peat-config.json -P raw_disk.qcow2 -e http://192.0.2.33:9200/
+# Parse files from a mounted drive or local directory, and copy them
+peat parse --copy-files /home/user/workstation_files
 """  # End pillage examples
 
 
@@ -512,7 +530,10 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
     push_parser.set_defaults(func="push")
 
     # Pillage command
-    pillage_description = "Find and parse firmware, configuration, and logic from a disk image"
+    pillage_description = (
+        "(Deprecated, use 'peat parse' instead) Find and parse "
+        "firmware, configuration, and logic from a disk image"
+    )
     pillage_parser = subparsers.add_parser(
         name="pillage",
         help=pillage_description,
@@ -935,9 +956,40 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         type=str,
         default=["-"],
         nargs="*",
-        help="Paths of files and/or directories to parse. If nothing "
+        help="Paths of files, directories, and/or disk images (e.g. VMDK, VHDX, "
+        "qcow2, raw, ISO, or DMG) to parse. If nothing "
         'or a "-" is specified, then stdin (piped input) is used.',
     )
+    parse_parser.add_argument(
+        "--copy-files",
+        action="store_true",
+        default=None,
+        dest="parse_copy_files",
+        help="Copy the files found in directories to the parse_files directory "
+        "in the run directory (PARSE_FILES_DIR), keeping their paths relative to "
+        "the directory. Files found on disk images are always copied.",
+    )
+    parse_parser.add_argument(
+        "--no-recursive",
+        action="store_false",
+        default=None,
+        dest="parse_recursive",
+        help="Don't search sub-directories of directories and disk image volumes.",
+    )
+    parse_parser.add_argument(
+        "--collect",
+        type=str,
+        action="append",
+        default=None,
+        metavar="PATTERN",
+        dest="collect_file_patterns",
+        help="Filename patterns of files to copy to the parse_files directory "
+        "without parsing them, such as project files for devices PEAT doesn't have "
+        "a module for (e.g. '*.mc7' or 'DEVINFO.DAT'). Patterns are matched "
+        "case-insensitively against the file name. Use the argument once for each "
+        "pattern, and quote patterns with wildcards, so the shell doesn't expand them.",
+    )
+    add_password_file_arg(parse_parser, "parse_password_file")
     add_list_module_args(parse_parser)  # Hack to add "--list-*" commands
 
     # Scan command arguments
@@ -1039,7 +1091,9 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
             help="Serial port(s) to target. Use a single number to specify a "
             "single port (0), or numbers separated by a - to specify a "
             "range of ports (e.g. 0-4). Alternatively, platform-specific "
-            "port names can be used (e.g. /dev/ttyUSB0).",
+            "port names can be used (e.g. /dev/ttyUSB0). On macOS, numbers are "
+            "an index into the sorted list of /dev/cu.* devices, and device "
+            "names (e.g. usbserial-1410) are also accepted.",
         )
         host_group.add_argument(
             "-f",
@@ -1114,12 +1168,14 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         required=False,
         metavar="SOURCE",
         dest="pillage_source",
-        help="Source to pillage either a raw image file or directory "
-        "location. Defaults to local directory if nothing "
-        'specified. If the source is a "split" VMware VMDK disk '
+        default=".",
+        help="Source to pillage, either a disk image file (raw, VMDK, qcow2, "
+        "VHD, VHDX, ISO, DMG, etc.) or a directory location. Defaults to local directory if "
+        'nothing specified. If the source is a "split" VMware VMDK disk '
         "(e.g. multiple VMDK files that make up a single disk), "
         'use the file without the "-sXXX" in the name as the source.',
     )
+    add_password_file_arg(pillage_parser, "pillage_password_file")
     add_list_module_args(pillage_parser)  # Hack to add "--list-*" commands
 
     # Encrypt Config command
@@ -1251,6 +1307,24 @@ def parse_peat_arguments(version: str = "ERROR") -> argparse.Namespace:
     # Parse the arguments
     args = parser.parse_args()
     return args
+
+
+def add_password_file_arg(parser: argparse.ArgumentParser, dest: str) -> None:
+    """Add the ``--password-file`` argument, for unlocking encrypted disk images."""
+    parser.add_argument(
+        "--password-file",
+        type=str,
+        required=False,
+        default=None,
+        metavar="FILE",
+        dest=dest,
+        help="File with passwords for encrypted disk images and volumes, one per "
+        "line (macOS only: encrypted DMG images and encrypted APFS volumes). Each one "
+        "is tried on each locked image or volume until one works. If this isn't given "
+        "and PEAT is running in a terminal, it prompts for the password of each locked "
+        "image or volume instead. Passwords can't be given on the command line, to keep "
+        "them out of shell history and process listings.",
+    )
 
 
 def add_list_module_args(

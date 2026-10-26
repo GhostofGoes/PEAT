@@ -71,7 +71,7 @@ Most of the top-level keys are standard config options, and most can be specifie
    default_timeout: 5.0
 
 
-The ``pillage`` section is the configuration for PEAT Pillage, refer to :ref:`pillage-config`.
+The ``collect_file_patterns``, ``parse_copy_files``, and ``parse_recursive`` options control how ``peat parse`` finds and copies files in directories and disk images, refer to :ref:`parse-disk-images`. The ``pillage`` section is deprecated, refer to :ref:`pillage-config`.
 
 The ``device_options`` section are settings for modules or protocols that are applied to everything in this PEAT run. In other words, it's global/universal, it's not on a per-host basis. Generally speaking, module/vendor specified methods have a dedicated key, e.g. ``sel`` for SEL devices (:class:`~peat.modules.sel.sel_relay.SELRelay` and :class:`~peat.modules.sel.sel_rtac.SELRTAC` modules), ``sage`` for the :class:`~peat.modules.schneider.sage.sage.Sage` module, etc. Then, there are protocol-specific options, e.g. ``telnet``, ``ssh``, etc. The protocol-specific options are usually port, timeout, login credentials, and any other protocol-specific options (such as SSH key paths).
 
@@ -175,12 +175,24 @@ YAML config reference
 
 .. _pillage-config:
 
-Pillage config reference
-========================
-- ``auto_copy`` [True or False] If ``True`` automatically copy a file to the results directory.  If ``False`` ask for permission to copy first.  This can be helpful in the case when there may be lot of false positives and the user wants to verify prior to copying. For example if you are searching for ``xml`` files.
-- ``recursive`` [True of False] If ``True`` search in the source parent directory and all sub directories.  If ``False`` only search in the source parent directory and ignore all sub directories.
-- Default/Brand specific search criteria:
+Pillage config reference (deprecated)
+=====================================
+The ``pillage`` section was the configuration for the ``peat pillage`` command, which is deprecated (refer to :ref:`parse-disk-images`). Use ``collect_file_patterns`` instead, which is a list of filename patterns (wildcards are allowed) of files to copy without parsing them.
 
-  - ``locations`` [List of strings, each one should be a directory path] If empty search through all directories.  If directories exist only files in those directories will be considered. **Not yet implemented, Pillage currently searches through all directories regardless of what is listed here.**
-  - ``filenames`` [List of strings] A list of filenames to search for.  When searching filenames take precedence over extensions and will be used first to determine the validity of a file.  No wildcards are accepted.  Must be the full filename with extension. Example ``['set_all.txt', '700g_001.rdb']``
-  - ``extensions`` [List of strings] A list of extensions to search for.  No wildcards are accepted.  Example ``['txt', 'rdb', 'xml']``
+If a configuration has a ``pillage`` section, the ``filenames`` and ``extensions`` in its ``default`` and ``brands`` sections are added to ``collect_file_patterns`` (e.g. ``extensions: [mc7]`` becomes ``"*.mc7"``), and a warning is logged. The other options are ignored: ``auto_copy`` (files are always copied), ``recursive`` (use ``parse_recursive`` or ``--no-recursive`` instead), and ``locations`` (which was never implemented). Files that a PEAT device module parses are always found by ``peat parse``, without being listed in the configuration.
+
+.. code-block:: yaml
+   :caption: A deprecated ``pillage`` section, and the equivalent ``collect_file_patterns``
+
+   pillage:
+     brands:
+       Siemens:
+         extensions:
+           - mc7
+       ION:
+         filenames:
+           - DEVINFO.DAT
+
+   collect_file_patterns:
+     - "*.mc7"
+     - DEVINFO.DAT

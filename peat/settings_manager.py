@@ -434,6 +434,10 @@ class SettingsManager(dict):
                 casted = ""
             else:
                 casted = Path(os.path.realpath(os.path.expanduser(value)))
+        # Handle lists in strings, e.g. an environment variable with "*.mc7,*.upg".
+        # Without this, list() would split the string into characters.
+        elif typecast is list and isinstance(value, str):
+            casted = [item.strip() for item in value.split(",") if item.strip()]
         # Handle boolean strings (e.g environment variable "true")
         elif typecast is bool and isinstance(value, str):
             # Accepts: yes, no, true, false, 0, 1 (case-insensitive)
@@ -489,6 +493,7 @@ class SettingsManager(dict):
                 "TEMP_DIR",
                 "ZEEK_LOGDIR",
                 "HEAT_ARTIFACTS_DIR",
+                "PARSE_FILES_DIR",
             ]
         else:
             raise ValueError(f"invalid dir_name {dir_name}")

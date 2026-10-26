@@ -57,8 +57,38 @@ POSIX: Final[bool] = os.name == "posix"
 #: bool: If the local system is Linux-based
 LINUX: Final[bool] = sys.platform == "linux"
 
+#: bool: If the local system is macOS (Darwin)
+MACOS: Final[bool] = sys.platform == "darwin"
+
+
+def _in_container() -> bool:
+    """If running in a Docker or Podman container."""
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
+def _is_wsl() -> bool:
+    """
+    If running in Windows Subsystem for Linux (WSL), either WSL 1 or WSL 2.
+
+    WSL 1 kernels have "Microsoft" in the version string (e.g. "#1-Microsoft"),
+    while WSL 2 kernels have "microsoft" in the release string
+    (e.g. "5.15.153.1-microsoft-standard-WSL2"), so check both, case-insensitively.
+
+    Docker Desktop and Podman containers on Windows also run on the WSL 2 kernel,
+    but they aren't WSL environments (e.g. no ``arp.exe``), so they're excluded.
+    """
+    if not LINUX:
+        return False
+
+    if _in_container():
+        return False
+
+    uname = platform.uname()
+    return "microsoft" in f"{uname.release} {uname.version}".lower()
+
+
 #: bool: If the local system is a Windows Subsystem for Linux (WSL) environment
-WSL: Final[bool] = LINUX and "Microsoft" in platform.version()
+WSL: Final[bool] = _is_wsl()
 
 #: str: Format to use for timestamp strings
 TIME_FMT: Final[str] = "%Y-%m-%d_%H-%M-%S"
@@ -244,6 +274,12 @@ def get_platform_info() -> dict[str, str | int | bool]:
             info["os_full"] = f"{info['os_name']} {info['os_rel']} ({distro.name(True)})"
         except Exception:
             pass  # Fail silently if anything goes wrong, info is non-critical
+    elif MACOS:
+        mac_ver = platform.mac_ver()[0]  # "15.3.1"
+        if mac_ver:
+            info["os_ver"] = mac_ver
+            # "Darwin 24.3.0 (macOS 15.3.1)"
+            info["os_full"] = f"{info['os_name']} {info['os_rel']} (macOS {mac_ver})"
 
     return info
 

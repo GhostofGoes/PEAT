@@ -260,6 +260,7 @@ Output directories (full list in the state JSON dump)
     PEAT Metadata    {_pth_log_string(config.META_DIR)}
     Result summaries {_pth_log_string(config.SUMMARIES_DIR)}
     Temporary files  {_pth_log_string(config.TEMP_DIR)}
+    Parsed files     {_pth_log_string(config.PARSE_FILES_DIR)}
     HEAT Artifacts   {_pth_log_string(config.HEAT_ARTIFACTS_DIR)}\n\n"""
     return runtime_info + environment_info + system_info + out_dirs
 

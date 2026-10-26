@@ -202,6 +202,11 @@ log_dir: !JOIN [*RUNDIR, "logs/"]
 # Working directory for file artifacts. May be cleaned up on exit.
 temp_dir: !JOIN [*RUNDIR, "temp/"]
 
+# Directory where "peat parse" copies the files it finds on disk images,
+# files matching collect_file_patterns, and files found in directories
+# if parse_copy_files is enabled.
+parse_files_dir: !JOIN [*RUNDIR, "parse_files/"]
+
 # Directory where Zeek logs will be saved
 # Also contains Zeek artifacts
 zeek_logdir: !JOIN [*RUNDIR, "zeek_logs/"]
@@ -369,55 +374,34 @@ zeek_dir: null
 
 # -----------------------------------------------------------------------------
 
-# --- Configuration for "peat pillage" ---
-# Refer to the Pillage section in the PEAT documentation for details.
+# --- Configuration for finding files with "peat parse" ---
+# Refer to the Parse section in the PEAT documentation for details.
 # https://sandialabs.github.io/PEAT/operate.html
-# Filenames and extensions are matched case-insensitively.
-# For example, "set_all.txt" will also match "SET_ALL.TXT".
 
-pillage:
-  auto_copy: true
-  recursive: true
-  default:
-    locations: []
-    filenames: []
-    extensions: []
-  brands:
-    Siemens:
-      locations: []
-      filenames: []
-      extensions:
-        - mc7
-    SEL:
-      locations: []
-      filenames:
-        - set_all.txt
-        - cfg.txt
-        - ser.txt
-        - history.txt
-        - cser.txt
-        - chistory.txt
-      extensions:
-        - rdb
-        - cid
-    Modicon:
-      extensions:
-        - apx
-    # Rockwell Studio5000
-    L5X:
-      extensions:
-        - l5x
-    ION:
-      filenames:
-        - DEVINFO.DAT
-        - SITEINFO.DAT
-        - 61850_log.txt
-      extensions:
-        - upg
-    Woodward:
-      extensions:
-        - wset
-        - tc
+# Copy the files found in directories to parse_files_dir, keeping their paths
+# relative to the directory. Files found on disk images are always copied.
+parse_copy_files: false
+
+# Search sub-directories of directories and disk image volumes
+parse_recursive: true
+
+# Filename patterns of files to copy to parse_files_dir without parsing them,
+# such as project files for devices PEAT doesn't have a module for.
+# Patterns are matched case-insensitively against the name of the file.
+# For example, "devinfo.dat" will also match "DEVINFO.DAT".
+collect_file_patterns:
+  # Siemens STEP 7 blocks
+  - "*.mc7"
+  # Schneider Electric ION meters
+  - DEVINFO.DAT
+  - SITEINFO.DAT
+  - 61850_log.txt
+  - "*.upg"
+
+# DEPRECATED: configuration for the old "peat pillage" command.
+# Use "collect_file_patterns" instead. The "filenames" and "extensions"
+# in this section are added to collect_file_patterns.
+pillage: {}
 
 # -----------------------------------------------------------------------------
 

@@ -231,7 +231,7 @@ Glossary
       Graphical editor for process logic and a standards body
 
    Pillager
-      :term:`PEAT` capability to collect artifacts (e.g. device configs or project files) from engineering workstation disk images or live machines. Refer to :ref:`pillage` for details.
+      :term:`PEAT` capability to collect artifacts (e.g. device configs or project files) from engineering workstation disk images or live machines. This is now part of ``peat parse``, refer to :ref:`parse-disk-images` for details.
 
    Podman
       Red Hat's container solution. Similar to :term:`Docker`. Further reading: `Podman documentation <http://docs.podman.io/en/latest/>`__

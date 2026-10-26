@@ -5,9 +5,9 @@ PEAT's primary interface is a command-line program with sub-commands for each fu
 
 - ``scan``: carefully discover supported devices on a network
 - ``pull``: acquire artifacts from a device, such as process logic, configuration, or firmware
-- ``parse``: parse artifacts to extract useful and human-readable logic or configuration
+- ``parse``: parse artifacts to extract useful and human-readable logic or configuration, from files, directories, drives, or disk images (refer to :ref:`parse-disk-images`)
 - ``push``: push firmware, logic, or configuration to a device
-- ``pillage``: search for :term:`OT` device-specific configuration and project files on a host machine
+- ``pillage``: (deprecated, use ``parse`` instead) search for :term:`OT` device-specific configuration and project files on a host machine
 - ``heat``: extract and parse device artifacts from network traffic captures (PCAPs)
 - ``config-builder``: interactively build a PEAT configuration file
 - ``encrypt-config``: encrypt a PEAT configuration file
@@ -32,7 +32,6 @@ Basics
    peat pull -h
    peat parse -h
    peat push -h
-   peat pillage -h
    peat encrypt-results --help
    peat decrypt-results -h
 
@@ -41,7 +40,6 @@ Basics
    peat pull --examples
    peat parse --examples
    peat push --examples
-   peat pillage --examples
    peat heat --examples
 
    # The standard PEAT Linux install has a man page available
@@ -71,11 +69,10 @@ Basics
    peat push -d <device-type> -i <ip> -- <filename>
    peat push -d <device-type> -i <ip> -t <push-type> <filename>
 
-   # Pillage
-   # NOTE: currently (04/20/2023) a configuration file with a "pillage" section is required.
-   # NOTE: pillage MUST be run as root, using sudo or by su'ing to root ("sudo su")
-   peat pillage -c ./examples/peat-config.yaml -P <raw-image-file>
-   peat pillage -c ./examples/peat-config.yaml -P <local-filesystem-path>
+   # Parsing disk images and drives
+   # NOTE: on Linux, parsing a disk image must be run as root (e.g. using sudo)
+   peat parse <disk-image-file>
+   peat parse --copy-files <local-filesystem-path>
 
    # List available device modules
    # NOTE: currently this shows ALL modules, including ones not supported for the command (e.g. scan)
@@ -84,7 +81,6 @@ Basics
    peat pull --list-modules
    peat parse --list-modules
    peat push --list-modules
-   peat pillage --list-modules
 
    # Dry run where no commands will be executed
    # Useful for understanding PEAT's behavior and experimenting with configuration
@@ -97,6 +93,8 @@ Basics
 Note about Windows usage
 ------------------------
 We recommend running in an Administrator-level PowerShell terminal or script. Running as a standard user will reduce performance slightly, since certain Windows networking APIs are restricted. This will affect some network features, such as the ability to do :term:`ICMP` pings, :term:`ARP` pings, or network sniffing. PEAT will run fine in a CMD terminal but some terminal functionality may not work as well (e.g. terminal output colors and formatting).
+
+Layer 2 features such as :term:`ARP` requests and broadcast discovery also require `Npcap <https://npcap.com/>`__. Refer to :ref:`windows-limitations-section` for the full list of differences on Windows, and :ref:`windows-ci-section` for the Windows versions PEAT is tested on.
 
 .. _output-structure:
 
@@ -130,6 +128,7 @@ The location and names of directories are configurable, refer to the :doc:`confi
 - ``logs/`` : Records of PEAT's command output, protocol logs, and other information that's useful for debugging or knowing what PEAT did. These include protocol- and module-specific log files (e.g. Telnet logs, ENIP logs).
 - ``peat_metadata/`` : files related to PEAT itself, including :term:`JSON` and :term:`YAML` formatted dumps of PEAT's configuration and internal state.
 - ``summaries/`` : Summary results of a command as :term:`JSON` files, e.g. :ref:`scan-summary`, :ref:`pull-summary`, or :ref:`parse-summary`. These include metadata about the operation (e.g., how many files were parsed), as well as a combined set of device summaries (most of the data, but some fields are excluded, like events, memory, blobs, etc.). To view the complete results for devices, look in the ``devices/`` directory.
+- ``parse_files/`` : Files found by ``peat parse`` on disk images, files matching ``collect_file_patterns``, and files found in directories with ``--copy-files`` (refer to :ref:`parse-disk-images`).
 - ``temp/`` : Temporary files, used by PEAT during a run to put files temporarily before being moved elsewhere.
 
 
@@ -175,6 +174,8 @@ The output directory structure generally looks like this:
                scan-summary.json
                pull-summary.json
                parse-summary.json
+         parse_files/
+               ...
          temp/
                ...
 
@@ -494,7 +495,7 @@ This is the standard PEAT command line interface, bundled up as a container.
    If peat is run as a container then the file path logged in the container will differ from that on host. This affects logging messages and anywhere else paths are noted or logged.
 
 .. warning::
-   Currently, PEAT Pillage **when used as a container** WILL NOT work with Windows disk images, and MAY NOT work reliably with Linux disk images. File systems WILL work if used with a volume mount, e.g. using ``-v`` with ``docker run`` (see the examples below for details). In the meantime, if you need Pillage functionality we recommend using the Linux or Windows executable version of PEAT instead of the container.
+   Currently, parsing disk images **when PEAT is used as a container** WILL NOT work with Windows disk images, and MAY NOT work reliably with Linux disk images. File systems WILL work if used with a volume mount, e.g. using ``-v`` with ``docker run`` (see the examples below for details). In the meantime, if you need to parse disk images we recommend using the Linux, Windows, or macOS executable version of PEAT instead of the container.
 
 View the command line help
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -652,98 +653,165 @@ Further reading
 - `Docker Volume documentation <https://docs.docker.com/storage/volumes/>`__
 - `Stack Overflow post explaining volumes and how to use them <https://stackoverflow.com/questions/42848279/how-to-mount-volume-from-container-to-host-in-docker?rq=1>`__
 
+.. _parse-disk-images:
+
 .. _pillage:
 
-Pillage
-=======
+Disk images
+===========
 
 Description
 -----------
-Pillage is a sub-command of PEAT that searches for relevant :term:`ICS`/:term:`OT` project files to import into PEAT for further analysis and comparison to project files retrieved elsewhere.  It can search through a specific directory on the host system, a directory that is connected/mounted to the host system, or a raw disk image for possible files.
+``peat parse`` can find and parse :term:`ICS`/:term:`OT` project files and device configurations on disk images (e.g. of an engineering workstation), live systems, and mounted drives, for further analysis and comparison to files retrieved elsewhere.
 
-The search criteria defined in the configuration file is used to validate if a file should be considered a a valid file for copying.
+- **Disk images** (raw, VMDK, qcow2, VHD, VHDX, ISO, DMG, etc.) are mounted read-only, and each volume on them is searched for files that PEAT's device modules can parse, using the same filename patterns and file signatures as any other ``peat parse`` of a directory. The files that are found are copied to the ``parse_files/<image name>/volume_<number>/`` directory in the run directory, keeping their paths on the volume, then the image is unmounted and the copies are parsed. A file with a disk image extension is only treated as a disk image if none of PEAT's device modules parse it.
+- **Directories, drives, and mount points** (e.g. ``C:\``, ``E:\``, ``/``, or ``/mnt/disk``) are searched like any other directory. To also copy the files that are found to ``parse_files/<directory name>/``, add ``--copy-files`` (or set ``parse_copy_files: true`` in a config file).
+- **Files PEAT doesn't have a module for** can be collected (copied without being parsed) with ``--collect PATTERN`` (once for each pattern) or ``collect_file_patterns`` in a config file, e.g. ``"*.mc7"`` or ``DEVINFO.DAT``. Patterns are matched case-insensitively against the name of the file. Collected files are listed in ``files_collected`` in the :ref:`parse-summary`.
+- Sub-directories are searched by default. To only search the top directory of each directory and volume, add ``--no-recursive`` (or set ``parse_recursive: false``).
+- PEAT's own output directory (``peat_results/``) is never searched, so that parsing a directory with the results of earlier runs in it doesn't parse and copy them again.
+- On disk images, only regular files on the volume are parsed: symbolic links to files outside the volume, and FIFOs and device files, are skipped. On Linux, images are mounted with ``nodev``, ``nosuid``, and ``noexec``.
 
-When a valid file is found it will be copied into a ``./pillage_results/`` directory located in the current working directory of PEAT.  The valid files are sorted into sub-directories based on the brands (plus ``DEFAULT``) defined in the pillage configuration file.  If a file is found to fit multiple brands then it will be copied into a ``MULTIPLE`` sub-directory for the user to determine which specific brand it belongs too.  For more details regarding which brands apply to a file and why it was copied review the PEAT logs after the run.
+When the source is the root of a drive, a mounted filesystem, or a disk image volume, system directories that won't have project files in them are skipped (see the notes below).
 
-Before a file is copied into a results sub-directory Pillage checks to see if a file with the same name already exists.  If it does then the new file is copied to the results sub-directory and renamed with an integer added.  For example if ``set_all.txt`` is found but a file with that same name already exists in ``./pillage_results/SEL/``, then the new file will be renamed to ``set_all.1.txt``
-
-Refer to :ref:`pillage-config` for the available options and examples.
+.. note::
+   ``peat parse`` replaces the ``peat pillage`` command, which is deprecated. ``peat pillage -P SOURCE`` still works, and is the same as ``peat parse --copy-files SOURCE``, except that it logs a warning. The ``pillage`` configuration section is also deprecated: its ``filenames`` and ``extensions`` are added to ``collect_file_patterns``, and its other options (``auto_copy``, ``recursive``, and ``locations``) are ignored. Results go in the run directory (``peat_results/<run-dir>/parse_files/``) instead of ``./pillage_results/``.
 
 Requirements
 ------------
-- Must be run on a Linux host system (Currently only tested on Ubuntu 18+)
+PEAT can search directories on any platform PEAT runs on, including a live Windows system (e.g. ``C:\``) or a mounted drive. Searching a directory doesn't require root or Administrator, but files the current user can't read will be skipped.
+
+Mounting disk images is supported on Linux, Windows, and macOS. It isn't supported in :term:`WSL`; in WSL, use ``peat.exe`` on Windows instead.
+
+Linux
+^^^^^
+- Currently only tested on Ubuntu 18+
 - Must be run as ``root``.  This is specifically needed if mounting an image.
 - ``qemu-nbd``, a part of the ``qemu-utils`` package. Installation: ``sudo apt install qemu-utils``
 - ``kmodpy`` Python package. This should be automatically installed with PEAT.
-- If pillaging a raw disk image, the host system must support the filesystem. The filesystems supported by the host can be found by:
+- If the first partition is encrypted with BitLocker, PEAT stops with an error. To search it, unlock and mount it yourself (e.g. with ``cryptsetup open --type bitlk --readonly`` or ``dislocker``), then parse the mount point.
+- If parsing a raw disk image, the host system must support the filesystem. The filesystems supported by the host can be found by:
 
   - Opening the file ``/proc/filesystems`` on the host system
   - Running ``ls -1 /lib/modules/$(uname -r)/kernel/fs`` on the host system
 
-Running Pillage
----------------
+Windows
+^^^^^^^
+- Tested on the Windows versions listed in :ref:`windows-ci-section`.
+- Disk images are mounted read-only with the built-in ``Mount-DiskImage`` PowerShell command. Every volume on the image that Windows can read (NTFS, FAT32, exFAT, ReFS) is searched. Volumes with other filesystems, such as ext4, are skipped; use Linux to parse those.
+- VHD and VHDX images must be mounted as Administrator. ISO images can be mounted as a standard user.
+- Other image formats (raw, VMDK, qcow2, etc.) are converted to a temporary VHDX file in a ``peat_image_<random>`` directory before mounting, which requires ``qemu-img.exe`` from `QEMU for Windows <https://qemu.weilnetz.de/w64/>`__ to be in the ``PATH``. The conversion makes a copy of the image, so there must be enough free disk space in the current directory to hold it. Alternatively, convert the image yourself (``qemu-img convert -O vhdx disk.vmdk disk.vhdx``) or mount it with another tool and parse its drive letter.
+- Images that were already attached before PEAT started are searched as they are, and left attached when it finishes.
+- Volumes encrypted with BitLocker are skipped with a warning, since they're locked. To search one, attach the image with ``Mount-DiskImage``, unlock the volume (e.g. in File Explorer or with ``manage-bde -unlock``), then run parse again.
+- Directory junctions (e.g. ``Documents and Settings``) aren't followed, since they point to other directories that may be searched twice. To search where a junction points, parse that directory.
 
-Example commands
-^^^^^^^^^^^^^^^^
-Pillage files from a raw disk image
+macOS
+^^^^^
+- Tested on the macOS versions listed in :ref:`platforms-section` (macOS 15 Sequoia on Apple Silicon and Intel, and macOS 26 Tahoe on Apple Silicon).
+- Disk images are attached read-only with the built-in ``hdiutil`` command, with ``-nobrowse`` so they don't show up in Finder, and their volumes are mounted in a ``/tmp/peat_image_<random>`` directory. Root isn't required, as long as the current user can read the image.
+- DMG (all variants), sparse images (``.sparseimage``), sparse bundles (``.sparsebundle``), ISO and CD/DVD master (``.cdr``) images are attached natively. Raw images (e.g. ``.img``, ``.raw``, ``.dd``, or the ``-flat.vmdk`` file of a flat VMDK disk) are attached as raw disks.
+- Other image formats (VMDK, VHD, VHDX, qcow2, etc.) are converted to a temporary raw image in a ``peat_image_<random>`` directory before attaching, which requires ``qemu-img`` (``brew install qemu``). If ``qemu-img`` is installed, it's also used to check the format of images, instead of relying on the file extension. PEAT checks there's enough free disk space in the current directory for the converted image first. On APFS the converted image is a sparse file, so it only uses as much space as the data in the image, but on HFS+, FAT, and exFAT it uses the full size of the disk.
+- Every volume macOS can read is searched: APFS (including every volume in an APFS container), HFS+, FAT32, exFAT, NTFS (read-only, which covers most Windows images), and ISO 9660/UDF. Volumes with other filesystems, such as ext4, Btrfs, or XFS, are skipped; use Linux to parse those.
+- Encrypted DMG and sparse bundle images, and encrypted APFS volumes, are unlocked with a password, which is read from the file given with ``--password-file`` (one password per line, each one is tried until one works), or prompted for if PEAT is running in a terminal and there's no password file. Passwords are passed to ``hdiutil attach -stdinpass`` and ``diskutil apfs unlockVolume -stdinpassphrase`` through stdin, so they're never on the command line, and they're never logged.
+- BitLocker and LUKS encrypted volumes are skipped with a warning, since macOS can't unlock them. Use Linux to parse those. FileVault-encrypted internal drives of Apple Silicon and T2 Macs can't be decrypted from an image either, since their keys are tied to the Mac's hardware.
+- Images that were already attached before PEAT started are searched as they are (only the volumes that are mounted), and left attached when it finishes.
+- Images in ``~/Desktop``, ``~/Documents``, ``~/Downloads``, iCloud Drive, or on removable or network volumes may need the terminal app to be allowed to access them. macOS asks the first time, or the error is "Operation not permitted".
+- E01 (EnCase) forensic images aren't supported. Use ``ewfmount`` to expose them as a raw image first, or use Linux.
+
+Parsing a live macOS system (``/``):
+
+- The macOS Data volume (``/System/Volumes/Data``) is never searched as part of ``/``, since everything in it is already searched through the firmlinks in ``/`` (e.g. ``/Users``, ``/Applications``, ``/Library``, and ``/private``).
+- macOS system directories are skipped (see the notes below), along with ``/Volumes``, ``/dev``, ``/Network``, ``/net``, and ``/home``, which other drives, disk images, network shares, and devices are mounted on. To search another drive, parse it directly (e.g. ``/Volumes/Backup``).
+- macOS privacy protections (TCC) block access to folders such as Mail, Messages, Safari, Time Machine backups, and other users' Desktop and Documents folders, even when running as root. To search them, give the terminal app PEAT runs in (e.g. Terminal) Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then restart the terminal. Folders that can't be searched are logged with a reminder of this.
+- Files in iCloud Drive and other cloud storage (e.g. ``~/Library/CloudStorage``) that haven't been downloaded to the Mac are skipped, since reading them would download them. To parse them, download them first (e.g. with "Download Now" in Finder).
+
+Examples
+--------
+Parse files on a raw disk image (on Linux, run as root to mount images)
 
 .. code-block:: bash
 
-   peat pillage -c examples/peat-config.yaml -P raw_disk.img
+   peat parse raw_disk.img
 
-
-Pillage files from VM images
-
-.. code-block:: bash
-
-   peat pillage -c examples/peat-config.yaml -P eng_vm.qcow2
-   peat pillage -c examples/peat-config.yaml -P SomeVM.vmdk
-
-
-Pillage files from a mounted drive or local directory
+Parse files on VM images
 
 .. code-block:: bash
 
-   peat pillage -c examples/peat-config.yaml -P /home/peat/pillage_this
+   peat parse eng_vm.qcow2
+   peat parse SomeVM.vmdk
 
-
-Results can also be pushed to Elasticsearch
+Parse files in a mounted drive or local directory, and copy them to ``parse_files/``
 
 .. code-block:: bash
 
-   peat pillage -e http://192.0.2.21:9200 -c examples/peat-config.yaml -P /home/peat/pillage_this
+   peat parse --copy-files /home/peat/workstation_files
+
+Also collect files PEAT doesn't have a module for, and push results to Elasticsearch
+
+.. code-block:: bash
+
+   peat parse -e http://192.0.2.21:9200 --collect '*.mc7' --collect DEVINFO.DAT SomeVM.vmdk
+
+On Windows, parse a VHDX image, the live system drive, or a mounted drive (run from an Administrator PowerShell terminal to mount images)
+
+.. code-block:: powershell
+
+   peat.exe parse C:\images\eng_workstation.vhdx
+   peat.exe parse --copy-files C:\
+   peat.exe parse --copy-files E:\
+
+On macOS, parse a DMG or VMDK image, an encrypted DMG image (or an image with encrypted APFS volumes), or the live system (root isn't required for any of them)
+
+.. code-block:: bash
+
+   peat parse ~/images/eng_workstation.dmg
+   peat parse ~/images/eng_vm.vmdk
+   peat parse --password-file passwords.txt encrypted.dmg
+   peat parse --copy-files /
 
 Command line arguments
 ^^^^^^^^^^^^^^^^^^^^^^
-- ``-c`` The PEAT configuration file to use. Refer to :ref:`pillage-config`.
-- ``-P`` The source image or directory to search
-
-Examples
-^^^^^^^^
-.. literalinclude:: ../peat/cli_args.py
-   :name: Pillage examples
-   :language: python
-   :start-after: pillage_examples = """
-   :end-before: """  # End pillage examples
+- ``--copy-files`` Copy the files found in directories to ``parse_files/`` in the run directory. Files found on disk images are always copied.
+- ``--collect PATTERN`` Filename pattern of files to copy to ``parse_files/`` without parsing them. Use it once for each pattern, and quote patterns with wildcards.
+- ``--no-recursive`` Don't search sub-directories.
+- ``--password-file`` (macOS only) File with passwords for encrypted DMG images and encrypted APFS volumes, one per line. Without it, PEAT prompts for passwords if it's running in a terminal.
 
 When things go wrong
 --------------------
-If there is a critical failure and PEAT is unable to cleanup, run the following commands to cleanup ``pillage_temp``:
+If there is a critical failure and PEAT is unable to cleanup, run the following commands to clean up on Linux (``/tmp/peat_image_<random>`` is the temporary mount directory):
 
 .. code-block:: bash
 
-   sudo umount pillage_temp
-   sudo rm -rf pillage_temp
+   sudo umount /tmp/peat_image_<random>
+   sudo rmdir /tmp/peat_image_<random>
    sudo qemu-nbd -d /dev/nbd1
    sudo rmmod nbd
 
+On Windows, unmount the image (or the converted image in ``peat_image_<random>``) and delete the ``peat_image_<random>`` directory from an Administrator PowerShell terminal:
+
+.. code-block:: powershell
+
+   Dismount-DiskImage -ImagePath C:\full\path\to\image.vhdx
+   Remove-Item -Recurse -Force peat_image_*
+
+On macOS, find the image's disk device (e.g. ``/dev/disk4``) in the output of ``hdiutil info``, detach it, and delete the temporary directories. Root isn't needed, unless the image was attached by root.
+
+.. code-block:: bash
+
+   hdiutil info
+   hdiutil detach /dev/disk4
+   # If it's busy, force it
+   hdiutil detach /dev/disk4 -force
+   rm -rf /tmp/peat_image_* peat_image_*
+
 Notes
 -----
-- If a disk image is used as the source it must be a raw disk image.  Pillage does not support any other image formats.  To use unsupported images with pillage either convert it to a raw disk image or mount it to the host filesystem manually and provide the mount point as the input source to Pillage.
-- If a disk image is used as a source Pillager will mount it (read only) to a directory prior to searching called ``pillage_temp``.  It will be located in the current working directory when Pillage is ran.  Once Pillager is complete the image will be unmounted and this directory will be removed.
-- There have been times during development and testing when the host OS would not mount the image, but if the same Pillage command was tried again after waiting a few seconds it would mount just fine.
-- If running in a VMware Workstation VM, pillage can run on a disk image or file system loaded in a shared folder. See the VMware documentation for details on how to set this up. If you run into issues, this askubuntu answer may be helpful: `How do I mount shared folders in Ubuntu using VMware tools? <https://askubuntu.com/a/1051620>`__
-- To manually mount an image in the same manner as pillage:
+- When the source is the root of a drive, a mounted filesystem, or a disk image, Windows system directories in its root (e.g. ``Windows``, ``$Recycle.Bin``, ``System Volume Information``) are skipped, since they won't have project files in them. These directories aren't skipped when searching other directories.
+- macOS system directories are skipped in the same way: ``System`` (which includes the Data volume at ``System/Volumes/Data``), ``cores``, ``private/var/vm``, ``private/var/db``, ``private/var/folders``, ``.Spotlight-V100``, ``.fseventsd``, ``.DocumentRevisions-V100``, ``.MobileBackups``, ``.Trashes``, and ``.vol``. Directories that can hold vendor software and project files, such as ``Applications``, ``Library``, ``Users``, ``opt``, ``usr/local``, and ``private/etc``, are searched.
+- On Linux, disk images must be in a format ``qemu-nbd`` can read (raw, VMDK, qcow2, VHD, VHDX, etc.), and only the first partition is searched. On Windows and macOS, all readable volumes are searched. To use an unsupported image, either convert it to a raw disk image, or mount it manually and parse the mount point.
+- On Linux, disk images are mounted (read-only) to a temporary ``peat_image_<random>`` directory in the system's temporary directory (e.g. ``/tmp``). The image is unmounted and the directory is removed when the search is finished.
+- There have been times during development and testing when the host OS would not mount the image, but if the same command was tried again after waiting a few seconds it would mount just fine.
+- If running in a VMware Workstation VM, PEAT can parse a disk image or file system loaded in a shared folder. See the VMware documentation for details on how to set this up. If you run into issues, this askubuntu answer may be helpful: `How do I mount shared folders in Ubuntu using VMware tools? <https://askubuntu.com/a/1051620>`__
+- To manually mount an image in the same way as PEAT:
 
 .. code-block:: shell
 
