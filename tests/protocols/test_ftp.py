@@ -4,6 +4,7 @@ import pytest
 
 from peat import CommError, DeviceData, config, datastore
 from peat.protocols import FTP
+from peat.protocols import ftp as ftp_module
 
 
 def test_ftp_class():
@@ -108,3 +109,53 @@ def test_ftp_login_password_registered_as_secret(mocker):
     assert inst.login("Admin", "FTP-late-pw-7f3a")
     inst.ftp.login.assert_called_once_with("Admin", "FTP-late-pw-7f3a")
     assert log_utils.redact_secrets("pw FTP-late-pw-7f3a") == "pw <redacted>"
+
+
+class _FakeListFTPLib:
+    """Stands in for ftplib.FTP, returning a fixed LIST response for every directory."""
+
+    def __init__(self, lines):
+        self.lines = lines
+        self.listed = []
+
+    def dir(self, *args):
+        *directory, callback = args
+        self.listed.append(directory[0] if directory else None)
+        for line in self.lines:
+            callback(line)
+
+
+def test_ftp_dir_skips_malformed_lines(mocker):
+    mocker.patch.object(datastore, "objects", [])
+    inst = FTP("127.0.0.1")
+    inst.ftp = _FakeListFTPLib(
+        [
+            "garbage",
+            "",
+            "total 8",
+            "-rw-r--r-- 1 0 0 NOTANUMBER JAN 01 1970 bad_size.txt",
+            "-rwxrwxrwx   1 0      0          437824 JAN 21  2011 FILE.SYS",
+        ]
+    )
+
+    names, metadata = inst.dir("/")
+    assert names == ["bad_size.txt", "FILE.SYS"]
+    assert metadata[0]["size"] == -1
+    assert metadata[1]["size"] == 437824
+    assert metadata[1]["path"] == "/FILE.SYS"
+
+
+def test_ftp_rdir_depth_limited(mocker, log_messages):
+    mocker.patch.object(datastore, "objects", [])
+    inst = FTP("127.0.0.1")
+    # Every directory contains another directory, forever
+    inst.ftp = _FakeListFTPLib(["drwxrwxrwx   5 0      0            8192 JAN 01  1970 d"])
+
+    assert inst.rdir("/")  # Previously, RecursionError
+    assert len(inst.ftp.listed) == ftp_module.MAX_RDIR_DEPTH + 1
+    assert any("directories deep" in m for m in log_messages)
+
+    inst.ftp.listed.clear()
+    _, metadata = inst.rdir("/", max_depth=5)
+    assert len(inst.ftp.listed) == 6
+    assert len(metadata) == 6

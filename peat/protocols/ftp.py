@@ -3,10 +3,14 @@ import re
 import traceback
 from io import BufferedReader, BytesIO, TextIOWrapper
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Final, Optional
 
 import peat  # Avoid circular imports
 from peat import CommError, config, consts, log, utils
+
+#: Maximum depth of directories listed by :meth:`FTP.rdir`, so a device
+#: advertising endlessly nested directories can't exhaust the recursion limit
+MAX_RDIR_DEPTH: Final[int] = 32
 
 
 class FTP:
@@ -380,6 +384,13 @@ class FTP:
             self.all_output.append(line)
 
             parts = [x.strip() for x in line.strip().split(" ") if x.strip()]
+
+            # Skip lines that aren't in the expected format, e.g. "total 8"
+            # or garbage from a misbehaving device, instead of failing
+            if len(parts) < 9:
+                self.log.debug(f"Skipping unparseable LIST line: {line!r}")
+                return
+
             name = " ".join(parts[8:])
 
             # skip "." and ".." since they're not files
@@ -399,10 +410,15 @@ class FTP:
                 # "pwd" if directory is None (a relative dir command).
                 parent = ""
 
+            try:
+                size = int(parts[4])
+            except ValueError:
+                size = -1
+
             metadata = {
                 "type": "dir" if parts[0][0] == "d" else "file",
                 "permissions": parts[0][1:],
-                "size": int(parts[4]),
+                "size": size,
                 "modified": utils.parse_date(" ".join(parts[5:8])),
                 "name": name,
                 "path": path,
@@ -425,6 +441,8 @@ class FTP:
         self,
         directory: str | None = None,
         _paths_done: set | None = None,
+        max_depth: int = MAX_RDIR_DEPTH,
+        _depth: int = 0,
     ) -> tuple[list[str], list[dict]] | None:
         """
         Recursively lists files on the server and parses metadata
@@ -435,10 +453,21 @@ class FTP:
         the calls. Refer to that method's docstring for further
         details about the returned data.
 
+        Args:
+            directory: Directory to list
+            max_depth: Maximum depth of directories to list below ``directory``.
+                Directories that are deeper are skipped with a warning.
+
         Returns:
             Tuple with list of filenames and list of dicts with file metadata,
             or :obj:`None` if the command failed.
         """
+        if _depth > max_depth:
+            self.log.warning(
+                f"Not listing '{directory}': it's more than {max_depth} directories deep"
+            )
+            return None
+
         dir_result = self.dir(directory)
         if not dir_result:
             return None
@@ -457,7 +486,7 @@ class FTP:
                     continue
                 _paths_done.add(file_dict["path"])
 
-                sub_result = self.rdir(file_dict["path"], _paths_done)
+                sub_result = self.rdir(file_dict["path"], _paths_done, max_depth, _depth + 1)
 
                 if not sub_result:
                     continue
