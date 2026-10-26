@@ -915,6 +915,12 @@ class Logic(BaseModel):
     protection schemes on a substation relay.
     """
 
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """
+    Additional unstructured information about the logic, such as
+    the structure of each statement. Device dependent.
+    """
+
     _strip_quotes = validator("author", "description", "name", "id", "parsed", allow_reuse=True)(
         strip_quotes
     )

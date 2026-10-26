@@ -1,5 +1,5 @@
 {
-    "created": "2026-10-26T03:41:38.596786",
+    "created": "2026-10-26T07:09:47.004676",
     "description": {
         "brand": "SCEPTRE",
         "full": "Sandia National Laboratories SCEPTRE",
@@ -50,7 +50,43 @@
             "sha256": "551C08F790DCC8226062DE0AB5F90F9C9FB4B76879C3D6084746901B0B3C1983",
             "sha512": "C420F70AEA6F38CB8484DBC49EF86AFF17F91DFB24125A62BFEE2B93B03734776E57637557AAAB27523FA5D146294AA642549E3AF35BF691C9F2C8315E5E5381"
         },
-        "parsed": "var_O0 = !(var_I1 >= 500.55)\nvar_O1 = var_O0,delay:20000\nvar_O11 = var_O1"
+        "parsed": "var_O0 = !(var_I1 >= 500.55)\nvar_O1 = var_O0,delay:20000\nvar_O11 = var_O1",
+        "extra": {
+            "statements": [
+                {
+                    "line": 1,
+                    "text": "var_O0 = !(var_I1 >= 500.55)",
+                    "target": "var_O0",
+                    "expression": "!(var_I1 >= 500.55)",
+                    "reads": [
+                        "var_I1"
+                    ],
+                    "ignored": false
+                },
+                {
+                    "line": 2,
+                    "text": "var_O1 = var_O0,delay:20000",
+                    "target": "var_O1",
+                    "expression": "var_O0",
+                    "reads": [
+                        "var_O0"
+                    ],
+                    "delay_cycles": 20000,
+                    "ignored": false,
+                    "delay_ms": 20000000
+                },
+                {
+                    "line": 3,
+                    "text": "var_O11 = var_O1",
+                    "target": "var_O11",
+                    "expression": "var_O1",
+                    "reads": [
+                        "var_O1"
+                    ],
+                    "ignored": false
+                }
+            ]
+        }
     },
     "interface": [
         {

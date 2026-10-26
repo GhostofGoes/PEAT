@@ -167,6 +167,7 @@ LOGIC_FIELDS: Final[NestedMappingType] = {
     "author": KEYWORD_AND_TEXT,
     "created": DATE,
     "description": KEYWORD_AND_TEXT,
+    "extra": FLATTENED,
     "file": {"properties": FILE_FIELDS},
     "formats": NESTED,
     "hash": {"properties": HASH_FIELDS},

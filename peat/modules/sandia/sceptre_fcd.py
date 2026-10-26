@@ -69,7 +69,7 @@ Data collected
 - Device type (e.g. "Relay", "RTU", or "FEP")
 - Device name (e.g. "relay-louie")
 - Cycle time
-- Logic
+- Logic, parsed into statements, with the tags each statement reads and writes
 - Tags (external and internal, with initial values)
 - Protocol data points (registers), with point options, linked to I/O
 - Protocol servers and clients, including client connections to remote servers
@@ -142,6 +142,16 @@ BOOL_VALUES: Final[dict[str, bool]] = {"true": True, "1": True, "false": False, 
 
 # Numbers a C++ stream reads as a double (not "nan", "inf", or "1_0", unlike Python's float())
 DOUBLE_PATTERN: Final[re.Pattern] = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+
+# Values bennu's LogicModule puts in place of tag names in a logic line,
+# for each tag type: "True" or "False" for binary tags, a double for analog tags
+BENNU_TAG_VALUES: Final[dict[str, str]] = {"binary": "True", "analog": "0.000000"}
+
+# Whitespace that boost::algorithm::trim removes
+LOGIC_WHITESPACE: Final[str] = " \t\n\r\v\f"
+
+INT32_MIN: Final[int] = -(2**31)
+INT32_MAX: Final[int] = 2**31 - 1
 
 FIRMWARE_PREFIX: Final[str] = "bennu-field-deviced"
 
@@ -787,6 +797,7 @@ class SCEPTRE(DeviceModule):
             parsed_logic = "\n".join(x.strip() for x in logic.splitlines() if x.strip())
             dev.logic.original = logic
             dev.logic.parsed = parsed_logic
+            extract_logic_statements(parsed_logic, dev)
             if isinstance(file, Path):
                 dev.logic.file.local_path = file
             else:
@@ -977,6 +988,186 @@ def extract_io_endpoint(module: Element, direction: str, dev: DeviceData) -> Non
                 extra={"purpose": "SCEPTRE simulation I/O"},
             )
             dev.store("interface", iface, lookup=lookup)
+
+
+def parse_logic(logic: str, tag_types: dict[str, str]) -> list[dict]:
+    """
+    Parse bennu logic into statements, the way bennu's ``LogicModule`` does.
+
+    Each non-blank line is an assignment, ``<tag> = <expression>[,delay:<cycles>]``.
+    Before evaluating a line, bennu replaces each tag name in it with the tag's
+    value: binary tags first, then analog tags, each longest name first. A name
+    is replaced anywhere in the line except at its start, if it isn't followed
+    by a letter or digit (``var_O1`` isn't replaced in ``var_O12``). This also
+    applies to the assigned tag, so a line like ``load-breaker = 1`` with a tag
+    named ``breaker`` assigns to ``load-True``, and bennu ignores it.
+
+    Args:
+        logic: The logic, as text
+        tag_types: Type of each tag, by name. bennu only has ``binary`` and
+            ``analog`` tags, so tags with other types are ignored.
+
+    Returns:
+        A dict for each non-blank line, with the line number (``line``,
+        counting non-blank lines only) and the line (``text``). For an
+        assignment, it also has the assigned tag (``target``), the
+        ``expression``, the tags the expression reads (``reads``), and its delay
+        in scan cycles (``delay_cycles``, if set). Problems bennu would have
+        with the line are listed in ``errors``, and ``ignored`` is True if
+        bennu doesn't evaluate the line.
+    """
+    # bennu replaces binary tags first, then analog tags, each longest name first
+    ordered = [
+        (name, BENNU_TAG_VALUES[tag_type])
+        for tag_type in BENNU_TAG_VALUES
+        for name in sorted(
+            (n for n, t in tag_types.items() if n and t == tag_type), key=len, reverse=True
+        )
+    ]
+    statements = []
+    lines = (line.strip(LOGIC_WHITESPACE) for line in logic.split("\n"))
+
+    for number, text in enumerate((line for line in lines if line), 1):
+        statement = {"line": number, "text": text}
+        statements.append(statement)
+
+        target, sep, rhs = text.partition("=")
+        target = target.strip(LOGIC_WHITESPACE)
+        if not sep or not target:
+            statement["errors"] = ["not an assignment"]
+            statement["ignored"] = True
+            continue
+
+        # Tags bennu looks for in this line
+        line_tags = [(name, value) for name, value in ordered if name in text]
+        new_target, _ = _replace_tags(target, line_tags, start_of_line=True)
+        new_rhs, reads = _replace_tags(rhs, line_tags, start_of_line=False)
+
+        expression = rhs.strip(LOGIC_WHITESPACE).split(",")[0]
+        statement["target"] = target
+        statement["expression"] = expression.strip(LOGIC_WHITESPACE)
+        statement["reads"] = sorted(reads)
+
+        errors = []
+        ignored = False
+        new_target = new_target.strip(LOGIC_WHITESPACE)
+        if new_target != target:
+            errors.append(
+                f"bennu replaces tag names in the assigned tag, which becomes "
+                f"'{new_target}', so the line is ignored"
+            )
+            ignored = True
+        elif tag_types.get(target) not in BENNU_TAG_VALUES:
+            errors.append("the assigned tag isn't a binary or analog tag, so the line is ignored")
+            ignored = True
+
+        # bennu reads the delay after replacing tags
+        _, *new_options = new_rhs.strip(LOGIC_WHITESPACE).split(",")
+        delay, delay_error, fatal = _logic_delay(new_options)
+        if delay:
+            statement["delay_cycles"] = delay
+        if delay_error:
+            errors.append(delay_error)
+
+        if errors:
+            statement["errors"] = errors
+        statement["ignored"] = ignored or fatal
+
+    return statements
+
+
+def _replace_tags(
+    text: str, tags: list[tuple[str, str]], start_of_line: bool
+) -> tuple[str, set[str]]:
+    """
+    Replace tag names with values, like ``LogicModule::mReplaceAllRhs`` in bennu.
+
+    Returns:
+        The text with tag names replaced, and the names that were replaced
+    """
+    replaced = set()
+    for name, value in tags:
+        pos = text.find(name)
+        while pos != -1:
+            following = text[pos + len(name) : pos + len(name) + 1]
+            if (pos != 0 or not start_of_line) and not (
+                following.isascii() and following.isalnum()
+            ):
+                text = text[:pos] + value + text[pos + len(name) :]
+                replaced.add(name)
+            # bennu searches again from the end of the name, not of the value
+            pos = text.find(name, pos + len(name))
+    return text, replaced
+
+
+def _logic_delay(options: list[str]) -> tuple[int, str | None, bool]:
+    """
+    Read the delay from the parts of a logic expression after the first comma,
+    like ``LogicModule::mGetDelay`` in bennu.
+
+    Returns:
+        The delay in scan cycles (0 if none), a problem bennu has with it,
+        and if that problem stops bennu from evaluating the line
+    """
+    if not options:
+        return 0, None, False
+    if len(options) > 1:
+        return 0, "too many commas, the delay is ignored", False
+    parts = options[0].split(":")
+    if len(parts) != 2 or parts[0] != "delay":
+        return 0, f"invalid delay '{options[0]}', the delay is ignored", False
+    # std::stoi: leading whitespace, an optional sign, then digits
+    match = re.match(r"[ \t\n\r\v\f]*([+-]?\d+)", parts[1])
+    if not match:
+        return 0, f"invalid delay '{options[0]}', the delay is ignored", False
+    delay = int(match[1])
+    if not INT32_MIN <= delay <= INT32_MAX:
+        # std::stoi throws std::out_of_range, which bennu doesn't catch
+        return 0, f"delay '{options[0]}' is out of range, which stops the field device", True
+    return max(delay, 0), None, False
+
+
+def extract_logic_statements(logic: str, dev: DeviceData) -> None:
+    """
+    Add the structure of the logic statements to ``logic.extra.statements``,
+    and the statements that read or write each tag to the tag's ``extra``
+    (``read_by_logic`` and ``written_by_logic``, as line numbers). Lines bennu
+    ignores aren't included in the tags.
+    """
+    tags = {tag.name: tag for tag in dev.tag if tag.name}
+    statements = parse_logic(logic, {name: tag.type for name, tag in tags.items()})
+
+    # bennu uses a cycle time of 1000 ms if it's missing or invalid
+    cycle_time = dev.extra.get("cycle_time")
+    if not isinstance(cycle_time, int) or cycle_time < 0:
+        cycle_time = 1000
+
+    reads: dict[str, list[int]] = {}
+    writes: dict[str, list[int]] = {}
+    for statement in statements:
+        for error in statement.get("errors", []):
+            SCEPTRE.log.warning(
+                f"Logic line {statement['line']} of {dev.get_id()}: {error}: {statement['text']}"
+            )
+        if statement.get("delay_cycles"):
+            # bennu delays an update by (delay cycles * cycle time) milliseconds
+            statement["delay_ms"] = statement["delay_cycles"] * cycle_time
+        if statement["ignored"]:
+            continue
+        writes.setdefault(statement["target"], []).append(statement["line"])
+        for name in statement["reads"]:
+            reads.setdefault(name, []).append(statement["line"])
+
+    # Set, not appended, so parsing the same config again doesn't duplicate them
+    for name, tag in tags.items():
+        tag.extra.pop("read_by_logic", None)
+        tag.extra.pop("written_by_logic", None)
+        if name in reads:
+            tag.extra["read_by_logic"] = reads[name]
+        if name in writes:
+            tag.extra["written_by_logic"] = writes[name]
+
+    dev.logic.extra["statements"] = statements
 
 
 def accepted_firmware_hashes(original: bytes) -> set[str]:
