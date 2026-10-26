@@ -8,8 +8,26 @@ from typing import Any
 
 import pymysql
 import pymysql.cursors
+from pymysql.constants import CLIENT
 
 from peat import CommError, log
+
+
+def _is_cert_verify_error(exc: BaseException) -> bool:
+    # PyMySQL wraps socket errors in OperationalError, with the original
+    # exception in "original_exception"
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        current = (
+            getattr(current, "original_exception", None)
+            or current.__cause__
+            or current.__context__
+        )
+    return False
 
 
 def quote_identifier(name: str) -> str:
@@ -40,12 +58,13 @@ class MySQL:
             this is determined by :func:`~peat.protocols.http.resolve_tls_verify`
             (the :attr:`TLS_VERIFY <peat.settings.Configuration.TLS_VERIFY>` and
             :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>`
-            settings).
+            settings, and the ``https.verify`` option of the device), the same
+            as for HTTPS.
 
     .. note::
-       TLS is used if the server supports it. PyMySQL doesn't support
-       requiring TLS, so if the server doesn't support it, the connection
-       (including authentication) is unencrypted.
+       TLS is required. If the server doesn't offer TLS (or an attacker
+       removed the offer from its greeting), the connection is refused
+       before any credentials are sent.
     """
 
     def __init__(
@@ -131,9 +150,11 @@ class MySQL:
         verify = self.tls_verify
         if verify is None:
             # Imported here to avoid a circular import
-            from peat.protocols.http import resolve_tls_verify
+            from peat.protocols.http import device_tls_verify, resolve_tls_verify
 
-            verify = resolve_tls_verify(host=f"{self.ip}:{self.port}")
+            verify = resolve_tls_verify(
+                host=f"{self.ip}:{self.port}", device_verify=device_tls_verify(self.ip)
+            )
 
         if verify is False:
             context = ssl._create_unverified_context()
@@ -162,19 +183,7 @@ class MySQL:
             return self._conn
 
         try:
-            self._conn = pymysql.connect(
-                host=self.ip,
-                port=self.port,
-                user=self.username,
-                password=self.password,
-                database=self.database or None,
-                connect_timeout=int(self.timeout),
-                read_timeout=int(self.timeout),
-                write_timeout=int(self.timeout),
-                autocommit=True,
-                ssl=self.ssl_context(),
-            )
-
+            self._conn = self._connect_tls()
             self.server_info = self._conn.get_server_info()
 
             version_str = self.server_info.split("-")[0]
@@ -187,10 +196,65 @@ class MySQL:
             self.on_connected()
 
         except Exception as exc:
-            self._conn = None
-            raise CommError(f"MySQL connect failed ({self.ip}:{self.port}): {exc}") from exc
+            self.disconnect()
+            msg = f"MySQL connect failed ({self.ip}:{self.port}): {exc}"
+            if _is_cert_verify_error(exc):
+                # Imported here to avoid a circular import
+                from peat.protocols.http import log_tls_verify_failure
+
+                log_tls_verify_failure(
+                    self.log,
+                    f"{self.ip}:{self.port}",
+                    f"MySQL connect failed: TLS certificate verification failed: {exc}",
+                )
+            raise CommError(msg) from exc
 
         return self._conn
+
+    def _connect_tls(self):
+        """
+        Connect and authenticate, refusing the connection if it isn't
+        encrypted with TLS.
+
+        PyMySQL only upgrades to TLS if the server's greeting says it supports
+        it (depending on the version, even when given an SSL context), so an
+        attacker could remove that from the greeting and receive the
+        authentication in cleartext. The check runs after the greeting is
+        read and before authentication.
+        """
+        conn = pymysql.connect(
+            host=self.ip,
+            port=self.port,
+            user=self.username,
+            password=self.password,
+            database=self.database or None,
+            connect_timeout=int(self.timeout),
+            read_timeout=int(self.timeout),
+            write_timeout=int(self.timeout),
+            autocommit=True,
+            ssl=self.ssl_context(),
+            defer_connect=True,
+        )
+        authenticate = conn._request_authentication
+
+        def _require_tls() -> None:
+            if not conn.server_capabilities & CLIENT.SSL:
+                raise CommError(
+                    "the server doesn't support TLS, refusing to send credentials unencrypted"
+                )
+            authenticate()
+
+        conn._request_authentication = _require_tls
+        conn.connect()
+
+        if getattr(conn, "_secure", False) is not True:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise CommError("the connection isn't encrypted with TLS")
+
+        return conn
 
     def connect(self) -> bool:
         """

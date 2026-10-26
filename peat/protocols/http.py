@@ -150,6 +150,42 @@ def _normalize_host(host: str) -> str:
     return host.lower().strip("[]").rstrip(".")
 
 
+def device_tls_verify(ip: str, dev: peat.data.models.DeviceData | None = None) -> bool:
+    """
+    Value of the ``https.verify`` device option for a device, which disables
+    TLS certificate verification for it if :obj:`False` (refer to
+    :func:`resolve_tls_verify`). If ``dev`` isn't given, the device is looked
+    up by its IP address, and :obj:`True` is returned if there's no such device.
+    """
+    if dev is None:
+        dev = peat.data.datastore.search(ip, "ip")
+    if dev is None:
+        return True
+    return bool(dev.options.get("https", {}).get("verify", True))
+
+
+def log_tls_verify_failure(logger, host: str, message: str) -> None:
+    """
+    Log a failed TLS certificate verification for a host, with
+    :data:`TLS_VERIFY_HINT` the first time for the host, and at DEBUG level after
+    that, since scanning a network of self-signed devices would otherwise be very noisy.
+
+    Args:
+        logger: Logger to log with, e.g. a class's bound logger
+        host: Host (and port) the connection was to
+        message: What failed, e.g. ``"Failed to GET '...': TLS certificate
+            verification failed: ..."``
+    """
+    with _tls_warn_lock:
+        first = host not in _tls_hint_hosts
+        _tls_hint_hosts.add(host)
+
+    if first:
+        logger.warning(f"{message}. {TLS_VERIFY_HINT}")
+    else:
+        logger.debug(message)
+
+
 def url_hostname(url: str) -> str:
     """
     Host name that :mod:`requests` (urllib3) connects to for a URL (lowercase,
@@ -362,17 +398,9 @@ class HTTP:
         :func:`~peat.protocols.http.resolve_tls_verify` using the global
         configuration and the device's ``https.verify`` option.
         """
-        dev = self.dev
-        if dev is None:
-            dev = peat.data.datastore.search(self.ip, "ip")
-
-        device_verify = True
-        if dev is not None:
-            device_verify = bool(dev.options.get("https", {}).get("verify", True))
-
         return resolve_tls_verify(
             host=f"{self.ip}:{self.port}",
-            device_verify=device_verify,
+            device_verify=device_tls_verify(self.ip, self.dev),
             warn=self.protocol != "http",
         )
 
@@ -831,20 +859,14 @@ class HTTP:
 
     def _log_tls_failure(self, method: str, url: str, ex: Exception) -> None:
         """
-        Log a failed TLS certificate verification, with :data:`TLS_VERIFY_HINT`
-        the first time for a host, and at DEBUG level after that, since
-        scanning a network with self-signed devices would otherwise be very noisy.
+        Log a failed TLS certificate verification (refer to
+        :func:`~peat.protocols.http.log_tls_verify_failure`).
         """
-        host = urllib.parse.urlsplit(url).netloc
-        with _tls_warn_lock:
-            first = host not in _tls_hint_hosts
-            _tls_hint_hosts.add(host)
-
-        msg = f"Failed to {method} '{url}': TLS certificate verification failed: {ex}"
-        if first:
-            self.log.warning(f"{msg}. {TLS_VERIFY_HINT}")
-        else:
-            self.log.debug(msg)
+        log_tls_verify_failure(
+            self.log,
+            urllib.parse.urlsplit(url).netloc,
+            f"Failed to {method} '{url}': TLS certificate verification failed: {ex}",
+        )
 
     def get_ssl_certificate(self) -> peat.data.models.X509 | None:
         """
@@ -1047,8 +1069,10 @@ __all__ = [
     "TLS_VERIFY_HINT",
     "PageCache",
     "SameHostSession",
+    "device_tls_verify",
     "is_safe_url",
     "is_same_host",
+    "log_tls_verify_failure",
     "resolve_tls_verify",
     "url_hostname",
 ]

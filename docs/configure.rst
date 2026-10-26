@@ -151,7 +151,7 @@ Additional topics
 
 TLS certificate verification
 ----------------------------
-PEAT verifies TLS (SSL) certificates for HTTPS connections, including connections to devices and to Elasticsearch/OpenSearch, and for MySQL/MariaDB connections (TLS is used for MySQL if the server supports it). Many older OT devices use self-signed certificates, which fail verification, and PEAT will log a warning explaining how to proceed when this happens. There are three ways to connect to these devices:
+PEAT verifies TLS (SSL) certificates for HTTPS connections, including connections to devices and to Elasticsearch/OpenSearch, and for MySQL/MariaDB connections (TLS is required for MySQL, and a server that doesn't offer it is refused before any credentials are sent). Many older OT devices use self-signed certificates, which fail verification, and PEAT will log a warning explaining how to proceed when this happens. There are three ways to connect to these devices:
 
 - **Trust the certificate (recommended)**: add the device's certificate, or the CA that issued it, to a PEM file and set :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>` (``tls_ca_bundle: /path/to/ca-bundle.pem``).
 - **Disable verification for specific hosts**: set the ``https.verify`` option to ``false`` for the host. Setting it in ``device_options`` disables verification for all devices, while still verifying the Elasticsearch server.
