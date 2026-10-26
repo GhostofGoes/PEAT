@@ -120,6 +120,7 @@ jobs:
     timeout-minutes: 45
     env:
       BENNU_FTP_PORT: 2121
+      BENNU_SERIAL_LOG: bennu-vm/serial.log
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -167,7 +168,8 @@ jobs:
         run: |
           pdm run peat pull -d sceptre -i 127.0.0.1 --assume-online -c examples/peat-config-sceptre-testing.yaml -o ./peat_results
           test -s ./peat_results/*/devices/*/ftp_files/config.xml
-          test -s ./peat_results/*/devices/*/ftp_files/bennu-field-deviced
+          # The push tests leave bennu-field-deviced.firmware on the VM, which is pulled instead
+          test -n "$(find ./peat_results -path '*/ftp_files/bennu-field-deviced*' -size +0)"
       - name: Stop bennu VM
         if: always()
         run: scripts/run-bennu-vm.sh stop ./bennu-vm

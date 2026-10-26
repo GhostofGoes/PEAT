@@ -20,7 +20,7 @@ On a phenix-deployed bennu VM, the SCEPTRE phenix app copies the device's
 of the ``sceptre`` user, which ``vsftpd`` serves over FTP (login
 ``sceptre``/``sceptre``). ``bennu-watcherd`` installs any valid firmware
 uploaded as ``bennu-field-deviced.firmware``. PEAT pulls the config and the
-firmware binary over FTP and parses the config.
+firmware binary over FTP and parses the config, and can push firmware.
 
 Development and testing of this module can be done with the pre-built bennu
 VM image from `sceptre-phenix-images
@@ -39,6 +39,20 @@ That config file sets the following options:
 - ftp.user: sceptre
 - ftp.pass: sceptre
 
+
+Firmware push
+
+.. code-block:: bash
+
+   peat push -d sceptre -i 192.0.2.10 -t firmware -- ./bennu-field-deviced
+
+The firmware is uploaded as ``bennu-field-deviced.firmware``, and
+``bennu-watcherd`` installs it and restarts the field device only if its
+SHA-256 matches the original binary or one of the two "shell" variants
+listed in ``/etc/sceptre/watcher.ini``. The watcher silently ignores any other
+file, so PEAT refuses to push it. Config pushes aren't supported, since the
+field device only reads ``/etc/sceptre/config.xml`` at startup, and that file
+isn't reachable over FTP.
 
 Listening services
 
@@ -64,6 +78,7 @@ Authors
 - Christopher Goes
 """  # noqa: E501
 
+import hashlib
 import ipaddress
 from pathlib import Path, PurePosixPath
 from random import randint
@@ -74,12 +89,14 @@ from peat import (
     IO,
     DeviceData,
     DeviceModule,
+    Event,
     Interface,
     IPMethod,
     Register,
     Service,
     Tag,
     config,
+    consts,
     datastore,
 )
 from peat.data.data_utils import match_all
@@ -212,6 +229,7 @@ class SCEPTRE(DeviceModule):
         candidates: list[str],
         fallback: str | None = None,
         extension: str = "",
+        save: bool = True,
     ) -> tuple[bytes | None, Path | None, str]:
         """
         Download a file from the FTP server's root directory.
@@ -222,6 +240,7 @@ class SCEPTRE(DeviceModule):
             fallback: if none of the candidates exist, the first file that
                 contains this string and ends with ``extension`` is used
             extension: required file extension for the fallback match
+            save: if the file should be written to the device's output directory
 
         Returns:
             The file data (or :obj:`None` if the download failed), the path of
@@ -265,7 +284,7 @@ class SCEPTRE(DeviceModule):
                 # Only use the base name locally, the name comes from the server
                 filename = PurePosixPath(remote_name).name
                 downloaded_path = None
-                if config.DEVICE_DIR:
+                if save and config.DEVICE_DIR:
                     downloaded_path = dev.write_file(
                         data=data,
                         filename=filename,
@@ -322,14 +341,34 @@ class SCEPTRE(DeviceModule):
 
         Files are tried in this order:
 
-        1. ``bennu-field-deviced.firmware``, the last firmware uploaded.
+        1. ``bennu-field-deviced.firmware``, the last firmware uploaded, if
+           ``bennu-watcherd`` accepts it (see :func:`accepted_firmware_hashes`),
+           meaning it's installed. A file the watcher rejects is still saved, but
+           the original binary is the one running.
         2. ``bennu-field-deviced``, phenix's copy of the original binary
            (``/usr/bin/bennu-field-deviced``).
         3. The first file starting with ``bennu-field-deviced``.
         """
-        data, file_path, filename = cls._download_ftp(
-            dev, [FIRMWARE_UPLOAD_NAME, FIRMWARE_PREFIX], FIRMWARE_PREFIX
-        )
+        uploaded, uploaded_path, uploaded_name = cls._download_ftp(dev, [FIRMWARE_UPLOAD_NAME])
+        original, original_path, original_name = cls._download_ftp(dev, [FIRMWARE_PREFIX])
+
+        if uploaded is not None and (
+            original is None
+            or hashlib.sha256(uploaded).hexdigest() in accepted_firmware_hashes(original)
+        ):
+            data, file_path, filename = uploaded, uploaded_path, uploaded_name
+        elif original is not None:
+            if uploaded is not None:
+                cls.log.warning(
+                    f"'{FIRMWARE_UPLOAD_NAME}' on {dev.ip} isn't firmware bennu-watcherd "
+                    f"accepts, so the original binary '{FIRMWARE_PREFIX}' is running"
+                )
+            data, file_path, filename = original, original_path, original_name
+        else:
+            data, file_path, filename = cls._download_ftp(dev, [], FIRMWARE_PREFIX)
+
+        # Both files are saved, since a rejected upload is useful evidence
+        dev.related.files.update(name for name in (uploaded_name, original_name) if name)
 
         if data is None:
             cls.log.error(f"Failed to pull firmware from {dev.ip}")
@@ -352,8 +391,91 @@ class SCEPTRE(DeviceModule):
         return data
 
     @classmethod
+    def _push(
+        cls,
+        dev: DeviceData,
+        to_push: str | bytes | Path,
+        push_type: consts.PushType,
+    ) -> bool:
+        """
+        Push firmware to a bennu field device.
+
+        The firmware is uploaded over FTP as ``bennu-field-deviced.firmware``.
+        ``bennu-watcherd`` checks the SHA-256 of that file every 10 ms. When it
+        differs from the last firmware the watcher installed and is one of the
+        hashes in ``/etc/sceptre/watcher.ini``, the watcher stops the field device,
+        copies the file to ``/usr/bin/bennu-field-deviced``, and restarts the
+        field device. Any other file is ignored.
+
+        PEAT can't read ``watcher.ini``, so it computes the accepted hashes from
+        phenix's copy of the original binary on the FTP server (see
+        :func:`accepted_firmware_hashes`). Firmware the watcher would ignore isn't
+        uploaded. If the original binary can't be downloaded, the firmware is
+        uploaded without the check. PEAT can't confirm the watcher installed the
+        firmware, only that the upload worked.
+
+        Config pushes aren't supported. The field device only reads
+        ``/etc/sceptre/config.xml`` when it starts, and that file is outside
+        of the FTP server's root directory.
+        """
+        if push_type != "firmware":
+            cls.log.error(
+                f"Push of '{push_type}' to {dev.ip} isn't supported: bennu field devices "
+                f"only read their config at startup, from a file outside the FTP root"
+            )
+            return False
+
+        try:
+            firmware = to_push.read_bytes() if isinstance(to_push, Path) else to_push
+        except OSError as err:
+            cls.log.error(f"Firmware push to {dev.ip} failed: couldn't read {to_push}: {err}")
+            return False
+        if not isinstance(firmware, bytes) or not firmware:
+            cls.log.error(
+                f"Firmware push to {dev.ip} failed: firmware must be a non-empty file or bytes"
+            )
+            return False
+
+        # Copy of the original binary, used to compute the hashes the watcher accepts
+        original, _, _ = cls._download_ftp(dev, [FIRMWARE_PREFIX], save=False)
+        if original is None:
+            cls.log.warning(
+                f"Couldn't download '{FIRMWARE_PREFIX}' from {dev.ip} to check if "
+                f"bennu-watcherd will install the firmware"
+            )
+        elif hashlib.sha256(firmware).hexdigest() not in accepted_firmware_hashes(original):
+            cls.log.error(
+                f"Firmware push to {dev.ip} failed: the firmware doesn't match the original "
+                f"'{FIRMWARE_PREFIX}' binary or its shell variants, so bennu-watcherd "
+                f"wouldn't install it"
+            )
+            return False
+
+        success = cls._upload_ftp(dev, FIRMWARE_UPLOAD_NAME, firmware)
+        dev.store(
+            "event",
+            Event(
+                action="file_push",
+                outcome="success" if success else "failure",
+                message=f"{'Pushed' if success else 'Failed to push'} firmware "
+                f"'{FIRMWARE_UPLOAD_NAME}' ({len(firmware)} bytes)",
+            ),
+            append=True,
+        )
+        return success
+
+    @classmethod
     def _upload_ftp(cls, dev: DeviceData, filename: str, content: str | bytes) -> bool:
-        if not isinstance(content, (str, bytes)):
+        """
+        Upload a file to the FTP server's root directory.
+
+        Text is encoded as UTF-8. Everything is uploaded in binary mode, so
+        the server can't change line endings. The upload is checked by
+        comparing the file size on the server, if the server supports ``SIZE``.
+        """
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        if not isinstance(content, bytes):
             cls.log.error(f"Cannot upload data with type '{type(content).__name__}'")
             return False
 
@@ -367,18 +489,28 @@ class SCEPTRE(DeviceModule):
                 password = dev.options["ftp"]["pass"]
 
                 if not ftp.login(username, password):
+                    cls.log.error(f"Failed to upload {filename} to {dev.ip}: login failed")
                     return False
 
                 dev.related.user.add(username)
+                ftp.upload_binary(filename, content)
 
-                if isinstance(content, str):
-                    ftp.upload_text(filename, content)
-                else:
-                    ftp.upload_binary(filename, content)
+                try:
+                    remote_size = ftp.file_size(filename)
+                except ValueError:  # Non-numeric SIZE reply
+                    remote_size = None
+                if remote_size is not None and remote_size != len(content):
+                    cls.log.error(
+                        f"Failed to upload {filename} to {dev.ip}: file on the server "
+                        f"is {remote_size} bytes, expected {len(content)} bytes"
+                    )
+                    return False
         except Exception as err:
-            cls.log.debug(f"Failed to upload file {filename} to {dev.ip}: {err}")
+            cls.log.error(f"Failed to upload {filename} to {dev.ip}: {err}")
             return False
 
+        dev.related.files.add(filename)
+        cls.log.info(f"Uploaded {filename} ({len(content)} bytes) to {dev.ip}")
         return True
 
     @classmethod
@@ -733,6 +865,29 @@ def extract_io_endpoint(module: Element, direction: str, dev: DeviceData) -> Non
                 extra={"purpose": "SCEPTRE simulation I/O"},
             )
             dev.store("interface", iface, lookup=lookup)
+
+
+def accepted_firmware_hashes(original: bytes) -> set[str]:
+    """
+    SHA-256 hashes of the firmware that ``bennu-watcherd`` will install.
+
+    These are the hashes the phenix SCEPTRE app writes to
+    ``/etc/sceptre/watcher.ini`` (``sceptre_start.mako`` in
+    `sceptre-phenix-apps <https://github.com/sandialabs/sceptre-phenix-apps>`__):
+    the original ``bennu-field-deviced`` binary, and two variants with its
+    ``SHELL_0`` marker changed to ``SHELL_1``.
+
+    Args:
+        original: The original ``bennu-field-deviced`` binary
+
+    Returns:
+        The accepted hashes, as lowercase hex strings
+    """
+    return {
+        hashlib.sha256(original).hexdigest(),  # reghash
+        hashlib.sha256(original.replace(b"_SHELL_0", b"_SHELL_1")).hexdigest(),  # shellhashA
+        hashlib.sha256(original.replace(b"SHELL_0", b"SHELL_1")).hexdigest(),  # shellhashB
+    }
 
 
 def _store_interface(dev: DeviceData, protocol: str, ip: str = "", serial_port: str = "") -> dict:

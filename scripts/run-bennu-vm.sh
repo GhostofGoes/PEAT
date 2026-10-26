@@ -108,6 +108,8 @@ cp /usr/bin/bennu-field-deviced /etc/sceptre/config.xml /home/sceptre/
 chown sceptre:sceptre /home/sceptre/*
 systemd-run --scope --unit=bennu-watcherd bennu-watcherd restart --f /etc/sceptre/config.xml --b /home/sceptre/bennu-field-deviced.firmware --w /etc/sceptre/watcher.ini
 systemctl restart vsftpd
+# Copy the watcher log (firmware updates, device restarts) to the serial log
+systemd-run --unit=bennu-watcher-log sh -c 'exec tail -n +1 -F /etc/sceptre/log/watcher-stdout.log > /dev/ttyS0'
 sleep 5
 ls -la /home/sceptre
 ps aux | grep '[b]ennu'
