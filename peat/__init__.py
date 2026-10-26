@@ -10,6 +10,12 @@ from loguru import logger as log  # convenience
 # reject absolute paths, ".." traversals, links outside the destination,
 # and device files ("data" filter, PEP 706). This is already the default
 # in Python 3.14+, but must be set explicitly for older versions.
+#
+# NOTE: this is process-wide, so it also applies to any other code in the
+# same process that extracts archives without passing "filter=", e.g. a
+# program using PEAT as a library. Such code that needs to extract trusted
+# archives with links outside the destination or device files must pass
+# "filter='fully_trusted'" (or "tar"), as it would on Python 3.14+.
 if hasattr(tarfile, "data_filter"):  # Python 3.11.4+
     tarfile.TarFile.extraction_filter = staticmethod(tarfile.data_filter)
 
