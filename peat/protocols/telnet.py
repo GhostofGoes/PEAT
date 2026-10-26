@@ -226,7 +226,7 @@ class Telnet:
         """
         self.raw_output.append(raw_data)
 
-        data = raw_data.decode(self.ENCODING)
+        data = raw_data.decode(self.ENCODING, errors="replace")
         self.all_output.append(data)
 
         if "Goodbye" in data:

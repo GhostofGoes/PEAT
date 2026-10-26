@@ -42,3 +42,11 @@ def test_telnet_write_sensitive_not_logged(mocker, log_messages, command):
     assert any("<redacted>" in m for m in log_messages)
     assert not any("Hunter2-UNIQUE-pw" in m for m in log_messages)
     peer.close()
+
+
+def test_telnet_add_data_non_utf8(mocker):
+    mocker.patch.dict(config["CONFIG"], {"LOG_DIR": None})
+    tn = telnet.Telnet("127.0.0.1")
+    # Previously, UnicodeDecodeError discarded the whole read
+    assert tn._add_data(b"\xffVxWorks\xfe login: ") == "�VxWorks� login:"
+    assert tn.raw_output[-1] == b"\xffVxWorks\xfe login: "
