@@ -36,8 +36,18 @@ _session_host_keys: Final = paramiko.HostKeys()
 _known_hosts_warned: Final[set[str]] = set()
 
 #: Errors from reading or writing a known_hosts file (ValueError includes
-#: UnicodeDecodeError from a file that isn't text)
-_KNOWN_HOSTS_ERRORS: Final = (OSError, ValueError, paramiko.SSHException)
+#: UnicodeDecodeError from a file that isn't text; paramiko raises
+#: InvalidHostKey, which is NOT a SSHException, for a line with a bad key)
+_KNOWN_HOSTS_ERRORS: Final = (
+    OSError,
+    ValueError,
+    paramiko.SSHException,
+    paramiko.hostkeys.InvalidHostKey,
+)
+
+#: How many times to retry replacing the known_hosts file on Windows, where
+#: os.replace() fails while another process has the file open for reading
+_REPLACE_ATTEMPTS: Final = 10
 
 
 def host_key_fingerprint(key: paramiko.PKey) -> str:
@@ -129,7 +139,14 @@ def save_host_key(path: Path, hostname: str, key: paramiko.PKey, replace: bool =
         os.close(fd)
         try:
             host_keys.save(tmp_name)
-            os.replace(tmp_name, real_path)
+            for attempt in range(_REPLACE_ATTEMPTS):
+                try:
+                    os.replace(tmp_name, real_path)
+                    break
+                except PermissionError:
+                    if attempt == _REPLACE_ATTEMPTS - 1:
+                        raise
+                    sleep(0.05)
         except BaseException:
             Path(tmp_name).unlink(missing_ok=True)
             raise

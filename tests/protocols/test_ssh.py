@@ -279,7 +279,10 @@ def test_ssh_known_hosts_errors(ssh_server, known_hosts, log_messages, mocker, p
         mocker.patch.dict(config["CONFIG"], {"SSH_KNOWN_HOSTS": known_hosts})
     else:
         known_hosts.parent.mkdir()
-        known_hosts.write_bytes(b"\xff\xfe not a known_hosts file\n")
+        # Invalid UTF-8 (a UnicodeDecodeError on POSIX) and, where the locale
+        # encoding accepts those bytes (Windows), a line with a bad key
+        corrupt = b"\xff\xfe not a known_hosts file\nhost ssh-rsa not-a-key\n"
+        known_hosts.write_bytes(corrupt)
     original = known_hosts.parent.read_bytes() if problem == "unwritable" else b""
 
     # Connections still work, with a single warning about the file
@@ -293,7 +296,7 @@ def test_ssh_known_hosts_errors(ssh_server, known_hosts, log_messages, mocker, p
     if problem == "unwritable":
         assert known_hosts.parent.read_bytes() == original
     else:
-        assert known_hosts.read_bytes() == b"\xff\xfe not a known_hosts file\n"
+        assert known_hosts.read_bytes() == corrupt
 
     # A key that changes during the run is still refused
     ssh_server.host_key = paramiko.RSAKey.generate(1024)
