@@ -22,6 +22,12 @@ def test_url():
     assert Elastic(safe_url).safe_url == safe_url
 
 
+def test_repr_hides_password():
+    es = Elastic("http://elastic:Marker-PW-5a7c@localhost:9200")
+    assert "Marker-PW-5a7c" not in repr(es)
+    assert repr(es) == 'Elastic("http://localhost:9200/")'
+
+
 def test_bencode():
     assert Elastic.bencode(b"") == ""
     assert Elastic.bencode(b"1234") == "MTIzNA=="

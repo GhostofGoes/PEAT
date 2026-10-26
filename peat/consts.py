@@ -190,6 +190,159 @@ def convert(value: Any) -> str | bool | int | float | list | dict | None:
         return str(value)
 
 
+#: Replaces secret values (e.g. passwords) in logs and results
+REDACTED: Final[str] = "<redacted>"
+
+#: Keys (e.g. in device options and configuration files) with values that are
+#: secrets (passwords, SNMP communities, etc.)
+SECRET_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "pass",
+        "passwd",
+        "password",
+        "passphrase",
+        "community",
+        "communities",
+        "creds",
+        "passwords",
+        "meter_pass",
+    }
+)
+
+#: Command line options with values that are secrets
+SECRET_CLI_OPTIONS: Final[tuple[str, ...]] = ("-p", "--password")
+
+#: Command line options with values that are URLs that may include credentials
+URL_CLI_OPTIONS: Final[tuple[str, ...]] = (
+    "-e",
+    "--elastic-server",
+    "--opensearch-server",
+    "--heat-elastic-server",
+)
+
+
+def redact_url(url: str, require_scheme: bool = True) -> str:
+    """
+    Redact the password (or token) in the user information of a URL, e.g.
+    ``https://elastic:changeme@localhost:9200/`` becomes
+    ``https://elastic:<redacted>@localhost:9200/``.
+
+    Args:
+        url: The URL to redact
+        require_scheme: Only redact URLs with a scheme (e.g. ``https://``).
+            If :obj:`False`, ``user:password@host`` is also redacted.
+
+    Returns:
+        The URL with the password redacted, or the original value if there isn't one
+    """
+    if not isinstance(url, str) or "@" not in url:
+        return url
+
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        if require_scheme:
+            return url
+        scheme, rest = "", url
+
+    netloc, slash, path = rest.partition("/")
+    if "@" not in netloc:
+        return url
+
+    userinfo, _, host = netloc.rpartition("@")
+    user, colon, _ = userinfo.partition(":")
+    userinfo = f"{user}:{REDACTED}" if colon else REDACTED
+
+    return f"{scheme}{sep}{userinfo}@{host}{slash}{path}"
+
+
+def redact_argv(argv: list[str]) -> list[str]:
+    """
+    Redact secrets in command line arguments, so they can be recorded in logs
+    and results: the values of :data:`SECRET_CLI_OPTIONS` (e.g. ``-p <password>``)
+    and passwords in URLs (e.g. ``-e https://user:password@host:9200/``).
+    """
+    redacted = []
+    redact_next = False
+    url_next = False
+
+    for arg in argv:
+        if redact_next:
+            redacted.append(REDACTED)
+            redact_next = False
+            continue
+
+        if url_next:
+            redacted.append(redact_url(arg, require_scheme=False))
+            url_next = False
+            continue
+
+        option, eq, _ = arg.partition("=")
+        if arg in SECRET_CLI_OPTIONS:
+            redact_next = True
+        elif arg in URL_CLI_OPTIONS:
+            url_next = True
+        elif (
+            eq and option.startswith("--") and len(option) > 3 and "--password".startswith(option)
+        ):
+            # "--password=secret", including abbreviations argparse accepts ("--pass=")
+            arg = f"{option}={REDACTED}"
+        elif eq and option in URL_CLI_OPTIONS:
+            arg = f"{option}={redact_url(arg[len(option) + 1 :], require_scheme=False)}"
+        elif arg.startswith("-p") and not arg.startswith("--") and len(arg) > 2:
+            arg = f"-p{REDACTED}"  # "-psecret"
+        elif arg.startswith("--") and len(arg) > 3 and "--password".startswith(arg):
+            redact_next = True  # "--pass secret"
+        else:
+            arg = redact_url(arg)
+
+        redacted.append(arg)
+
+    return redacted
+
+
+def redact_secrets(value: Any, is_secret: bool = False) -> Any:
+    """
+    Redact secrets in configuration values (e.g. an export of the configuration):
+    the values of keys in :data:`SECRET_KEYS` (at any depth, e.g. in device
+    options) and passwords in URLs. The structure of the values is kept, e.g.
+    ``creds: [[user, password]]`` becomes ``creds: [[user, <redacted>]]``.
+
+    Returns:
+        A redacted copy of the value (the value isn't modified)
+    """
+    if isinstance(value, dict):
+        return {
+            key: redact_secrets(val, is_secret or str(key).lower() in SECRET_KEYS)
+            for key, val in value.items()
+        }
+
+    if isinstance(value, list | tuple | set):
+        items = []
+        for item in value:
+            if (
+                is_secret
+                and isinstance(item, list | tuple)
+                and len(item) == 2
+                and all(isinstance(v, str) for v in item)
+            ):
+                # A (username, password) pair, e.g. "creds: [[user, pass], ...]"
+                pair = [item[0], REDACTED]
+                items.append(pair if isinstance(item, list) else tuple(pair))
+            else:
+                items.append(redact_secrets(item, is_secret))
+        return items if not isinstance(value, tuple) else tuple(items)
+
+    if isinstance(value, str):
+        if is_secret:
+            return REDACTED if value else value
+        return redact_url(value)
+
+    if is_secret and isinstance(value, int | float | bytes) and not isinstance(value, bool):
+        return REDACTED
+
+    return value
+
+
 def get_platform_info() -> dict[str, str | int | bool]:
     """
     Collect information about the system PEAT is running on.
@@ -221,8 +374,11 @@ def get_platform_info() -> dict[str, str | int | bool]:
     info["tcpdump"] = str(tcpdump) if tcpdump else ""
 
     if len(sys.argv) > 1:
-        info["cli_exe"] = sys.argv[0]
-        info["cli_arguments"] = " ".join(sys.argv[1:])
+        # NOTE: secrets (e.g. "-p <password>") are redacted, since
+        # this is recorded in the logs and results
+        argv = redact_argv(sys.argv)
+        info["cli_exe"] = argv[0]
+        info["cli_arguments"] = " ".join(argv[1:])
 
     if LINUX:
         try:

@@ -1,6 +1,7 @@
 import json
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -396,3 +397,77 @@ def test_cli_results_decryption(run_peat, tmp_path, mock_encrypted_peat_results)
     run_peat(args)[0]
 
     assert tmp_path / "unencrypted" / "mock_peat_results.zip"
+
+
+SECRET_MARKER = "Marker-PW-c0ffee"
+
+
+def _files_with_text(path: Path, text: str) -> list[str]:
+    return [
+        f.as_posix() for f in path.rglob("*") if f.is_file() and text.encode() in f.read_bytes()
+    ]
+
+
+@pytest.mark.slow
+def test_cli_results_do_not_contain_secrets(exec_peat, tmp_path, assert_meta_files):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        f"""
+device_options:
+  ssh:
+    pass: "{SECRET_MARKER}"
+  snmp:
+    communities: ["{SECRET_MARKER}"]
+  sel:
+    creds: [["acc", "{SECRET_MARKER}"]]
+heat_elastic_server: "http://heat:{SECRET_MARKER}@127.0.0.1:1/"
+""",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    args = ["parse", "-d", "m340", "-c", config_file.as_posix(), "--run-dir", run_dir.as_posix()]
+
+    result = exec_peat([*args, "nonexistent-file.apx"])
+    assert result.returncode == 1  # the file doesn't exist
+    assert_meta_files(run_dir)
+    assert (run_dir / "peat_metadata" / "config.yaml").is_file()  # copy of config file
+    assert not _files_with_text(run_dir, SECRET_MARKER)
+    assert SECRET_MARKER not in result.stdout.decode() + result.stderr.decode()
+
+    # The command line is recorded in the logs, even when PEAT fails to start
+    es_dir = tmp_path / "run-es"
+    es_url = f"http://elastic:{SECRET_MARKER}@127.0.0.1:1/"  # nothing is listening
+    args = ["parse", "-d", "m340", "-e", es_url, "--run-dir", es_dir.as_posix()]
+
+    result = exec_peat([*args, "nonexistent-file.apx"])
+    assert result.returncode == 1
+    assert (es_dir / "logs" / "json-log.jsonl").is_file()
+    assert (es_dir / "logs" / "debug-info.txt").is_file()
+    assert not _files_with_text(es_dir, SECRET_MARKER)
+    assert SECRET_MARKER not in result.stdout.decode() + result.stderr.decode()
+
+
+@pytest.mark.slow
+def test_cli_config_encryption_no_results(run_peat, tmp_path, examples_dir):
+    config_file = tmp_path / "example_config.yaml"
+    shutil.copy(src=examples_dir / "encryption" / "example_config.yaml", dst=config_file)
+    run_dir = tmp_path / "run"
+
+    args = ["encrypt", "-f", config_file.as_posix(), "-p", SECRET_MARKER]
+    stdout, stderr = run_peat([*args, "--run-dir", run_dir.as_posix()])
+
+    encrypted = tmp_path / "encrypted_example_config.yaml"
+    assert encrypted.is_file()
+    # No results (e.g. logs with the command line) are saved
+    assert not run_dir.exists()
+    assert not _files_with_text(tmp_path, SECRET_MARKER)
+    assert SECRET_MARKER not in stdout + stderr
+
+    decrypted_dir = tmp_path / "decrypted"
+    decrypted_dir.mkdir()
+    args = ["decrypt", "-f", encrypted.as_posix(), "-p", SECRET_MARKER, "-w", decrypted_dir]
+    run_peat([*args, "--run-dir", run_dir.as_posix()])
+
+    assert (decrypted_dir / "decrypted_config.yaml").is_file()
+    assert not run_dir.exists()
+    assert not _files_with_text(tmp_path, SECRET_MARKER)

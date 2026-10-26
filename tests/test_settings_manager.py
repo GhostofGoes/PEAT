@@ -97,6 +97,42 @@ def test_export(settings_instance):
     assert settings_instance.export() == {"ALPHA": False, "ENV_PREFIX": "TEST_"}
 
 
+def test_export_redacts_secrets(tmp_path):
+    password = "Marker-PW-41f0"
+
+    class SecretSettings(SettingsManager):
+        ELASTIC_SERVER: str = ""
+        DEVICE_OPTIONS: dict = {}
+
+    settings = SecretSettings(label="configuration", env_prefix="TEST_", init_env=False)
+    settings.ELASTIC_SERVER = f"https://elastic:{password}@localhost:9200/"
+    settings.DEVICE_OPTIONS = {
+        "ssh": {"user": "admin", "pass": password},
+        "snmp": {"communities": [password]},
+        "sel": {"creds": [["acc", password]]},
+    }
+
+    exported = settings.export()
+    assert exported["ELASTIC_SERVER"] == "https://elastic:<redacted>@localhost:9200/"
+    assert exported["DEVICE_OPTIONS"] == {
+        "ssh": {"user": "admin", "pass": "<redacted>"},
+        "snmp": {"communities": ["<redacted>"]},
+        "sel": {"creds": [["acc", "<redacted>"]]},
+    }
+    assert password not in settings.yaml()
+    assert password not in settings.json()
+
+    settings.save_to_file(outdir=tmp_path)
+    for name in ["peat_configuration.json", "peat_configuration.yaml"]:
+        text = (tmp_path / name).read_text(encoding="utf-8")
+        assert password not in text, name
+        assert "<redacted>" in text, name
+
+    # The values used by PEAT aren't changed
+    assert settings.DEVICE_OPTIONS["ssh"]["pass"] == password
+    assert password in settings.ELASTIC_SERVER
+
+
 def test_yaml(settings_instance):
     assert settings_instance.yaml()
     assert yaml.safe_load(settings_instance.yaml()) == lower_dict(settings_instance.export())

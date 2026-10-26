@@ -8,7 +8,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 import yaml
 from loguru import logger as log
 
-from .consts import PeatError, convert, lower_dict, str_to_bool
+from .consts import PeatError, convert, lower_dict, redact_secrets, str_to_bool
 
 
 # Source: https://github.com/python-discord/bot
@@ -309,11 +309,16 @@ class SettingsManager(dict):
         """
         Current values in a deterministic format that can be exported.
 
+        Secrets are redacted with :func:`~peat.consts.redact_secrets`
+        (e.g. device passwords and SNMP communities, and passwords in
+        Elasticsearch server URLs), since the export is saved to files
+        in the results and to Elasticsearch.
+
         Returns:
             JSON-serializable :class:`dict` with uppercase keys, sorted
             "alphabetically" by key (well, technically UNICODE order).
         """
-        dict_config = dict(self.json_dict())
+        dict_config = redact_secrets(dict(self.json_dict()))
         sorted_config = sorted(dict_config.items(), key=lambda x: str(x[0]))
 
         return dict(sorted_config)

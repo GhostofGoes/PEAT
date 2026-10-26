@@ -204,7 +204,9 @@ Auto-generated configs
 ----------------------
 Every run of PEAT generates a YAML file with the configuration values from the run in the path set by :attr:`META_DIR <peat.settings.Configuration.META_DIR>`, which by default is ``./peat_results/*/peat_metadata/``. This contains values for all configurations, regardless of their source, and is the single source of truth for how PEAT was configured at the end of a run. Note that if you used a config file for the run the auto-generated config may not match the config file you specified exactly.
 
-These auto-generated configuration files can also be safely reused in a future run without modification. For example, ``peat scan -c ./peat_results/*/peat_metadata/peat_configuration.yaml -i 192.0.2.0/24``. This can help ensure consistency between runs, simplifies the process of reproducibility (redoing the same run in the same manner at a later date), and saves typing.
+These auto-generated configuration files can also be reused in a future run. For example, ``peat scan -c ./peat_results/*/peat_metadata/peat_configuration.yaml -i 192.0.2.0/24``. This can help ensure consistency between runs, simplifies the process of reproducibility (redoing the same run in the same manner at a later date), and saves typing.
+
+Secrets are redacted (replaced with ``<redacted>``) in the auto-generated configs, in the copy of the config file saved to :attr:`META_DIR <peat.settings.Configuration.META_DIR>`, in the configuration saved to Elasticsearch, and in the command line recorded in the logs. This includes device passwords and SNMP communities (e.g. ``pass``, ``password``, ``community``, and ``creds`` in ``device_options``) and passwords in Elasticsearch server URLs. If you reuse an auto-generated config, set the secrets again (e.g. in the config file or with environment variables).
 
 JSON file
 ---------

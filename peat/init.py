@@ -1,7 +1,11 @@
+import json
 import sys
 from copy import deepcopy
 from pathlib import Path
 from pprint import pformat
+from typing import Final
+
+import yaml
 
 from peat import (
     DeviceData,
@@ -20,7 +24,51 @@ from peat import (
 )
 from peat.data.default_options import DEFAULT_OPTIONS
 
-from .log_utils import print_logo, setup_logging
+from .log_utils import print_logo, register_secret, setup_logging
+
+#: CLI commands that only encrypt or decrypt files. These don't create a
+#: results directory or log files (which would record the command line).
+CRYPTO_COMMANDS: Final[frozenset[str]] = frozenset(
+    {"encrypt_config", "decrypt_config", "encrypt_results", "decrypt_results"}
+)
+
+
+def copy_config_file(src: Path, dest: Path) -> bool:
+    """
+    Copy a configuration file to the results, with secrets (e.g. device passwords
+    and SNMP communities, and passwords in Elasticsearch server URLs) redacted
+    by :func:`~peat.consts.redact_secrets`. Encrypted configuration files are
+    copied as-is.
+
+    .. note::
+       Comments and formatting of YAML files aren't kept.
+
+    Returns:
+        If the file was copied
+    """
+    try:
+        text = src.read_text(encoding="utf-8")
+        if config_crypto.check_header(text):
+            utils.copy_file(src, dest)
+            return True
+
+        is_json = src.suffix.lower() == ".json"
+        data = json.loads(text) if is_json else yaml.safe_load(text)
+        if not isinstance(data, dict):
+            raise ValueError("not a dictionary")
+    except (OSError, ValueError, yaml.YAMLError) as ex:
+        log.warning(f"Not saving a copy of config file '{src.name}' to the results: {ex}")
+        return False
+
+    redacted = consts.redact_secrets(data)
+    if is_json:  # write_file() formats the data as JSON
+        return utils.write_file(redacted, dest)
+
+    content = (
+        f"# Copy of {src.name} with secrets redacted by PEAT\n"
+        f"{yaml.safe_dump(redacted, sort_keys=False)}"
+    )
+    return utils.write_file(content, dest)
 
 
 def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -> None:
@@ -108,8 +156,17 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         if conf.get(list_arg):
             return
 
+    # Commands that only encrypt or decrypt files don't need a results directory.
+    # Their command line may include the password ("-p"), and the log files
+    # would otherwise be written in plaintext next to the encrypted files.
+    if entrypoint == "CLI" and conf.get("func") in CRYPTO_COMMANDS:
+        register_secret(conf.get("user-password"))
+        config.OUT_DIR = None  # type: ignore[assignment]
+        config.fixup_dirs(None, "OUT_DIR", override_all=True)
+        config.RUN_DIR = None  # type: ignore[assignment]
+        config.fixup_dirs(None, "RUN_DIR", override_all=True)
     # Hack to configure output directories
-    if conf.get("out_dir"):
+    elif conf.get("out_dir"):
         config.fixup_dirs(config.OUT_DIR, "OUT_DIR", override_all=True)
     elif entrypoint == "Package" and "out_dir" in conf and conf["out_dir"] is None:
         config.OUT_DIR = None
@@ -168,10 +225,10 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         debug_info_file=debug_info_file,
     )
 
-    # Copy original config file
+    # Copy original config file (with any secrets redacted)
     if conf.get("config_file") and config.META_DIR:
         config_path = Path(conf["config_file"]).resolve()
-        utils.copy_file(config_path, config.META_DIR / config_path.name)
+        copy_config_file(config_path, config.META_DIR / config_path.name)
 
     # Output messages to user now that logging is configured
     config_name = ""

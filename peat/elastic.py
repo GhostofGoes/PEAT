@@ -166,7 +166,8 @@ class Elastic:
         return self.host
 
     def __repr__(self) -> str:  # Needed for dumping peat.state
-        return f'Elastic("{self.unsafe_url}")'
+        # NOTE: safe_url, since the repr may be logged or saved to a file
+        return f'Elastic("{self.safe_url}")'
 
     def _dump_docs_to_file(self) -> None:
         if not config.ELASTIC_DIR or not self._docs_written:
