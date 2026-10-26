@@ -172,6 +172,35 @@ def register_secrets_from_config() -> None:
     register_secret(*secrets)
 
 
+#: Terminal control sequences and control characters removed from log messages:
+#: CSI sequences (e.g. ``ESC [ 2 J``, clear screen), OSC sequences (e.g.
+#: ``ESC ] 0 ; title BEL``, set the terminal title), other escape sequences,
+#: and C0 and C1 control characters except newline and tab. Newlines are kept,
+#: since many of PEAT's log messages are intentionally multi-line.
+CONTROL_CHARS_RE: Final[re.Pattern[str]] = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, terminated by BEL or ST
+    r"|\x1b[^\n]"  # Other escape sequences (the ESC and the next character)
+    r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"  # C0 (except \t and \n), DEL, and C1
+)
+
+
+def strip_control_chars(text: str) -> str:
+    """
+    Remove terminal control sequences and control characters (except
+    newlines and tabs) from text, e.g. values from devices or parsed files,
+    so they can't manipulate the terminal or forge log output.
+    """
+    if not text:
+        return text
+    return CONTROL_CHARS_RE.sub("", text)
+
+
+def patch_strip_control_chars(record: loguru.Record) -> None:
+    """Loguru patcher that removes terminal control sequences from the message."""
+    record["message"] = strip_control_chars(record["message"])
+
+
 def patch_redact_secrets(record: loguru.Record) -> None:
     """
     Loguru patcher that redacts registered secrets from the message and exception.
@@ -417,8 +446,13 @@ def patch_json_string(record: loguru.Record) -> None:
 def patch_record(record: loguru.Record) -> None:
     """
     Loguru patcher applied to every message before any sink sees it.
-    Secrets are redacted first, so they don't end up in the JSON log string.
+
+    Loguru only supports one patcher, so this chains them. Terminal control
+    sequences are removed, then secrets are redacted (so a secret can't be
+    hidden from redaction by control characters), and then the JSON log
+    string is generated, so neither ends up in it.
     """
+    patch_strip_control_chars(record)
     patch_redact_secrets(record)
     patch_json_string(record)
 

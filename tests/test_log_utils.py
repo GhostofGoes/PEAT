@@ -215,3 +215,51 @@ def test_json_log_redacts_command_line(secrets, mocker, tmp_path):  # noqa: ARG0
         "<redacted>",
     ]
     assert record["process"]["command_line"] == " ".join(record["process"]["args"])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("\x1b]0;PWNED-TITLE\x07\x1b[2Jvalue", "value"),
+        ("\x1b[1;31mFAKE-ERROR\x1b[0m", "FAKE-ERROR"),
+        ("osc st \x1b]8;;http://x\x1b\\link", "osc st link"),
+        ("line1\r\nline2\twith tab", "line1\nline2\twith tab"),
+        ("nul\x00 bel\x07 del\x7f c1\x9b2J", "nul bel del c12J"),
+        ("lone escape \x1b", "lone escape "),
+        ("", ""),
+    ],
+)
+def test_strip_control_chars(text, expected):
+    assert log_utils.strip_control_chars(text) == expected
+
+
+def test_setup_logging_strips_control_chars(secrets, mocker, tmp_path, capfd):  # noqa: ARG001
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "LOG_DIR": tmp_path,
+            "QUIET": False,
+            "NO_COLOR": False,
+            "DEBUG": 0,
+            "ELASTIC_SERVER": None,
+            "DEVICE_OPTIONS": {},
+            "HOSTS": [],
+        },
+    )
+    log_utils.setup_logging(file=tmp_path / "peat.log", json_file=tmp_path / "json-log.jsonl")
+
+    logger.warning("Invalid IP for DNS server: \x1b]0;PWNED-TITLE\x07\x1b[2J\x1b[1;31mFAKE\x1b[0m")
+    logger.complete()
+
+    stderr = capfd.readouterr().err
+    assert "Invalid IP for DNS server: FAKE" in stderr
+    assert "PWNED-TITLE" not in stderr
+    assert "\x1b[2J" not in stderr
+    assert "\x07" not in stderr
+
+    for name in ["peat.log", "json-log.jsonl"]:
+        text = (tmp_path / name).read_text(encoding="utf-8")
+        assert "Invalid IP for DNS server: FAKE" in text, name
+        assert "PWNED-TITLE" not in text, name
+        assert "\x1b" not in text, name
+        assert "\\u001b" not in text, name
