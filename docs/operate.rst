@@ -212,8 +212,10 @@ The command expects the path to a PEAT results directory, such as ``./examples/e
 
 Use ``-w`` (``--write-file``) to choose where the encrypted archive is written. Use ``-p`` (``--password``) to provide the archive password on the command line. If ``-p`` is not provided, PEAT will prompt interactively for a password.
 
+The results directory is stored as a single tar archive (``peat-results.tar``) inside the AES-256 encrypted zip archive, so the names and sizes of the result files (which include device IP addresses, module names and pulled file names) are encrypted along with their contents. Only the total size of the archive is visible without the password. Symbolic links in the results directory are stored as links, and aren't extracted by ``decrypt-results``. When prompting for the password, PEAT asks for it twice to catch typos.
+
 .. warning::
-   PEAT does not save the password for the encrypted archive. If the password is lost, the encrypted results cannot be recovered.
+   PEAT does not save the password for the encrypted archive. If the password is lost, the encrypted results cannot be recovered. A password provided with ``-p`` is visible to other users of the system (e.g. in the output of ``ps``) and in the shell history, so prefer entering it at the prompt.
 
 .. code-block:: bash
 
@@ -234,6 +236,8 @@ PEAT can decrypt an archive previously created with ``encrypt-results`` using th
 The command expects the path to an encrypted PEAT archive, such as ``./examples/encryption/encrypted_example_peat_results.zip``. Use ``-w`` (``--write-file``) to choose where the decrypted results directory is written. Use ``-p`` (``--password``) to provide the archive password on the command line. If ``-p`` is not provided, PEAT will prompt interactively for a password.
 
 By default, the decrypted directory is written to the current working directory and named after the original run directory.
+
+Archives created by older versions of PEAT (which stored each file directly in the zip archive) can also be decrypted. Archives with contents larger than 32 GiB or the free disk space aren't extracted, so a small crafted archive can't fill the disk.
 
 .. code-block:: bash
 

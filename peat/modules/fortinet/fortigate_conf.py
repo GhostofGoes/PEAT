@@ -1,5 +1,6 @@
-import ast
 import copy
+import re
+from typing import Any, Final
 
 from peat import DeviceData, Interface, Service, User, consts, log, utils
 
@@ -22,14 +23,33 @@ def strip_quotes(data: dict):
         return data
 
 
+#: Maximum nesting depth of ``config``/``edit`` blocks in a FortiGate configuration
+MAX_FG_CONF_DEPTH: Final[int] = 100
+
+# Backslash escapes in FortiGate configuration values, e.g. \" and \\
+_FG_ESCAPE_RE: Final[re.Pattern[str]] = re.compile(r"\\(.)")
+
+
+def _fg_clean(text: str) -> str:
+    """Remove backslash escapes and quotes from a FortiGate name or value."""
+    return _FG_ESCAPE_RE.sub(r"\1", text).replace('"', "")
+
+
 def fg_conf_to_dict(raw_data: str) -> dict:
     """
-    Converts a raw Fortigate configuration file to a Python
-    dictionary using Python's ast library.
-    """
+    Converts a raw Fortigate configuration file to a Python dictionary.
 
-    prepared_content = []
-    indent_level = 0
+    ``config`` and ``edit`` lines start a nested dict, ``set`` lines add a value
+    to the current dict, and ``next`` and ``end`` lines end the current dict.
+    Quotes are removed from names and values.
+
+    Raises:
+        ValueError: The configuration is nested more than
+            :data:`~peat.modules.fortinet.fortigate_conf.MAX_FG_CONF_DEPTH` levels deep
+    """
+    root: dict[str, Any] = {}
+    current = root
+    stack: list[dict[str, Any]] = []
 
     # TODO: extract config-version from first line in file
     # TODO: dev.endian
@@ -41,32 +61,40 @@ def fg_conf_to_dict(raw_data: str) -> dict:
             continue
 
         if line.startswith("config") or line.startswith("edit"):
-            block_name = line.split(maxsplit=1)[1].strip('"')
-            prepared_content.append(" " * indent_level + f"'{block_name}': {{")
-            indent_level += 4
+            if len(stack) >= MAX_FG_CONF_DEPTH:
+                raise ValueError(
+                    f"Failed to parse config: nested more than {MAX_FG_CONF_DEPTH} levels deep"
+                )
+
+            parts = line.split(maxsplit=1)
+            block_name = _fg_clean(parts[1].strip()) if len(parts) > 1 else ""
+            # NOTE: a repeated block replaces the earlier one
+            block: dict[str, Any] = {}
+            current[block_name] = block
+            stack.append(current)
+            current = block
 
         elif line.startswith("set"):
-            key, value = line.split(maxsplit=1)[1].split(maxsplit=1)
-            if value == "''":  # this breaks how parsing is being done
-                value = '""'
-            prepared_content.append(" " * indent_level + f"'{key}': '{value}',")
+            parts = line.split(maxsplit=1)
+            key_value = parts[1].split(maxsplit=1) if len(parts) > 1 else []
+            if not key_value:
+                log.debug(f"Ignoring 'set' with no key in Fortigate config: {line!r}")
+                continue
+            key = key_value[0]
+            value = key_value[1] if len(key_value) > 1 else ""
+            if value == "''":  # Empty value
+                value = ""
+            current[_fg_clean(key)] = _fg_clean(value)
 
         elif line.startswith("next") or line.startswith("end"):
-            indent_level -= 4
-            prepared_content.append(" " * indent_level + "},")
-
-    # Wrap in a top-level dictionary
-    prepared_content = "{\n" + "\n".join(prepared_content) + "\n}"
-
-    # Parse the Python-like dictionary into a Python object
-    try:
-        parsed_dict = ast.literal_eval(prepared_content)
-    except (SyntaxError, ValueError) as e:
-        raise ValueError(f"Failed to parse config: {e}") from None
+            if stack:
+                current = stack.pop()
+            else:
+                log.debug(f"Ignoring unmatched '{line}' in Fortigate config")
 
     # nest the config sections (un-flatten)
-    un_flattened = {}
-    for key, value in parsed_dict.items():
+    un_flattened: dict[str, Any] = {}
+    for key, value in root.items():
         if " " in key:
             parts = key.split(" ")
             d = un_flattened
@@ -77,9 +105,6 @@ def fg_conf_to_dict(raw_data: str) -> dict:
             d[parts[-1]] = value
         else:
             un_flattened[key] = value
-
-    # TODO: strip quotation marks from strings
-    un_flattened = strip_quotes(un_flattened)
 
     return un_flattened
 

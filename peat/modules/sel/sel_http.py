@@ -15,7 +15,7 @@ Authors
 import re
 from time import sleep
 from typing import Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import humanfriendly
 from bs4 import BeautifulSoup
@@ -26,6 +26,7 @@ from peat import DeviceData, Event, PeatError, config, consts, datastore, log, u
 from peat.data.models import User
 from peat.data.validators import validate_hash
 from peat.protocols import HTTP, split_ipv4_cidr
+from peat.protocols.http import is_safe_url, is_same_host
 
 from .relay_parse import (
     parse_and_process_events,
@@ -126,7 +127,7 @@ class SELHTTP(HTTP):
 
         login_url = f"{self.url}/login"
         self.log.trace(f"Sending login POST request to {login_url}")
-        resp = self.session.post(url=login_url, data=login_data, timeout=self.timeout)
+        resp = self._request("POST", login_url, timeout=self.timeout, data=login_data)
 
         if not resp or resp.status_code != 200:
             self.log.error(
@@ -138,6 +139,13 @@ class SELHTTP(HTTP):
         # 451 has "login_query.html"
         # 351 has "login"
         self.log.trace(f"Response URL: {resp.url}")
+
+        # The session URL is used for all later requests, so it must not be
+        # possible for the device to point it at another host via a redirect.
+        if not is_same_host(resp.url, login_url):
+            self.log.error(f"Login failed: login redirected to a different host ({resp.url})")
+            return False
+
         sess_url = (
             resp.url.replace("login_query.html", "").replace("login.html", "").replace("login", "")
         )
@@ -151,7 +159,16 @@ class SELHTTP(HTTP):
         # 351 doesn't include the magic in the response
         if "/N" not in sess_url:
             soup = self.gen_soup(resp.content)
-            magic = soup.find("a")["href"].replace("ver.html", "")
+            link = soup.find("a")
+            href = str(link.get("href", "")) if link else ""
+
+            # Only accept a path on the device, not a URL for another host
+            parsed_href = urlsplit(href)
+            if not href or parsed_href.scheme or parsed_href.netloc or not is_safe_url(href):
+                self.log.error(f"Login failed: unexpected session link in response: {href!r}")
+                return False
+
+            magic = href.replace("ver.html", "")
             sess_url += magic[1:]
 
         # 451 (351S includes "protected" in the response url)
@@ -205,7 +222,7 @@ class SELHTTP(HTTP):
     def _get_page(self, url: str) -> str:
         self.log.trace2(f"Getting page: {url}")
 
-        response = self.session.get(url, timeout=self.timeout)
+        response = self._request("GET", url, timeout=self.timeout)
 
         if response.status_code != 200:
             if self._found_url:
@@ -754,14 +771,16 @@ class SELHTTP(HTTP):
         """
         self.log.info("Getting RTAC system log data (soe.csv)")
 
-        response = self.session.get(
+        response = self._request(
+            "GET",
             f"{self.url}/soe.csv",
-            params=self._rtac_session,
             timeout=self.timeout + 10.0,
+            params=self._rtac_session,
         )
 
         if not response or not response.text:
             self.log.error("No response or data for Sequence of Events (SOE) log (soe.csv)")
+            return {}
 
         dev.write_file(
             data=response.text,
@@ -786,10 +805,22 @@ class SELHTTP(HTTP):
                     continue
                 raw = {}
                 line = [x.strip('"') for x in syslog_lines[i].split('",') if x]
+                if len(line) < len(labels):
+                    self.log.warning(
+                        f"Skipping SOE line {i} with {len(line)} columns "
+                        f"(expected {len(labels)}): {syslog_lines[i]!r}"
+                    )
+                    continue
+
                 # For each event column, fill in details, and populate event
                 for col_idx in range(len(labels)):
                     trim_label = labels[col_idx][1:-1]
                     raw[trim_label] = line[col_idx]
+
+                if "message" not in raw:
+                    self.log.warning(f"Skipping SOE line {i} with no message: {syslog_lines[i]!r}")
+                    continue
+
                 web_syslog_events.append(raw)
 
                 # Process the event into the data model
@@ -2394,6 +2425,10 @@ class SELHTTP(HTTP):
         for href in view_pages:
             # A 5-second timeout sometimes fails, device can be slow
             cert_url = urljoin(self.url, href)
+            if not is_safe_url(href) or not is_same_host(cert_url, self.url):
+                self.log.warning(f"Skipping certificate link to a different host: {href!r}")
+                continue
+
             response = self.post(cert_url, data=self._rando, dev=dev, timeout=17.0)
 
             if not response or response.status_code != 200:

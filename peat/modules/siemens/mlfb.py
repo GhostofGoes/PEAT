@@ -101,7 +101,8 @@ def decode_mlfb(mlfb: str) -> dict[str, str]:
 
     mlfb_data = {"mlfb": mlfb}
 
-    for idx, c in enumerate(mlfb):
-        mlfb_data[mlfb_val_names[idx]] = mlfb_vals[idx].get(c, "N/A")
+    # NOTE: zip() ignores any characters beyond the known fields
+    for name, values, c in zip(mlfb_val_names, mlfb_vals, mlfb, strict=False):
+        mlfb_data[name] = values.get(c, "N/A")
 
     return mlfb_data

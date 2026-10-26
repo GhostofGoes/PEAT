@@ -9,6 +9,21 @@ from peat.data import Interface, Register, Service, SSHKey, User
 from peat.protocols import HTTP, clean_mac
 
 
+def _to_number(value, convert: type = int):
+    """
+    Convert a value from a device's JSON response to a number,
+    returning :obj:`None` if it's missing or isn't a valid number.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+
+    try:
+        return convert(value)
+    except (TypeError, ValueError, OverflowError):
+        log.debug(f"Invalid number from device: {value!r}")
+        return None
+
+
 class TotusHTTP(HTTP):
     """
     HTTP interface for the Camlin Totus Dissolved Gas Analyzer (DGA).
@@ -106,10 +121,8 @@ class TotusHTTP(HTTP):
             self.log.debug("Skipping login since we're already logged in")
             return True
 
-        if config.DEBUG:
-            self.log.trace(f"Logging in with username '{username}' and password '{password}'")
-        else:
-            self.log.debug(f"Logging in with username '{username}'")
+        # NOTE: never log the password, even when debugging
+        self.log.debug(f"Logging in with username '{username}'")
 
         # Get login XSRF (Cross-site request forgery) token
         # The token is required for all future requests to DGA
@@ -213,24 +226,39 @@ class TotusHTTP(HTTP):
 
     @staticmethod
     def process_hardware_info(dev: DeviceData, hw_info: dict) -> None:
-        dev.serial_number = hw_info["serialNumber"]
-        dev.firmware.version = hw_info["softwareVersion"]
-        dev.hostname = hw_info["hostname"]
+        # Fields that are missing or invalid are skipped,
+        # so one bad field doesn't lose all of the others.
+        if hw_info.get("serialNumber"):
+            dev.serial_number = str(hw_info["serialNumber"])
+        if hw_info.get("softwareVersion"):
+            dev.firmware.version = str(hw_info["softwareVersion"])
+        if hw_info.get("hostname"):
+            dev.hostname = str(hw_info["hostname"])
 
         # TODO: ephemeral data from hw_info: freemem, dataFree, dataUsed
-        dev.uptime = int(hw_info["uptime"])
+        uptime = _to_number(hw_info.get("uptime"))
+        if uptime is not None:
+            dev.uptime = uptime
 
         # Hardware information
-        dev.architecture = hw_info["arch"]
-        dev.hardware.memory_total = int(hw_info["totalmem"])
-        dev.hardware.id = str(hw_info["hardwareID"])
-        dev.hardware.storage_available = int(hw_info["dataSize"])
+        if hw_info.get("arch"):
+            dev.architecture = str(hw_info["arch"])
+        memory_total = _to_number(hw_info.get("totalmem"))
+        if memory_total is not None:
+            dev.hardware.memory_total = memory_total
+        if hw_info.get("hardwareID") is not None:
+            dev.hardware.id = str(hw_info["hardwareID"])
+        storage = _to_number(hw_info.get("dataSize"))
+        if storage is not None:
+            dev.hardware.storage_available = storage
 
         # Operating system
-        dev.os.name = hw_info["platform"]
-        # TODO: auto-populate os.version from os.kernel in data model
-        dev.os.kernel = hw_info["release"]
-        dev.os.version = hw_info["release"].partition("-")[0]
+        if hw_info.get("platform"):
+            dev.os.name = str(hw_info["platform"])
+        if hw_info.get("release"):
+            # TODO: auto-populate os.version from os.kernel in data model
+            dev.os.kernel = str(hw_info["release"])
+            dev.os.version = dev.os.kernel.partition("-")[0]
 
     @staticmethod
     def process_timedate(dev: DeviceData, time_info: dict) -> None:
@@ -292,7 +320,7 @@ class TotusHTTP(HTTP):
 
         # this can be zero, hence the "None" checks
         if iface.speed is None and if_dict.get("speed") is not None:
-            iface.speed = int(if_dict["speed"])
+            iface.speed = _to_number(if_dict["speed"])
 
         if not iface.subnet_mask and if_dict.get("netmask"):
             iface.subnet_mask = if_dict["netmask"]
@@ -609,7 +637,7 @@ class TotusHTTP(HTTP):
             svc = Service(protocol="modbus", enabled=True)
 
             if mb_if.get("port"):
-                svc.port = int(mb_if["port"])
+                svc.port = _to_number(mb_if["port"])
             if mb_if.get("slaveAddress") is not None:
                 svc.protocol_id = str(mb_if["slaveAddress"])
             if mb_if.get("name"):
@@ -636,9 +664,10 @@ class TotusHTTP(HTTP):
         DNP3 configuration.
         """
         for dnp3_ch in dnp3_channels:
+            ch_config = dnp3_ch.get("config")
             svc = Service(
                 protocol="dnp3",
-                port=int(dnp3_ch["config"]["port"]),
+                port=_to_number(ch_config.get("port")) if isinstance(ch_config, dict) else None,
                 enabled=True,
                 protocol_id=str(dnp3_ch.get("localAddress", "")),
                 extra={
@@ -652,11 +681,11 @@ class TotusHTTP(HTTP):
             elif dnp3_ch.get("channel") is not None:
                 svc.extra["channel"] = dnp3_ch["channel"]
             if dnp3_ch.get("bufferSize") is not None:
-                svc.extra["buffer_size"] = int(dnp3_ch["bufferSize"])
+                svc.extra["buffer_size"] = _to_number(dnp3_ch["bufferSize"])
             if dnp3_ch.get("remoteAddress") is not None:
-                svc.extra["remote_address"] = int(dnp3_ch["remoteAddress"])
+                svc.extra["remote_address"] = _to_number(dnp3_ch["remoteAddress"])
             if dnp3_ch.get("keepaliveTimeout") is not None:
-                svc.extra["keepalive_timeout"] = int(dnp3_ch["keepaliveTimeout"])
+                svc.extra["keepalive_timeout"] = _to_number(dnp3_ch["keepaliveTimeout"])
 
             if svc.port:
                 dev.related.ports.add(svc.port)
@@ -671,7 +700,11 @@ class TotusHTTP(HTTP):
         Parse raw HTML page with the Modbus register map.
         """
         mb_soup = BeautifulSoup(modbus_map_html, features=consts.BS4_PARSER)
-        mb_tables = list(mb_soup.body.find_all("table"))
+        mb_tables = list(mb_soup.find_all("table"))
+        if not mb_tables:
+            log.warning("No tables found in Modbus register map page")
+            return []
+
         ht_body = mb_tables[0]
 
         # In some cases it has "tbody", in others it doesn't.
@@ -679,9 +712,14 @@ class TotusHTTP(HTTP):
         if mb_tables[0].find("tbody"):
             ht_body = mb_tables[0].find("tbody")
 
+        header_row = ht_body.find("tr")
+        if header_row is None:
+            log.warning("No header row found in Modbus register map page")
+            return []
+
         mb_headers = [
             str(th.string).strip().lower().replace(" ", "_") if th.string else ""
-            for th in ht_body.find("tr").find_all("th")
+            for th in header_row.find_all("th")
         ]
         mb_data = []
 
@@ -702,24 +740,28 @@ class TotusHTTP(HTTP):
     @staticmethod
     def process_modbus_map(dev: DeviceData, mb_data: list[dict]) -> None:
         for entry in mb_data:
+            if not entry.get("address"):
+                log.debug(f"Skipping Modbus register with no address: {entry}")
+                continue
+
             # TODO: handle number_of_registers > 1
             reg = Register(
                 protocol="modbus",
                 address=entry["address"],
-                data_type=entry.get("format", "").lower(),
-                tag=entry.get("topic", ""),
+                data_type=(entry.get("format") or "").lower(),
+                tag=entry.get("topic") or "",
             )
 
-            if "read only" in entry.get("access", "").lower():
+            if "read only" in (entry.get("access") or "").lower():
                 reg.read_write = "read"
             if entry.get("notes"):
                 reg.description = entry["notes"]
             if entry.get("register") is not None:
-                reg.extra["register"] = int(entry["register"])
+                reg.extra["register"] = _to_number(entry["register"])
             if entry.get("number_of_registers") is not None:
-                reg.extra["number_of_registers"] = int(entry["number_of_registers"])
+                reg.extra["number_of_registers"] = _to_number(entry["number_of_registers"])
             if entry.get("scaling") is not None:
-                reg.extra["scaling"] = float(entry["scaling"])
+                reg.extra["scaling"] = _to_number(entry["scaling"], float)
             if entry.get("offset") is not None:
                 reg.extra["offset"] = entry["offset"]
 

@@ -1,8 +1,11 @@
+import io
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import requests_mock as requests_mock_module
 from requests import Response
 
 from peat import config, consts, datastore
@@ -211,3 +214,308 @@ def test_import_does_not_silence_urllib3_warnings():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip().splitlines()[-1] == "1"
+
+
+@pytest.fixture
+def http_env(mocker, tmp_path):
+    """Empty datastore, empty page cache, and files written under tmp_path."""
+    mocker.patch.object(datastore, "objects", [])
+    mocker.patch.object(HTTP, "page_cache", type(HTTP.page_cache)())
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path / "devices", "TEMP_DIR": None})
+
+
+def test_http_get_refuses_off_host_redirect(http_env, requests_mock, log_messages):  # noqa: ARG001
+    requests_mock.get(
+        "http://192.0.2.10:80/redir",
+        status_code=302,
+        headers={"Location": "http://127.0.0.1:8080/internal-admin"},
+    )
+    internal = requests_mock.get("http://127.0.0.1:8080/internal-admin", text="secret")
+
+    assert HTTP("192.0.2.10").get("redir", use_cache=False) is None
+    assert not internal.called
+    assert any("different host" in m for m in log_messages)
+
+
+def test_http_post_refuses_off_host_redirect(http_env, requests_mock):  # noqa: ARG001
+    requests_mock.post(
+        "http://192.0.2.10:80/login",
+        status_code=307,
+        headers={"Location": "//198.51.100.1/collect"},
+    )
+    other = requests_mock.post("http://198.51.100.1/collect", text="x")
+
+    assert HTTP("192.0.2.10").post("http://192.0.2.10:80/login", data={"pw": "x"}) is None
+    assert not other.called
+
+
+def test_http_get_follows_same_host_redirect(http_env, requests_mock):  # noqa: ARG001
+    requests_mock.get(
+        "http://192.0.2.10:80/", status_code=302, headers={"Location": "https://192.0.2.10/home"}
+    )
+    requests_mock.get("https://192.0.2.10/home", text="<html>home</html>")
+
+    response = HTTP("192.0.2.10").get(use_cache=False)
+    assert response is not None
+    assert response.status_code == 200
+    assert response.text == "<html>home</html>"
+    assert response.url == "https://192.0.2.10/home"
+    assert [r.status_code for r in response.history] == [302]
+
+
+def test_http_post_same_host_redirect_becomes_get(http_env, requests_mock):  # noqa: ARG001
+    requests_mock.post(
+        "http://192.0.2.10:80/login", status_code=303, headers={"Location": "/welcome"}
+    )
+    welcome = requests_mock.get("http://192.0.2.10:80/welcome", text="ok")
+
+    response = HTTP("192.0.2.10").post("http://192.0.2.10:80/login", data={"user": "x"})
+    assert response is not None
+    assert response.text == "ok"
+    assert welcome.call_count == 1
+    assert welcome.last_request.body is None
+
+
+def test_http_get_redirect_limit(http_env, requests_mock, log_messages):  # noqa: ARG001
+    requests_mock.get("http://192.0.2.10:80/loop", status_code=302, headers={"Location": "/loop"})
+
+    assert HTTP("192.0.2.10").get("loop", use_cache=False) is None
+    assert requests_mock.call_count == http_module.MAX_HTTP_REDIRECTS + 1
+    assert any("too many redirects" in m for m in log_messages)
+
+
+def test_same_host_session_refuses_off_host_redirect(requests_mock):
+    requests_mock.get(
+        "http://192.0.2.10/login", status_code=302, headers={"Location": "http://127.0.0.1/"}
+    )
+    internal = requests_mock.get("http://127.0.0.1/", text="internal")
+    requests_mock.get(
+        "http://192.0.2.10/a", status_code=301, headers={"Location": "http://192.0.2.10/b"}
+    )
+    requests_mock.get("http://192.0.2.10/b", text="b")
+
+    session = HTTP.gen_session(verify=False)
+    response = session.get("http://192.0.2.10/login")
+    assert response.status_code == 302  # The redirect isn't followed
+    assert response.url == "http://192.0.2.10/login"
+    assert not internal.called
+    assert session.get("http://192.0.2.10/a").text == "b"
+
+
+def test_http_get_refuses_oversize_body(http_env, requests_mock, log_messages):  # noqa: ARG001
+    requests_mock.get("http://192.0.2.10:80/big", content=b"A" * 2048)
+
+    http = HTTP("192.0.2.10")
+    assert http.get("big", use_cache=False, max_body_size=1024) is None
+    assert any("too large" in m for m in log_messages)
+    assert http.get("big", use_cache=False, max_body_size=4096).content == b"A" * 2048
+
+
+def test_http_get_refuses_oversize_body_without_content_length(
+    http_env,  # noqa: ARG001
+    requests_mock,
+    mocker,
+):
+    class EndlessBody(io.RawIOBase):
+        """Endless response body, with no Content-Length."""
+
+        bytes_read = 0
+
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, buffer) -> int:
+            buffer[:] = b"A" * len(buffer)
+            EndlessBody.bytes_read += len(buffer)
+            return len(buffer)
+
+    mocker.patch.object(http_module, "MAX_HTTP_BODY", 1024 * 1024)
+    requests_mock.get("http://192.0.2.10:80/stream", body=EndlessBody())
+
+    assert HTTP("192.0.2.10").get("stream", use_cache=False) is None
+    assert EndlessBody.bytes_read < 2 * 1024 * 1024  # Stopped reading once over the limit
+
+
+def test_page_cache_is_bounded():
+    def resp(size: int) -> Response:
+        r = Response()
+        r._content = b"x" * size
+        return r
+
+    cache = http_module.PageCache(max_entries=3, max_bytes=100)
+    for i in range(5):
+        cache[f"u{i}"] = resp(10)
+    assert len(cache) == 3
+    assert "u0" not in cache
+    assert cache.get("u4") is not None
+
+    cache.get("u2")  # most recently used, so u3 is removed next
+    cache["big"] = resp(80)
+    assert "u3" not in cache
+    assert "u2" in cache
+    assert cache.total_bytes <= 100
+
+    cache["huge"] = resp(1000)  # larger than the whole cache, not cached
+    assert "huge" not in cache
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://127.0.0.1:8080\\@192.0.2.10/internal",
+        "http://127.0.0.1\\@192.0.2.10/",
+        "//127.0.0.1\\@192.0.2.10/",
+        "http://127.0.0.1#@192.0.2.10/",
+        "http://127.0.0.1?@192.0.2.10/",
+        "http://192.0.2.10 .127.0.0.1/",
+        "http://192.0.2.10\t.127.0.0.1/",
+        "http://127.0.0.1\x00@192.0.2.10/",
+        "http://192.0.2.10:99999/",
+    ],
+)
+def test_is_same_host_parser_differentials(target):
+    assert not http_module.is_same_host(target, "http://192.0.2.10:80/login")
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://192.0.2.10/x",
+        "https://192.0.2.10:8443/x",
+        "http://192.0.2.10./x",
+        "http://192.0.2.10/?next=http://127.0.0.1/",
+        "http://192.0.2.10/#@127.0.0.1",
+    ],
+)
+def test_is_same_host_accepts_same_host(target):
+    assert http_module.is_same_host(target, "http://192.0.2.10:80/login")
+
+
+def test_url_hostname_matches_requests():
+    assert http_module.url_hostname("http://127.0.0.1:80\\@192.0.2.10/") == "127.0.0.1"
+    assert http_module.url_hostname("http://[::1]:80/") == "::1"
+    assert http_module.url_hostname("http://EXAMPLE.com./") == "example.com"
+    assert http_module.url_hostname("not a url") == ""
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://127.0.0.1:8080\\@192.0.2.10:80/internal",
+        "//127.0.0.1\\@192.0.2.10/internal",
+        "http://127.0.0.1:8080#@192.0.2.10:80/internal",
+        "/internal\\x",
+        "/internal page",
+    ],
+)
+def test_http_get_refuses_redirect_parser_differential(
+    http_env,  # noqa: ARG001
+    requests_mock,
+    location,
+):
+    requests_mock.get(
+        "http://192.0.2.10:80/redir", status_code=302, headers={"Location": location}
+    )
+    other = requests_mock.register_uri(
+        requests_mock_module.ANY, re.compile(r"^https?://127\.0\.0\.1"), text="secret"
+    )
+    internal = requests_mock.get(re.compile(r"^http://192\.0\.2\.10:80/internal"), text="x")
+
+    assert HTTP("192.0.2.10").get("redir", use_cache=False, auth=("user", "pw")) is None
+    assert not other.called
+    assert not internal.called
+
+
+def test_same_host_session_refuses_backslash_redirect(requests_mock):
+    requests_mock.get(
+        "http://192.0.2.10/login",
+        status_code=302,
+        headers={"Location": "http://127.0.0.1\\@192.0.2.10/"},
+    )
+    other = requests_mock.register_uri(
+        requests_mock_module.ANY, re.compile(r"^https?://127\.0\.0\.1"), text="secret"
+    )
+
+    response = HTTP.gen_session(verify=False).get("http://192.0.2.10/login")
+    assert response.status_code == 302
+    assert not other.called
+
+
+@pytest.mark.parametrize(
+    ("target", "stripped"),
+    [
+        ("http://192.0.2.10:8080/final", True),  # port change
+        ("http://192.0.2.10:80/final", True),  # https to http downgrade
+        ("https://192.0.2.10:443/final", False),  # same scheme and port
+    ],
+)
+def test_http_redirect_strips_auth_on_scheme_or_port_change(
+    http_env,  # noqa: ARG001
+    requests_mock,
+    target,
+    stripped,
+):
+    requests_mock.get(
+        "https://192.0.2.10:443/start", status_code=302, headers={"Location": target}
+    )
+    final = requests_mock.get(target, text="ok")
+
+    http = HTTP("192.0.2.10", 443)
+    http.session.headers["Authorization"] = "Bearer session-token"
+    response = http.get("start", use_cache=False, auth=("user", "pw"), headers={"X-Other": "kept"})
+    assert response is not None
+    assert response.text == "ok"
+
+    sent = final.last_request.headers
+    assert sent["X-Other"] == "kept"
+    if stripped:
+        assert "Authorization" not in sent
+    else:
+        assert sent["Authorization"].startswith("Basic ")
+
+
+def test_http_get_off_host_redirect_returned_with_allow_errors(
+    http_env,  # noqa: ARG001
+    requests_mock,
+    log_messages,
+):
+    requests_mock.get(
+        "http://192.0.2.10:80/redir",
+        status_code=302,
+        headers={"Location": "http://device.example/home"},
+    )
+    other = requests_mock.get("http://device.example/home", text="x")
+
+    response = HTTP("192.0.2.10").get("redir", use_cache=False, allow_errors=True)
+    assert response is not None
+    assert response.status_code == 302
+    assert response.headers["Location"] == "http://device.example/home"
+    assert not other.called
+    assert any("different host" in m for m in log_messages)
+
+
+def test_http_get_follows_login_redirect_chain(http_env, requests_mock):  # noqa: ARG001
+    for i in range(5):
+        requests_mock.get(
+            f"http://192.0.2.10:80/step{i}",
+            status_code=302,
+            headers={"Location": f"/step{i + 1}"},
+        )
+    requests_mock.get("http://192.0.2.10:80/step5", text="logged in")
+
+    response = HTTP("192.0.2.10").get("step0", use_cache=False)
+    assert response is not None
+    assert response.text == "logged in"
+    assert len(response.history) == 5
+
+
+def test_http_get_redirect_from_url_with_space(http_env, requests_mock):  # noqa: ARG001
+    # The requested URL isn't a redirect target, so its unquoted space is fine
+    requests_mock.get(
+        "http://192.0.2.10:80/a%20page", status_code=302, headers={"Location": "/home"}
+    )
+    requests_mock.get("http://192.0.2.10:80/home", text="home")
+
+    response = HTTP("192.0.2.10").get("a page", use_cache=False)
+    assert response is not None
+    assert response.text == "home"

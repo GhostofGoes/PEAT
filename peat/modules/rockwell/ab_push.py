@@ -15,12 +15,16 @@ import tempfile
 import zipfile
 from pathlib import Path
 from time import sleep
+from typing import Final
 
 from peat import log, utils
 from peat.protocols.cip import CCM, CIP, CIP_ERROR_CODES
 from peat.protocols.enip import ENIP, EncapData, GetAttributesAllResponse
 
 from .ab_scan import extract_info_response
+
+#: Maximum total size of the files extracted from a firmware archive (ZIP file)
+MAX_FIRMWARE_EXTRACTED_SIZE: Final[int] = 1024 * 1024 * 1024  # 1 GiB
 
 # TODO: cleanup and properly integrate into PEAT API
 # Use EnipDriver, pass in from ControlLogix?
@@ -226,23 +230,32 @@ def _open_firmware(firmware: bytes) -> tuple[bytes, bytes, bytes, bytes]:
     tmp_dir = Path(tempfile.mkdtemp())
     log.debug(f"Created temporary directory for firmware extraction: {tmp_dir}")
 
-    # Parse the blob as a zipfile
-    with zipfile.ZipFile(file_obj) as zip_ref:
-        zip_ref.extractall(path=str(tmp_dir))
-        zip_ref.close()
+    try:
+        # Parse the blob as a zipfile
+        with zipfile.ZipFile(file_obj) as zip_ref:
+            # The sizes in the ZIP directory are enforced when extracting
+            total_size = sum(info.file_size for info in zip_ref.infolist())
+            if total_size > MAX_FIRMWARE_EXTRACTED_SIZE:
+                raise ValueError(
+                    f"firmware archive contents are too large ({total_size} bytes, "
+                    f"limit is {MAX_FIRMWARE_EXTRACTED_SIZE} bytes)"
+                )
+            zip_ref.extractall(path=str(tmp_dir))
 
-    # Get the names of the files we want
-    config = configparser.ConfigParser()
-    ini_files = tmp_dir.glob("PN-*.nvs")  # Get any extracted config files
-    config.read(ini_files)  # Parses a list of file names
+        # Get the names of the files we want
+        config = configparser.ConfigParser()
+        ini_files = tmp_dir.glob("PN-*.nvs")  # Get any extracted config files
+        config.read(ini_files)  # Parses a list of file names
 
-    # Read the binary files found
-    sig1 = Path(tmp_dir, config["Update1"]["DataFileName"]).read_bytes()
-    bin1 = Path(tmp_dir, config["Update2"]["DataFileName"]).read_bytes()
-    sig2 = Path(tmp_dir, config["Update3"]["DataFileName"]).read_bytes()
-    bin2 = Path(tmp_dir, config["Update4"]["DataFileName"]).read_bytes()
+        # Read the binary files found. The names come from the archive,
+        # so ensure they're inside of the extraction directory.
+        sig1, bin1, sig2, bin2 = (
+            utils.safe_join(tmp_dir, config[section]["DataFileName"]).read_bytes()
+            for section in ("Update1", "Update2", "Update3", "Update4")
+        )
+    finally:
+        # Cleanup
+        log.debug(f"Removing temporary directory '{tmp_dir}'")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # Cleanup
-    log.debug(f"Removing temporary directory '{tmp_dir}'")
-    shutil.rmtree(tmp_dir)
     return sig1, bin1, sig2, bin2

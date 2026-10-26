@@ -129,34 +129,20 @@ class EnipSocket:
 
         return total_sent
 
-    def receive(self) -> bytes:
+    def _recv_exact(self, size: int) -> bytes:
         """
-        Receive and unpack an ENIP response.
-
-        Returns:
-            The ENIP response as bytes
+        Receive exactly ``size`` bytes from the socket.
 
         Raises:
-            EnipCommError: Exception occured while recieving the response
+            EnipCommError: The connection was closed or timed out before
+                ``size`` bytes were received
         """
-        msg_len = 28
         chunks = []
         bytes_received = 0
-        one_shot = True
 
-        while bytes_received < msg_len:
+        while bytes_received < size:
             try:
-                chunk = self.sock.recv(min(msg_len - bytes_received, 2048))
-                if not chunk:
-                    raise EnipCommError(
-                        f"socket connection broken during receive from {str(self)}"
-                    )
-                if one_shot:
-                    data_size = int(struct.unpack("<H", chunk[2:4])[0])
-                    msg_len = HEADER_SIZE + data_size
-                    one_shot = False
-                chunks.append(chunk)
-                bytes_received += len(chunk)
+                chunk = self.sock.recv(min(size - bytes_received, 2048))
             except TimeoutError:
                 self.log.warning(
                     f"Socket timed out during receive (timeout: {self.timeout} seconds)"
@@ -167,7 +153,31 @@ class EnipSocket:
                     f"socket connection broken during receive from {str(self)}"
                 ) from None
 
-        message = b"".join(chunks)
+            if not chunk:
+                raise EnipCommError(f"socket connection broken during receive from {str(self)}")
+
+            chunks.append(chunk)
+            bytes_received += len(chunk)
+
+        return b"".join(chunks)
+
+    def receive(self) -> bytes:
+        """
+        Receive and unpack an ENIP response.
+
+        The fixed-size ENIP header is received first, then the number
+        of bytes of data specified by the length field in the header.
+
+        Returns:
+            The ENIP response as bytes
+
+        Raises:
+            EnipCommError: Exception occured while recieving the response
+        """
+        header = self._recv_exact(HEADER_SIZE)
+        data_size = struct.unpack_from("<H", header, 2)[0]
+        message = header + self._recv_exact(data_size)
+
         if self.log_to_file:
             self._log_protocol_msg(message, "RECEIVE")
 

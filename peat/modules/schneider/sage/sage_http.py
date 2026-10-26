@@ -176,8 +176,12 @@ class SageHTTP(HTTP):
             try:
                 config_page_post_data = f"type=UP_DOWN&entid=&state=&exectime=&channel={channel}"
 
-                response = session.post(
+                # Same redirect policy and response size limit as HTTP.post()
+                response = self._request(
+                    "POST",
                     url,
+                    timeout=None,
+                    session=session,
                     data=config_page_post_data,
                     cookies=self.cookies,
                     headers={"Connection": "close"},

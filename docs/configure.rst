@@ -151,7 +151,7 @@ Additional topics
 
 TLS certificate verification
 ----------------------------
-PEAT verifies TLS (SSL) certificates for HTTPS connections, including connections to devices and to Elasticsearch/OpenSearch. Many older OT devices use self-signed certificates, which fail verification, and PEAT will log a warning explaining how to proceed when this happens. There are three ways to connect to these devices:
+PEAT verifies TLS (SSL) certificates for HTTPS connections, including connections to devices and to Elasticsearch/OpenSearch, and for MySQL/MariaDB connections (TLS is required for MySQL, and a server that doesn't offer it is refused before any credentials are sent). Many older OT devices use self-signed certificates, which fail verification, and PEAT will log a warning explaining how to proceed when this happens. There are three ways to connect to these devices:
 
 - **Trust the certificate (recommended)**: add the device's certificate, or the CA that issued it, to a PEM file and set :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>` (``tls_ca_bundle: /path/to/ca-bundle.pem``).
 - **Disable verification for specific hosts**: set the ``https.verify`` option to ``false`` for the host. Setting it in ``device_options`` disables verification for all devices, while still verifying the Elasticsearch server.
@@ -170,6 +170,13 @@ PEAT verifies TLS (SSL) certificates for HTTPS connections, including connection
 
 .. warning::
    When verification is disabled, anyone who can intercept the connection can capture credentials PEAT sends over it (e.g. web logins). PEAT logs a warning for each host that verification is disabled for.
+
+
+.. _http-redirects:
+
+HTTP redirects and response sizes
+---------------------------------
+PEAT only follows HTTP redirects from a device to the same host (the scheme and port may change, e.g. ``http://`` to ``https://``), and at most :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. A redirect to a different host isn't followed (it's logged, and the request fails unless the caller accepts the redirect response), so a device can't make PEAT send requests (with its session cookies) to other systems, or have their responses saved and parsed as if they came from the device. Credentials aren't sent again when a redirect changes the scheme or port (except ``http://`` to ``https://`` on the default ports). Response bodies larger than :data:`~peat.protocols.http.MAX_HTTP_BODY` (64 MiB) are refused.
 
 
 .. _ssh-host-keys:

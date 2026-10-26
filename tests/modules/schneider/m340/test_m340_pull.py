@@ -6,7 +6,7 @@ import time
 import pytest
 
 from peat import CommError, DeviceError, config, datastore
-from peat.modules.schneider.m340 import m340, umas_packets
+from peat.modules.schneider.m340 import m340, m340_pull, umas_packets
 from peat.modules.schneider.m340.m340 import M340
 
 
@@ -195,3 +195,80 @@ def test_recv_modbus_frame_complete_and_invalid_length():
             writer.sendall(struct.pack(">HHH", 1, 0, length) + b"\x00" * length)
             with pytest.raises(CommError, match="Invalid length"):
                 umas_packets.recv_modbus_frame(reader)
+
+
+class _FakeFTP:
+    def __init__(self, responses):
+        self.responses = responses
+
+    def __call__(self, *_args, **_kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        pass
+
+    def login(self, *_args):
+        return True
+
+    def cmd(self, command):
+        return self.responses[command]
+
+
+def test_get_ftp_metadata_malformed(mocker):
+    fake = _FakeFTP(
+        {
+            "LDST": "200 only one line",
+            "DINF": "200-\nFwLoc=0, Ir='abc', Device='BMX P34 2020', garbage, Mac='00-80-F4'\n200",
+            "FREE": "200 nope",
+        }
+    )
+    mocker.patch.object(m340_pull, "FTP", fake)
+
+    # Previously, IndexError (LDST), then ValueError (Ir, FREE)
+    info = m340_pull._get_ftp_metadata("192.0.2.1")
+    assert info["loader_status"] == {}
+    assert info["device_0"]["device"] == "BMX P34 2020"
+    assert info["device_0"]["mac_address"] == "00:80:F4"
+    assert "ir" not in info["device_0"]
+    assert "free_space_sd_card" not in info
+
+
+def test_get_ftp_metadata():
+    info = m340_pull._parse_ftp_metadata(
+        "200-\nLoaderVersion=1.2, Status=OK\n200",
+        "200-\nFwLoc=0, Ir=7, Device='BMX P34 2020'\n200",
+        "200 FREE=1024",
+    )
+    assert info["loader_status"] == {"loader_version": "1.2", "status": "OK"}
+    assert info["device_0"]["ir"] == 7
+    assert info["free_space_sd_card"] == 1024
+
+
+def test_get_snmp_metadata_malformed(mocker):
+    class _FakeSNMP:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get(self, identity, single_query=True, **_kwargs):
+            if not single_query:  # LED table, fewer LEDs than expected
+                return [{"value_encoded": "1"}, {"value_encoded": "x"}]
+            if identity.endswith("1.3833.1.2.2.0"):
+                return [{"value_string": "3"}]  # Unknown supported_protocol
+            if identity.endswith("1.3833.1.7.1.0"):
+                return [{"value_string": "BMX P34 2020"}]
+            return [{"value_string": "not-a-number"}]
+
+    mocker.patch.object(m340_pull, "SNMP", _FakeSNMP)
+
+    # Previously, ValueError (int conversion), KeyError and IndexError
+    module_info, system_info = m340_pull._get_snmp_metadata("192.0.2.1")
+    assert module_info["model_name"] == "BMX P34 2020"
+    assert "slot" not in module_info
+    assert module_info["port_502"]["supported_protocol"] == "unknown (3)"
+    assert module_info["led_0"] == {"name": "1", "description": "1", "state": 1}
+    assert module_info["led_1"] == {"name": "x", "description": "x", "state": None}
+    assert "led_2" not in module_info
+    assert system_info["firmware_version"] == "not-a-number"

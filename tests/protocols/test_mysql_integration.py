@@ -23,7 +23,8 @@ PASSWORD = os.environ.get("MYSQL_PASSWORD", "testpass")
 
 @pytest.fixture(scope="module")
 def mysql():
-    m = MySQL(HOST, port=PORT, username=USER, password=PASSWORD)
+    # The test server uses a self-signed certificate (e.g. the mysql:8.0 image)
+    m = MySQL(HOST, port=PORT, username=USER, password=PASSWORD, tls_verify=False)
     assert m.connect(), f"Could not connect to MySQL at {HOST}:{PORT}"
     yield m
     m.disconnect()
@@ -75,7 +76,7 @@ def test_get_process_list(mysql):
 
 @pytest.mark.container
 def test_context_manager():
-    with MySQL(HOST, port=PORT, username=USER, password=PASSWORD) as m:
+    with MySQL(HOST, port=PORT, username=USER, password=PASSWORD, tls_verify=False) as m:
         assert m.connect()
         assert m.connected
     assert not m.connected

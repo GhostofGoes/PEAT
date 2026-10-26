@@ -215,3 +215,182 @@ def test_json_log_redacts_command_line(secrets, mocker, tmp_path):  # noqa: ARG0
         "<redacted>",
     ]
     assert record["process"]["command_line"] == " ".join(record["process"]["args"])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("\x1b]0;PWNED-TITLE\x07\x1b[2Jvalue", "value"),
+        ("\x1b[1;31mFAKE-ERROR\x1b[0m", "FAKE-ERROR"),
+        ("osc st \x1b]8;;http://x\x1b\\link", "osc st link"),
+        ("line1\r\nline2\twith tab", "line1\nline2\twith tab"),
+        ("nul\x00 bel\x07 del\x7f c1\x9b2J", "nul bel del c12J"),
+        ("lone escape \x1b", "lone escape "),
+        (
+            "bidi \u202etxt.exe\u202c zw\u200bsp \u2028ls\u2029 bom\ufeff",
+            "bidi txt.exe zwsp ls bom",
+        ),
+        ("unicode \u00b0C \u00e9", "unicode \u00b0C \u00e9"),
+        ("", ""),
+    ],
+)
+def test_strip_control_chars(text, expected):
+    assert log_utils.strip_control_chars(text) == expected
+
+
+def test_setup_logging_strips_control_chars(secrets, mocker, tmp_path, capfd):  # noqa: ARG001
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "LOG_DIR": tmp_path,
+            "QUIET": False,
+            "NO_COLOR": False,
+            "DEBUG": 0,
+            "ELASTIC_SERVER": None,
+            "DEVICE_OPTIONS": {},
+            "HOSTS": [],
+        },
+    )
+    log_utils.setup_logging(file=tmp_path / "peat.log", json_file=tmp_path / "json-log.jsonl")
+
+    logger.warning("Invalid IP for DNS server: \x1b]0;PWNED-TITLE\x07\x1b[2J\x1b[1;31mFAKE\x1b[0m")
+    logger.complete()
+
+    stderr = capfd.readouterr().err
+    assert "Invalid IP for DNS server: FAKE" in stderr
+    assert "PWNED-TITLE" not in stderr
+    assert "\x1b[2J" not in stderr
+    assert "\x07" not in stderr
+
+    for name in ["peat.log", "json-log.jsonl"]:
+        text = (tmp_path / name).read_text(encoding="utf-8")
+        assert "Invalid IP for DNS server: FAKE" in text, name
+        assert "PWNED-TITLE" not in text, name
+        assert "\x1b" not in text, name
+        assert "\\u001b" not in text, name
+
+
+def test_redact_config(secrets):  # noqa: ARG001
+    log_utils.register_secret("Registered-UNIQUE-1")
+    conf = {
+        "user-password": "Cli-UNIQUE-pw",
+        "elastic_server": "https://elastic:Es-UNIQUE-pw@localhost:9200/",
+        "note": "contains Registered-UNIQUE-1",
+        "DEVICE_OPTIONS": {
+            "ssh": {"user": "admin", "pass": "Ssh-UNIQUE-pw", "port": 22},
+            "ftp": {"creds": [("ftpuser", "Ftp-UNIQUE-pw")]},
+            "sel": {"creds": {"acc": "Sel-UNIQUE-pw"}},
+            "snmp": {"community": "Comm-UNIQUE", "communities": ["Comm-UNIQUE-2"]},
+            "web": {"pass": ""},
+        },
+    }
+    redacted = log_utils.redact_config(conf)
+    text = json.dumps(redacted)
+    for secret in ["UNIQUE-pw", "Comm-UNIQUE", "Registered-UNIQUE-1"]:
+        assert secret not in text
+
+    options = redacted["DEVICE_OPTIONS"]
+    assert options["ssh"] == {"user": "admin", "pass": "<redacted>", "port": 22}
+    assert options["ftp"]["creds"] == [("ftpuser", "<redacted>")]
+    assert options["web"]["pass"] == ""
+    assert redacted["elastic_server"] == "https://elastic:<redacted>@localhost:9200/"
+    # The original isn't modified
+    assert conf["DEVICE_OPTIONS"]["ssh"]["pass"] == "Ssh-UNIQUE-pw"
+
+
+def test_debug_info_file_redacts_config(secrets, mocker, tmp_path):  # noqa: ARG001
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "LOG_DIR": None,
+            "QUIET": True,
+            "DEBUG": 3,
+            "ELASTIC_SERVER": None,
+            "HEAT_ELASTIC_SERVER": "https://elastic:Es-UNIQUE-pw@localhost:9200/",
+            "DEVICE_OPTIONS": {"telnet": {"user": "Admin", "pass": "Telnet-UNIQUE-pw"}},
+            "HOSTS": [],
+        },
+    )
+    debug_file = tmp_path / "debug-info.txt"
+    log_utils.setup_logging(debug_info_file=debug_file)
+
+    text = debug_file.read_text(encoding="utf-8")
+    assert "raw config dump" in text
+    assert "Telnet-UNIQUE-pw" not in text
+    assert "Es-UNIQUE-pw" not in text
+    assert '"user": "Admin"' in text
+
+
+def _fail_parse(value: str) -> None:
+    raise ValueError(f"bad value {value}")
+
+
+@pytest.mark.parametrize("no_color", [False, True])
+def test_setup_logging_strips_control_chars_from_exceptions(
+    secrets,  # noqa: ARG001
+    mocker,
+    tmp_path,
+    capfd,
+    no_color,
+):
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "LOG_DIR": tmp_path,
+            "QUIET": False,
+            "NO_COLOR": no_color,
+            "DEBUG": 0,
+            "ELASTIC_SERVER": None,
+            "DEVICE_OPTIONS": {},
+            "HOSTS": [],
+        },
+    )
+    log_utils.setup_logging(file=tmp_path / "peat.log", json_file=tmp_path / "json-log.jsonl")
+
+    # Not in the call, since the traceback includes the source line
+    device_value = "\x1b]0;PWNED-EXC\x07\x1b[2Jdata"
+    try:
+        _fail_parse(device_value)
+    except ValueError:
+        logger.exception("Failed to parse artifact")
+    logger.complete()
+
+    logs = {
+        "stderr": capfd.readouterr().err,
+        "peat.log": (tmp_path / "peat.log").read_text(encoding="utf-8"),
+        "json-log.jsonl": (tmp_path / "json-log.jsonl").read_text(encoding="utf-8"),
+    }
+    for name, text in logs.items():
+        assert "PWNED-EXC" not in text, name
+        assert "\x07" not in text, name
+        assert "\\u001b" not in text, name
+        assert "_fail_parse" in text, name  # The traceback is still logged
+    assert "\x1b" not in logs["peat.log"]
+    assert "ValueError: bad value data" in logs["peat.log"]
+    if no_color:
+        assert "\x1b" not in logs["stderr"]
+
+
+def test_secret_with_control_char_redacted_after_stripping(secrets, log_messages):  # noqa: ARG001
+    from peat import log
+
+    log_utils.register_secret("Ctl\x01-UNIQUE-pw", "Cr-UNIQUE\r-pw2")
+    logger.configure(patcher=log_utils.patch_record)
+    log.info("login with Ctl\x01-UNIQUE-pw and Cr-UNIQUE\r-pw2")
+
+    assert log_messages[-1] == "login with <redacted> and <redacted>"
+
+
+def test_redact_config_secret_lists(secrets):  # noqa: ARG001
+    conf = {
+        "web": {"passwords": ["Summer-UNIQUE-1", "Winter-UNIQUE-2"]},
+        "ftp": {"creds": [["ftpuser", "Ftp-UNIQUE-1"], ("anon", "Anon-UNIQUE-2")]},
+        "snmp": {"communities": ("Comm-UNIQUE-1", "Comm-UNIQUE-2")},
+        "api": {"token": "Tok-UNIQUE", "api_key": "Key-UNIQUE", "pwd": "Pwd-UNIQUE"},
+        "ftp_creds": ["user", "Pair-UNIQUE"],
+    }
+    redacted = log_utils.redact_config(conf)
+    assert "UNIQUE" not in json.dumps(redacted)
+    assert redacted["web"]["passwords"] == ["<redacted>", "<redacted>"]
+    assert redacted["ftp"]["creds"] == [["ftpuser", "<redacted>"], ("anon", "<redacted>")]
+    assert redacted["snmp"]["communities"] == ("<redacted>", "<redacted>")

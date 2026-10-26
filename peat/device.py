@@ -292,7 +292,10 @@ class DeviceModule:
                     tmp_path = config.TEMP_DIR / file.name
                     if tmp_path.exists():
                         shutil.rmtree(tmp_path)
-                    shutil.copytree(file, tmp_path, dirs_exist_ok=True)
+                    # symlinks=True copies links as links, so a link in the input
+                    # directory can't pull files from elsewhere on the system into
+                    # the results (dangling links are copied as-is, not followed).
+                    shutil.copytree(file, tmp_path, symlinks=True, dirs_exist_ok=True)
         else:
             # Treat file streams as raw data
             if isinstance(to_parse, (io.RawIOBase, io.StringIO)):

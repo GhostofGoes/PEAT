@@ -7,7 +7,7 @@ import re
 import sys
 import threading
 import urllib.parse
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC
 from pathlib import Path
 from pprint import pformat
@@ -66,7 +66,7 @@ def _secret_pattern(secret: str) -> str:
 def _secret_variants(secret: str) -> set[str]:
     # Forms the secret commonly takes in log messages: as is, URL or form
     # encoded (e.g. a HTTP login body), and escaped in JSON or a repr().
-    return {
+    variants = {
         secret,
         urllib.parse.quote(secret, safe=""),
         urllib.parse.quote_plus(secret, safe=""),
@@ -74,6 +74,12 @@ def _secret_variants(secret: str) -> set[str]:
         json.dumps(secret, ensure_ascii=False)[1:-1],
         repr(secret)[1:-1],
     }
+    # Control characters are removed from messages before secrets are
+    # redacted, so a secret containing them must also match without them
+    stripped = strip_control_chars(secret)
+    if len(stripped) >= MIN_SECRET_LENGTH:
+        variants.add(stripped)
+    return variants
 
 
 def register_secret(*values: Any) -> None:
@@ -172,28 +178,140 @@ def register_secrets_from_config() -> None:
     register_secret(*secrets)
 
 
+#: Terminal control sequences and control characters removed from log messages:
+#: CSI sequences (e.g. ``ESC [ 2 J``, clear screen), OSC sequences (e.g.
+#: ``ESC ] 0 ; title BEL``, set the terminal title), other escape sequences,
+#: C0 and C1 control characters except newline and tab, and Unicode
+#: bidirectional, zero-width and line/paragraph separator characters (which
+#: can make text display differently than it reads, e.g. U+202E).
+#: Newlines are kept, since many of PEAT's log messages are intentionally
+#: multi-line, so a value containing a newline can still start a new line in
+#: the human-readable logs (the JSON log has one record per line regardless).
+CONTROL_CHARS_RE: Final[re.Pattern[str]] = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, terminated by BEL or ST
+    r"|\x1b[^\n]"  # Other escape sequences (the ESC and the next character)
+    r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"  # C0 (except \t and \n), DEL, and C1
+    r"|[\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]"  # Bidi, zero-width, etc.
+)
+
+
+def strip_control_chars(text: str) -> str:
+    """
+    Remove terminal control sequences, control characters (except newlines
+    and tabs) and Unicode bidirectional and zero-width characters from text,
+    e.g. values from devices or parsed files, so they can't manipulate the
+    terminal or disguise log output. Newlines are kept (refer to
+    :data:`~peat.log_utils.CONTROL_CHARS_RE`).
+    """
+    if not text:
+        return text
+    return CONTROL_CHARS_RE.sub("", text)
+
+
+def patch_strip_control_chars(record: loguru.Record) -> None:
+    """Loguru patcher that removes terminal control sequences from the message."""
+    record["message"] = strip_control_chars(record["message"])
+
+
+#: Matches the password in a URL, e.g. ``https://user:password@host``
+_URL_PASSWORD_RE: Final[re.Pattern[str]] = re.compile(r"(?<=://)([^/@:\s]*):([^/@\s]+)@")
+
+
+def _is_secret_key(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    key = key.lower().replace("-", "_")
+    return key in SECRET_OPTION_KEYS or key.endswith(
+        (
+            "password",
+            "passwd",
+            "passphrase",
+            "_pass",
+            "pwd",
+            "community",
+            "secret",
+            "token",
+            "api_key",
+            "private_key",
+            "secret_key",
+            "_creds",
+        )
+    )
+
+
+def _is_credential_pair(value: Any) -> bool:
+    return (
+        isinstance(value, list | tuple)
+        and len(value) == 2
+        and all(isinstance(v, str) for v in value)
+    )
+
+
+def redact_config(value: Any, _is_secret: bool = False) -> Any:
+    """
+    Copy of a configuration value (e.g. CLI arguments, device options, or a
+    dump of the configuration) that's safe to log or write to a debug file.
+
+    Values of keys that are secrets (refer to
+    :data:`~peat.log_utils.SECRET_OPTION_KEYS`, as well as keys ending with
+    ``password``, ``_pass``, etc.) and passwords in URLs are replaced with
+    ``<redacted>``, as are any registered secrets. For ``(username, password)``
+    pairs in a list of them (e.g. ``creds: [[user, pass], ...]``), only the
+    password is replaced. Any other list of strings, such as a list of two
+    passwords, is fully redacted.
+    """
+    if isinstance(value, Mapping):
+        return {k: redact_config(v, _is_secret or _is_secret_key(k)) for k, v in value.items()}
+
+    if isinstance(value, list | tuple | set):
+        redacted = []
+        for item in value:
+            if _is_secret and _is_credential_pair(item):
+                pair = [item[0], REDACTED]  # A (username, password) pair
+                redacted.append(tuple(pair) if isinstance(item, tuple) else pair)
+            else:
+                redacted.append(redact_config(item, _is_secret))
+        if isinstance(value, tuple):
+            return tuple(redacted)
+        if isinstance(value, set):
+            return set(redacted)
+        return redacted
+
+    if _is_secret and value not in (None, "", False):
+        return REDACTED
+
+    if isinstance(value, str):
+        return redact_secrets(_URL_PASSWORD_RE.sub(rf"\1:{REDACTED}@", value))
+
+    return value
+
+
 def patch_redact_secrets(record: loguru.Record) -> None:
     """
-    Loguru patcher that redacts registered secrets from the message and exception.
+    Loguru patcher that redacts registered secrets from the message and exception,
+    and removes terminal control sequences from the exception.
 
-    If any secrets are registered, an exception is formatted here, without the
-    values of local variables (loguru's ``diagnose``), and stored redacted in
-    ``record["extra"]["redacted_exception"]``, which the formatters log
-    instead of the exception.
+    If any secrets are registered, or the exception contains control sequences
+    (e.g. an exception message with device data in it), the exception is
+    formatted here, without the values of local variables (loguru's
+    ``diagnose``), and stored redacted and stripped (refer to
+    :func:`strip_control_chars`) in ``record["extra"]["redacted_exception"]``,
+    which the formatters log instead of the exception.
     """
-    if _secrets_re is None:
-        return
-
-    record["message"] = redact_secrets(record["message"])
+    if _secrets_re is not None:
+        record["message"] = redact_secrets(record["message"])
 
     exc = record["exception"]
     if exc is not None and exc.type is not None:
         formatted = "".join(format_exception(exc.type, exc.value, exc.traceback))
-        record["extra"]["redacted_exception"] = redact_secrets(formatted)
+        cleaned = strip_control_chars(redact_secrets(formatted))
+        if _secrets_re is not None or cleaned != formatted:
+            record["extra"]["redacted_exception"] = cleaned
 
 
 def _exception_field(record: loguru.Record) -> str:
-    # The redacted exception if secrets are registered, see patch_redact_secrets()
+    # The redacted exception if needed, see patch_redact_secrets()
     if "redacted_exception" in record["extra"]:
         return "{extra[redacted_exception]}"
     return "{exception}"
@@ -328,8 +446,10 @@ def generate_log_dict(record: loguru.Record) -> dict[str, dict | str | None]:
     if record["exception"]:
         content["error"] = {
             "type": record["exception"].type.__name__,
-            "message": redact_secrets(str(record["exception"].value)),
-            "stack_trace": redact_secrets("".join(format_tb(record["exception"].traceback))),
+            "message": strip_control_chars(redact_secrets(str(record["exception"].value))),
+            "stack_trace": strip_control_chars(
+                redact_secrets("".join(format_tb(record["exception"].traceback)))
+            ),
         }
 
     return content
@@ -417,8 +537,14 @@ def patch_json_string(record: loguru.Record) -> None:
 def patch_record(record: loguru.Record) -> None:
     """
     Loguru patcher applied to every message before any sink sees it.
-    Secrets are redacted first, so they don't end up in the JSON log string.
+
+    Loguru only supports one patcher, so this chains them. Terminal control
+    sequences are removed, then secrets are redacted (so a secret can't be
+    hidden from redaction by control characters, and secrets containing
+    control characters are also registered without them), and then the JSON
+    log string is generated, so neither ends up in it.
     """
+    patch_strip_control_chars(record)
     patch_redact_secrets(record)
     patch_json_string(record)
 
@@ -574,7 +700,8 @@ def setup_logging(
         # Raw config dump only when debugging internals
         if config.DEBUG >= 3:
             info += (
-                f"\n\n** raw config dump ***\n\n{json.dumps(consts.convert(config), indent=2)}\n"
+                f"\n\n** raw config dump (secrets redacted) ***\n\n"
+                f"{json.dumps(redact_config(consts.convert(config)), indent=2)}\n"
             )
 
         df.write_text(info, encoding="utf-8")

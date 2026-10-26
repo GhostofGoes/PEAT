@@ -125,6 +125,20 @@ def pull_network_config(ip: str, timeout: float = 1.0, snmp_community: str = "pu
     return device_info
 
 
+def _convert_snmp_value(response: list[dict] | None, convert: type, key: str = "value_string"):
+    """
+    Convert the value of the first result of a SNMP query, returning :obj:`None`
+    if there isn't a result or the value can't be converted (e.g. ``int("abc")``).
+    """
+    if not response:
+        return None
+
+    try:
+        return convert(response[0][key])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
 def _get_snmp_metadata(
     ip: str, community: str = "public", timeout: float = 0.5, max_failures: int = 7
 ) -> tuple[dict, dict]:
@@ -244,8 +258,8 @@ def _get_snmp_metadata(
 
             continue
 
-        data = oid_pair[1](response[0]["value_string"])  # Convert data
-        if data != "":
+        data = _convert_snmp_value(response, oid_pair[1])
+        if data is not None and data != "":
             if name == "mac_address":
                 # Handle MAC address being represented as
                 # raw bytes and not text characters.
@@ -262,7 +276,7 @@ def _get_snmp_metadata(
                 module_info[name] = "enabled" if data == 2 else "disabled"
             elif name == "communication_services":
                 srvcs = {}
-                bits = [int(x) for x in f"{int(data):07b}"]
+                bits = [int(x) for x in f"{data & 0x7F:07b}"]
                 srvcs["port_502_messaging"] = "supported" if bits[0] == 1 else "unsupported"
                 srvcs["io_scanning"] = "supported" if bits[1] == 1 else "unsupported"
                 srvcs["global_data"] = "supported" if bits[2] == 1 else "unsupported"
@@ -279,11 +293,8 @@ def _get_snmp_metadata(
     log.debug("Pulling SNMP email server info...")
     for name, oid_pair in smtp_oids.items():
         response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
-            continue
-
-        data = oid_pair[1](response[0]["value_string"])  # Convert data
-        if data != "":
+        data = _convert_snmp_value(response, oid_pair[1])
+        if data is not None and data != "":
             if "ipv4" in name:
                 # snmp.get() will generate a IP string
                 smtp_info[name] = data
@@ -315,16 +326,12 @@ def _get_snmp_metadata(
     log.debug("Pulling SNMP Port502 info...")
     for name, oid_pair in port_502_oids.items():
         response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
-            continue
-
-        # Convert data
-        data = oid_pair[1](response[0]["value_string"])
-        if data != "":
+        data = _convert_snmp_value(response, oid_pair[1])
+        if data is not None and data != "":
             if name == "port_security":
                 port_502_info[name] = "enabled" if data == 2 else "disabled"
             elif name == "supported_protocol":
-                port_502_info[name] = supp_protos[data]
+                port_502_info[name] = supp_protos.get(data, f"unknown ({data})")
             elif name == "service_status":
                 port_502_info[name] = "operational" if data == 2 else "no configuration"
             else:
@@ -336,12 +343,8 @@ def _get_snmp_metadata(
     log.debug("Pulling SNMP web server info...")
     for name, oid_pair in web_oids.items():
         response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
-            continue
-
-        # Convert dataQ
-        data = oid_pair[1](response[0]["value_string"])
-        if data != "":
+        data = _convert_snmp_value(response, oid_pair[1])
+        if data is not None and data != "":
             if name == "password_status":
                 web_info[name] = "enabled" if data == 2 else "disabled"
             elif name == "service_status":
@@ -372,23 +375,22 @@ def _get_snmp_metadata(
         if not responses:
             continue
 
-        led_info[name] = [oid_pair[1](x["value_encoded"]) for x in responses]
+        led_info[name] = [
+            _convert_snmp_value([x], oid_pair[1], "value_encoded") for x in responses
+        ]
     for i in range(5):
-        # Convert from the lists of values per OID to dict of info per LED
-        info = {}
-        for k in led_oids.keys():
-            info[k] = led_info[k][i]
-        module_info["led_" + str(i)] = info
+        # Convert from the lists of values per OID to dict of info per LED.
+        # The device may have returned fewer values than expected.
+        info = {k: led_info[k][i] for k in led_oids.keys() if i < len(led_info.get(k, []))}
+        if info:
+            module_info["led_" + str(i)] = info
 
     # Pull information for the overall system
     log.debug("Pulling SNMP overall system info...")
     for name, oid_pair in system_oids.items():
         response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
-            continue
-
-        data = oid_pair[1](response[0]["value_string"])
-        if data != "":
+        data = _convert_snmp_value(response, oid_pair[1])
+        if data is not None and data != "":
             system_info[name] = data
 
     return module_info, system_info
@@ -430,15 +432,27 @@ def _get_ftp_metadata(
         log.error(f"Failed to pull FTP data from {ip}: {ex}")
         return {}
 
+    return _parse_ftp_metadata(ldst_data, dinf_data, sd_data, log)
+
+
+def _parse_ftp_metadata(ldst_data: str, dinf_data: str, sd_data: str, log=peat_logger) -> dict:
+    """
+    Parse the responses to the ``LDST``, ``DINF``, and ``FREE`` FTP commands.
+    Malformed values are skipped.
+    """
     device_info = {}
 
     # ** Loader status (LDST) **
     loader_status = {}
-    ldst_data = ldst_data.split("\n")[1]  # Remove "200" lines
-    ldst_data = ldst_data.replace(" ", "").split(",")  # Clean spaces and split
-    for pair in ldst_data:
-        split = pair.split("=")
-        loader_status[utils.convert_to_snake_case(split[0])] = split[1]
+    ldst_lines = ldst_data.split("\n")
+    if len(ldst_lines) > 1:
+        ldst_pairs = ldst_lines[1].replace(" ", "").split(",")  # Remove "200" lines and spaces
+        for pair in ldst_pairs:
+            key, sep, value = pair.partition("=")
+            if not sep:
+                log.debug(f"Skipping malformed LDST value: {pair!r}")
+                continue
+            loader_status[utils.convert_to_snake_case(key)] = value
     device_info["loader_status"] = loader_status
 
     # ** Device info (DINF) **
@@ -457,27 +471,33 @@ def _get_ftp_metadata(
         module_tag = "device_" + str(module_number)
 
         # Get the metadata from the key-value pairs
-        module_info["fw_loc"] = module_data[0]
+        module_info["fw_loc"] = module_data[0] if module_data else ""
 
         for pair in module_data[1:]:
-            split = pair.split("=")
+            name, sep, value = pair.partition("=")
+            if not sep:
+                log.debug(f"Skipping malformed DINF value: {pair!r}")
+                continue
 
-            if split[0] == "Desc":
+            if name == "Desc":
                 key = "description"
-            elif split[0] == "HwId":
+            elif name == "HwId":
                 key = "hardware_id"
             else:
-                key = utils.convert_to_snake_case(split[0])
+                key = utils.convert_to_snake_case(name)
 
             if key == "ir":
-                module_info[key] = int(split[1])
+                try:
+                    module_info[key] = int(value)
+                except ValueError:
+                    log.debug(f"Skipping non-integer DINF 'Ir' value: {value!r}")
             # TODO: is "Date" the manufacture date or firmware flash date?
             elif key == "date":
-                module_info["timestamp"] = split[1].replace("#dt", "")
+                module_info["timestamp"] = value.replace("#dt", "")
             elif key == "mac":
-                module_info["mac_address"] = split[1].replace("-", ":")
+                module_info["mac_address"] = value.replace("-", ":")
             else:
-                module_info[key] = split[1]
+                module_info[key] = value
 
         # Save the module info
         device_info[module_tag] = module_info
@@ -487,7 +507,10 @@ def _get_ftp_metadata(
         module_number += 1
 
     # ** Free space on the SD card (FREE) **
-    device_info["free_space_sd_card"] = int(sd_data.split("=")[-1].strip())
+    try:
+        device_info["free_space_sd_card"] = int(sd_data.rsplit("=", maxsplit=1)[-1].strip())
+    except ValueError:
+        log.debug(f"Skipping malformed FREE response: {sd_data!r}")
 
     return device_info
 
@@ -525,7 +548,9 @@ def _get_modbus_metadata(ip: str, timeout: float = 5.0, port: int = 502) -> dict
     # TODO: is there more information from this?
     payload = binascii.unhexlify("01bf00000005005a000606")
     response = send_umas_packet(sock, payload, UMASResponse)
-    device_info["memory_card_model"] = bytes(response.payload)[3:-1].decode()
+    device_info["memory_card_model"] = bytes(response.payload)[3:-1].decode(
+        "utf-8", errors="replace"
+    )
 
     sock.close()
     log.debug(f"Metadata found over Modbus for device {ip}: {device_info!s}")

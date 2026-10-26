@@ -375,8 +375,8 @@ class Siprotec(DeviceModule):
         cls.log.trace2(f"** SNMP module_info **\n{pformat(module_info)}\n")
         return module_info, system_info
 
-    @staticmethod
-    def _parse_mlfb_txt(data: str) -> dict:
+    @classmethod
+    def _parse_mlfb_txt(cls, data: str) -> dict:
         """
         Parse the contents of MLFB.txt.
 
@@ -387,13 +387,21 @@ class Siprotec(DeviceModule):
             The components of the file as a dictionary
         """
         parts = [x for x in data.split("\n") if x != ""]
+        if len(parts) < 2:
+            cls.log.warning(f"Unexpected MLFB.txt contents, expected at least 2 lines: {data!r}")
+            return {}
 
         parsed = {
             "model": parts[0][:6],
             "bf_number": parts[1].strip(),
             "firmware_version": parts[-1][-9:].strip(),
-            **decode_mlfb(parts[0][6 : data.index("-")]),
         }
+
+        dash = parts[0].find("-")
+        if dash > 6:
+            parsed.update(decode_mlfb(parts[0][6:dash]))
+        else:
+            cls.log.warning(f"Unexpected MLFB format, not decoding it: {parts[0]!r}")
 
         return parsed
 

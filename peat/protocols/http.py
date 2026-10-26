@@ -6,13 +6,15 @@ import ssl
 import tempfile
 import threading
 import urllib.parse
+from collections import OrderedDict
 from pathlib import Path, PurePosixPath
 from typing import Final, Literal
 
 import urllib3
 from bs4 import BeautifulSoup
-from requests import Response, Session
+from requests import PreparedRequest, Response, Session
 from requests.exceptions import SSLError
+from requests.structures import CaseInsensitiveDict
 
 import peat  # Avoid circular imports
 from peat import config, consts, log, utils
@@ -27,6 +29,24 @@ TLS_VERIFY_HINT: Final[str] = (
     "'tls_verify: false' in the config file or the environment variable "
     "PEAT_TLS_VERIFY=false."
 )
+
+#: Maximum size (in bytes) of the body of a HTTP response. Larger responses are
+#: refused, so a device can't exhaust memory by sending an endless response.
+#: This is generous, since some devices serve firmware or configuration files
+#: over HTTP. It can be changed for a request with the ``max_body_size``
+#: argument of :meth:`HTTP.get` and :meth:`HTTP.post`.
+MAX_HTTP_BODY: Final[int] = 64 * 1024 * 1024
+
+#: Maximum number of redirects followed for a request. Only redirects to
+#: the same host are followed. This allows for login pages that redirect
+#: several times, but stops a device from redirecting endlessly.
+MAX_HTTP_REDIRECTS: Final[int] = 10
+
+#: Maximum number of responses kept in :attr:`HTTP.page_cache`
+MAX_PAGE_CACHE_ENTRIES: Final[int] = 256
+
+#: Maximum total size (in bytes) of the response bodies kept in :attr:`HTTP.page_cache`
+MAX_PAGE_CACHE_BYTES: Final[int] = 256 * 1024 * 1024
 
 _tls_warned_hosts: Final[set[str]] = set()
 _tls_warn_lock: Final = threading.Lock()
@@ -111,12 +131,211 @@ def resolve_tls_verify(
     return False
 
 
+#: Backslashes, whitespace and control characters, which aren't allowed in
+#: redirect targets or links that are followed. URL parsers disagree about
+#: them (e.g. :mod:`urllib.parse` and urllib3 on ``http://a\@b/``), so they
+#: can make a URL look like it's for one host when the request goes to another.
+_UNSAFE_URL_RE: Final[re.Pattern[str]] = re.compile(r"[\\\s\x00-\x1f\x7f-\x9f]")
+
+
+def is_safe_url(url: str) -> bool:
+    """
+    If a URL (e.g. a ``Location`` header or a link from a device) has no
+    backslashes, whitespace or control characters, which URL parsers disagree about.
+    """
+    return not _UNSAFE_URL_RE.search(url)
+
+
+def _normalize_host(host: str) -> str:
+    return host.lower().strip("[]").rstrip(".")
+
+
+def device_tls_verify(ip: str, dev: peat.data.models.DeviceData | None = None) -> bool:
+    """
+    Value of the ``https.verify`` device option for a device, which disables
+    TLS certificate verification for it if :obj:`False` (refer to
+    :func:`resolve_tls_verify`). If ``dev`` isn't given, the device is looked
+    up by its IP address, and :obj:`True` is returned if there's no such device.
+    """
+    if dev is None:
+        dev = peat.data.datastore.search(ip, "ip")
+    if dev is None:
+        return True
+    return bool(dev.options.get("https", {}).get("verify", True))
+
+
+def log_tls_verify_failure(logger, host: str, message: str) -> None:
+    """
+    Log a failed TLS certificate verification for a host, with
+    :data:`TLS_VERIFY_HINT` the first time for the host, and at DEBUG level after
+    that, since scanning a network of self-signed devices would otherwise be very noisy.
+
+    Args:
+        logger: Logger to log with, e.g. a class's bound logger
+        host: Host (and port) the connection was to
+        message: What failed, e.g. ``"Failed to GET '...': TLS certificate
+            verification failed: ..."``
+    """
+    with _tls_warn_lock:
+        first = host not in _tls_hint_hosts
+        _tls_hint_hosts.add(host)
+
+    if first:
+        logger.warning(f"{message}. {TLS_VERIFY_HINT}")
+    else:
+        logger.debug(message)
+
+
+def url_hostname(url: str) -> str:
+    """
+    Host name that :mod:`requests` (urllib3) connects to for a URL (lowercase,
+    without the port, IPv6 brackets or a trailing dot), or an empty string
+    if the URL doesn't have one or can't be parsed.
+
+    This is computed the same way :mod:`requests` does when sending a request,
+    since :mod:`urllib.parse` disagrees with it for some URLs.
+    """
+    try:
+        prepared = PreparedRequest()
+        prepared.prepare_url(url, None)
+        host = urllib3.util.parse_url(prepared.url).host or ""
+    except Exception:
+        return ""
+    return _normalize_host(host)
+
+
+def _urllib_hostname(url: str) -> str:
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+        # Same IDNA encoding as requests, so internationalized names compare equal
+        return _normalize_host(host.encode("idna").decode("ascii"))
+    except (ValueError, UnicodeError):
+        return ""
+
+
+def is_same_host(url: str, other: str) -> bool:
+    """
+    If two URLs are for the same host. The scheme and port can differ,
+    e.g. a redirect from ``http://host/`` to ``https://host/`` is the same host.
+
+    URLs with backslashes, whitespace or control characters are never the
+    same host (refer to :func:`is_safe_url`), and both :mod:`requests` and
+    :mod:`urllib.parse` must agree on the host of each URL, so a URL crafted
+    to be parsed differently by them can't pass the check.
+    """
+    if not is_safe_url(url) or not is_safe_url(other):
+        return False
+
+    host = url_hostname(url)
+    if not host or host != url_hostname(other):
+        return False
+
+    return _urllib_hostname(url) == host and _urllib_hostname(other) == host
+
+
+class SameHostSession(Session):
+    """
+    :class:`requests.Session` that only follows redirects to the same host
+    as the request, and at most :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS`
+    of them. A redirect to another host isn't followed, and the redirect
+    response is returned instead.
+
+    This prevents a device from redirecting PEAT (with the cookies and
+    credentials of the session) to other hosts reachable from the system
+    running PEAT, and from having the response saved and parsed as if it
+    came from the device.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.max_redirects = MAX_HTTP_REDIRECTS
+
+    def get_redirect_target(self, resp: Response) -> str | None:
+        target = super().get_redirect_target(resp)
+        if target is None or resp.request is None or not resp.request.url:
+            return target
+
+        if not is_safe_url(target) or not is_same_host(
+            urllib.parse.urljoin(resp.request.url, target), resp.request.url
+        ):
+            return None
+
+        return target
+
+
+class PageCache:
+    """
+    Thread-safe cache of HTTP responses, keyed by URL. The least recently
+    used responses are removed when there are more than ``max_entries``
+    responses, or their bodies total more than ``max_bytes``.
+    """
+
+    def __init__(
+        self,
+        max_entries: int = MAX_PAGE_CACHE_ENTRIES,
+        max_bytes: int = MAX_PAGE_CACHE_BYTES,
+    ) -> None:
+        self.max_entries: int = max_entries
+        self.max_bytes: int = max_bytes
+        self.total_bytes: int = 0
+        self._data: OrderedDict[str, Response] = OrderedDict()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _size(response: Response) -> int:
+        content = getattr(response, "_content", None)
+        return len(content) if isinstance(content, bytes) else 0
+
+    def get(self, url: str, default: Response | None = None) -> Response | None:
+        with self._lock:
+            response = self._data.get(url)
+            if response is None:
+                return default
+            self._data.move_to_end(url)
+            return response
+
+    def __getitem__(self, url: str) -> Response:
+        response = self.get(url)
+        if response is None:
+            raise KeyError(url)
+        return response
+
+    def __setitem__(self, url: str, response: Response) -> None:
+        size = self._size(response)
+        with self._lock:
+            if url in self._data:
+                self.total_bytes -= self._size(self._data.pop(url))
+            if size > self.max_bytes:
+                return  # Too large to cache
+
+            self._data[url] = response
+            self.total_bytes += size
+
+            while len(self._data) > self.max_entries or self.total_bytes > self.max_bytes:
+                _, removed = self._data.popitem(last=False)
+                self.total_bytes -= self._size(removed)
+
+    def __contains__(self, url: object) -> bool:
+        with self._lock:
+            return url in self._data
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+            self.total_bytes = 0
+
+
 class HTTP:
     """
     Basic set of reusable HTTP functionality.
     """
 
-    page_cache: dict[str, Response] = {}  # Global cache of page data, keyed by URL
+    # Global cache of page data, keyed by URL (bounded in size)
+    page_cache: PageCache = PageCache()
     DEFAULT_HEADERS: dict = {}
 
     def __init__(
@@ -179,17 +398,9 @@ class HTTP:
         :func:`~peat.protocols.http.resolve_tls_verify` using the global
         configuration and the device's ``https.verify`` option.
         """
-        dev = self.dev
-        if dev is None:
-            dev = peat.data.datastore.search(self.ip, "ip")
-
-        device_verify = True
-        if dev is not None:
-            device_verify = bool(dev.options.get("https", {}).get("verify", True))
-
         return resolve_tls_verify(
             host=f"{self.ip}:{self.port}",
-            device_verify=device_verify,
+            device_verify=device_tls_verify(self.ip, self.dev),
             warn=self.protocol != "http",
         )
 
@@ -245,6 +456,138 @@ class HTTP:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.ip}, {self.port}, {self.timeout})"
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        timeout: float | None,
+        max_body_size: int | None = None,
+        session: Session | None = None,
+        **kwargs,
+    ) -> Response:
+        """
+        Send a request, following redirects only to the same host (at most
+        :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them), and read
+        the body of the response, up to ``max_body_size`` bytes.
+
+        A redirect that isn't followed (to another host, or after too many
+        redirects) is logged, and the redirect response is returned, the same
+        as :class:`~peat.protocols.http.SameHostSession` does.
+
+        Modules should use this (or :meth:`get` and :meth:`post`) instead of
+        calling methods of :attr:`session` directly, so these limits apply.
+
+        Args:
+            method: HTTP method, e.g. ``"GET"``
+            url: URL to request
+            timeout: Timeout for the request (:obj:`None` for no timeout)
+            max_body_size: Maximum size of the response body, in bytes.
+                If :obj:`None`, :data:`~peat.protocols.http.MAX_HTTP_BODY` is used.
+            session: Session to use instead of :attr:`session`
+            kwargs: Passed to :meth:`requests.Session.request`. ``stream`` is
+                ignored, since the body is always read (up to ``max_body_size``).
+
+        Raises:
+            CommError: The response body was larger than ``max_body_size``
+        """
+        if max_body_size is None:
+            max_body_size = MAX_HTTP_BODY
+
+        if session is None:
+            session = self.session
+
+        # The response is always streamed, so the size of the body can be limited
+        kwargs.pop("stream", None)
+        follow_redirects = kwargs.pop("allow_redirects", True)
+
+        response: Response = session.request(
+            method, url, timeout=timeout, allow_redirects=False, stream=True, **kwargs
+        )
+
+        # The URL as requests sent it (e.g. with spaces quoted), to compare redirects with
+        origin = response.url
+        history: list[Response] = []
+        while follow_redirects and response.is_redirect:
+            code = response.status_code
+            location = Session.get_redirect_target(session, response) or ""
+            target = urllib.parse.urljoin(response.url, location)
+
+            if not is_safe_url(location) or not is_same_host(target, origin):
+                self.log.warning(
+                    f"Not following redirect ({code}) from '{response.url}' "
+                    f"to a different host: {location!r}"
+                )
+                break
+
+            if len(history) >= MAX_HTTP_REDIRECTS:
+                self.log.warning(
+                    f"Not following redirect ({code}) from '{response.url}': "
+                    f"too many redirects (more than {MAX_HTTP_REDIRECTS})"
+                )
+                break
+
+            # Don't read the body of redirect responses that are followed
+            response.close()
+
+            # Change the method the same way requests and browsers do
+            if method != "HEAD" and (code in (302, 303) or (code == 301 and method == "POST")):
+                method = "GET"
+                for key in ("data", "json", "files"):
+                    kwargs.pop(key, None)
+
+            # The query parameters are in the redirect target, if any
+            kwargs.pop("params", None)
+
+            # Don't send credentials if the scheme or port changes (except
+            # http to https on the default ports), the same as requests does
+            # when it follows redirects, e.g. for a redirect to plain HTTP.
+            if session.should_strip_auth(response.url, target):
+                kwargs.pop("auth", None)
+                headers = CaseInsensitiveDict(kwargs.get("headers") or {})
+                headers["Authorization"] = None  # Removes the session's header too
+                kwargs["headers"] = headers
+
+            self.log.debug(f"Following redirect ({code}) from '{response.url}' to '{target}'")
+            history.append(response)
+            response = session.request(
+                method, target, timeout=timeout, allow_redirects=False, stream=True, **kwargs
+            )
+
+        response.history = history
+        self._read_body(response, max_body_size)
+
+        return response
+
+    @staticmethod
+    def _read_body(response: Response, max_size: int) -> None:
+        """
+        Read the body of a streamed response, refusing it if it's larger than
+        ``max_size`` bytes. Afterwards, it's available as usual with
+        ``response.content``, ``response.text``, etc.
+        """
+        try:
+            declared = int(response.headers.get("content-length", ""))
+        except ValueError:
+            declared = -1
+
+        if declared > max_size:
+            response.close()
+            raise consts.CommError(
+                f"response body is too large ({declared} bytes, limit is {max_size} bytes)"
+            )
+
+        body = bytearray()
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            body += chunk
+            if len(body) > max_size:
+                response.close()
+                raise consts.CommError(
+                    f"response body is too large (more than {max_size} bytes, the limit)"
+                )
+
+        response._content = bytes(body)
+        response._content_consumed = True
 
     def _save_response_to_file(
         self,
@@ -318,10 +661,16 @@ class HTTP:
         allow_errors: bool = False,
         dev: peat.data.models.DeviceData | None = None,
         timeout: float | None = None,
+        max_body_size: int | None = None,
         **kwargs,
     ) -> Response | None:
         """
         Perform a HTTP ``GET`` request and return the response.
+
+        Redirects are only followed to the same host, and at most
+        :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. If a redirect
+        isn't followed, the redirect response is returned if ``allow_errors``
+        is set, otherwise the request fails.
 
         .. warning::
            Results of queries for an identical URL are cached by default for
@@ -345,6 +694,8 @@ class HTTP:
             dev: DeviceData object to save files to
             timeout: Timeout for the query. If :obj:`None`, the default
                 timeout for this class instance is used instead.
+            max_body_size: Maximum size of the response body, in bytes.
+                If :obj:`None`, :data:`~peat.protocols.http.MAX_HTTP_BODY` is used.
             kwargs: Additional keyword arguments that will be passed
                 directly to ``Requests.get()``
 
@@ -391,8 +742,14 @@ class HTTP:
         try:
             req_ts = utils.utc_now()  # rough timestamp of send time
 
-            response: Response = self.session.get(
-                url, timeout=timeout, params=params, auth=auth, **kwargs
+            response = self._request(
+                "GET",
+                url,
+                timeout=timeout,
+                max_body_size=max_body_size,
+                params=params,
+                auth=auth,
+                **kwargs,
             )
 
             file_path = self._save_response_to_file(response, page, url, dev)
@@ -422,10 +779,15 @@ class HTTP:
         timeout: float | None = None,
         dev: peat.data.models.DeviceData | None = None,
         use_cache: bool = False,
+        max_body_size: int | None = None,
         **kwargs,
     ) -> Response | None:
         """
         Perform a HTTP ``POST`` request and return the response.
+
+        Redirects are only followed to the same host, and at most
+        :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. If a redirect
+        isn't followed, the request fails.
 
         .. note::
            The response object will have three additional attributes:
@@ -437,6 +799,8 @@ class HTTP:
                 timeout for this class instance is used instead.
             dev: DeviceData object to save files to
             use_cache: If the internal page cache should be used
+            max_body_size: Maximum size of the response body, in bytes.
+                If :obj:`None`, :data:`~peat.protocols.http.MAX_HTTP_BODY` is used.
             kwargs: Additional keyword arguments that will be passed
                 directly to ``Requests.post()``
 
@@ -462,7 +826,9 @@ class HTTP:
         try:
             req_ts = utils.utc_now()  # rough timestamp of send time
 
-            response: Response = self.session.post(url, timeout=timeout, **kwargs)
+            response = self._request(
+                "POST", url, timeout=timeout, max_body_size=max_body_size, **kwargs
+            )
 
             # Save the raw response text body to disk as an artifact
             parts = urllib.parse.urlparse(url)
@@ -495,20 +861,14 @@ class HTTP:
 
     def _log_tls_failure(self, method: str, url: str, ex: Exception) -> None:
         """
-        Log a failed TLS certificate verification, with :data:`TLS_VERIFY_HINT`
-        the first time for a host, and at DEBUG level after that, since
-        scanning a network with self-signed devices would otherwise be very noisy.
+        Log a failed TLS certificate verification (refer to
+        :func:`~peat.protocols.http.log_tls_verify_failure`).
         """
-        host = urllib.parse.urlsplit(url).netloc
-        with _tls_warn_lock:
-            first = host not in _tls_hint_hosts
-            _tls_hint_hosts.add(host)
-
-        msg = f"Failed to {method} '{url}': TLS certificate verification failed: {ex}"
-        if first:
-            self.log.warning(f"{msg}. {TLS_VERIFY_HINT}")
-        else:
-            self.log.debug(msg)
+        log_tls_verify_failure(
+            self.log,
+            urllib.parse.urlsplit(url).netloc,
+            f"Failed to {method} '{url}': TLS certificate verification failed: {ex}",
+        )
 
     def get_ssl_certificate(self) -> peat.data.models.X509 | None:
         """
@@ -685,7 +1045,9 @@ class HTTP:
     def gen_session(verify: bool | str | None = None) -> Session:
         """
         Session with no proxies, ``.netrc`` credentials, or CA bundles
-        from the environment (e.g. ``https_proxy`` or ``REQUESTS_CA_BUNDLE``).
+        from the environment (e.g. ``https_proxy`` or ``REQUESTS_CA_BUNDLE``),
+        that only follows redirects to the same host
+        (refer to :class:`~peat.protocols.http.SameHostSession`).
 
         Args:
             verify: TLS certificate verification setting for the session
@@ -696,10 +1058,23 @@ class HTTP:
         if verify is None:
             verify = resolve_tls_verify()
 
-        session = Session()
+        session = SameHostSession()
         session.verify = verify
         session.trust_env = False
         return session
 
 
-__all__ = ["HTTP", "TLS_VERIFY_HINT", "resolve_tls_verify"]
+__all__ = [
+    "HTTP",
+    "MAX_HTTP_BODY",
+    "MAX_HTTP_REDIRECTS",
+    "TLS_VERIFY_HINT",
+    "PageCache",
+    "SameHostSession",
+    "device_tls_verify",
+    "is_safe_url",
+    "is_same_host",
+    "log_tls_verify_failure",
+    "resolve_tls_verify",
+    "url_hostname",
+]

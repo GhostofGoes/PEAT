@@ -10,10 +10,32 @@ Authors
 """
 
 import re
+from pathlib import PurePosixPath
 
-from peat import Interface, config, datastore, log, state, utils
+from peat import Interface, config, consts, datastore, log, state, utils
 
 from .heat_classes import HeatArtifact, HeatProtocol, TelnetHeatArtifact
+
+
+def _safe_artifact_name(name: str) -> str:
+    """
+    Make a file name from captured traffic (e.g. a YMODEM header) safe to use as
+    part of a file name: only the final path component is kept, and characters
+    that are invalid in file names are replaced.
+    """
+    final = PurePosixPath(str(name).replace("\\", "/")).name
+    clean = consts.sanitize_filename(final)
+    if clean in ("", ".", ".."):
+        return "unnamed"
+    return clean
+
+
+def _decode_artifact(data: bytearray) -> str | bytes:
+    """Decode ASCII file data as text, otherwise keep it as raw bytes."""
+    try:
+        return data.decode("ascii")
+    except UnicodeDecodeError:
+        return bytes(data)
 
 
 def _cleanup_oui(mac: str) -> str:
@@ -455,7 +477,7 @@ class TelnetExtractor(HeatProtocol):
             start=startoffset,
             stop=stopoffset,
             command=selcommand,
-            reconstructed_artifact=fileData.decode("ascii"),
+            reconstructed_artifact=_decode_artifact(fileData),
             artifact_file_name=file_name,
         )
 
@@ -631,6 +653,15 @@ class TelnetExtractor(HeatProtocol):
 
                 # read all blocks
                 while mode == "YMODEM":
+                    # The capture may end in the middle of a transfer
+                    if i + 3 > len(stream):
+                        log.warning(
+                            f"YMODEM transfer is truncated - "
+                            f"skipping file with command {selcommand}"
+                        )
+                        mode = "TELNET"
+                        break
+
                     # block starts with <SOH>=b'\x01' for 128 bytes
                     # but <STX>=b'\x02' for 1024 bytes
                     # this is hypothesized since it is nonstandard
@@ -649,6 +680,10 @@ class TelnetExtractor(HeatProtocol):
                     # so it has no bearing on the YMODEM transfer
                     if blockID == b"\xff":
                         i += 1
+                    if i + 2 >= len(stream):
+                        log.warning(f"YMODEM block 0x{blockID.hex()} header is truncated")
+                        mode = "TELNET"
+                        break
                     block1sComp = bytes([stream[i + 2]])
                     # 0xff is encoded as 0xffff by SEL's ascii protocol for command specification
                     # so it has no bearing on the YMODEM transfer
@@ -672,10 +707,20 @@ class TelnetExtractor(HeatProtocol):
                     size = 128
                     if blockLength == b"\x02":
                         size = 1024
+
+                    # data, then 2 CRC bytes (each possibly escaped as 0xffff),
+                    # then the byte after the block
+                    if i + size + 3 > len(stream):
+                        log.warning(
+                            f"YMODEM block 0x{blockID.hex()} is truncated - "
+                            f"skipping file with command {selcommand}"
+                        )
+                        mode = "TELNET"
+                        break
+
                     # read data bytes
-                    for j in range(size):
-                        data.append(stream[i + j])
-                    i += j + 1
+                    data.extend(stream[i : i + size])
+                    i += size
                     # after reading 128 bytes or 1024 bytes, get the CRC
                     crc = 0
                     crc += stream[i] << 8
@@ -683,12 +728,20 @@ class TelnetExtractor(HeatProtocol):
                     # so it has no bearing on the YMODEM transfer
                     if bytes([stream[i]]) == b"\xff":
                         i += 1
+                    if i + 2 >= len(stream):
+                        log.warning(f"YMODEM block 0x{blockID.hex()} CRC is truncated")
+                        mode = "TELNET"
+                        break
                     crc += stream[i + 1]
                     # 0xff is encoded as 0xffff by SEL's ascii protocol for command specification
                     # so it has no bearing on the YMODEM transfer
                     if bytes([stream[i + 1]]) == b"\xff":
                         i += 1
                     i += 2
+                    if i >= len(stream):
+                        log.warning(f"YMODEM transfer ends after block 0x{blockID.hex()}")
+                        mode = "TELNET"
+                        break
 
                     # verify CRC is correct
                     calc_crc = self.ymodem_crc(data)
@@ -710,12 +763,11 @@ class TelnetExtractor(HeatProtocol):
                         mode = "TELNET"
 
                         # assemble the file
-                        for blk_id, b_data in dataBlocks:
+                        for blk_id, b_data in dataBlocks.items():
                             if blk_id == b"\x00":
-                                for c in range(len(b_data)):
-                                    if bytes([b_data[c]]) == b"\x00":
-                                        break
-                                    fileName += bytes([b_data[c]]).decode("ascii")
+                                # Block 0 has the file name, terminated by a null byte
+                                raw_name = bytes(b_data).partition(b"\x00")[0]
+                                fileName = raw_name.decode("ascii", errors="replace")
                             else:
                                 fileData.extend(b_data.rstrip(b"\x00").rstrip(b"\x1a"))
 
@@ -765,20 +817,32 @@ class TelnetExtractor(HeatProtocol):
     def assemble_artifacts(self) -> None:
         for artifact in self.artifacts:
             start = artifact.start_time.strftime("%Y-%m-%d_%H-%M-%S")
+            # The name comes from captured traffic, so only use the final
+            # component (no directories) and make it a valid file name.
+            name = _safe_artifact_name(artifact.artifact_file_name)
             artifact.file_name = (
                 f"{artifact.source_ip}_{artifact.dest_ip}_"
-                f"{artifact.direction}_{artifact.artifact_file_name}_"
+                f"{artifact.direction}_{name}_"
                 f"{start}+{int(artifact.duration)}_"
-                f"[{artifact.start}:{artifact.stop}] \
-                    {artifact.artifact_file_name[artifact.artifact_file_name.index('.') :]}"
+                f"[{artifact.start}:{artifact.stop}]{PurePosixPath(name).suffix}"
             )
-            artifact.file_name = str.replace(artifact.file_name, ":", "_")
+            artifact.file_name = consts.sanitize_filename(
+                str.replace(artifact.file_name, ":", "_")
+            )
 
     def export_artifacts(self) -> None:
         log.info(f"Exporting {len(self.artifacts)} artifacts...")
         for artifact in self.artifacts:
             log.info(f"[{artifact.id} Exporting to {artifact.file_name}")
-            artifact.file_path = config.HEAT_ARTIFACTS_DIR / artifact.file_name
+            try:
+                artifact.file_path = utils.safe_join(
+                    config.HEAT_ARTIFACTS_DIR, consts.sanitize_filename(artifact.file_name)
+                )
+            except ValueError as ex:
+                log.error(f"Not exporting artifact {artifact.id}: {ex}")
+                artifact.file_path = None
+                continue
+
             utils.write_file(
                 artifact.reconstructed_artifact,
                 artifact.file_path,
@@ -797,7 +861,7 @@ class TelnetExtractor(HeatProtocol):
             if txtRegex.search(artifact.artifact_file_name):
                 self._parse_artifact(artifact)
             else:
-                ext = artifact.artifact_file_name[artifact.artifact_file_name.index(".") :]
+                ext = PurePosixPath(_safe_artifact_name(artifact.artifact_file_name)).suffix
                 log.warning(
                     f"Unable to parse file with unsupported extension "
                     f"{ext}: {artifact.artifact_file_name}"

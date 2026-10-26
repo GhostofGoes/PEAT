@@ -407,3 +407,10 @@ def test_ssh_read_until_never_matches():
     ssh.channel = _FakeChannel(b"A" * 1000, endless=True)
     result, _ = _run_with_watchdog(lambda: ssh.read_until("#", delay=0))
     assert 50_000 <= len(result["value"]) < 52_000
+
+
+def test_ssh_add_data_non_utf8():
+    client = SSH("127.0.0.1")
+    # Previously, UnicodeDecodeError discarded the whole read
+    assert client._add_data(b"\xff banner \xfe\n") == "� banner �"
+    assert client.raw_output[-1] == b"\xff banner \xfe\n"

@@ -338,10 +338,11 @@ class SELSerial(SELAscii):
             )
             return None
 
-        # shell out to rz command for YMODEM file retrieval
-        cmd = f"{self.rz_path} --ymodem --quiet > {self.address} < {self.address}"
+        # Run the rz command for YMODEM file retrieval. "--restrict" stops the
+        # device from choosing a path outside of out_dir or overwriting files.
+        cmd = [self.rz_path, "--ymodem", "--quiet", "--restrict"]
         self.log.debug(f"Starting 'rz' subprocess: {cmd}")
-        proc = subprocess.run(cmd, shell=True, cwd=out_dir, stderr=subprocess.PIPE, check=False)
+        proc = self._run_on_serial_port(cmd, cwd=out_dir, stderr=subprocess.PIPE, check=False)
         self.log.debug("Finished executing 'rz'")
 
         # rz writes files lowercase
@@ -417,23 +418,15 @@ class SELSerial(SELAscii):
             self.write(f"file write {conf_file}")
             sleep(1.5)
 
-            proc = subprocess.run(
-                f"{self.sz_path} --ymodem -vv -b {conf_file} > {self.address} < {self.address}",
-                shell=True,
-                cwd=configs_dir,
-                check=True,
-            )
+            # "--" so a file name starting with "-" isn't treated as an option
+            cmd = [self.sz_path, "--ymodem", "-vv", "-b", "--", conf_file]
+            proc = self._run_on_serial_port(cmd, cwd=configs_dir, check=True)
             if proc.returncode != 0:
                 self.log.error(f"sz failed to push config {conf_file}")
                 return False
 
             # TODO: why do we call sz twice?
-            subprocess.run(
-                f"{self.sz_path} --ymodem -vv -b {conf_file} > {self.address} < {self.address}",
-                shell=True,
-                cwd=configs_dir,
-                check=True,
-            )
+            self._run_on_serial_port(cmd, cwd=configs_dir, check=True)
             sleep(2.5)
 
         if not self.restart_device():
@@ -444,6 +437,22 @@ class SELSerial(SELAscii):
         self.log.info("Completed relay serial upload")
 
         return True
+
+    def _run_on_serial_port(
+        self, cmd: list[str], cwd: Path, check: bool, **kwargs
+    ) -> subprocess.CompletedProcess:
+        """
+        Run a command (e.g. ``rz`` or ``sz``) with its standard input and output
+        connected to the serial port, without using a shell (equivalent to
+        ``cmd > port < port``).
+        """
+        with (
+            open(self.address, "rb", buffering=0) as port_in,
+            open(self.address, "wb", buffering=0) as port_out,
+        ):
+            return subprocess.run(
+                cmd, stdin=port_in, stdout=port_out, cwd=cwd, check=check, **kwargs
+            )
 
     # TODO: rename from "download_binary"
     def download_binary(
