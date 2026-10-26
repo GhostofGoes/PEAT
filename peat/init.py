@@ -67,12 +67,13 @@ def restrict_results_permissions() -> None:
 def copy_config_file(src: Path, dest: Path) -> bool:
     """
     Copy a configuration file to the results, with secrets (e.g. device passwords
-    and SNMP communities, and passwords in Elasticsearch server URLs) redacted
-    by :func:`~peat.consts.redact_secrets`. Encrypted configuration files are
+    and SNMP communities, and passwords in Elasticsearch server URLs) omitted
+    by :func:`~peat.consts.omit_secrets`. Encrypted configuration files are
     copied as-is.
 
     .. note::
-       Comments and formatting of YAML files aren't kept.
+       Comments and formatting of YAML files aren't kept. A comment listing
+       the secrets that were omitted is added to YAML files.
 
     Returns:
         If the file was copied
@@ -91,13 +92,14 @@ def copy_config_file(src: Path, dest: Path) -> bool:
         log.warning(f"Not saving a copy of config file '{src.name}' to the results: {ex}")
         return False
 
-    redacted = consts.redact_secrets(data)
+    without_secrets, omitted = consts.omit_secrets(data)
     if is_json:  # write_file() formats the data as JSON
-        return utils.write_file(redacted, dest)
+        return utils.write_file(without_secrets, dest)
 
     content = (
-        f"# Copy of {src.name} with secrets redacted by PEAT\n"
-        f"{yaml.safe_dump(redacted, sort_keys=False)}"
+        f"# Copy of {src.name} with secrets omitted by PEAT: "
+        f"{', '.join(omitted) if omitted else '(none)'}\n"
+        f"{yaml.safe_dump(without_secrets, sort_keys=False)}"
     )
     return utils.write_file(content, dest)
 

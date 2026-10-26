@@ -39,13 +39,17 @@ def test_copy_config_file_yaml(tmp_path):
 
     text = dest.read_text(encoding="utf-8")
     assert PASSWORD not in text
+    assert "<redacted>" not in text
+    assert text.splitlines()[0] == (
+        "# Copy of config.yaml with secrets omitted by PEAT: elastic_server (password), "
+        "device_options.ssh.pass, device_options.snmp.communities, "
+        "device_options.sel.creds, hosts[0].options.web.pass"
+    )
     data = yaml.safe_load(text)
     assert data["metadata"] == {"name": "test config"}
-    assert data["elastic_server"] == "http://elastic:<redacted>@localhost:9200/"
-    assert data["device_options"]["ssh"] == {"user": "admin", "pass": "<redacted>"}
-    assert data["device_options"]["snmp"]["communities"] == ["<redacted>"]
-    assert data["device_options"]["sel"]["creds"] == [["acc", "<redacted>"]]
-    assert data["hosts"][0]["options"]["web"]["pass"] == "<redacted>"
+    assert data["elastic_server"] == "http://elastic@localhost:9200/"
+    assert data["device_options"] == {"ssh": {"user": "admin"}, "snmp": {}, "sel": {}}
+    assert data["hosts"][0]["options"]["web"] == {}
     assert PASSWORD in src.read_text(encoding="utf-8")  # original isn't changed
 
 
@@ -58,7 +62,7 @@ def test_copy_config_file_json(tmp_path):
 
     text = dest.read_text(encoding="utf-8")
     assert PASSWORD not in text
-    assert json.loads(text)["device_options"]["ssh"]["pass"] == "<redacted>"
+    assert json.loads(text)["device_options"]["ssh"] == {"user": "admin"}
 
 
 def test_copy_config_file_example_config(tmp_path, examples_dir):
@@ -68,8 +72,11 @@ def test_copy_config_file_example_config(tmp_path, examples_dir):
 
     assert init.copy_config_file(src, dest)
     data = yaml.safe_load(dest.read_text(encoding="utf-8"))
-    assert data["device_options"] == consts.redact_secrets(
-        yaml.safe_load(src.read_text(encoding="utf-8"))["device_options"]
+    assert (
+        data["device_options"]
+        == consts.omit_secrets(yaml.safe_load(src.read_text(encoding="utf-8"))["device_options"])[
+            0
+        ]
     )
 
 

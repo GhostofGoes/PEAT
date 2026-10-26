@@ -97,7 +97,7 @@ def test_export(settings_instance):
     assert settings_instance.export() == {"ALPHA": False, "ENV_PREFIX": "TEST_"}
 
 
-def test_export_redacts_secrets(tmp_path):
+def test_export_omits_secrets(tmp_path):
     password = "Marker-PW-41f0"
 
     class SecretSettings(SettingsManager):
@@ -113,12 +113,8 @@ def test_export_redacts_secrets(tmp_path):
     }
 
     exported = settings.export()
-    assert exported["ELASTIC_SERVER"] == "https://elastic:<redacted>@localhost:9200/"
-    assert exported["DEVICE_OPTIONS"] == {
-        "ssh": {"user": "admin", "pass": "<redacted>"},
-        "snmp": {"communities": ["<redacted>"]},
-        "sel": {"creds": [["acc", "<redacted>"]]},
-    }
+    assert exported["ELASTIC_SERVER"] == "https://elastic@localhost:9200/"
+    assert exported["DEVICE_OPTIONS"] == {"ssh": {"user": "admin"}, "snmp": {}, "sel": {}}
     assert password not in settings.yaml()
     assert password not in settings.json()
 
@@ -126,7 +122,13 @@ def test_export_redacts_secrets(tmp_path):
     for name in ["peat_configuration.json", "peat_configuration.yaml"]:
         text = (tmp_path / name).read_text(encoding="utf-8")
         assert password not in text, name
-        assert "<redacted>" in text, name
+        assert "<redacted>" not in text, name
+    yaml_text = (tmp_path / "peat_configuration.yaml").read_text(encoding="utf-8")
+    assert yaml_text.splitlines()[0] == (
+        "# Secrets omitted by PEAT (set them again to reuse this file): "
+        "device_options.sel.creds, device_options.snmp.communities, "
+        "device_options.ssh.pass, elastic_server (password)"
+    )
 
     # The values used by PEAT aren't changed
     assert settings.DEVICE_OPTIONS["ssh"]["pass"] == password
@@ -200,3 +202,55 @@ def test_is_default_value(settings_instance):
     assert settings_instance.is_default_value("TEST_OPTION")
     settings_instance.TEST_OPTION = "some other non-default value"
     assert not settings_instance.is_default_value("TEST_OPTION")
+
+
+class _DeviceSettings(SettingsManager):
+    ELASTIC_SERVER: str = ""
+    DEVICE_OPTIONS: dict = {}
+    COUNT: int = 3
+
+
+def test_reused_export_keeps_default_secrets(tmp_path):
+    """Reusing a saved configuration used "<redacted>" as passwords and communities."""
+    settings = _DeviceSettings(label="configuration", env_prefix="TEST_", init_env=False)
+    settings.ELASTIC_SERVER = "https://elastic:Marker-PW-77@localhost:9200/"
+    settings.DEVICE_OPTIONS = {
+        "sel": {"pass": "Marker-PW-77", "creds": [["acc", "Marker-PW-77"]], "user": "acc"},
+        "snmp": {"community": "Marker-PW-77", "port": 1161},
+    }
+    settings.save_to_file(outdir=tmp_path)
+
+    for name in ["peat_configuration.json", "peat_configuration.yaml"]:
+        reused = _DeviceSettings(label="configuration", env_prefix="TEST_", init_env=False)
+        assert reused.load_from_file(tmp_path / name)
+        assert reused.DEVICE_OPTIONS == {"sel": {"user": "acc"}, "snmp": {"port": 1161}}
+        assert reused.ELASTIC_SERVER == "https://elastic@localhost:9200/"
+        assert "<redacted>" not in str(reused.export())
+
+
+def test_load_ignores_redacted_values(tmp_path, caplog):
+    file = tmp_path / "config.yaml"
+    file.write_text(
+        """
+elastic_server: "https://elastic:<redacted>@localhost:9200/"
+count: "<redacted>"
+device_options:
+  sel:
+    pass: "<redacted>"
+    creds: [[acc, "<redacted>"], [acc2, real-pw]]
+    user: acc
+  snmp:
+    communities: ["<redacted>"]
+""",
+        encoding="utf-8",
+    )
+    settings = _DeviceSettings(label="configuration", env_prefix="TEST_", init_env=False)
+    with caplog.at_level("WARNING"):
+        assert settings.load_from_file(file)
+
+    assert settings.ELASTIC_SERVER == ""
+    assert settings.COUNT == 3
+    assert settings.DEVICE_OPTIONS == {"sel": {"creds": [["acc2", "real-pw"]], "user": "acc"}}
+    assert "Ignoring redacted values in config 'DEVICE_OPTIONS'" in caplog.text
+    assert "sel.pass, sel.creds[0], snmp.communities[0]" in caplog.text
+    assert "Ignoring redacted values in config 'ELASTIC_SERVER'" in caplog.text

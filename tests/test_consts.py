@@ -195,7 +195,7 @@ def test_redact_argv(argv, expected):
     assert argv == original  # not modified
 
 
-def test_redact_secrets():
+def test_omit_secrets():
     data = {
         "DEVICE_OPTIONS": {
             "ssh": {"user": "admin", "pass": MARKER, "port": 22, "passphrase": ""},
@@ -205,32 +205,75 @@ def test_redact_secrets():
         },
         "HOSTS": [{"identifier": "192.0.2.1", "options": {"web": {"pass": MARKER}}}],
         "ELASTIC_SERVER": f"https://elastic:{MARKER}@localhost:9200/",
+        "OTHER_SERVER": f"https://{MARKER}@localhost:9200/",
         "DEBUG": 1,
         "VERBOSE": True,
         "PILLAGE": None,
     }
 
-    redacted = consts.redact_secrets(data)
+    result, omitted = consts.omit_secrets(data)
 
-    assert MARKER not in str(redacted)
+    assert MARKER not in str(result)
+    assert consts.REDACTED not in str(result)
     assert MARKER in str(data)  # not modified
-    assert redacted["DEVICE_OPTIONS"]["ssh"] == {
-        "user": "admin",
-        "pass": "<redacted>",
-        "port": 22,
-        "passphrase": "",  # empty values are kept
+    assert result["DEVICE_OPTIONS"] == {
+        "ssh": {"user": "admin", "port": 22},
+        "snmp": {},
+        "sel": {},
+        "telnet": {},
     }
-    assert redacted["DEVICE_OPTIONS"]["snmp"]["communities"] == ["<redacted>", "<redacted>"]
-    assert redacted["DEVICE_OPTIONS"]["sel"]["creds"] == [
-        ["acc", "<redacted>"],
-        ("2ac", "<redacted>"),
+    assert result["HOSTS"] == [{"identifier": "192.0.2.1", "options": {"web": {}}}]
+    assert result["ELASTIC_SERVER"] == "https://elastic@localhost:9200/"
+    assert result["OTHER_SERVER"] == "https://localhost:9200/"
+    assert result["DEBUG"] == 1
+    assert result["VERBOSE"] is True
+    assert result["PILLAGE"] is None
+    assert omitted == [
+        "DEVICE_OPTIONS.ssh.pass",
+        "DEVICE_OPTIONS.ssh.passphrase",
+        "DEVICE_OPTIONS.snmp.community",
+        "DEVICE_OPTIONS.snmp.communities",
+        "DEVICE_OPTIONS.sel.creds",
+        "DEVICE_OPTIONS.sel.passwords",
+        "DEVICE_OPTIONS.telnet.meter_pass",
+        "DEVICE_OPTIONS.telnet.Password",
+        "HOSTS[0].options.web.pass",
+        "ELASTIC_SERVER (password)",
+        "OTHER_SERVER (password)",
     ]
-    assert redacted["DEVICE_OPTIONS"]["telnet"]["meter_pass"] == "<redacted>"
-    assert redacted["HOSTS"][0]["identifier"] == "192.0.2.1"
-    assert redacted["ELASTIC_SERVER"] == "https://elastic:<redacted>@localhost:9200/"
-    assert redacted["DEBUG"] == 1
-    assert redacted["VERBOSE"] is True
-    assert redacted["PILLAGE"] is None
+
+
+def test_drop_redacted():
+    r = consts.REDACTED
+    data = {
+        "sel": {"pass": r, "user": "acc", "creds": [["a", r], ("b", "pw"), ["c", "d"]]},
+        "snmp": {"communities": [r, r], "port": 161},
+        "ssh": {"pass": r},
+        "url": f"http://elastic:{r}@host:9200/",
+        "token_url": f"https://{r}@host/",
+        "other": f"not a URL {r}@",
+        "empty": {},
+    }
+    result, dropped = consts.drop_redacted(data)
+    assert result == {
+        "sel": {"user": "acc", "creds": [("b", "pw"), ["c", "d"]]},
+        "snmp": {"port": 161},
+        "other": f"not a URL {r}@",
+        "empty": {},
+    }
+    assert dropped == [
+        "sel.pass",
+        "sel.creds[0]",
+        "snmp.communities[0]",
+        "snmp.communities[1]",
+        "ssh.pass",
+        "url",
+        "token_url",
+    ]
+    assert consts.drop_redacted(r) == (consts.DROPPED, [""])
+    assert consts.drop_redacted([r]) == (consts.DROPPED, ["[0]"])
+    assert consts.drop_redacted("value") == ("value", [])
+    assert consts.drop_redacted(data["empty"]) == ({}, [])
 
 
 def test_platform_info_redacts_argv(mocker):

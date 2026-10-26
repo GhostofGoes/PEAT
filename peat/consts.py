@@ -221,7 +221,7 @@ URL_CLI_OPTIONS: Final[tuple[str, ...]] = (
 )
 
 
-def redact_url(url: str, require_scheme: bool = True) -> str:
+def redact_url(url: str, require_scheme: bool = True, replacement: str | None = REDACTED) -> str:
     """
     Redact the password (or token) in the user information of a URL, e.g.
     ``https://elastic:changeme@localhost:9200/`` becomes
@@ -231,6 +231,9 @@ def redact_url(url: str, require_scheme: bool = True) -> str:
         url: The URL to redact
         require_scheme: Only redact URLs with a scheme (e.g. ``https://``).
             If :obj:`False`, ``user:password@host`` is also redacted.
+        replacement: What to replace the password with. If :obj:`None`, the
+            password is removed (``https://elastic@localhost:9200/``), and a
+            token without a username is removed with the ``@``.
 
     Returns:
         The URL with the password redacted, or the original value if there isn't one
@@ -250,9 +253,12 @@ def redact_url(url: str, require_scheme: bool = True) -> str:
 
     userinfo, _, host = netloc.rpartition("@")
     user, colon, _ = userinfo.partition(":")
-    userinfo = f"{user}:{REDACTED}" if colon else REDACTED
+    if replacement is None:
+        userinfo = f"{user}@" if colon else ""
+    else:
+        userinfo = f"{user}:{replacement}@" if colon else f"{replacement}@"
 
-    return f"{scheme}{sep}{userinfo}@{host}{slash}{path}"
+    return f"{scheme}{sep}{userinfo}{host}{slash}{path}"
 
 
 def redact_argv(argv: list[str]) -> list[str]:
@@ -300,47 +306,119 @@ def redact_argv(argv: list[str]) -> list[str]:
     return redacted
 
 
-def redact_secrets(value: Any, is_secret: bool = False) -> Any:
+def omit_secrets(value: Any, path: str = "") -> tuple[Any, list[str]]:
     """
-    Redact secrets in configuration values (e.g. an export of the configuration):
-    the values of keys in :data:`SECRET_KEYS` (at any depth, e.g. in device
-    options) and passwords in URLs. The structure of the values is kept, e.g.
-    ``creds: [[user, password]]`` becomes ``creds: [[user, <redacted>]]``.
+    Remove secrets from configuration values (e.g. an export of the configuration
+    that may be loaded again): keys in :data:`SECRET_KEYS` (at any depth, e.g. in
+    device options) are removed, and passwords are removed from URLs
+    (``https://elastic:pw@host/`` becomes ``https://elastic@host/``).
+
+    Nothing is replaced with :data:`REDACTED`, so loading the result doesn't
+    use a placeholder as a password, and the default values of the removed
+    options (e.g. SNMP communities) are used instead.
+
+    Args:
+        value: The values to remove secrets from
+        path: Path of ``value``, used for the paths returned
 
     Returns:
-        A redacted copy of the value (the value isn't modified)
+        A copy of the value without secrets (the value isn't modified), and
+        the paths of the values that were removed (e.g. ``device_options.sel.pass``)
     """
+    omitted: list[str] = []
+
     if isinstance(value, dict):
-        return {
-            key: redact_secrets(val, is_secret or str(key).lower() in SECRET_KEYS)
-            for key, val in value.items()
-        }
+        result = {}
+        for key, val in value.items():
+            key_path = f"{path}.{key}" if path else str(key)
+            if str(key).lower() in SECRET_KEYS:
+                omitted.append(key_path)
+                continue
+            result[key], key_omitted = omit_secrets(val, key_path)
+            omitted.extend(key_omitted)
+        return result, omitted
 
     if isinstance(value, list | tuple | set):
         items = []
-        for item in value:
-            if (
-                is_secret
-                and isinstance(item, list | tuple)
-                and len(item) == 2
-                and all(isinstance(v, str) for v in item)
-            ):
-                # A (username, password) pair, e.g. "creds: [[user, pass], ...]"
-                pair = [item[0], REDACTED]
-                items.append(pair if isinstance(item, list) else tuple(pair))
-            else:
-                items.append(redact_secrets(item, is_secret))
-        return items if not isinstance(value, tuple) else tuple(items)
+        for index, item in enumerate(value):
+            item, item_omitted = omit_secrets(item, f"{path}[{index}]")
+            items.append(item)
+            omitted.extend(item_omitted)
+        return (items if not isinstance(value, tuple) else tuple(items)), omitted
 
     if isinstance(value, str):
-        if is_secret:
-            return REDACTED if value else value
-        return redact_url(value)
+        without_password = redact_url(value, replacement=None)
+        if without_password != value:
+            omitted.append(f"{path} (password)" if path else "(password)")
+        return without_password, omitted
 
-    if is_secret and isinstance(value, int | float | bytes) and not isinstance(value, bool):
-        return REDACTED
+    return value, omitted
 
-    return value
+
+#: Returned by :func:`drop_redacted` for a value that was redacted
+DROPPED: Final[object] = object()
+
+
+def _is_redacted(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value == REDACTED:
+        return True
+    # A URL with a redacted password, e.g. "https://elastic:<redacted>@host/"
+    return f"{REDACTED}@" in value and redact_url(value, require_scheme=False) == value
+
+
+def drop_redacted(value: Any, path: str = "") -> tuple[Any, list[str]]:
+    """
+    Remove values that were redacted (:data:`REDACTED`, e.g. copied from PEAT's
+    logs or from a configuration saved by a development version of PEAT), so
+    loading a configuration with them doesn't use the placeholder as a password
+    or SNMP community. A ``[username, <redacted>]``
+    pair is removed, as are lists and dicts that are empty once redacted values
+    are removed (so default values are used instead), and URLs with a redacted
+    password.
+
+    Args:
+        value: The values to check
+        path: Path of ``value``, used for the paths returned
+
+    Returns:
+        A copy of the value with redacted values removed (:data:`DROPPED` if the
+        value itself was redacted), and the paths of the values that were removed
+    """
+    if _is_redacted(value):
+        return DROPPED, [path]
+
+    dropped: list[str] = []
+
+    if isinstance(value, dict):
+        result = {}
+        for key, val in value.items():
+            key_path = f"{path}.{key}" if path else str(key)
+            val, key_dropped = drop_redacted(val, key_path)
+            dropped.extend(key_dropped)
+            if val is not DROPPED:
+                result[key] = val
+        if value and not result:
+            return DROPPED, dropped
+        return result, dropped
+
+    if isinstance(value, list | tuple | set):
+        items = []
+        for index, item in enumerate(value):
+            item_path = f"{path}[{index}]"
+            if isinstance(item, list | tuple) and len(item) == 2 and _is_redacted(item[1]):
+                dropped.append(item_path)  # a (username, password) pair
+                continue
+            item, item_dropped = drop_redacted(item, item_path)
+            dropped.extend(item_dropped)
+            if item is not DROPPED:
+                items.append(item)
+        if value and not items:
+            return DROPPED, dropped
+        return (items if not isinstance(value, tuple) else tuple(items)), dropped
+
+    return value, dropped
 
 
 def get_platform_info() -> dict[str, str | int | bool]:
