@@ -306,14 +306,14 @@ def search(source: Path, results: Path) -> bool:
                     print(auto_copy, file=sys.stderr, flush=True)  # noqa: T201
 
                     if auto_copy == "Y":
-                        copy_file(src_file, dst_file, max_file_size)
+                        copy_file(src_file, dst_file, max_file_size, base=source)
                     else:
                         log.warning(
                             f"[Pillage] Declined to copy {src_file} to "
                             f"{dst_file} (auto_copy is false)"
                         )
                 else:
-                    copy_file(src_file, dst_file, max_file_size)
+                    copy_file(src_file, dst_file, max_file_size, base=source)
 
         if not config.PILLAGE["recursive"]:
             break
@@ -356,7 +356,30 @@ def search(source: Path, results: Path) -> bool:
 #     return all_dirs, locations
 
 
-def copy_file(src: Path, dst: Path, max_size: int | None = None) -> bool:
+def _open_no_symlinks(src: Path, base: Path | None) -> int:
+    """
+    Open a file for copying. If ``base`` is set, each directory between ``base``
+    and the file is opened relative to the previous one without following
+    symbolic links, so a directory swapped for a link after it was checked
+    can't be used to read a file outside of ``base``.
+    """
+    if base is None or os.open not in os.supports_dir_fd:  # e.g. Windows
+        return os.open(src, _COPY_OPEN_FLAGS)
+
+    parts = src.relative_to(base).parts
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    dir_fd = os.open(base, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(part, dir_flags, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return os.open(parts[-1], _COPY_OPEN_FLAGS, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def copy_file(src: Path, dst: Path, max_size: int | None = None, base: Path | None = None) -> bool:
     """
     Copy a regular file, refusing to follow symbolic links or read special files.
 
@@ -367,13 +390,16 @@ def copy_file(src: Path, dst: Path, max_size: int | None = None) -> bool:
             to be larger than this many bytes (e.g. it grew after it was checked,
             or it's a pseudo-file that reports a size of 0). :obj:`None` or 0
             means there's no limit.
+        base: Directory ``src`` was found in (e.g. the pillage source). If set,
+            symbolic links in the directories between it and ``src`` aren't
+            followed either.
 
     Returns:
         If the file was copied
     """
     try:
-        fd = os.open(src, _COPY_OPEN_FLAGS)
-    except OSError as ex:
+        fd = _open_no_symlinks(src, base)
+    except (OSError, ValueError) as ex:
         log.warning(f"[Pillage] Failed to open {src}, skipping it: {ex}")
         return False
 

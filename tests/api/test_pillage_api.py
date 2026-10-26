@@ -6,6 +6,7 @@ import pytest
 from peat import config, consts
 from peat.api.pillage_api import (
     check_file_conditions,
+    copy_file,
     is_valid_file,
     mount_image,
     pillage,
@@ -135,3 +136,23 @@ def test_search_size_limit_enforced_while_copying(mocker, tmp_path, pillage_conf
     results = tmp_path / "results"
     assert search(source, results) is True
     assert _results(results) == ["SEL/small.rdb"]
+
+
+@pytest.mark.skipif(os.open not in os.supports_dir_fd, reason="requires dir_fd support")
+def test_copy_file_symlinked_parent_dir(tmp_path):
+    # e.g. a directory swapped for a symbolic link after os.walk() listed it
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SET_ALL.TXT").write_text("host file", encoding="utf-8")
+    (source / "real").mkdir()
+    (source / "real" / "SET_ALL.TXT").write_text("relay settings", encoding="utf-8")
+    (source / "swapped").symlink_to(outside, target_is_directory=True)
+
+    dst = tmp_path / "results" / "SET_ALL.TXT"
+    assert copy_file(source / "swapped" / "SET_ALL.TXT", dst, base=source) is False
+    assert not dst.exists()
+
+    assert copy_file(source / "real" / "SET_ALL.TXT", dst, base=source) is True
+    assert dst.read_text(encoding="utf-8") == "relay settings"
