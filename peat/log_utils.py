@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
+import threading
+import urllib.parse
+from collections.abc import Iterable
 from datetime import UTC
 from pathlib import Path
 from pprint import pformat
 from traceback import format_tb
+from typing import Any, Final
 
 import loguru
 from loguru import logger
@@ -22,6 +27,140 @@ from peat import (
     state,
     utils,
 )
+
+#: Replaces secret values in log messages
+REDACTED: Final[str] = "<redacted>"
+
+#: Secrets shorter than this aren't redacted, since they're too likely
+#: to match unrelated text (e.g. an ION meter password of "0")
+MIN_SECRET_LENGTH: Final[int] = 4
+
+#: Device option keys with values that are secrets (passwords, SNMP communities, etc.)
+SECRET_OPTION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "pass",
+        "passwd",
+        "password",
+        "passphrase",
+        "community",
+        "communities",
+        "creds",
+        "passwords",
+    }
+)
+
+_secrets: set[str] = set()
+_secrets_lock: Final = threading.Lock()
+# Compiled pattern matching any registered secret, or None if there aren't any.
+# Replaced (never mutated) when secrets are added, so it can be read without a lock.
+_secrets_re: re.Pattern[str] | None = None
+
+
+def _secret_pattern(secret: str) -> str:
+    # Don't match inside longer words, e.g. a password of "TAIL" in "DETAIL"
+    pattern = re.escape(secret)
+    if secret[0].isalnum():
+        pattern = rf"(?<![A-Za-z0-9]){pattern}"
+    if secret[-1].isalnum():
+        pattern = rf"{pattern}(?![A-Za-z0-9])"
+    return pattern
+
+
+def register_secret(*values: Any) -> None:
+    """
+    Register secret values (e.g. passwords) to be redacted from all log messages.
+
+    :class:`bytes` values are decoded as UTF-8. Values that aren't strings or
+    bytes, or are shorter than :data:`~peat.log_utils.MIN_SECRET_LENGTH`, are ignored.
+    """
+    global _secrets_re
+
+    decoded = (
+        v.decode("utf-8", "replace") if isinstance(v, bytes | bytearray) else v for v in values
+    )
+    new = {v for v in decoded if isinstance(v, str) and len(v) >= MIN_SECRET_LENGTH}
+    if not new:
+        return
+
+    with _secrets_lock:
+        if new <= _secrets:
+            return
+        _secrets.update(new)
+        # Longest first, so a secret containing another secret is fully redacted
+        patterns = [_secret_pattern(v) for v in sorted(_secrets, key=len, reverse=True)]
+        _secrets_re = re.compile("|".join(patterns))
+
+
+def clear_secrets() -> None:
+    """Remove all registered secrets."""
+    global _secrets_re
+
+    with _secrets_lock:
+        _secrets.clear()
+        _secrets_re = None
+
+
+def redact_secrets(text: str) -> str:
+    """Replace any registered secret values in the text with ``<redacted>``."""
+    pattern = _secrets_re
+    if pattern is None or not text:
+        return text
+    return pattern.sub(REDACTED, text)
+
+
+def _find_option_secrets(options: Any, is_secret: bool = False) -> Iterable[str]:
+    if isinstance(options, dict):
+        for key, value in options.items():
+            yield from _find_option_secrets(value, is_secret or key in SECRET_OPTION_KEYS)
+    elif isinstance(options, list | tuple):
+        for value in options:
+            if (
+                is_secret
+                and isinstance(value, list | tuple)
+                and len(value) == 2
+                and all(isinstance(v, str) for v in value)
+            ):
+                # A (username, password) pair, e.g. "creds: [[user, pass], ...]"
+                yield value[1]
+            else:
+                yield from _find_option_secrets(value, is_secret)
+    elif is_secret and isinstance(options, str):
+        yield options
+
+
+def _url_secrets(url: str | None) -> list[str]:
+    if not url:
+        return []
+    try:
+        password = urllib.parse.urlsplit(url).password
+    except ValueError:
+        return []
+    if not password:
+        return []
+    return [password, urllib.parse.unquote(password)]
+
+
+def register_secrets_from_config() -> None:
+    """
+    Register secrets from the configuration to be redacted from log messages.
+
+    This includes the values of device options with keys in
+    :data:`~peat.log_utils.SECRET_OPTION_KEYS` (in ``device_options`` and
+    the options of ``hosts``), and passwords in Elasticsearch server URLs.
+    """
+    secrets = list(_find_option_secrets(config.DEVICE_OPTIONS))
+    for host in config.HOSTS or []:
+        if isinstance(host, dict):
+            secrets.extend(_find_option_secrets(host.get("options", {})))
+    secrets.extend(_url_secrets(config.ELASTIC_SERVER))
+    secrets.extend(_url_secrets(config.HEAT_ELASTIC_SERVER))
+    register_secret(*secrets)
+
+
+def patch_redact_secrets(record: loguru.Record) -> None:
+    """Loguru patcher that redacts registered secrets from the message."""
+    if _secrets_re is not None:
+        record["message"] = redact_secrets(record["message"])
 
 
 class ElasticLogSink:
@@ -237,6 +376,15 @@ def patch_json_string(record: loguru.Record) -> None:
     )
 
 
+def patch_record(record: loguru.Record) -> None:
+    """
+    Loguru patcher applied to every message before any sink sees it.
+    Secrets are redacted first, so they don't end up in the JSON log string.
+    """
+    patch_redact_secrets(record)
+    patch_json_string(record)
+
+
 def setup_logging(
     file: Path | None = None,
     json_file: Path | None = None,
@@ -268,8 +416,12 @@ def setup_logging(
     # TODO: only add this if doing json file or elastic output?
     # One nice effect of this is the JSON dict is only generated once if
     # JSON file and Elasticsearch output is enabled, reducing overhead.
+    #
+    # Secrets (e.g. device passwords) in the configuration are redacted
+    # from messages before they reach any sink (including Elasticsearch).
+    register_secrets_from_config()
     logger.configure(
-        patcher=patch_json_string,
+        patcher=patch_record,
     )
 
     # What level sinks should handle, based on configured DEBUG level

@@ -193,3 +193,16 @@ def test_ssh_host_key_options_from_device(ssh_server, known_hosts):  # noqa: ARG
     assert "host_key_fingerprint" not in client.kwargs
     assert client.host_key_fingerprint == host_key_fingerprint(ssh_server.host_key)
     assert len(ssh_server.creds) == 0
+
+
+def test_ssh_write_sensitive_not_logged(mocker, log_messages):
+    client = SSH("127.0.0.1")
+    client.POST_WRITE_SLEEP = 0
+    client.channel = mocker.Mock()
+
+    client.write("ls")
+    client.write("SSH-UNIQUE-pw-1", sensitive=True)
+    client.channel.sendall.assert_called_with(b"SSH-UNIQUE-pw-1\n")
+
+    assert any("Writing SSH command: ls" in m for m in log_messages)
+    assert not any("SSH-UNIQUE-pw-1" in m for m in log_messages)

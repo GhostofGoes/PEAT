@@ -40,7 +40,7 @@ class SageTelnet(Telnet, SageCommands):
             self.read_until("login: ")
             self.write(user)
             self.read_until("Password: ")
-            self.write(passwd)
+            self.write(passwd, sensitive=True)
             data = self.read()
 
             if "->" not in data:

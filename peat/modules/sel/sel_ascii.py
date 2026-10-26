@@ -8,6 +8,7 @@ from time import sleep
 from dateutil.parser import parse as date_parse
 
 from peat import DeviceError, config, consts, exit_handler, log, state, utils
+from peat.log_utils import register_secret
 from peat.protocols import Telnet
 from peat.protocols.common import MAC_RE_DASH
 
@@ -154,13 +155,17 @@ class SELAscii(ABC):
     def read(self, delay: float | None = None, strip_whitespace: bool = True) -> str:
         pass
 
-    def write(self, command: bytes | str | int) -> None:
+    def write(self, command: bytes | str | int, sensitive: bool = False) -> None:
         """
         Send a command to the device.
 
         Args:
             command: Command to send (this will be automatically encoded)
+            sensitive: If the command is a secret (e.g. a password), which
+                will not be logged or recorded in ``all_writes``
         """
+        if sensitive:
+            register_secret(command)
         # If it's an int, first convert to a string, which will then be encoded
         if isinstance(command, int):
             command = str(command)
@@ -171,7 +176,7 @@ class SELAscii(ABC):
 
         # Append the line terminator (encode here to ensure proper encoding)
         command += self.LINE_TERMINATOR.encode(self.ENCODING)
-        self.all_writes.append(command)
+        self.all_writes.append(b"<redacted>" if sensitive else command)
 
         # If we don't sleep, errors can occur.
         if self.PRE_WRITE_SLEEP:
@@ -180,7 +185,7 @@ class SELAscii(ABC):
         # NOTE: calling telnetlib object directly is a bit of a hack,
         #   the peat.protocols.Telnet wrapper mostly duplicates what we do.
         if isinstance(self.comm, Telnet):
-            self.comm.comm.write(command)
+            self.comm.comm.write(command, sensitive=sensitive)
         else:
             self.comm.write(command)
 
@@ -319,7 +324,7 @@ class SELAscii(ABC):
                     self.log.debug("Elevating to level 1 (acc)")
                     self.write("acc")
                     self.read()
-                    self.write(creds["acc"])
+                    self.write(creds["acc"], sensitive=True)
                     if "invalid" in self.read().lower():
                         self.log.error("Invalid level 1 (acc) password")
                         return False
@@ -330,7 +335,7 @@ class SELAscii(ABC):
                     self.log.debug("Elevating to level 2 (2ac)")
                     self.write("2ac")
                     self.read()
-                    self.write(creds["2ac"])
+                    self.write(creds["2ac"], sensitive=True)
                     if "invalid" in self.read().lower():
                         self.log.error("Invalid level 2 (2ac) password")
                         return False
@@ -340,7 +345,7 @@ class SELAscii(ABC):
                 elif self.priv_level == 2:
                     self.log.debug("Elevating to level 3 (cal)")
                     self.write("cal")
-                    self.write(creds["cal"])
+                    self.write(creds["cal"], sensitive=True)
                     if "invalid" in self.read().lower():
                         self.log.error("Invalid level 3 (cal) password")
                         return False

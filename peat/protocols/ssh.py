@@ -512,6 +512,7 @@ class SSH:
         self,
         command: bytes | str | int,
         flush: bool = False,  # noqa: ARG002
+        sensitive: bool = False,
     ) -> None:
         """
         Send the given command to the SSH device.
@@ -522,8 +523,17 @@ class SSH:
         Args:
             command: Command to send (this will be automatically encoded)
             flush: If the responses to the command should be dropped
+            sensitive: If the command is a secret (e.g. a password), which
+                will not be logged and is redacted from all log messages
         """
-        self.log.debug(f"Writing SSH command: {command}")
+        if sensitive:
+            # Imported here to avoid a circular import
+            from peat.log_utils import register_secret
+
+            register_secret(command)
+            self.log.debug("Writing SSH command: <redacted>")
+        else:
+            self.log.debug(f"Writing SSH command: {command}")
 
         # If it's an int, first convert to a string, which will then be encoded
         if isinstance(command, int):

@@ -273,10 +273,10 @@ class SELSerial(SELAscii):
 
         return False
 
-    def write(self, command: bytes | str | int) -> None:
+    def write(self, command: bytes | str | int, sensitive: bool = False) -> None:
         self.comm.reset_input_buffer()
-        self.log.trace2(f"Writing: {command}")
-        super().write(command)
+        self.log.trace2(f"Writing: {'<redacted>' if sensitive else command}")
+        super().write(command, sensitive=sensitive)
 
     def ymodem_read_file(self, file_id: str) -> bytes | None:
         """
