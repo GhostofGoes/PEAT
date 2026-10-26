@@ -4,6 +4,7 @@ import re
 import socket
 import time
 from pathlib import Path
+from typing import Final
 
 from peat import (
     IO,
@@ -16,6 +17,11 @@ from peat import (
     state,
     utils,
 )
+
+#: Maximum number of pages read from a menu with multiple pages (e.g. Digital
+#: Inputs). The device decides when the last page is reached, so this keeps
+#: a hostile or broken device from keeping PEAT reading forever.
+MAX_MENU_PAGES: Final[int] = 500
 
 
 # TODO: record all data sent and received via telnet
@@ -173,10 +179,21 @@ class D25Telnet:
             self.select_menu_option("b")
             self.sock.recv(8192)  # skip garbage
             chunk = ""
+            pages = 0
             while chunk != ",":
+                if pages >= MAX_MENU_PAGES:
+                    self.log.warning(
+                        f"Stopped reading Digital Input pages after {pages} pages "
+                        f"(limit: {MAX_MENU_PAGES})"
+                    )
+                    break
+                pages += 1
                 self.select_menu_option("n")
-                chunk = self.sock.recv(8192)
-                chunk = clean_up_data(chunk)
+                raw_chunk = self.sock.recv(8192)
+                if not raw_chunk:  # connection closed
+                    self.log.warning("Connection closed while reading Digital Input pages")
+                    break
+                chunk = clean_up_data(raw_chunk)
                 data += chunk
         elif io == "O":
             self.select_menu_option("n")
