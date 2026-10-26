@@ -714,6 +714,15 @@ variables were configured, e.g. `OUT_DIR`, `ELASTIC_DIR` or `LOG_DIR`.
 
     if not readme_path.is_file():
         log.debug(f"Writing README to {readme_path.as_posix()}")
-        return utils.write_file(readme_text, readme_path)
+        if not utils.write_file(readme_text, readme_path):
+            return False
+
+        # The README has no sensitive data, so allow anyone to read it
+        # (files in the results are only readable by the owner by default)
+        if consts.POSIX:
+            try:
+                readme_path.chmod(0o644)
+            except OSError as ex:
+                log.debug(f"Failed to change permissions of README: {ex}")
 
     return True

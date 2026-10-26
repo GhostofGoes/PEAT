@@ -208,6 +208,10 @@ These auto-generated configuration files can also be reused in a future run. For
 
 Secrets are redacted (replaced with ``<redacted>``) in the auto-generated configs, in the copy of the config file saved to :attr:`META_DIR <peat.settings.Configuration.META_DIR>`, in the configuration saved to Elasticsearch, and in the command line recorded in the logs. This includes device passwords and SNMP communities (e.g. ``pass``, ``password``, ``community``, and ``creds`` in ``device_options``) and passwords in Elasticsearch server URLs. If you reuse an auto-generated config, set the secrets again (e.g. in the config file or with environment variables).
 
+Results file permissions
+------------------------
+Files and directories created in the results are only accessible by the user running PEAT (umask ``077``), since they may contain sensitive data. If PEAT is run with ``sudo``, the owner of the run directory is changed to the user that ran ``sudo`` when PEAT exits. This isn't done when PEAT runs in a container.
+
 JSON file
 ---------
 PEAT will also accept configuration files in :term:`JSON` format. This is provided for flexibility and to provide backward compatibility. However, it's more limited than the YAML, and harder to write. The YAML format is preferred.

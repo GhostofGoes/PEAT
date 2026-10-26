@@ -1,12 +1,13 @@
 import json
 import shutil
+import stat
 import sys
 from pathlib import Path
 
 import pytest
 
 import peat.api.scan_api
-from peat import __version__
+from peat import __version__, consts
 
 
 @pytest.mark.slow
@@ -433,6 +434,11 @@ heat_elastic_server: "http://heat:{SECRET_MARKER}@127.0.0.1:1/"
     assert (run_dir / "peat_metadata" / "config.yaml").is_file()  # copy of config file
     assert not _files_with_text(run_dir, SECRET_MARKER)
     assert SECRET_MARKER not in result.stdout.decode() + result.stderr.decode()
+
+    if consts.POSIX:
+        for path in [run_dir, *run_dir.rglob("*")]:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            assert not mode & 0o077, f"{path} is accessible by other users ({oct(mode)})"
 
     # The command line is recorded in the logs, even when PEAT fails to start
     es_dir = tmp_path / "run-es"

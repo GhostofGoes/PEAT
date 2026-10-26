@@ -1,9 +1,11 @@
 import json
+import os
+import stat
 
 import pytest
 import yaml
 
-from peat import config_crypto, consts, init
+from peat import config, config_crypto, consts, init
 
 PASSWORD = "Marker-PW-9e4d"
 
@@ -90,3 +92,38 @@ def test_copy_config_file_invalid(tmp_path, content):
 
     assert not init.copy_config_file(src, dest)
     assert not dest.exists()
+
+
+@pytest.fixture
+def restore_umask():
+    original = os.umask(0o022)
+    yield
+    os.umask(original)
+
+
+@pytest.mark.skipif(not consts.POSIX, reason="umask only restricts access on POSIX systems")
+def test_restrict_results_permissions(tmp_path, mocker, restore_umask):  # noqa: ARG001
+    out_dir = tmp_path / "peat_results"
+    run_dir = out_dir / "run"
+    mocker.patch.dict(config["CONFIG"], {"OUT_DIR": out_dir, "RUN_DIR": run_dir})
+    mocker.patch.dict(consts.SYSINFO, {"containerized": False})
+
+    init.restrict_results_permissions()
+    (run_dir / "logs").mkdir(parents=True)
+    (run_dir / "logs" / "peat.log").write_text("secret", encoding="utf-8")
+
+    # The directory with the results of all runs can still be shared
+    assert stat.S_IMODE(out_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((run_dir / "logs").stat().st_mode) == 0o700
+    assert stat.S_IMODE((run_dir / "logs" / "peat.log").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(not consts.POSIX, reason="umask only restricts access on POSIX systems")
+def test_restrict_results_permissions_container(tmp_path, mocker, restore_umask):  # noqa: ARG001
+    mocker.patch.dict(config["CONFIG"], {"RUN_DIR": tmp_path / "run"})
+    mocker.patch.dict(consts.SYSINFO, {"containerized": True})
+
+    init.restrict_results_permissions()
+    (tmp_path / "run").mkdir()
+    assert stat.S_IMODE((tmp_path / "run").stat().st_mode) == 0o755

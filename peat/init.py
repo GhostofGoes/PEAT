@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -31,6 +32,36 @@ from .log_utils import print_logo, register_secret, setup_logging
 CRYPTO_COMMANDS: Final[frozenset[str]] = frozenset(
     {"encrypt_config", "decrypt_config", "encrypt_results", "decrypt_results"}
 )
+
+#: umask set by the PEAT CLI before the run directory (RUN_DIR) is created:
+#: files are created as 0600 and directories as 0700 (only accessible by
+#: the user running PEAT)
+RESULTS_UMASK: Final[int] = 0o077
+
+
+def restrict_results_permissions() -> None:
+    """
+    Only allow the user running PEAT to access files and directories created
+    in the results, since they may contain sensitive data (e.g. device
+    configurations and logs).
+
+    The directory the run directory (``RUN_DIR``) is created in (by default,
+    ``OUT_DIR``) is created first with the default permissions, since it may
+    be shared by multiple runs and users. With ``sudo``, the owner of the run
+    directory is changed to the user that ran ``sudo`` when PEAT exits
+    (:func:`~peat.utils.fix_file_owners`).
+
+    Skipped on Windows (umask has no effect on access to files) and in
+    containers, where the results are usually accessed from the host
+    through a volume mount by a different user.
+    """
+    if not consts.POSIX or consts.SYSINFO["containerized"]:
+        return
+
+    if config.RUN_DIR:
+        config.RUN_DIR.parent.mkdir(parents=True, exist_ok=True)
+
+    os.umask(RESULTS_UMASK)
 
 
 def copy_config_file(src: Path, dest: Path) -> bool:
@@ -205,6 +236,9 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
 
         config.RUN_DIR = config.OUT_DIR / run_name
         config.fixup_dirs(config.RUN_DIR, "RUN_DIR", override_all=True)
+
+    if entrypoint == "CLI":
+        restrict_results_permissions()
 
     # Fancy startup logo, printed to stderr
     if state.entrypoint == "CLI" and not (config.QUIET or config.NO_LOGO):
