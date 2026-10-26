@@ -1,5 +1,5 @@
 {
-    "created": "2026-10-25T23:49:36.981314",
+    "created": "2026-10-26T00:33:11.172154",
     "description": {
         "brand": "SCEPTRE",
         "full": "Sandia National Laboratories SCEPTRE",
@@ -11,6 +11,7 @@
         }
     },
     "id": "fep-1",
+    "serial_port": "/dev/ttySerial1",
     "name": "fep-1",
     "type": "FEP",
     "os": {
@@ -25,9 +26,19 @@
         {
             "application": "modbus",
             "enabled": true,
+            "type": "serial",
+            "serial_port": "/dev/ttySerial1",
             "services": [
                 {
                     "enabled": true,
+                    "extra": {
+                        "command_interface": "tcp://127.0.0.1:1330",
+                        "connections": [
+                            {
+                                "endpoint": "/dev/ttySerial1"
+                            }
+                        ]
+                    },
                     "protocol": "modbus",
                     "role": "client"
                 }
@@ -37,6 +48,14 @@
     "service": [
         {
             "enabled": true,
+            "extra": {
+                "command_interface": "tcp://127.0.0.1:1330",
+                "connections": [
+                    {
+                        "endpoint": "/dev/ttySerial1"
+                    }
+                ]
+            },
             "protocol": "modbus",
             "role": "client"
         }
@@ -44,6 +63,9 @@
     "related": {
         "ip": [
             "127.0.0.1"
+        ],
+        "ports": [
+            1330
         ],
         "protocols": [
             "modbus"

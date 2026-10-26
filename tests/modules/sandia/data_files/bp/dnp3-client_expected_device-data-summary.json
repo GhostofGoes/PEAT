@@ -1,5 +1,5 @@
 {
-    "created": "2026-10-25T23:49:14.743521",
+    "created": "2026-10-26T00:32:44.452066",
     "description": {
         "brand": "SCEPTRE",
         "full": "Sandia National Laboratories SCEPTRE",
@@ -21,28 +21,18 @@
             "name": "Canonical"
         }
     },
-    "interface": [
-        {
-            "application": "dnp3",
-            "enabled": true,
-            "services": [
-                {
-                    "enabled": true,
-                    "extra": {
-                        "scan-rate": "5"
-                    },
-                    "protocol": "dnp3",
-                    "protocol_id": "1",
-                    "role": "client"
-                }
-            ]
-        }
-    ],
     "service": [
         {
             "enabled": true,
             "extra": {
-                "scan-rate": "5"
+                "scan_rate": "5",
+                "command_interface": "tcp://127.0.0.1:1330",
+                "connections": [
+                    {
+                        "endpoint": "tcp://127.0.0.1:20000",
+                        "address": "10"
+                    }
+                ]
             },
             "protocol": "dnp3",
             "protocol_id": "1",
@@ -52,6 +42,10 @@
     "related": {
         "ip": [
             "127.0.0.1"
+        ],
+        "ports": [
+            1330,
+            20000
         ],
         "protocols": [
             "dnp3"

@@ -1,5 +1,5 @@
 {
-    "created": "2026-10-25T23:49:32.020363",
+    "created": "2026-10-26T03:41:27.493046",
     "description": {
         "brand": "SCEPTRE",
         "full": "Sandia National Laboratories SCEPTRE",
@@ -30,10 +30,12 @@
             "ip": "192.168.122.1",
             "services": [
                 {
+                    "configured_port": 5502,
                     "enabled": true,
                     "extra": {
                         "event_logging": "inverter-sunspec-tcp-server.log"
                     },
+                    "listen_address": "192.168.122.1",
                     "port": 5502,
                     "protocol": "sunspec_tcp",
                     "role": "server",
@@ -44,10 +46,12 @@
     ],
     "service": [
         {
+            "configured_port": 5502,
             "enabled": true,
             "extra": {
                 "event_logging": "inverter-sunspec-tcp-server.log"
             },
+            "listen_address": "192.168.122.1",
             "port": 5502,
             "protocol": "sunspec_tcp",
             "role": "server",
@@ -55,7 +59,11 @@
         }
     ],
     "related": {
+        "files": [
+            "inverter-sunspec-tcp-server.log"
+        ],
         "ip": [
+            "127.0.0.1",
             "192.168.122.1"
         ],
         "ports": [
@@ -66,6 +74,14 @@
         ]
     },
     "extra": {
-        "cycle_time": 1000
+        "cycle_time": 1000,
+        "io_endpoints": {
+            "input": [
+                "127.0.0.1"
+            ],
+            "output": [
+                "127.0.0.1"
+            ]
+        }
     }
 }

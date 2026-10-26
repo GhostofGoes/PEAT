@@ -1,5 +1,5 @@
 {
-    "created": "2026-10-25T23:49:42.259764",
+    "created": "2026-10-26T03:41:44.694364",
     "description": {
         "brand": "SCEPTRE",
         "full": "Sandia National Laboratories SCEPTRE",
@@ -30,10 +30,12 @@
             "ip": "10.117.4.104",
             "services": [
                 {
+                    "configured_port": 20000,
                     "enabled": true,
                     "extra": {
                         "event_logging": "rtu-4-dnp3-outstation.log"
                     },
+                    "listen_address": "10.117.4.104",
                     "port": 20000,
                     "protocol": "dnp3",
                     "protocol_id": "10",
@@ -41,14 +43,24 @@
                     "transport": "tcp"
                 }
             ]
+        },
+        {
+            "enabled": true,
+            "extra": {
+                "purpose": "SCEPTRE simulation I/O"
+            },
+            "type": "ethernet",
+            "ip": "172.16.1.7"
         }
     ],
     "service": [
         {
+            "configured_port": 20000,
             "enabled": true,
             "extra": {
                 "event_logging": "rtu-4-dnp3-outstation.log"
             },
+            "listen_address": "10.117.4.104",
             "port": 20000,
             "protocol": "dnp3",
             "protocol_id": "10",
@@ -57,17 +69,33 @@
         }
     ],
     "related": {
+        "files": [
+            "rtu-4-dnp3-outstation.log"
+        ],
         "ip": [
-            "10.117.4.104"
+            "10.117.4.104",
+            "172.16.1.2",
+            "172.16.1.7",
+            "239.0.0.1"
         ],
         "ports": [
-            20000
+            5555,
+            20000,
+            40000
         ],
         "protocols": [
             "dnp3"
         ]
     },
     "extra": {
-        "cycle_time": 1000
+        "cycle_time": 1000,
+        "io_endpoints": {
+            "input": [
+                "udp://172.16.1.7;239.0.0.1:40000"
+            ],
+            "output": [
+                "tcp://172.16.1.2:5555"
+            ]
+        }
     }
 }
