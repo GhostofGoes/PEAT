@@ -226,6 +226,11 @@ def test_json_log_redacts_command_line(secrets, mocker, tmp_path):  # noqa: ARG0
         ("line1\r\nline2\twith tab", "line1\nline2\twith tab"),
         ("nul\x00 bel\x07 del\x7f c1\x9b2J", "nul bel del c12J"),
         ("lone escape \x1b", "lone escape "),
+        (
+            "bidi \u202etxt.exe\u202c zw\u200bsp \u2028ls\u2029 bom\ufeff",
+            "bidi txt.exe zwsp ls bom",
+        ),
+        ("unicode \u00b0C \u00e9", "unicode \u00b0C \u00e9"),
         ("", ""),
     ],
 )
@@ -364,3 +369,13 @@ def test_setup_logging_strips_control_chars_from_exceptions(
     assert "ValueError: bad value data" in logs["peat.log"]
     if no_color:
         assert "\x1b" not in logs["stderr"]
+
+
+def test_secret_with_control_char_redacted_after_stripping(secrets, log_messages):  # noqa: ARG001
+    from peat import log
+
+    log_utils.register_secret("Ctl\x01-UNIQUE-pw", "Cr-UNIQUE\r-pw2")
+    logger.configure(patcher=log_utils.patch_record)
+    log.info("login with Ctl\x01-UNIQUE-pw and Cr-UNIQUE\r-pw2")
+
+    assert log_messages[-1] == "login with <redacted> and <redacted>"

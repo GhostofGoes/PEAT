@@ -66,7 +66,7 @@ def _secret_pattern(secret: str) -> str:
 def _secret_variants(secret: str) -> set[str]:
     # Forms the secret commonly takes in log messages: as is, URL or form
     # encoded (e.g. a HTTP login body), and escaped in JSON or a repr().
-    return {
+    variants = {
         secret,
         urllib.parse.quote(secret, safe=""),
         urllib.parse.quote_plus(secret, safe=""),
@@ -74,6 +74,12 @@ def _secret_variants(secret: str) -> set[str]:
         json.dumps(secret, ensure_ascii=False)[1:-1],
         repr(secret)[1:-1],
     }
+    # Control characters are removed from messages before secrets are
+    # redacted, so a secret containing them must also match without them
+    stripped = strip_control_chars(secret)
+    if len(stripped) >= MIN_SECRET_LENGTH:
+        variants.add(stripped)
+    return variants
 
 
 def register_secret(*values: Any) -> None:
@@ -175,21 +181,28 @@ def register_secrets_from_config() -> None:
 #: Terminal control sequences and control characters removed from log messages:
 #: CSI sequences (e.g. ``ESC [ 2 J``, clear screen), OSC sequences (e.g.
 #: ``ESC ] 0 ; title BEL``, set the terminal title), other escape sequences,
-#: and C0 and C1 control characters except newline and tab. Newlines are kept,
-#: since many of PEAT's log messages are intentionally multi-line.
+#: C0 and C1 control characters except newline and tab, and Unicode
+#: bidirectional, zero-width and line/paragraph separator characters (which
+#: can make text display differently than it reads, e.g. U+202E).
+#: Newlines are kept, since many of PEAT's log messages are intentionally
+#: multi-line, so a value containing a newline can still start a new line in
+#: the human-readable logs (the JSON log has one record per line regardless).
 CONTROL_CHARS_RE: Final[re.Pattern[str]] = re.compile(
     r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI
     r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, terminated by BEL or ST
     r"|\x1b[^\n]"  # Other escape sequences (the ESC and the next character)
     r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"  # C0 (except \t and \n), DEL, and C1
+    r"|[\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]"  # Bidi, zero-width, etc.
 )
 
 
 def strip_control_chars(text: str) -> str:
     """
-    Remove terminal control sequences and control characters (except
-    newlines and tabs) from text, e.g. values from devices or parsed files,
-    so they can't manipulate the terminal or forge log output.
+    Remove terminal control sequences, control characters (except newlines
+    and tabs) and Unicode bidirectional and zero-width characters from text,
+    e.g. values from devices or parsed files, so they can't manipulate the
+    terminal or disguise log output. Newlines are kept (refer to
+    :data:`~peat.log_utils.CONTROL_CHARS_RE`).
     """
     if not text:
         return text
@@ -507,8 +520,9 @@ def patch_record(record: loguru.Record) -> None:
 
     Loguru only supports one patcher, so this chains them. Terminal control
     sequences are removed, then secrets are redacted (so a secret can't be
-    hidden from redaction by control characters), and then the JSON log
-    string is generated, so neither ends up in it.
+    hidden from redaction by control characters, and secrets containing
+    control characters are also registered without them), and then the JSON
+    log string is generated, so neither ends up in it.
     """
     patch_strip_control_chars(record)
     patch_redact_secrets(record)
