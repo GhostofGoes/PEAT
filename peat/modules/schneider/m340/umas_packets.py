@@ -11,6 +11,8 @@ Authors
 
 import binascii
 import socket
+import struct
+from typing import Final
 
 from scapy.all import (
     ByteField,
@@ -25,6 +27,10 @@ from scapy.all import (
 
 from peat import CommError, config, utils
 from peat import log as peat_logger
+
+#: Length of the Modbus/TCP (MBAP) header before the length field's data:
+#: transaction ID (2 bytes), protocol ID (2 bytes), and length (2 bytes)
+MBAP_HEADER_LENGTH: Final[int] = 6
 
 # TODO: refactor the UMAS packets to properly implement the UMAS protocol
 #   based on what we know now about it. hopefully improve reliability.
@@ -173,9 +179,18 @@ def send_umas_packet(
         raise err
 
     # TODO: fix for scapy 2.6.1
-    raw_response = sock.recv(4096)  # type: bytes
-    modbus_layer = Modbus(raw_response)
-    data = response_class(modbus_layer.data)  # type: Packet
+    raw_response = recv_modbus_frame(sock)
+
+    # A malformed or truncated response from the device can raise
+    # all sorts of errors from scapy, make them all a CommError.
+    try:
+        modbus_layer = Modbus(raw_response)
+        data = response_class(modbus_layer.data)  # type: Packet
+    except (struct.error, ValueError, TypeError, IndexError, AttributeError) as ex:
+        raise CommError(
+            f"Malformed UMAS response from {device} "
+            f"({type(ex).__name__}: {ex}): {binascii.hexlify(raw_response[:64])!r}"
+        ) from ex
     update_tracker("receive", data, raw_response, sock, tracker)
 
     if config.DEBUG >= 3:
@@ -199,6 +214,38 @@ def send_umas_packet(
             data.show2()
 
     return data
+
+
+def recv_exact(sock: socket.socket, length: int) -> bytes:
+    """
+    Receive exactly ``length`` bytes from a socket.
+
+    Raises:
+        CommError: The connection was closed before all the data was received
+    """
+    data = bytearray()
+    while len(data) < length:
+        part = sock.recv(length - len(data))
+        if not part:
+            raise CommError(
+                f"Connection closed after receiving {len(data)} of {length} "
+                f"bytes of a UMAS response"
+            )
+        data += part
+    return bytes(data)
+
+
+def recv_modbus_frame(sock: socket.socket) -> bytes:
+    """
+    Receive one complete Modbus/TCP frame, using the length in the MBAP header
+    (a response may arrive in multiple TCP segments).
+
+    Raises:
+        CommError: The connection was closed before the frame was received
+    """
+    header = recv_exact(sock, MBAP_HEADER_LENGTH)
+    (length,) = struct.unpack(">H", header[4:6])  # unit ID and PDU
+    return header + recv_exact(sock, length)
 
 
 def update_tracker(

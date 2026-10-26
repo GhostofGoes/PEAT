@@ -33,6 +33,7 @@ from copy import copy
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from pprint import pformat
+from typing import Final
 from xml.etree.ElementTree import SubElement
 
 from peat import (
@@ -64,6 +65,14 @@ from .umas_packets import (
     start_pull_packet,
     stop_pull_packet,
 )
+
+#: Maximum number of blocks requested when downloading a project file.
+#: The block number is a 16-bit field in the request.
+MAX_APX_BLOCKS: Final[int] = 0xFFFF
+
+#: Maximum size of a project file downloaded from a device (64 MiB).
+#: Real project files are a few MB at most.
+MAX_APX_SIZE: Final[int] = 64 * 1024 * 1024
 
 # TODO
 #  Separate the status-type info from the config-type info
@@ -364,10 +373,32 @@ class M340(DeviceModule):
             download_blob = bytearray(b"")
 
             # Pull the data
+            # NOTE: the device decides when the download is finished, so the
+            # number of blocks and the size are limited to avoid looping forever.
             while not finished:
+                if count > MAX_APX_BLOCKS or recv_len > MAX_APX_SIZE:
+                    raise DeviceError(
+                        f"failed to pull project file from {ip}: device sent more than "
+                        f"{min(count - 1, MAX_APX_BLOCKS)} blocks ({recv_len} bytes) without "
+                        f"finishing (limits: {MAX_APX_BLOCKS} blocks, {MAX_APX_SIZE} bytes)"
+                    )
+
                 data = send_umas_packet(
                     sock, pull_packet(cid, count), UMASResponse, packet_tracker
                 )
+
+                if data.dataLen is None or data.num is None:
+                    raise DeviceError(
+                        f"failed to pull project file from {ip}: truncated response "
+                        f"for block {count}"
+                    )
+
+                load = bytes(data.payload)
+                if data.dataLen > 0 and data.dataLen != len(load):
+                    raise DeviceError(
+                        f"failed to pull project file from {ip}: block {count} has "
+                        f"{len(load)} bytes of data, but its length field is {data.dataLen}"
+                    )
 
                 if data.dataLen > 0:
                     if recv_len == total_len:
@@ -383,10 +414,10 @@ class M340(DeviceModule):
                         finished = True
 
                     recv_len += data.dataLen
-                    download_blob.extend(bytearray(data.load))
+                    download_blob.extend(load)
 
                     if config.DEBUG:
-                        debug_data.append(data.load)
+                        debug_data.append(load)
                 else:
                     finished = True
 
