@@ -388,7 +388,7 @@ class FTP:
             # Skip lines that aren't in the expected format, e.g. "total 8"
             # or garbage from a misbehaving device, instead of failing
             if len(parts) < 9:
-                self.log.debug(f"Skipping unparseable LIST line: {line!r}")
+                self.log.debug(f"Skipping unparsable LIST line: {line!r}")
                 return
 
             name = " ".join(parts[8:])
