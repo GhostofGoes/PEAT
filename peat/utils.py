@@ -15,7 +15,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from traceback import format_exc
 from typing import Any
 
@@ -55,9 +55,9 @@ def safe_join(base: Path, *untrusted: str | PurePath) -> Path:
     archive) to a trusted base directory, ensuring the result stays inside it.
 
     Backslashes are treated as path separators, and empty, ``.`` and ``..``
-    components and any leading root (``/``) are dropped. The joined path is then
-    resolved (following any symbolic links that already exist on disk) and
-    checked to be ``base`` or a path under ``base``.
+    components, Windows drives (``C:``) and any leading root (``/``) are
+    dropped. The joined path is then resolved (following any symbolic links
+    that already exist on disk) and checked to be ``base`` or a path under ``base``.
 
     .. note::
        This only does containment. Use :func:`~peat.consts.sanitize_filepath`
@@ -77,6 +77,9 @@ def safe_join(base: Path, *untrusted: str | PurePath) -> Path:
     parts = []
     for component in untrusted:
         for part in PurePosixPath(str(component).replace("\\", "/")).parts:
+            # Drop a Windows drive (e.g. "C:" or "C:name"), which joinpath()
+            # would otherwise treat as a new root on Windows
+            part = part[len(PureWindowsPath(part).drive) :]
             if part.strip("/") not in ("", ".", ".."):
                 parts.append(part)
 

@@ -322,6 +322,10 @@ def test_is_mac():
         (("..\\..\\escape.txt",), "escape.txt"),
         (("a/../../b.txt",), "a/b.txt"),
         (("",), ""),
+        (("C:/Windows/x.txt",), "Windows/x.txt"),
+        (("..\\..\\D:\\x.txt",), "x.txt"),
+        (("a", "C:x.txt"), "a/x.txt"),
+        (("//server/share/x.txt",), "server/share/x.txt"),
     ],
 )
 def test_safe_join(tmp_path, untrusted, expected):
