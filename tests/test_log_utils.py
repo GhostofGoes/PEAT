@@ -1,4 +1,5 @@
 import json
+import urllib.parse
 
 import pytest
 from loguru import logger
@@ -104,3 +105,35 @@ def test_setup_logging_redacts_secrets(secrets, mocker, tmp_path):  # noqa: ARG0
 
     record = json.loads(logs["json-log.jsonl"].splitlines()[-1])
     assert record["event"]["original"] == "Writing command: <redacted>"
+
+
+def test_redact_secrets_repr_escapes(secrets):  # noqa: ARG001
+    # Devices often echo the password back, and data is commonly logged with !r
+    log_utils.register_secret("Telvent1!", "TAIL")
+    for text in [
+        repr(b"user\r\nTelvent1!\r\n"),
+        repr(b"\x00Telvent1!"),
+        repr("\tTelvent1!"),
+        repr("\u2028Telvent1!"),
+        repr("\U000e0001Telvent1!"),
+    ]:
+        assert "Telvent1" not in log_utils.redact_secrets(text), text
+    assert log_utils.redact_secrets(repr(b"\r\nTAIL\r\n")) == repr(b"\r\n<redacted>\r\n")
+    # A backslash escape is a boundary, but other letters still aren't
+    assert log_utils.redact_secrets(repr(b"\r\nDETAIL")) == repr(b"\r\nDETAIL")
+
+
+def test_redact_secrets_encoded_variants(secrets):  # noqa: ARG001
+    password = 'Tel"vent 1!'
+    log_utils.register_secret(password)
+    for text in [
+        urllib.parse.urlencode({"pword": password}),
+        urllib.parse.quote(password),
+        json.dumps({"p": password}),
+        repr(password),
+        password.upper(),
+        password.lower(),
+    ]:
+        redacted = log_utils.redact_secrets(text)
+        assert "vent" not in redacted.lower(), text
+        assert "<redacted>" in redacted, text

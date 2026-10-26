@@ -55,20 +55,43 @@ _secrets_lock: Final = threading.Lock()
 # Replaced (never mutated) when secrets are added, so it can be read without a lock.
 _secrets_re: re.Pattern[str] | None = None
 
+# A backslash escape (e.g. "\n" or "\x00" in a repr() of device output) right
+# before a secret is a boundary, even though it ends with a letter or digit.
+_ESCAPE_BOUNDARY: Final[str] = (
+    r"(?<=\\[abfnrtv])|(?<=\\x[0-9A-Fa-f]{2})|(?<=\\u[0-9A-Fa-f]{4})|(?<=\\U[0-9A-Fa-f]{8})"
+)
+
 
 def _secret_pattern(secret: str) -> str:
     # Don't match inside longer words, e.g. a password of "TAIL" in "DETAIL"
     pattern = re.escape(secret)
     if secret[0].isalnum():
-        pattern = rf"(?<![A-Za-z0-9]){pattern}"
+        pattern = rf"(?:(?<![A-Za-z0-9])|{_ESCAPE_BOUNDARY}){pattern}"
     if secret[-1].isalnum():
         pattern = rf"{pattern}(?![A-Za-z0-9])"
     return pattern
 
 
+def _secret_variants(secret: str) -> set[str]:
+    # Forms the secret commonly takes in log messages: as is, URL or form
+    # encoded (e.g. a HTTP login body), and escaped in JSON or a repr().
+    return {
+        secret,
+        urllib.parse.quote(secret, safe=""),
+        urllib.parse.quote_plus(secret, safe=""),
+        json.dumps(secret)[1:-1],
+        json.dumps(secret, ensure_ascii=False)[1:-1],
+        repr(secret)[1:-1],
+    }
+
+
 def register_secret(*values: Any) -> None:
     """
     Register secret values (e.g. passwords) to be redacted from all log messages.
+
+    This can be called at any time, e.g. when a password is discovered or
+    used for a login. Secrets are matched case-insensitively, and URL encoded,
+    JSON escaped and :func:`repr` escaped forms of them are also redacted.
 
     :class:`bytes` values are decoded as UTF-8. Values that aren't strings or
     bytes, or are shorter than :data:`~peat.log_utils.MIN_SECRET_LENGTH`, are ignored.
@@ -78,7 +101,10 @@ def register_secret(*values: Any) -> None:
     decoded = (
         v.decode("utf-8", "replace") if isinstance(v, bytes | bytearray) else v for v in values
     )
-    new = {v for v in decoded if isinstance(v, str) and len(v) >= MIN_SECRET_LENGTH}
+    new: set[str] = set()
+    for value in decoded:
+        if isinstance(value, str) and len(value) >= MIN_SECRET_LENGTH:
+            new.update(_secret_variants(value))
     if not new:
         return
 
@@ -88,7 +114,7 @@ def register_secret(*values: Any) -> None:
         _secrets.update(new)
         # Longest first, so a secret containing another secret is fully redacted
         patterns = [_secret_pattern(v) for v in sorted(_secrets, key=len, reverse=True)]
-        _secrets_re = re.compile("|".join(patterns))
+        _secrets_re = re.compile("|".join(patterns), re.IGNORECASE)
 
 
 def clear_secrets() -> None:
