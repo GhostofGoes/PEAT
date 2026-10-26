@@ -4,20 +4,29 @@ Integration tests against a live SCEPTRE bennu field device VM.
 The VM is started with ``scripts/run-bennu-vm.sh``, loaded with
 ``data_files/ep/dnp3-server.xml``. Set ``BENNU_FTP_PORT`` if FTP
 isn't forwarded to the default port of 2121. Set ``BENNU_SERIAL_LOG``
-to the VM's serial log to check that bennu-watcherd installs pushed firmware.
+to the VM's serial log to check that bennu-watcherd installs pushed firmware,
+and that the brash shell starts on TCP 1337 with the "shell" firmware.
 
 Tests can run in any order (pytest-randomly). Pushing firmware leaves a valid
-``bennu-field-deviced.firmware`` on the VM, which is pulled after that.
+``bennu-field-deviced.firmware`` on the VM (the original binary or its "shell"
+variant), which is pulled after that.
 """
 
 import os
+import socket
 import time
 from pathlib import Path
 
 import pytest
 
 from peat import SCEPTRE, config, datastore
-from peat.modules.sandia.sceptre_fcd import FIRMWARE_PREFIX, FIRMWARE_UPLOAD_NAME
+from peat.modules.sandia.sceptre_fcd import (
+    BRASH_PORT,
+    FIRMWARE_PREFIX,
+    FIRMWARE_UPLOAD_NAME,
+    SHELL_DISABLED_MARKER,
+    SHELL_ENABLED_MARKER,
+)
 
 pytestmark = pytest.mark.container
 
@@ -53,6 +62,13 @@ def test_pull(live_dev, datapath, mocker):
     assert live_dev.firmware.file.name in (FIRMWARE_UPLOAD_NAME, FIRMWARE_PREFIX)
     assert live_dev.firmware.file.local_path.read_bytes() == live_dev.firmware.original
     assert live_dev.firmware.hash.sha256
+    shell_enabled = SHELL_ENABLED_MARKER in live_dev.firmware.original
+    assert live_dev.firmware.extra["shell_enabled"] is shell_enabled
+
+    # The FTP account PEAT logged in with
+    assert [(u.name, u.extra) for u in live_dev.users] == [
+        ("sceptre", {"default_credentials": True})
+    ]
 
     # Config pulled from the device is the one loaded into it
     config_path = live_dev._out_dir / "ftp_files" / "config.xml"
@@ -104,8 +120,49 @@ def test_push_firmware(live_dev):
 
     # The watcher only installs firmware that differs from the last one it installed
     if SERIAL_LOG and before != original:
-        for _ in range(30):
-            if _watcher_log_count("field-device restarted") > restarts:
-                break
+        _wait_for_restart(restarts)
+
+
+def _wait_for_restart(restarts: int) -> None:
+    for _ in range(30):
+        if _watcher_log_count("field-device restarted") > restarts:
+            break
+        time.sleep(1)
+    assert _watcher_log_count("field-device restarted") > restarts
+
+
+def _brash_banner(timeout: float = 30.0) -> bytes:
+    """Read what the brash shell sends after connecting (a login prompt)."""
+    deadline = time.monotonic() + timeout
+    data = b""
+    while time.monotonic() < deadline and b"login:" not in data:
+        try:
+            with socket.create_connection(("127.0.0.1", BRASH_PORT), timeout=5) as sock:
+                data = b""
+                while b"login:" not in data and (chunk := sock.recv(4096)):
+                    data += chunk
+        except OSError:
+            pass
+        if b"login:" not in data:
             time.sleep(1)
-        assert _watcher_log_count("field-device restarted") > restarts
+    return data
+
+
+def test_shell_firmware(live_dev):
+    original, _, _ = SCEPTRE._download_ftp(live_dev, [FIRMWARE_PREFIX], save=False)
+    assert SHELL_DISABLED_MARKER in original
+    shell = original.replace(b"_SHELL_0", b"_SHELL_1")
+    before, _, _ = SCEPTRE._download_ftp(live_dev, [FIRMWARE_UPLOAD_NAME], save=False)
+    restarts = _watcher_log_count("field-device restarted")
+
+    assert SCEPTRE.push(live_dev, shell, "firmware") is True
+    assert SCEPTRE.pull_firmware(live_dev) == shell
+    assert live_dev.firmware.extra["shell_enabled"] is True
+    assert live_dev.firmware.extra["watcher_accepted"] is True
+    assert [s.port for s in live_dev.service if s.protocol == "brash"] == [BRASH_PORT]
+    assert live_dev.event[-1].action == "shell-firmware"
+
+    if SERIAL_LOG:
+        if before != shell:
+            _wait_for_restart(restarts)
+        assert b"login:" in _brash_banner()

@@ -167,6 +167,7 @@ LOGIC_FIELDS: Final[NestedMappingType] = {
     "author": KEYWORD_AND_TEXT,
     "created": DATE,
     "description": KEYWORD_AND_TEXT,
+    "extra": FLATTENED,
     "file": {"properties": FILE_FIELDS},
     "formats": NESTED,
     "hash": {"properties": HASH_FIELDS},
@@ -271,6 +272,7 @@ REGISTER_FIELDS: Final[MappingType] = {
 TAG_FIELDS: Final[MappingType] = {
     "address": KEYWORD,
     "description": TEXT,
+    "extra": FLATTENED,
     "io": KEYWORD,
     "name": KEYWORD,
     "type": KEYWORD,
