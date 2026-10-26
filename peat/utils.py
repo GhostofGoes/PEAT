@@ -100,9 +100,10 @@ def check_tar_member(
     Check if a member of an untrusted tar archive is safe to read or extract.
 
     Only regular files (and directories, if ``allow_dirs`` is set) are allowed.
-    Members are checked with :func:`tarfile.data_filter`, which rejects absolute
-    paths after stripping leading slashes, ``..`` traversals, links, device
-    nodes, and other special files. Rejected members are skipped with a warning.
+    Members (including directories) are checked with :func:`tarfile.data_filter`,
+    which rejects absolute paths after stripping leading slashes, ``..`` traversals,
+    links, device nodes, and other special files. Rejected members are skipped
+    with a warning.
 
     Args:
         member: Tar archive member to check
@@ -114,9 +115,11 @@ def check_tar_member(
         ``/`` stripped from the name), or :obj:`None` if it should be skipped
     """
     if member.isdir():
-        return member if allow_dirs else None
-
-    if not member.isfile():
+        if not allow_dirs:
+            return None
+        # Directories are name-checked like files, so a hostile name (e.g. "../x")
+        # is skipped here instead of making extractall() raise or follow it.
+    elif not member.isfile():
         log.warning(
             f"Skipping tar member '{member.name}': not a regular file "
             f"(type {member.type!r}, link target {member.linkname!r})"

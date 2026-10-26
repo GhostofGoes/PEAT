@@ -374,7 +374,24 @@ def test_check_tar_member(tmp_path, member, expected_name):
 
 def test_check_tar_member_allow_dirs(tmp_path):
     member = _tar_info("dir", tarfile.DIRTYPE)
-    assert utils.check_tar_member(member, tmp_path, allow_dirs=True) is member
+    result = utils.check_tar_member(member, tmp_path, allow_dirs=True)
+    assert result is not None
+    assert result.name == "dir"
+
+
+@pytest.mark.parametrize("name", ["../dirup", "dir/../../dirup"])
+def test_check_tar_member_unsafe_dir(tmp_path, name):
+    member = _tar_info(name, tarfile.DIRTYPE)
+    assert utils.check_tar_member(member, tmp_path, allow_dirs=True) is None
+
+
+@pytest.mark.parametrize("name", ["../dirup", "/abs/dir", "../escape.txt"])
+def test_check_tar_member_unsafe_without_data_filter(monkeypatch, tmp_path, name):
+    # Python 3.11.0 - 3.11.3 have no PEP 706 extraction filters
+    monkeypatch.delattr(tarfile, "data_filter")
+    typ = tarfile.REGTYPE if name.endswith(".txt") else tarfile.DIRTYPE
+    member = _tar_info(name, typ)
+    assert utils.check_tar_member(member, tmp_path, allow_dirs=True) is None
 
 
 def test_tarfile_default_extraction_filter(tmp_path):

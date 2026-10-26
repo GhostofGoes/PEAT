@@ -67,3 +67,32 @@ def test_sage_parse_tarball_links_skipped(sage_env, tmp_path):
     assert list(outside.iterdir()) == []
     for path in tmp_path.rglob("*.txt"):
         assert path.is_relative_to(raw_dir), path
+
+
+def _add_dir(tar: tarfile.TarFile, name: str) -> None:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.DIRTYPE
+    tar.addfile(info)
+
+
+@pytest.mark.parametrize("data_filter", [True, False])
+def test_sage_parse_tarball_unsafe_dir_skipped(sage_env, tmp_path, monkeypatch, data_filter):
+    dev, archive, _ = sage_env
+    with tarfile.open(archive, "w:gz") as tar:
+        _add_dir(tar, "../dirup")
+        _add_dir(tar, "ata0a")
+        _add_file(tar, "ata0a/notes.txt", b"benign\n")
+
+    if not data_filter:
+        # Python 3.11.0 - 3.11.3 have no PEP 706 extraction filters
+        monkeypatch.delattr(tarfile, "data_filter")
+        monkeypatch.setattr(
+            tarfile.TarFile, "extraction_filter", staticmethod(tarfile.fully_trusted_filter)
+        )
+
+    Sage._parse(archive, dev)
+
+    raw_dir = dev.get_sub_dir("sage_backup_raw_files")
+    # One hostile directory doesn't stop the safe members from being extracted
+    assert (raw_dir / "ata0a" / "notes.txt").read_bytes() == b"benign\n"
+    assert not list(tmp_path.rglob("dirup"))
