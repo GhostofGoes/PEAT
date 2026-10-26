@@ -992,9 +992,14 @@ class SELRTAC(DeviceModule):
 
             device_info["existing_files"] = []
             with tarfile.open(name=file.as_posix(), mode=mode, encoding="utf-8") as tar:
-                for member in tar.getmembers():
+                for unchecked_member in tar.getmembers():
+                    # The archive is untrusted, only read regular files with safe names
+                    member = utils.check_tar_member(unchecked_member, "extracted_files")
+                    if member is None:
+                        continue
+
                     cls.log.debug(f"Parsing '{member.name}' from '{file.name}'")
-                    f_handle = tar.extractfile(member)
+                    f_handle = tar.extractfile(unchecked_member)
 
                     if f_handle is not None:  # skip directories
                         device_info["existing_files"].append(member.name)

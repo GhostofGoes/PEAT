@@ -1,9 +1,17 @@
 import logging
 import inspect
+import tarfile
 import warnings
 from functools import partialmethod
 
 from loguru import logger as log  # convenience
+
+# Make tarfile extraction safe by default for any archive PEAT extracts:
+# reject absolute paths, ".." traversals, links outside the destination,
+# and device files ("data" filter, PEP 706). This is already the default
+# in Python 3.14+, but must be set explicitly for older versions.
+if hasattr(tarfile, "data_filter"):  # Python 3.11.4+
+    tarfile.TarFile.extraction_filter = staticmethod(tarfile.data_filter)
 
 # reset loguru's pre-configured handlers
 log.remove()

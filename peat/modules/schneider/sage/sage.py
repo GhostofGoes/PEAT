@@ -1039,9 +1039,15 @@ class Sage(DeviceModule):
         if is_tar_file:
             with tarfile.open(name=file, mode="r:gz", encoding="utf-8") as tar:
                 device_info["existing_files"] = []
-                for member in tar.getmembers():
-                    device_info["existing_files"].append(member.name)
-                    f_handle = tar.extractfile(member)
+                for unchecked_member in tar.getmembers():
+                    device_info["existing_files"].append(unchecked_member.name)
+
+                    # The archive is untrusted, only read regular files with safe names
+                    member = utils.check_tar_member(unchecked_member, ".")
+                    if member is None:
+                        continue
+
+                    f_handle = tar.extractfile(unchecked_member)
 
                     if f_handle:
                         path = PurePath(member.name)
@@ -1178,7 +1184,17 @@ class Sage(DeviceModule):
                 )
 
                 with tarfile.open(name=file, mode="r:gz", encoding="utf-8") as tar:
-                    tar.extractall(path=t_path)
+                    # The archive is untrusted, so only extract regular files and
+                    # directories with safe names ("data" filter, PEP 706).
+                    members = [
+                        m
+                        for m in tar.getmembers()
+                        if utils.check_tar_member(m, t_path, allow_dirs=True)
+                    ]
+                    if hasattr(tarfile, "data_filter"):
+                        tar.extractall(path=t_path, members=members, filter="data")
+                    else:  # Python < 3.11.4, the members were already checked
+                        tar.extractall(path=t_path, members=members)
             except Exception as ex:
                 cls.log.debug(f"Failed to extract raw files from {file.name}: {ex}")
 

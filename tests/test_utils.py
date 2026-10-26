@@ -1,5 +1,7 @@
+import io
 import json
 import sys
+import tarfile
 from datetime import datetime
 from pathlib import Path
 from platform import python_version
@@ -338,3 +340,55 @@ def test_safe_join_symlink_escape(tmp_path):
 
     with pytest.raises(ValueError, match="outside of"):
         utils.safe_join(base, "link", "x.txt")
+
+
+def _tar_info(name: str, typ: bytes = tarfile.REGTYPE, linkname: str = "") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type = typ
+    info.linkname = linkname
+    return info
+
+
+@pytest.mark.parametrize(
+    ("member", "expected_name"),
+    [
+        (_tar_info("dir/file.txt"), "dir/file.txt"),
+        (_tar_info("/abs/file.txt"), "abs/file.txt"),
+        (_tar_info("../../escape.txt"), None),
+        (_tar_info("dir/../../escape.txt"), None),
+        (_tar_info("link", tarfile.SYMTYPE, "/etc/passwd"), None),
+        (_tar_info("hard", tarfile.LNKTYPE, "dir/file.txt"), None),
+        (_tar_info("dev", tarfile.CHRTYPE), None),
+        (_tar_info("fifo", tarfile.FIFOTYPE), None),
+        (_tar_info("dir", tarfile.DIRTYPE), None),
+    ],
+)
+def test_check_tar_member(tmp_path, member, expected_name):
+    result = utils.check_tar_member(member, tmp_path)
+    if expected_name is None:
+        assert result is None
+    else:
+        assert result is not None
+        assert result.name == expected_name
+
+
+def test_check_tar_member_allow_dirs(tmp_path):
+    member = _tar_info("dir", tarfile.DIRTYPE)
+    assert utils.check_tar_member(member, tmp_path, allow_dirs=True) is member
+
+
+def test_tarfile_default_extraction_filter(tmp_path):
+    import peat  # noqa: F401  (importing peat sets the default filter)
+
+    archive = tmp_path / "evil.tar"
+    with tarfile.open(archive, "w") as tar:
+        data = b"pwned"
+        info = tarfile.TarInfo("../escape.txt")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+    dest = tmp_path / "dest"
+    with tarfile.open(archive) as tar:
+        with pytest.raises(tarfile.FilterError):
+            tar.extractall(dest)
+    assert not (tmp_path / "escape.txt").exists()

@@ -9,6 +9,7 @@ import re
 import shutil
 import site
 import sys
+import tarfile
 from collections.abc import Container, Iterable
 from contextlib import ExitStack
 from copy import deepcopy
@@ -90,6 +91,50 @@ def safe_join(base: Path, *untrusted: str | PurePath) -> Path:
         )
 
     return joined
+
+
+def check_tar_member(
+    member: tarfile.TarInfo, dest: Path | str, allow_dirs: bool = False
+) -> tarfile.TarInfo | None:
+    """
+    Check if a member of an untrusted tar archive is safe to read or extract.
+
+    Only regular files (and directories, if ``allow_dirs`` is set) are allowed.
+    Members are checked with :func:`tarfile.data_filter`, which rejects absolute
+    paths after stripping leading slashes, ``..`` traversals, links, device
+    nodes, and other special files. Rejected members are skipped with a warning.
+
+    Args:
+        member: Tar archive member to check
+        dest: Directory the member would be extracted to
+        allow_dirs: If directory members should be allowed
+
+    Returns:
+        The filtered member (it may be a modified copy, e.g. with the leading
+        ``/`` stripped from the name), or :obj:`None` if it should be skipped
+    """
+    if member.isdir():
+        return member if allow_dirs else None
+
+    if not member.isfile():
+        log.warning(
+            f"Skipping tar member '{member.name}': not a regular file "
+            f"(type {member.type!r}, link target {member.linkname!r})"
+        )
+        return None
+
+    if not hasattr(tarfile, "data_filter"):  # Python < 3.11.4 (no PEP 706 filters)
+        parts = PurePosixPath(member.name.replace("\\", "/")).parts
+        if not parts or parts[0] == "/" or ".." in parts:
+            log.warning(f"Skipping unsafe tar member '{member.name}': unsafe path")
+            return None
+        return member
+
+    try:
+        return tarfile.data_filter(member, str(dest))
+    except tarfile.FilterError as ex:
+        log.warning(f"Skipping unsafe tar member '{member.name}': {ex}")
+        return None
 
 
 def clean_empty_dirs(to_clean: Path) -> None:
