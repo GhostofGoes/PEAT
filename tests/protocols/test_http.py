@@ -99,6 +99,7 @@ def test_http_save_response_content_disposition_contained(mocker, tmp_path, disp
 def tls_env(mocker):
     """Fresh TLS warning state and an empty datastore."""
     mocker.patch.object(http_module, "_tls_warned_hosts", set(), create=True)
+    mocker.patch.object(http_module, "_tls_hint_hosts", set(), create=True)
     mocker.patch.object(datastore, "objects", [])
     mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": None, "TEMP_DIR": None})
 
@@ -144,6 +145,17 @@ def test_http_get_self_signed_rejected(tls_env, https_server, log_messages):  # 
     assert any(
         "TLS certificate verification failed" in m and "verify: false" in m for m in log_messages
     )
+
+
+def test_http_tls_failure_hint_logged_once_per_host(tls_env, https_server, log_messages):  # noqa: ARG001
+    http = HTTP("127.0.0.1", https_server.port, protocol="https")
+    for page in ["a.html", "b.html", "c.html"]:
+        assert http.get(page, use_cache=False) is None
+    assert http.post(f"{https_server.url}d.html") is None
+
+    failures = [m for m in log_messages if "TLS certificate verification failed" in m]
+    assert len(failures) == 4  # every failure is still logged
+    assert len([m for m in failures if "verify: false" in m]) == 1
 
 
 def test_http_get_self_signed_trusted_bundle(tls_env, mocker, https_server):  # noqa: ARG001

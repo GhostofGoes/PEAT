@@ -31,6 +31,9 @@ TLS_VERIFY_HINT: Final[str] = (
 _tls_warned_hosts: Final[set[str]] = set()
 _tls_warn_lock: Final = threading.Lock()
 
+#: Hosts that TLS_VERIFY_HINT was logged for, so it's only logged once per host
+_tls_hint_hosts: Final[set[str]] = set()
+
 
 def resolve_tls_verify(
     host: str = "", device_verify: bool = True, warn: bool = True
@@ -378,7 +381,8 @@ class HTTP:
                 self.page_cache[url] = response
                 return response
         except SSLError as ex:
-            err = f"TLS certificate verification failed: {ex}. {TLS_VERIFY_HINT}"
+            self._log_tls_failure("GET", url, ex)
+            return None
         except Exception as ex:
             err = str(ex)
 
@@ -454,12 +458,30 @@ class HTTP:
 
                 return response
         except SSLError as ex:
-            err = f"TLS certificate verification failed: {ex}. {TLS_VERIFY_HINT}"
+            self._log_tls_failure("POST", url, ex)
+            return None
         except Exception as ex:
             err = str(ex)
 
         self.log.warning(f"Failed to POST '{url}': {err}")
         return None
+
+    def _log_tls_failure(self, method: str, url: str, ex: Exception) -> None:
+        """
+        Log a failed TLS certificate verification, with :data:`TLS_VERIFY_HINT`
+        the first time for a host, and at DEBUG level after that, since
+        scanning a network with self-signed devices would otherwise be very noisy.
+        """
+        host = urllib.parse.urlsplit(url).netloc
+        with _tls_warn_lock:
+            first = host not in _tls_hint_hosts
+            _tls_hint_hosts.add(host)
+
+        msg = f"Failed to {method} '{url}': TLS certificate verification failed: {ex}"
+        if first:
+            self.log.warning(f"{msg}. {TLS_VERIFY_HINT}")
+        else:
+            self.log.debug(msg)
 
     def get_ssl_certificate(self) -> peat.data.models.X509 | None:
         """
