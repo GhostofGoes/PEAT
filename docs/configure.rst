@@ -172,6 +172,27 @@ PEAT verifies TLS (SSL) certificates for HTTPS connections, including connection
    When verification is disabled, anyone who can intercept the connection can capture credentials PEAT sends over it (e.g. web logins). PEAT logs a warning for each host that verification is disabled for.
 
 
+.. _ssh-host-keys:
+
+SSH host keys
+-------------
+PEAT checks the host key of every device it connects to with SSH, before sending any credentials. Keys are checked against the system ``~/.ssh/known_hosts`` file and PEAT's own known_hosts file, set by :attr:`SSH_KNOWN_HOSTS <peat.settings.Configuration.SSH_KNOWN_HOSTS>` (default: ``~/.peat/known_hosts``, in the home directory of the user running PEAT, e.g. ``/root`` if run with ``sudo``).
+
+- **New host**: the key is trusted on first use and saved to PEAT's known_hosts file, and a warning with its fingerprint (``SHA256:...``, the format output by ``ssh-keygen -lf``) is logged. If possible, check the fingerprint against the device.
+- **Changed key**: the connection is refused and an error is logged with the expected and actual fingerprints. This can mean the connection is being intercepted, or that the device's key changed (e.g. after a firmware update or device replacement). If the change is expected, remove the old key from the known_hosts file, or set the ``ssh.trust_new_host_key`` option to ``true`` for the host to accept and save the new key.
+- **Pinned key**: set the ``ssh.host_key_fingerprint`` option for a host to only accept a key with that fingerprint (``SHA256:...`` or MD5 hex). Pinned keys are not saved to the known_hosts file.
+
+.. code-block:: yaml
+   :caption: Pin the SSH host key of a single host
+
+   hosts:
+   - label: "Sage-RTU"
+     identifiers:
+       ip: 192.0.2.40
+     options:
+       ssh:
+         host_key_fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8"
+
 Disabling file output
 ---------------------
 Setting directory-related configuration options (e.g. :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>`) to an empty string will **disable** any output to that directory. For example, setting :attr:`LOG_DIR <peat.settings.Configuration.LOG_DIR>` to an empty string (e.g. ``LOG_DIR=""``) will disable writing of logging data to files, including PEAT's logging and any protocols that log to a file (such as Telnet).

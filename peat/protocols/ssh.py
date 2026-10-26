@@ -9,16 +9,136 @@ Authors
 - Kevin Cox
 """
 
+import base64
+import hashlib
+import threading
 import traceback
 from copy import deepcopy
 from pathlib import Path
 from time import sleep
-from typing import Any
+from typing import Any, Final
 
 import paramiko
 
 import peat
-from peat import CommError, consts, log, utils
+from peat import CommError, config, consts, log, utils
+
+#: Serializes updates to the PEAT known_hosts file between threads
+_known_hosts_lock: Final = threading.Lock()
+
+
+def host_key_fingerprint(key: paramiko.PKey) -> str:
+    """
+    OpenSSH-style SHA256 fingerprint of a SSH host key, e.g. ``SHA256:nThbg6kX...``.
+    This is the same format as ``ssh-keygen -lf <key>`` outputs.
+    """
+    digest = hashlib.sha256(key.asbytes()).digest()
+    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+def fingerprint_matches(key: paramiko.PKey, fingerprint: str) -> bool:
+    """
+    Check if a SSH host key matches a fingerprint, either in OpenSSH SHA256 format
+    (``SHA256:<base64>``) or MD5 hex format (``MD5:aa:bb:...`` or ``aabb...``).
+    """
+    fingerprint = fingerprint.strip()
+    if fingerprint.upper().startswith("SHA256:"):
+        return host_key_fingerprint(key)[7:] == fingerprint[7:].rstrip("=")
+
+    if fingerprint.upper().startswith("MD5:"):
+        fingerprint = fingerprint[4:]
+    return key.get_fingerprint().hex() == fingerprint.replace(":", "").lower()
+
+
+def known_hosts_path() -> Path | None:
+    """
+    Path to PEAT's SSH known_hosts file, from
+    :attr:`SSH_KNOWN_HOSTS <peat.settings.Configuration.SSH_KNOWN_HOSTS>`
+    (with ``~`` expanded), or :obj:`None` if saving host keys is disabled.
+    """
+    if not config.SSH_KNOWN_HOSTS:
+        return None
+    return Path(config.SSH_KNOWN_HOSTS).expanduser()
+
+
+def save_host_key(path: Path, hostname: str, key: paramiko.PKey, replace: bool = False) -> None:
+    """
+    Add a host key to a known_hosts file, creating the file if needed.
+
+    Args:
+        path: known_hosts file to update
+        hostname: Host name as used by paramiko (``host`` or ``[host]:port``)
+        key: The host key to save
+        replace: If existing keys for the host should be removed first
+    """
+    with _known_hosts_lock:
+        host_keys = paramiko.HostKeys()
+        if path.is_file():
+            host_keys.load(str(path))
+        elif not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        if replace:
+            while True:
+                try:
+                    del host_keys[hostname]
+                except KeyError:
+                    break
+
+        host_keys.add(hostname, key.get_name(), key)
+        host_keys.save(str(path))
+
+
+class TrustOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
+    """
+    Accept and save host keys for hosts that don't have a known key
+    (trust on first use, or TOFU), logging a warning with the fingerprint.
+
+    A key that doesn't match a known key is rejected by paramiko
+    (:class:`paramiko.BadHostKeyException`) before this policy is used.
+    """
+
+    def __init__(self, known_hosts: Path | None, logger: Any, replace: bool = False) -> None:
+        self.known_hosts = known_hosts
+        self.log = logger
+        self.replace = replace
+
+    def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey):
+        key_str = f"{key.get_name()} {host_key_fingerprint(key)}"
+        saved = f", saving it to '{self.known_hosts}'" if self.known_hosts else ""
+
+        if self.replace:
+            self.log.warning(
+                f"Trusting the SSH host key presented by {hostname} ({key_str}) without "
+                f"checking it against known keys, since 'trust_new_host_key' is set{saved}"
+            )
+        else:
+            self.log.warning(
+                f"New SSH host key for {hostname}: {key_str}. Trusting it on first use"
+                f"{saved}. If possible, check this fingerprint matches the device's key."
+            )
+
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        if self.known_hosts:
+            save_host_key(self.known_hosts, hostname, key, replace=self.replace)
+
+
+class PinnedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    """
+    Only accept a host key that matches a pinned fingerprint.
+    """
+
+    def __init__(self, fingerprint: str) -> None:
+        self.fingerprint = fingerprint
+
+    def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey):
+        if not fingerprint_matches(key, self.fingerprint):
+            raise paramiko.SSHException(
+                f"SSH host key for {hostname} ({key.get_name()} {host_key_fingerprint(key)}) "
+                f"does not match the pinned 'host_key_fingerprint' ({self.fingerprint}). "
+                f"The connection was refused and no credentials were sent."
+            )
+        client.get_host_keys().add(hostname, key.get_name(), key)
 
 
 class SSH:
@@ -69,7 +189,18 @@ class SSH:
         username: str | None = None,
         password: str | None = None,
         kwargs: dict[str, Any] | None = None,  # Additional Paramiko input
+        host_key_fingerprint: str | None = None,
+        trust_new_host_key: bool | None = None,
     ) -> None:
+        """
+        Args:
+            host_key_fingerprint: Only accept a host key with this fingerprint
+                (``SHA256:...`` or MD5 hex). If :obj:`None`, the
+                ``ssh.host_key_fingerprint`` option of the device is used, if any.
+            trust_new_host_key: Accept (and save) the host key the server presents,
+                even if it doesn't match the known key. If :obj:`None`, the
+                ``ssh.trust_new_host_key`` option of the device is used, if any.
+        """
         self.ip: str = ip
         self.port: int = port
         self.timeout: float = timeout
@@ -87,6 +218,26 @@ class SSH:
 
         if kwargs is None:
             kwargs = {}
+
+        # Host key verification options. These may be in kwargs (e.g. from
+        # device options) and must not be passed to paramiko.
+        dev_options: dict = {}
+        dev = peat.data.datastore.search(ip, "ip")
+        if dev is not None:
+            dev_options = dev.options.get("ssh", {})
+
+        kw_fingerprint = kwargs.pop("host_key_fingerprint", None)
+        kw_trust_new = kwargs.pop("trust_new_host_key", None)
+        if host_key_fingerprint is None:
+            host_key_fingerprint = kw_fingerprint or dev_options.get("host_key_fingerprint", "")
+        if trust_new_host_key is None:
+            if kw_trust_new is not None:
+                trust_new_host_key = kw_trust_new
+            else:
+                trust_new_host_key = dev_options.get("trust_new_host_key", False)
+
+        self.host_key_fingerprint: str = host_key_fingerprint or ""
+        self.trust_new_host_key: bool = bool(trust_new_host_key)
 
         self.kwargs = kwargs  # type: dict[str, Any]
 
@@ -150,8 +301,7 @@ class SSH:
                 # Leaving as comment in case unintended results occur
                 # paramiko.Transport._preferred_ciphers = ("aes256-cbc", 'ssh-rsa', 'aes256-ctr')
 
-                # TODO: this is dangerous for MITM Attacks. Is there a way around this?
-                self._comm.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                self._configure_host_key_checking()
 
                 self.log.debug(f"Attempting SSH login with user '{self.username}'")
                 self._comm.connect(
@@ -166,6 +316,21 @@ class SSH:
 
                 self.connected = True
                 self.log.info(f"SSH connected to {self.ip}:{self.port}")
+            except paramiko.BadHostKeyException as ex:
+                self._close()
+                kh = known_hosts_path()
+                raise CommError(
+                    f"SSH host key for {self.ip}:{self.port} has CHANGED! Expected "
+                    f"{ex.expected_key.get_name()} {host_key_fingerprint(ex.expected_key)}, "
+                    f"got {ex.key.get_name()} {host_key_fingerprint(ex.key)}. Someone may be "
+                    f"intercepting the connection (man-in-the-middle), or the device's key "
+                    f"was changed (e.g. a firmware update or a replaced device). The "
+                    f"connection was refused and no credentials were sent. If the change "
+                    f"is expected, remove the old key for the host from "
+                    f"{f'{kh} or ' if kh else ''}~/.ssh/known_hosts, pin the new key with "
+                    f"the 'ssh.host_key_fingerprint' option, or set the "
+                    f"'ssh.trust_new_host_key' option to true for the host."
+                ) from None
             except paramiko.AuthenticationException as ex:
                 self._close()
                 raise paramiko.AuthenticationException(
@@ -181,6 +346,42 @@ class SSH:
     @comm.setter
     def comm(self, obj: paramiko.SSHClient) -> None:
         self._comm = obj
+
+    def _configure_host_key_checking(self) -> None:
+        """
+        Configure how the server's host key is checked before authenticating.
+
+        - If a fingerprint is pinned, only a key matching it is accepted.
+        - If ``trust_new_host_key`` is set, any key is accepted and saved,
+          replacing any known key for the host.
+        - Otherwise, keys are checked against the system known_hosts file
+          (``~/.ssh/known_hosts``) and PEAT's known_hosts file. A changed key
+          is rejected, and a key for a new host is trusted on first use
+          and saved to PEAT's known_hosts file.
+        """
+        if self.host_key_fingerprint:
+            # Known keys aren't loaded, so the policy is always used to check the pin
+            self._comm.set_missing_host_key_policy(PinnedHostKeyPolicy(self.host_key_fingerprint))
+            return
+
+        known_hosts = known_hosts_path()
+
+        if not self.trust_new_host_key:
+            try:
+                self._comm.load_system_host_keys()
+            except (OSError, paramiko.SSHException) as ex:
+                self.log.warning(f"Failed to load the system SSH known_hosts file: {ex}")
+
+            if known_hosts and known_hosts.is_file():
+                try:
+                    # NOTE: not load_host_keys(), so paramiko doesn't save the file itself
+                    self._comm.get_host_keys().load(str(known_hosts))
+                except (OSError, paramiko.SSHException) as ex:
+                    self.log.warning(f"Failed to load SSH known_hosts '{known_hosts}': {ex}")
+
+        self._comm.set_missing_host_key_policy(
+            TrustOnFirstUsePolicy(known_hosts, self.log, replace=self.trust_new_host_key)
+        )
 
     def open_sftp(self) -> None:
         if self.connected:

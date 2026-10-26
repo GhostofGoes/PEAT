@@ -138,6 +138,21 @@ class Configuration(SettingsManager):
     :meta hide-value:
     """
 
+    SSH_KNOWN_HOSTS: Path | None = Path("~/.peat/known_hosts")
+    """
+    File where PEAT saves the SSH host keys of devices it connects to (OpenSSH
+    ``known_hosts`` format). ``~`` is expanded to the home directory of the user
+    running PEAT. If empty, host keys aren't saved between runs.
+
+    SSH host keys are checked against the system ``~/.ssh/known_hosts`` file and
+    this file. The key of a host that isn't in either is trusted on first use and
+    saved here, with a warning that includes its fingerprint. If a host's key
+    doesn't match the known key, the connection is refused before any credentials
+    are sent. To accept a changed key, remove the old key from this file, pin the
+    new key with the ``ssh.host_key_fingerprint`` device option, or set the
+    ``ssh.trust_new_host_key`` device option to :obj:`True` for the host.
+    """
+
     RESOLVE_IP: bool = True
     """
     If PEAT should attempt to resolve device :term:`IP`

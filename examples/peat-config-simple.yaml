@@ -26,6 +26,7 @@ override_max_file_discovery_threads: 0
 default_timeout: 5.0
 tls_verify: true
 tls_ca_bundle: null
+ssh_known_hosts: "~/.peat/known_hosts"
 
 resolve_ip: true
 resolve_mac: true
@@ -235,6 +236,8 @@ device_options:
     passphrase: ""
     key_filename: ""
     look_for_keys: false
+    host_key_fingerprint: ""
+    trust_new_host_key: false
   http:
     port: 80
     timeout: 5.0
@@ -243,6 +246,7 @@ device_options:
   https:
     port: 443
     timeout: 5.0
+    verify: true
   snmp:
     port: 161
     timeout: 5.0

@@ -104,6 +104,11 @@ tls_verify: true
 # the default CA certificates. Only used if "tls_verify" is true.
 tls_ca_bundle: null
 
+# File where PEAT saves the SSH host keys of devices (OpenSSH known_hosts format).
+# Keys of new hosts are trusted on first use and saved here. If a host's key
+# changes, the connection is refused. Set to null to not save host keys.
+ssh_known_hosts: "~/.peat/known_hosts"
+
 # -----------------------------------------------------------------------------
 
 # --- Options for controlling lookups of addresses ---
@@ -719,6 +724,12 @@ device_options:
     passphrase: ""        # Pem key_file passphrase
     key_filename: ""      # Location of pem key (must be openssh)
     look_for_keys: false  # Don't look for ssh keys
+    # Only accept a host key with this fingerprint ("SHA256:..." as shown by
+    # "ssh-keygen -lf", or MD5 hex). Best set per-host in the "hosts" section.
+    host_key_fingerprint: ""
+    # Accept and save the key the host presents, even if it doesn't match the
+    # known key (e.g. after a firmware update). Only set this per-host.
+    trust_new_host_key: false
 
   # Hyper-Text Transfer Protocol (HTTP)
   #
