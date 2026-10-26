@@ -14,6 +14,7 @@ import urllib3
 from bs4 import BeautifulSoup
 from requests import PreparedRequest, Response, Session
 from requests.exceptions import SSLError
+from requests.structures import CaseInsensitiveDict
 
 import peat  # Avoid circular imports
 from peat import config, consts, log, utils
@@ -480,6 +481,15 @@ class HTTP:
 
             # The query parameters are in the redirect target, if any
             kwargs.pop("params", None)
+
+            # Don't send credentials if the scheme or port changes (except
+            # http to https on the default ports), the same as requests does
+            # when it follows redirects, e.g. for a redirect to plain HTTP.
+            if self.session.should_strip_auth(response.url, target):
+                kwargs.pop("auth", None)
+                headers = CaseInsensitiveDict(kwargs.get("headers") or {})
+                headers["Authorization"] = None  # Removes the session's header too
+                kwargs["headers"] = headers
 
             self.log.debug(f"Following redirect ({code}) from '{response.url}' to '{target}'")
             history.append(response)

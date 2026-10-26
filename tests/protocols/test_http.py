@@ -439,3 +439,36 @@ def test_same_host_session_refuses_backslash_redirect(requests_mock):
     response = HTTP.gen_session(verify=False).get("http://192.0.2.10/login")
     assert response.status_code == 302
     assert not other.called
+
+
+@pytest.mark.parametrize(
+    ("target", "stripped"),
+    [
+        ("http://192.0.2.10:8080/final", True),  # port change
+        ("http://192.0.2.10:80/final", True),  # https to http downgrade
+        ("https://192.0.2.10:443/final", False),  # same scheme and port
+    ],
+)
+def test_http_redirect_strips_auth_on_scheme_or_port_change(
+    http_env,  # noqa: ARG001
+    requests_mock,
+    target,
+    stripped,
+):
+    requests_mock.get(
+        "https://192.0.2.10:443/start", status_code=302, headers={"Location": target}
+    )
+    final = requests_mock.get(target, text="ok")
+
+    http = HTTP("192.0.2.10", 443)
+    http.session.headers["Authorization"] = "Bearer session-token"
+    response = http.get("start", use_cache=False, auth=("user", "pw"), headers={"X-Other": "kept"})
+    assert response is not None
+    assert response.text == "ok"
+
+    sent = final.last_request.headers
+    assert sent["X-Other"] == "kept"
+    if stripped:
+        assert "Authorization" not in sent
+    else:
+        assert sent["Authorization"].startswith("Basic ")
