@@ -100,6 +100,7 @@ def tls_env(mocker):
     """Fresh TLS warning state and an empty datastore."""
     mocker.patch.object(http_module, "_tls_warned_hosts", set(), create=True)
     mocker.patch.object(http_module, "_tls_hint_hosts", set(), create=True)
+    mocker.patch.object(http_module, "_tls_bad_ca_bundles", set(), create=True)
     mocker.patch.object(datastore, "objects", [])
     mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": None, "TEMP_DIR": None})
 
@@ -113,9 +114,22 @@ def test_gen_session_verifies_by_default(tls_env):  # noqa: ARG001
 
 def test_gen_session_ca_bundle(tls_env, mocker, tmp_path):  # noqa: ARG001
     bundle = tmp_path / "ca.pem"
+    bundle.write_text("", encoding="utf-8")
     mocker.patch.dict(config["CONFIG"], {"TLS_CA_BUNDLE": bundle})
     assert HTTP.gen_session().verify == str(bundle)
     assert HTTP("127.0.0.1", 443).session.verify == str(bundle)
+
+
+def test_gen_session_missing_ca_bundle(tls_env, mocker, tmp_path, log_messages):  # noqa: ARG001
+    bundle = tmp_path / "missing-ca.pem"
+    mocker.patch.dict(config["CONFIG"], {"TLS_CA_BUNDLE": bundle})
+    # Still verifies (with the missing bundle, so connections fail closed)
+    assert HTTP.gen_session().verify == str(bundle)
+    assert HTTP("127.0.0.1", 443).session.verify == str(bundle)
+
+    errors = [m for m in log_messages if "'tls_ca_bundle'" in m and str(bundle) in m]
+    assert len(errors) == 1  # logged once
+    assert "doesn't exist" in errors[0]
 
 
 def test_tls_verify_disabled_globally_warns(tls_env, mocker, log_messages):  # noqa: ARG001

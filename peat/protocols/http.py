@@ -34,6 +34,27 @@ _tls_warn_lock: Final = threading.Lock()
 #: Hosts that TLS_VERIFY_HINT was logged for, so it's only logged once per host
 _tls_hint_hosts: Final[set[str]] = set()
 
+#: CA bundles that an error was logged for, since they don't exist
+_tls_bad_ca_bundles: Final[set[str]] = set()
+
+
+def _ca_bundle_path() -> str:
+    # Check the bundle exists, since otherwise every request fails with a
+    # generic error ("Could not find a suitable TLS CA certificate bundle")
+    bundle = Path(config.TLS_CA_BUNDLE).expanduser()
+    if not bundle.is_file():
+        with _tls_warn_lock:
+            first = str(bundle) not in _tls_bad_ca_bundles
+            _tls_bad_ca_bundles.add(str(bundle))
+        if first:
+            log.error(
+                f"The CA certificate bundle set with 'tls_ca_bundle' ('{bundle}') "
+                f"doesn't exist or isn't a file, so HTTPS connections will fail. Fix "
+                f"the path, or set 'tls_ca_bundle' to an empty string to use the "
+                f"default CA certificates."
+            )
+    return str(bundle)
+
 
 def resolve_tls_verify(
     host: str = "", device_verify: bool = True, warn: bool = True
@@ -60,7 +81,7 @@ def resolve_tls_verify(
     """
     if config.TLS_VERIFY and device_verify:
         if config.TLS_CA_BUNDLE:
-            return str(config.TLS_CA_BUNDLE)
+            return _ca_bundle_path()
         return True
 
     if warn:
