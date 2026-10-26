@@ -1,5 +1,8 @@
+import zlib
+
 import pytest
 
+from peat import utils
 from peat.modules.rockwell.clx_const import *
 from peat.modules.rockwell.clx_string_logic_parser import *
 
@@ -169,3 +172,30 @@ def test_decompile_string_process_logic_symbol_token():
 )
 def test_decompile_string_process_logic_edge_cases(data):
     assert decompile_string_process_logic(data) == data
+
+
+def _interleave(stream: bytes) -> bytes:
+    """Raw FBD/ST buffer: 3 bytes of the zlib stream in every 4 bytes."""
+    stream += b"\x00" * (-len(stream) % 3)
+    return b"".join(stream[i : i + 3] + b"\x00" for i in range(0, len(stream), 3))
+
+
+@pytest.mark.parametrize(
+    ("formatter", "interleaved"),
+    [
+        (format_logic_string_fbd, True),
+        (format_logic_string_sfc, False),
+        (format_logic_string_st, True),
+    ],
+)
+def test_format_logic_string_zlib_bomb(mocker, formatter, interleaved):
+    """The logic strings from the device were inflated without a limit (1 MB -> 1 GiB)."""
+    mocker.patch.object(utils, "MAX_INFLATE", 1024 * 1024)
+    bomb = zlib.compress(b"\x00" * (4 * 1024 * 1024), 9)
+    small = zlib.compress(b"logic", 9)
+    if interleaved:
+        bomb, small = _interleave(bomb), _interleave(small)
+
+    assert formatter(small) == b"logic"
+    with pytest.raises(DisassembleStringLogicError, match="inflates to more than"):
+        formatter(bomb)
