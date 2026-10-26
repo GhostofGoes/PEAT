@@ -26,10 +26,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # Source: https://github.com/gurnec/Undo_FFG/blob/master/nrbf.py
+#
+# PEAT changes: counts and lengths read from the stream are checked against the
+# number of bytes remaining in the stream before anything is allocated, so a
+# small crafted file can't exhaust memory; make_unique() is O(1) per name; and
+# rectangular arrays are indexed directly instead of with eval and exec.
 
 __all__ = ['read_stream', 'serialization', 'JSONEncoder']
 
-import enum, itertools, json, re, sys
+import enum, itertools, json, math, re, sys
 from array       import array as Array, typecodes
 from collections import OrderedDict, namedtuple
 from copy        import deepcopy
@@ -38,7 +43,18 @@ from decimal     import Decimal
 from keyword     import iskeyword
 from struct      import Struct, pack
 from contextlib  import suppress
+from typing      import Final
 from .namedlist   import namedlist
+
+
+#: Maximum number of elements in an array that may be mostly empty
+#: (i.e. made up of ObjectNullMultiple records, which represent many
+#: elements with a few bytes). Larger arrays need at least one byte
+#: in the stream for each element.
+MAX_SPARSE_ARRAY_ELEMENTS: Final = 1024 * 1024
+
+#: Maximum rank (number of dimensions) of a BinaryArray (.NET's limit is 32)
+MAX_ARRAY_RANK: Final = 32
 
 
 # Decorator which adds an enum value (an int or a length-one bytes) and its associated
@@ -65,6 +81,12 @@ class serialization:
             assert streamfile.writable()
             assert streamfile.seekable()
         self._file               = streamfile
+        self._stream_end         = None  # size of the stream, see _check_count()
+        with suppress(Exception):
+            if streamfile.seekable():
+                pos = streamfile.tell()
+                self._stream_end = streamfile.seek(0, 2)
+                streamfile.seek(pos)
         self._Class_by_id        = {}    # see _read_ClassInfo()
         self._objects_by_id      = {}    # all referenceable objects indexed by ObjectId
         self._root_id            = None  # the id of the single root object
@@ -77,6 +99,22 @@ class serialization:
 
     _CollectionInfo = namedtuple('_CollectionInfo', 'obj id')      # original collection object and ObjectId
     _OverwriteInfo  = namedtuple('_OverwriteInfo',  'pos format')  # file.tell() and struct format string
+
+    # Raises ValueError if count is negative, or if count items of at least
+    # min_item_size bytes each can't fit in the bytes remaining in the stream.
+    # This must be called before allocating anything based on a count read
+    # from the stream, so a small hostile file can't exhaust memory.
+    def _check_count(self, count, min_item_size, what, sparse_ok = False):
+        if count < 0:
+            raise ValueError(f'invalid {what} {count} (negative)')
+        if self._stream_end is None or min_item_size <= 0:
+            return
+        if sparse_ok and count <= MAX_SPARSE_ARRAY_ELEMENTS:
+            return
+        remaining = self._stream_end - self._file.tell()
+        if count * min_item_size > remaining:
+            raise ValueError(f'invalid {what} {count}: larger than the '
+                             f'{remaining} bytes remaining in the stream')
 
     # Below are a set of "readers" and other support types, one per defined structure in
     # revisions 10.0-12.0 of the ".NET Remoting: Binary Format Data Structure" specification
@@ -133,6 +171,7 @@ class serialization:
                 break
         else:
             raise OverflowError('LengthPrefixedString overflow')
+        self._check_count(length, 1, 'LengthPrefixedString length')
         return self._file.read(length).decode('utf-8')
 
     @_register_reader(_PrimitiveType_readers, 5)
@@ -209,7 +248,9 @@ class serialization:
     _read_StringValueWithCode = _read_ValueWithCode
 
     def _read_ArrayOfValueWithCode(self):
-        return [self._read_ValueWithCode() for i in range(self._read_Int32())]
+        count = self._read_Int32()
+        self._check_count(count, 1, 'ArrayOfValueWithCode length')  # each has a 1-byte type code
+        return [self._read_ValueWithCode() for i in range(count)]
 
 
     # A dict of all RecordType readers indexed by a length-one RecordTypeEnumeration bytes object
@@ -246,10 +287,12 @@ class serialization:
         object_id    = self._read_Int32()
         class_name   = self._read_LengthPrefixedString()
         member_count = self._read_Int32()
+        self._check_count(member_count, 1, 'ClassInfo member count')  # names are at least 1 byte
         member_names = [self._read_LengthPrefixedString() for i in range(member_count)]
         unique_members = set()
+        unique_counters = {}
         for member_num, member_name in enumerate(member_names):
-            member_name = make_unique(sanitize_identifier(member_name), unique_members)
+            member_name = make_unique(sanitize_identifier(member_name), unique_members, unique_counters)
             unique_members.add(member_name)
             member_names[member_num] = member_name
         Class = namedlist(sanitize_identifier(class_name), member_names, default=None)
@@ -386,7 +429,11 @@ class serialization:
         object_id  = self._read_Int32()
         array_type = self._BinaryArrayTypeEnumeration(self._read_Byte())
         rank       = self._read_Int32()
+        if not 0 <= rank <= MAX_ARRAY_RANK:
+            raise ValueError(f'invalid BinaryArray rank {rank}')
         lengths    = [self._read_Int32() for i in range(rank)]
+        for length in lengths:
+            self._check_count(length, 0, 'BinaryArray length')  # (only checks for negative lengths)
         if array_type.is_offset():
             [self._read_Int32() for i in range(rank)]  # LowerBounds are not implemented; they're ignored
         binary_type     = self._read_Byte()
@@ -395,6 +442,14 @@ class serialization:
         # If the BinaryArray is multidimensional, the complex code branch is required:
         if array_type.is_rectangular():
             supports_Array = primitive_type and primitive_type in self._array_format_by_primitive_type
+            # Lengths of 0 are counted as 1 since the lists for the other dimensions are
+            # still allocated (e.g. lengths of [0, N] or [N, N, 0] allocate N or N*N lists)
+            size = math.prod(max(length, 1) for length in lengths)
+            if supports_Array:
+                item_size = Array(self._array_format_by_primitive_type[primitive_type]).itemsize
+                self._check_count(size, item_size, 'BinaryArray size')
+            else:
+                self._check_count(size, 1, 'BinaryArray size', sparse_ok=True)
             if supports_Array:  # if True, a Python Array can be used for the *last* dimension...
                 array_length = lengths.pop()  # ...which is removed from the lengths list here
             array = multidimensional_array(lengths)  # preallocate a list of lists (it's not a Python Array)
@@ -412,12 +467,16 @@ class serialization:
                     if isinstance(val, self._ObjectNullMultiple):  # represents one or more empty elements
                         skip = val.count - 1  # counts this iteration which we're skipping right now
                         continue
-                    if isinstance(val, self._MemberReference):     # see _read_MemberReference()
-                        list_indexes = ''.join(f'[{i}]' for i in indexes[:-1])
-                        val.parent          = eval(f'array{list_indexes}')  # the parent list, i.e. all but the last index
-                        val.index_in_parent = indexes[-1]                   # the last index
-                list_indexes = ''.join(f'[{i}]' for i in indexes)
-                exec(f'array{list_indexes} = val')
+                if not indexes:  # a single value (rank 0, or rank 1 with a Python Array)
+                    array = val
+                    continue
+                parent = array  # the parent list, i.e. all but the last index
+                for i in indexes[:-1]:
+                    parent = parent[i]
+                if not supports_Array and isinstance(val, self._MemberReference):  # see _read_MemberReference()
+                    val.parent          = parent
+                    val.index_in_parent = indexes[-1]  # the last index
+                parent[indexes[-1]] = val
             self._objects_by_id[object_id] = array
             return array
         else:  # else it's not multidimensional, the standard code branch can be used:
@@ -442,12 +501,15 @@ class serialization:
             array = self._read_Array_native_elements(length, primitive_type)
             self._objects_by_id[object_id] = array
             return array
+        # Each element is at least 1 byte, except runs of nulls (ObjectNullMultiple)
+        self._check_count(length, 1, 'array length', sparse_ok=not primitive_type)
         return self._read_members_into([None] * length, object_id, lambda i: primitive_type)
 
     def _read_Array_native_elements(self, length, primitive_type):
         if self._add_overwrite_info:
             initial_pos = self._file.tell()
         array = Array(self._array_format_by_primitive_type[primitive_type])
+        self._check_count(length, array.itemsize, 'array length')
         array.fromfile(self._file, length)  # read them in one call
         if sys.byteorder == 'big' and array.itemsize > 1:
             array.byteswap()
@@ -484,7 +546,10 @@ class serialization:
 
     @_register_reader(_RecordType_readers, 14)
     def _read_ObjectNullMultiple(self):
-        return self._ObjectNullMultiple(self._read_Int32())
+        count = self._read_Int32()
+        if count < 1:  # a negative count would move backwards when filling members
+            raise ValueError(f'invalid ObjectNullMultiple count {count}')
+        return self._ObjectNullMultiple(count)
 
     @_register_reader(_RecordType_readers, 13)
     def _read_ObjectNullMultiple256(self):
@@ -759,14 +824,20 @@ def sanitize_identifier(identifier):
     assert identifier.isidentifier()
     return identifier
 
-# Returns a version of the name which isn't present in the unique_set
-def make_unique(name, unique_set):
+# Returns a version of the name which isn't present in the unique_set.
+# If the same counters dict is passed for each name added to unique_set,
+# this is O(1) (amortized) instead of O(n) for each duplicate name.
+def make_unique(name, unique_set, counters = None):
     if name not in unique_set:
         return name
-    for append in itertools.count(2):
-        replacement = name + str(append)
-        if replacement not in unique_set:
-            return replacement
+    if counters is None:
+        counters = {}
+    # Suffixes below counters[name] were already returned (or already in unique_set)
+    append = counters.get(name, 2)
+    while (replacement := name + str(append)) in unique_set:
+        append += 1
+    counters[name] = append + 1
+    return replacement
 
 # Pre-allocates a "multidimensional array", i.e. a list of lists of Nones
 def multidimensional_array(lengths):
