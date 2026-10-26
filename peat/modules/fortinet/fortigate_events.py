@@ -30,9 +30,15 @@ other two locations have the same format.
 
 import re
 from datetime import UTC, datetime
+from typing import Final
 
 from peat import DeviceData, Event, utils
 from peat.protocols.common import IPV4_RE
+
+#: key="quoted value" or key=unquoted-value pairs in an event log line.
+#: Keys only match at the start of a word and the quantifiers are possessive,
+#: so matching takes linear time (no ReDoS with long hostile lines).
+FG_EVENT_KV_RE: Final[re.Pattern[str]] = re.compile(r'(?<!\w)(\w++)=(?:"([^"]++)"|([\w.\-:]++))')
 
 
 def parse_fg_events(raw_data: str) -> list[dict[str, str]]:
@@ -41,15 +47,12 @@ def parse_fg_events(raw_data: str) -> list[dict[str, str]]:
     with key=value pairs as dicts.
     """
     parsed_data = []
-    log_pattern = re.compile(r'(\w+)="([^"]+)"|(\w+)=([\w\.\-:]+)')
 
     for line in raw_data.splitlines():
         entry = {}
 
-        for match in log_pattern.findall(line):
-            key = match[0] if match[0] else match[2]
-            value = match[1] if match[1] else match[3]
-            entry[key] = value
+        for key, quoted, unquoted in FG_EVENT_KV_RE.findall(line):
+            entry[key] = quoted if quoted else unquoted
 
         entry["raw_line"] = line
         parsed_data.append(entry)
