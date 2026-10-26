@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generates system log events on a SEL RTAC."""
+
 import argparse
 from time import sleep
 
