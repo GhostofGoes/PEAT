@@ -261,6 +261,27 @@ SIPROTEC 7SJ6x relays
    :members:
    :no-undoc-members:
 
+SIMATIC S7 PLCs
+---------------
+.. automodule:: peat.modules.siemens.s7
+   :members:
+   :no-undoc-members:
+
+S7comm client
+^^^^^^^^^^^^^
+.. automodule:: peat.modules.siemens.s7comm
+   :members:
+
+S7 project file parsing
+^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.siemens.s7_parse
+   :members:
+
+dBASE table reader
+^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.siemens.dbf
+   :members:
+
 Woodward
 ========
 

@@ -125,3 +125,8 @@ BOOTROM.SYS binary
 
 # Rockwell tests
 tests/modules/rockwell/data_files/*.txt     text eol=lf
+
+# Siemens S7 test files: keep public example files byte-for-byte identical to their sources
+tests/modules/siemens/data_files/**  -text
+*.zap[0-9][0-9]  binary
+*.s7p       binary
