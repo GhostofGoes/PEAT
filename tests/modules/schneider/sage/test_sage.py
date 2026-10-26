@@ -72,6 +72,7 @@ def test_sage_parse_tarball_links_skipped(sage_env, tmp_path):
 def _add_dir(tar: tarfile.TarFile, name: str) -> None:
     info = tarfile.TarInfo(name)
     info.type = tarfile.DIRTYPE
+    info.mode = 0o755  # TarInfo defaults to 0o644, which an unprivileged user can't traverse
     tar.addfile(info)
 
 
