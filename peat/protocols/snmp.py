@@ -55,6 +55,11 @@ from pysnmp.smi.builder import DirMibSource, MibBuilder
 import peat
 from peat import config, consts, exit_handler, log, state, utils
 
+#: Default maximum number of queries for one :meth:`SNMP.get` with
+#: ``single_query=False`` (a "walk"), so an agent that keeps returning
+#: values can't keep PEAT walking forever.
+DEFAULT_QUERY_LIMIT: Final[int] = 10_000
+
 # https://www.iana.org/assignments/ianaiftype-mib/ianaiftype-mib
 INTERFACE_MAP: Final[dict[int, str]] = {
     1: "other",
@@ -157,7 +162,7 @@ class SNMP:
         self,
         identity: str | tuple,
         single_query: bool = True,
-        query_limit: int = 0,
+        query_limit: int | None = None,
         walk_whole_mib: bool = False,
     ) -> list[dict]:
         """
@@ -207,6 +212,9 @@ class SNMP:
                 more data (for OIDs with "sub values", e.g. tables or enumerations).
             query_limit: If ``single_query`` is :obj:`False`, limit the iteration to this
                 number of queries and stop. This is cheap workaround if you don't have a MIB.
+                If :obj:`None`, :data:`~peat.protocols.snmp.DEFAULT_QUERY_LIMIT` is used.
+                Set to ``0`` for no limit (the walk then only ends when the agent stops
+                returning values, which a hostile or broken agent may never do).
             walk_whole_mib: If all values in a MIB should be walked.
                 This sets ``lexicographicMode=True`` in PySNMP ``nextCmd``.
 
@@ -258,6 +266,10 @@ class SNMP:
             )
         if querier is None:
             raise ValueError(f"{self.ip}: bad querier iterator (single_query={single_query})")
+
+        default_limit = query_limit is None
+        if query_limit is None:
+            query_limit = DEFAULT_QUERY_LIMIT
 
         values = []
         finished = False
@@ -323,8 +335,13 @@ class SNMP:
                 finished = True
 
             query_counter += 1
-            if query_counter and query_counter == query_limit:
+            if not finished and query_limit and query_counter >= query_limit:
                 finished = True
+                if not single_query and default_limit:
+                    self.log.warning(
+                        f"Stopped SNMP walk of {identity} after {query_counter} "
+                        f"queries (query_limit: {query_limit})"
+                    )
 
         self.all_output[utils.utc_now().isoformat()] = deepcopy(values)
 
