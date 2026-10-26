@@ -394,3 +394,55 @@ class TestEdgeCases:
         mocker.patch("builtins.open", side_effect=exception)
 
         assert sig.matches(test_file) is False
+
+
+class TestShortCircuit:
+    """Checks stop at the first failure, cheapest first."""
+
+    def test_custom_check_not_run_if_magic_number_fails(self):
+        calls = []
+        sig = FileSignature(
+            default_filename="test.file",
+            magic_number="7801",
+            custom_check=lambda source: calls.append(source) or True,
+        )
+        assert sig.matches(b"\x78\xda" + b"x" * 100) is False
+        assert calls == []
+        assert sig.matches(b"\x78\x01" + b"x" * 100) is True
+        assert len(calls) == 1
+
+    def test_xml_and_custom_not_run_if_substrings_fail(self, mocker):
+        xml_check = mocker.spy(FileSignature, "_matches_xml_tags")
+        custom = mocker.Mock(return_value=True)
+        sig = FileSignature(
+            default_filename="test.xml",
+            xml_tags=("root",),
+            substrings=("needle",),
+            custom_check=custom,
+        )
+        assert sig.matches(b"<root>haystack</root>") is False
+        assert xml_check.call_count == 0
+        custom.assert_not_called()
+
+        assert sig.matches(b"<root>needle</root>") is True
+        assert xml_check.call_count == 1
+        custom.assert_called_once()
+
+    def test_all_checks_run_and_stream_rewound(self):
+        seen = []
+
+        def check(source):
+            seen.append(source.read())
+            return True
+
+        sig = FileSignature(
+            default_filename="test.xml",
+            magic_number="3c72",  # "<r"
+            xml_tags=("root",),
+            substrings=("needle",),
+            custom_check=check,
+        )
+        stream = io.BytesIO(b"<root>needle</root>")
+        assert sig.matches(stream) is True
+        assert seen == [b"<root>needle</root>"]
+        assert stream.tell() == 0
