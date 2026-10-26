@@ -1,4 +1,5 @@
 import io
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -241,3 +242,31 @@ def test_decrypt_legacy_example_archive(examples_dir, tmp_path):
     out = tmp_path / "example_peat_results"
     assert (out / "devices" / "192.0.2.10" / "device-data-summary.json").is_file()
     assert (out / "README.md").read_text(encoding="utf-8").startswith("This directory")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks require privileges on Windows")
+def test_symlinks_warned_on_encrypt_and_decrypt(tmp_path, log_messages):
+    results = _results_dir(tmp_path)
+    device_dir = results / "pull_run_1" / "devices" / "192.0.2.10"
+    (device_dir / "link.txt").symlink_to("SET_ALL.TXT")
+    (results / "dir-link").symlink_to(device_dir, target_is_directory=True)
+    assert results_crypto.zip_encrypt_results(results, tmp_path, "pw-1234")
+
+    encrypt_warnings = [m for m in log_messages if "is a symbolic link" in m]
+    assert len(encrypt_warnings) == 2
+    assert any("link.txt" in m for m in encrypt_warnings)
+    assert any("dir-link" in m for m in encrypt_warnings)
+
+    out = tmp_path / "out"
+    assert results_crypto.unzip_decrypt_results(
+        tmp_path / "encrypted_peat_results.zip", out, "pw-1234"
+    )
+    extracted = out / "peat_results"
+    assert (extracted / "pull_run_1" / "devices" / "192.0.2.10" / "SET_ALL.TXT").is_file()
+    assert not (extracted / "pull_run_1" / "devices" / "192.0.2.10" / "link.txt").exists()
+    assert not (extracted / "dir-link").exists()
+
+    decrypt_warnings = [m for m in log_messages if "weren't extracted" in m]
+    assert len(decrypt_warnings) == 1
+    assert decrypt_warnings[0].startswith("2 symbolic or hard link(s)")
+    assert "link.txt' -> 'SET_ALL.TXT'" in decrypt_warnings[0]

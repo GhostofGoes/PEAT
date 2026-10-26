@@ -23,6 +23,9 @@ RESULTS_ARCHIVE_MEMBER: Final[str] = "peat-results.tar"
 #: archive that will be extracted, so a small crafted archive can't fill the disk.
 MAX_RESULTS_ARCHIVE_SIZE: Final[int] = 32 * 1024**3  # 32 GiB
 
+#: Maximum number of links that weren't extracted listed in the warning about them
+MAX_LISTED_LINKS: Final[int] = 20
+
 
 def zip_encrypt_results(
     results_dir_path: Path, write_path: Path = Path("./"), user_password: str | None = None
@@ -32,7 +35,9 @@ def zip_encrypt_results(
 
     The directory is stored as a single tar archive inside the AES-encrypted
     ZIP file, so the file names and sizes are encrypted as well as the contents.
-    Symbolic links are stored as links (their targets aren't included).
+    Symbolic links are stored as links (their targets aren't included), and
+    :func:`unzip_decrypt_results` doesn't extract them, so a warning is
+    logged for each one.
 
     Args:
         results_dir_path:    target peat results directory
@@ -77,11 +82,20 @@ def zip_encrypt_results(
                 zf.open(RESULTS_ARCHIVE_MEMBER, "w", force_zip64=True) as member,
                 tarfile.open(fileobj=member, mode="w|", format=tarfile.PAX_FORMAT) as tar,
             ):
-                for dirpath, _, filenames in os.walk(results_dir_path):
+                for dirpath, dirnames, filenames in os.walk(results_dir_path):
                     dirpath = Path(dirpath)
-                    for filename in sorted(filenames):
+                    # os.walk() lists links to directories in dirnames (and doesn't follow them)
+                    links = [d for d in dirnames if (dirpath / d).is_symlink()]
+                    for filename in sorted(filenames + links):
                         full_path = dirpath / filename
                         arcname = full_path.relative_to(results_dir_path).as_posix()
+                        if full_path.is_symlink():
+                            log.warning(
+                                f"'{arcname}' is a symbolic link (to "
+                                f"'{os.readlink(full_path)}'). Only the link is stored "
+                                f"in the archive, not the file it points to, and "
+                                f"links aren't extracted when decrypting results."
+                            )
                         tar.add(full_path, arcname=arcname, recursive=False)
         log.info(f"encrypted results written: {zip_name}")
         return True
@@ -167,11 +181,16 @@ def _existing_parent(path: Path) -> Path:
 def _extract_results_tar(zf: pyzipper.AESZipFile, extract_dir: Path) -> None:
     extract_dir.mkdir(parents=True, exist_ok=True)
 
+    links: list[str] = []
     with (
         zf.open(RESULTS_ARCHIVE_MEMBER) as member,
         tarfile.open(fileobj=member, mode="r|") as tar,
     ):
         for unchecked in tar:
+            if unchecked.issym() or unchecked.islnk():
+                links.append(f"'{unchecked.name}' -> '{unchecked.linkname}'")
+                continue
+
             checked = utils.check_tar_member(unchecked, extract_dir, allow_dirs=True)
             if checked is None:
                 continue
@@ -180,3 +199,15 @@ def _extract_results_tar(zf: pyzipper.AESZipFile, extract_dir: Path) -> None:
                 tar.extract(unchecked, path=extract_dir, filter="data")
             else:  # Python < 3.11.4, the member was already checked
                 tar.extract(checked, path=extract_dir)
+
+    if links:
+        shown = ", ".join(links[:MAX_LISTED_LINKS])
+        more = (
+            f" (and {len(links) - MAX_LISTED_LINKS} more)" if len(links) > MAX_LISTED_LINKS else ""
+        )
+        log.warning(
+            f"{len(links)} symbolic or hard link(s) in the archive weren't extracted, "
+            f"since links aren't extracted from encrypted results (the files they point "
+            f"to aren't in the archive, and a link could point outside of the results): "
+            f"{shown}{more}"
+        )
