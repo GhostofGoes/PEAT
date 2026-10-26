@@ -38,6 +38,12 @@ repos:
       files: ^(peat|tests)/
       types_or: [ python, pyi ]
       args: [ '--check' ]
+- repo: https://github.com/zizmorcore/zizmor-pre-commit
+  rev: v1.31.1  # zizmor version, keep in sync with .github/workflows/zizmor.yml
+  hooks:
+    - id: zizmor
+      # Online audits need a GitHub token and run in CI
+      args: [ '--offline', '--config', '.github/zizmor.yml' ]
 - repo: https://github.com/twisted/towncrier
   rev: 25.8.0
   hooks:

@@ -322,6 +322,7 @@ Notes
 ^^^^^
 
 - `pre-commit <https://pre-commit.com/>`__ is used to ensure common issues are caught before they're committed and pushed. For example, commit message format (conventional commits), linting or formatting issues, etc.
+- `zizmor <https://docs.zizmor.sh/>`__ checks the GitHub Actions workflows in ``.github/workflows/`` for security issues, in pre-commit and in CI (the ``GitHub Actions Security Analysis`` workflow). Its configuration is in ``.github/zizmor.yml``. Fix findings where possible; if a finding has to stay, ignore it in that file with a comment explaining why.
 - `PDM <https://pdm-project.org>`__ is used for tooling and dependency management
 - Edits to the code (``.py`` files) don't necessitate a reinstall if environment was created with PDM (``pdm install -d``). You only need to install on first setup, or if the dependencies change (these are defined in ``pyproject.toml``).
 - Tests are run using ``pytest``

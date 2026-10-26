@@ -17,7 +17,7 @@ on:
         required: false
         type: string
 
-permissions: read-all
+permissions: {}
 
 concurrency:
   group: release-${{ github.repository }}-${{ inputs.target_branch }}
@@ -26,11 +26,15 @@ concurrency:
 jobs:
   test:
     name: Tests
-    uses: ./.github/workflows/tests.yml
+    uses: $/.github/workflows/tests.yml
+    permissions:
+      contents: read
 
   build:
     name: Build artifacts
-    uses: ./.github/workflows/build.yml
+    uses: $/.github/workflows/build.yml
+    permissions:
+      contents: read
     with:
       # The tag doesn't exist yet when the artifacts are built, so pass the
       # version explicitly (executables, Python package, and docs use it)
@@ -39,7 +43,8 @@ jobs:
   check-changelog:
     name: Check ChangeLog
     needs: [test, build]
-    permissions: read-all
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     env:
       TAG_NAME: ${{ inputs.tag_name }}
@@ -60,9 +65,9 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: 
-            persist-credentials: true
+            persist-credentials: false
             fetch-depth: 0
             ref: ${{ inputs.target_branch }}
       - name: Check whether changelog was already updated
@@ -123,13 +128,13 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: 
-            persist-credentials: true
+            persist-credentials: true  # git push
             fetch-depth: 0
             ref: ${{ inputs.target_branch }}
       - name: Setup PDM
-        uses: pdm-project/setup-pdm@94a823180e06fcde4ad29308721954a521c96ed0 # v4
+        uses: pdm-project/setup-pdm@94a823180e06fcde4ad29308721954a521c96ed0 # v4.4
         with:
           python-version: "3.12"
           cache: true
@@ -152,7 +157,7 @@ jobs:
 
           git commit -m "docs: Updated CHANGELOG for tag $TAG_NAME [skip ci]
 
-          Triggered-by: ${{ github.actor }}"
+          Triggered-by: ${GITHUB_ACTOR}"
           git push
 
   create-tag:
@@ -199,9 +204,9 @@ jobs:
             exit 1
           fi
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: true
+          persist-credentials: true  # git push
           fetch-depth: 0
           ref: ${{ inputs.target_branch }}
       - name: Create tag if needed
@@ -221,7 +226,7 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag -a "$TAG_NAME" -m "Release $TAG_NAME
 
-            Triggered-by: ${{ github.actor }}"
+            Triggered-by: ${GITHUB_ACTOR}"
             git push origin "refs/tags/$TAG_NAME"
           fi
       # The tag is pushed with GITHUB_TOKEN, and events caused by GITHUB_TOKEN
@@ -279,9 +284,9 @@ jobs:
             motd.ubuntu.com:443
             packages.microsoft.com:443
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: 
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.target_branch }}
       # Each artifact uploaded by build.yml (actions/upload-artifact "name:"
@@ -310,7 +315,7 @@ jobs:
           cp manpage/peat.1 peat_linux/
           cp linux_exe/peat peat_linux/
           ls -lAht peat_linux/
-          tar -czf "peat_linux_${{ env.TAG_NAME }}.tgz" peat_linux/
+          tar -czf "peat_linux_${TAG_NAME}.tgz" peat_linux/
       - name: Create Windows release bundle
         run: |
           mkdir peat_windows
@@ -318,7 +323,7 @@ jobs:
           cp examples/peat-config-simple.yaml peat_windows/
           cp windows_exe/peat.exe peat_windows/
           ls -lAht peat_windows/
-          zip -r "peat_windows_${{ env.TAG_NAME }}.zip" peat_windows/
+          zip -r "peat_windows_${TAG_NAME}.zip" peat_windows/
       - name: Zip up HTML docs
         run: |
           cp manpage/peat.1 peat_docs/
@@ -329,7 +334,7 @@ jobs:
           set -euo pipefail
 
           echo "TAG_NAME=$TAG_NAME"
-          echo "github.ref_name=${{ github.ref_name }}"
+          echo "github.ref_name=${GITHUB_REF_NAME}"
           echo "Current directory:"
           pwd
 
@@ -343,7 +348,7 @@ jobs:
           test -f "windows_exe/peat.exe"
       # NOTE: This will trigger the Docker workflow
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         id: create-release
         with:
           prerelease: ${{ endsWith(env.TAG_NAME, '-prerelease') }}

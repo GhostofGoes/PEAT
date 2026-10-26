@@ -1,0 +1,12 @@
+# Configuration for zizmor, the GitHub Actions security linter.
+# https://docs.zizmor.sh/configuration/
+#
+# Run it locally with "pre-commit run zizmor --all-files" or "uvx zizmor .github/workflows".
+rules:
+  superfluous-actions:
+    ignore:
+      # softprops/action-gh-release creates the draft release, links the
+      # announcement discussion, and uploads every asset in one step. Moving
+      # that to "gh release create" changes the release process and can only
+      # be tested by cutting a release, so it's left for a separate change.
+      - release.yml
