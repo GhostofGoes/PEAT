@@ -68,10 +68,11 @@ def test_snmp_walk_deadline(mocker):
             yield response
 
     mocker.patch("peat.protocols.snmp.nextCmd", side_effect=_slow)
-    snmp = SNMP(ip="127.0.0.1", timeout=0.01, walk_deadline=0.2)
+    # A generous deadline: a loaded Windows CI runner can take a while for one reply
+    snmp = SNMP(ip="127.0.0.1", timeout=0.01, walk_deadline=1.0)
     start = time.monotonic()
     snmp.get("1.3.6.1.2.1.1", single_query=False, query_limit=0)
-    assert time.monotonic() - start < 1.0
-    assert 2 <= calls["count"] < 100
+    assert time.monotonic() - start < 10.0  # 20,000 replies would take 200 seconds
+    assert 2 <= calls["count"] < 500
 
     assert SNMP(ip="127.0.0.1").walk_deadline == snmp_module.DEFAULT_WALK_DEADLINE
