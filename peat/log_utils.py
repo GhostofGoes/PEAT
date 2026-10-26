@@ -223,7 +223,28 @@ def _is_secret_key(key: Any) -> bool:
         return False
     key = key.lower().replace("-", "_")
     return key in SECRET_OPTION_KEYS or key.endswith(
-        ("password", "passwd", "passphrase", "_pass", "community", "secret")
+        (
+            "password",
+            "passwd",
+            "passphrase",
+            "_pass",
+            "pwd",
+            "community",
+            "secret",
+            "token",
+            "api_key",
+            "private_key",
+            "secret_key",
+            "_creds",
+        )
+    )
+
+
+def _is_credential_pair(value: Any) -> bool:
+    return (
+        isinstance(value, list | tuple)
+        and len(value) == 2
+        and all(isinstance(v, str) for v in value)
     )
 
 
@@ -236,22 +257,21 @@ def redact_config(value: Any, _is_secret: bool = False) -> Any:
     :data:`~peat.log_utils.SECRET_OPTION_KEYS`, as well as keys ending with
     ``password``, ``_pass``, etc.) and passwords in URLs are replaced with
     ``<redacted>``, as are any registered secrets. For ``(username, password)``
-    pairs, only the password is replaced.
+    pairs in a list of them (e.g. ``creds: [[user, pass], ...]``), only the
+    password is replaced. Any other list of strings, such as a list of two
+    passwords, is fully redacted.
     """
     if isinstance(value, Mapping):
         return {k: redact_config(v, _is_secret or _is_secret_key(k)) for k, v in value.items()}
 
     if isinstance(value, list | tuple | set):
-        if (
-            _is_secret
-            and isinstance(value, list | tuple)
-            and len(value) == 2
-            and all(isinstance(v, str) for v in value)
-        ):
-            pair = [value[0], REDACTED]  # A (username, password) pair
-            return tuple(pair) if isinstance(value, tuple) else pair
-
-        redacted = [redact_config(v, _is_secret) for v in value]
+        redacted = []
+        for item in value:
+            if _is_secret and _is_credential_pair(item):
+                pair = [item[0], REDACTED]  # A (username, password) pair
+                redacted.append(tuple(pair) if isinstance(item, tuple) else pair)
+            else:
+                redacted.append(redact_config(item, _is_secret))
         if isinstance(value, tuple):
             return tuple(redacted)
         if isinstance(value, set):

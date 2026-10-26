@@ -379,3 +379,18 @@ def test_secret_with_control_char_redacted_after_stripping(secrets, log_messages
     log.info("login with Ctl\x01-UNIQUE-pw and Cr-UNIQUE\r-pw2")
 
     assert log_messages[-1] == "login with <redacted> and <redacted>"
+
+
+def test_redact_config_secret_lists(secrets):  # noqa: ARG001
+    conf = {
+        "web": {"passwords": ["Summer-UNIQUE-1", "Winter-UNIQUE-2"]},
+        "ftp": {"creds": [["ftpuser", "Ftp-UNIQUE-1"], ("anon", "Anon-UNIQUE-2")]},
+        "snmp": {"communities": ("Comm-UNIQUE-1", "Comm-UNIQUE-2")},
+        "api": {"token": "Tok-UNIQUE", "api_key": "Key-UNIQUE", "pwd": "Pwd-UNIQUE"},
+        "ftp_creds": ["user", "Pair-UNIQUE"],
+    }
+    redacted = log_utils.redact_config(conf)
+    assert "UNIQUE" not in json.dumps(redacted)
+    assert redacted["web"]["passwords"] == ["<redacted>", "<redacted>"]
+    assert redacted["ftp"]["creds"] == [["ftpuser", "<redacted>"], ("anon", "<redacted>")]
+    assert redacted["snmp"]["communities"] == ("<redacted>", "<redacted>")
