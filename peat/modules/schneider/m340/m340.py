@@ -446,7 +446,9 @@ class M340(DeviceModule):
         dev: DeviceData | None = None,
         file: Path | None = None,
     ) -> DeviceData:
-        parsed_config = m340_parse.parse_config_to_dict(raw_data)
+        # Decompress the project file once, it's used for both config and logic
+        project_blocks = m340_parse.chunkify(bytes(raw_data))
+        parsed_config = m340_parse.parse_config_to_dict(raw_data, project_blocks)
         metadata = parsed_config.get("project_file_metadata", {})  # type: dict
 
         # Determine a valid identifier for the device from the config
@@ -568,7 +570,7 @@ class M340(DeviceModule):
         cls.update_dev(dev)
 
         # Parse out the Structured Text logic and save the TC6 tree as well
-        logic_blocks = m340_parse.extract_logic_blocks(raw_data)
+        logic_blocks = m340_parse.extract_logic_blocks(raw_data, project_blocks)
         if logic_blocks:
             # Create the TC6 object with the skeleton of the TC6 XML
             dev.logic.name = metadata.get("project_name", "").strip()

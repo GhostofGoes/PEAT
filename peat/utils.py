@@ -10,6 +10,7 @@ import shutil
 import site
 import sys
 import tarfile
+import zlib
 from collections.abc import Container, Iterable
 from contextlib import ExitStack
 from copy import deepcopy
@@ -17,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from traceback import format_exc
-from typing import Any
+from typing import Any, Final
 
 import pathvalidate
 from dateutil.parser import parse as date_parse
@@ -141,6 +142,61 @@ def check_tar_member(
     except tarfile.FilterError as ex:
         log.warning(f"Skipping unsafe tar member '{member.name}': {ex}")
         return None
+
+
+#: Default maximum size of data inflated by :func:`bounded_decompress` (256 MiB)
+MAX_INFLATE: Final[int] = 256 * 1024 * 1024
+
+
+def bounded_decompress(
+    data: bytes,
+    limit: int | None = None,
+    wbits: int = zlib.MAX_WBITS,
+    decompressor: Any = None,
+) -> bytes:
+    """
+    Decompress zlib (or raw DEFLATE/gzip, depending on ``wbits``) data from an
+    untrusted source, refusing to inflate more than ``limit`` bytes, to protect
+    against decompression bombs (a few KB that inflate to many GB).
+
+    Without ``decompressor``, this is equivalent to :func:`zlib.decompress`:
+    data after the end of the compressed stream is ignored, and an incomplete
+    stream raises :class:`zlib.error`.
+
+    If ``decompressor`` is a :func:`zlib.decompressobj` object, it's used
+    instead of a new one, and an incomplete stream isn't an error (like
+    :meth:`zlib.Decompress.decompress`). The caller can then check the
+    object's ``eof`` and ``unused_data`` attributes.
+
+    Args:
+        data: Compressed data
+        limit: Maximum number of bytes to inflate
+            (default: :data:`~peat.utils.MAX_INFLATE`)
+        wbits: Window size and header format, refer to :func:`zlib.decompress`
+        decompressor: Existing decompression object to use
+
+    Returns:
+        The decompressed data
+
+    Raises:
+        ValueError: the data inflates to more than ``limit`` bytes
+        zlib.error: the data is invalid (or incomplete, without ``decompressor``)
+    """
+    if limit is None:
+        limit = MAX_INFLATE
+    zo = decompressor if decompressor is not None else zlib.decompressobj(wbits)
+
+    # NOTE: max_length=0 means "unlimited", so always ask for at least 1 byte.
+    # One byte more than the limit is requested, so if the output is longer
+    # than the limit then it would've inflated to more than the limit.
+    out = zo.decompress(data, max(limit, 0) + 1)
+    if len(out) > limit:
+        raise ValueError(f"compressed data inflates to more than {limit} bytes")
+
+    if decompressor is None and not zo.eof:
+        raise zlib.error("Error -5 while decompressing data: incomplete or truncated stream")
+
+    return out
 
 
 def clean_empty_dirs(to_clean: Path) -> None:

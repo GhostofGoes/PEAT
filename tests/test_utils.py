@@ -454,3 +454,40 @@ def test_clean_empty_dirs_does_not_follow_symlinks(tmp_path):
     utils.clean_empty_dirs(to_clean)
     assert not (to_clean / "empty").exists()
     assert (outside / "empty").is_dir()
+
+
+def test_bounded_decompress():
+    import zlib
+
+    data = zlib.compress(b"peat" * 1000)
+    assert utils.bounded_decompress(data) == b"peat" * 1000
+    assert utils.bounded_decompress(data, limit=4000) == b"peat" * 1000
+    assert utils.bounded_decompress(data + b"trailing") == b"peat" * 1000
+    assert utils.bounded_decompress(zlib.compress(b""), limit=0) == b""
+    with pytest.raises(zlib.error):
+        utils.bounded_decompress(data[:-4])
+    with pytest.raises(zlib.error):
+        utils.bounded_decompress(b"not zlib data")
+
+    # Raw DEFLATE, and an existing decompression object for unused data
+    zo = zlib.decompressobj()
+    assert utils.bounded_decompress(data + b"tail", decompressor=zo) == b"peat" * 1000
+    assert zo.unused_data == b"tail"
+    raw = zlib.compressobj(wbits=-15)
+    deflated = raw.compress(b"raw") + raw.flush()
+    assert utils.bounded_decompress(deflated, wbits=-15) == b"raw"
+
+
+@pytest.mark.parametrize("limit", [0, 1, 4095, 1024 * 1024])
+def test_bounded_decompress_bomb(limit, mocker):
+    import zlib
+
+    bomb = zlib.compress(b"\x00" * (8 * 1024 * 1024), 9)  # ~8 KB -> 8 MiB
+    assert len(bomb) < 10_000
+    with pytest.raises(ValueError, match="inflates to more than"):
+        utils.bounded_decompress(bomb, limit=limit)
+
+    # The default limit is MAX_INFLATE
+    mocker.patch.object(utils, "MAX_INFLATE", 1024 * 1024)
+    with pytest.raises(ValueError, match="inflates to more than"):
+        utils.bounded_decompress(bomb)

@@ -1,7 +1,6 @@
 import copy
 import csv
 import re
-import zlib
 from pathlib import PurePath, PurePosixPath
 from typing import Any, Final, Literal
 
@@ -1924,7 +1923,8 @@ def extract_cid_content(data: bytes) -> str:
     if not data:
         return ""
 
-    decompressed = zlib.decompress(data)
+    # Limit the decompressed size, the file may be a decompression bomb
+    decompressed = utils.bounded_decompress(data)
 
     # NOTE utf-8-sig is required to remove the
     # Byte Order Mark (BOM) that gets prepended in some cases.

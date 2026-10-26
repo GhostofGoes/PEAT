@@ -91,7 +91,7 @@ import timeit
 from copy import deepcopy
 from pathlib import Path
 from pprint import pformat
-from typing import Literal
+from typing import Final, Literal
 
 import olefile
 import serial
@@ -126,6 +126,9 @@ from .sel_comms import populate_file_listing, pull_files
 from .sel_http import SELHTTP
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
+
+#: Maximum size of data inflated when checking if a file is a CID file (16 MiB)
+MAX_CID_CHECK_INFLATE: Final[int] = 16 * 1024 * 1024
 
 # TODO: auto-construct SET_ALL.TXT from individual files for parse,
 #   e.g. a directory of SET_* files.
@@ -199,15 +202,23 @@ class SELRelay(DeviceModule):
         """
         import zlib
 
+        # Check the zlib header before reading (and inflating) the whole file
+        header = data.read(2)
+        if header != b"\x78\x01":
+            return False
+
         try:
-            decompressed_bytes = zlib.decompress(data.read())
+            # Limit the size, since this runs on every file during discovery
+            decompressed_bytes = utils.bounded_decompress(
+                header + data.read(), limit=MAX_CID_CHECK_INFLATE
+            )
             sig = FileSignature(
                 default_filename="",
                 xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
                 substrings=("IEC 61850",),
             )
             return sig.matches(decompressed_bytes)
-        except zlib.error:
+        except (zlib.error, ValueError):
             return False
 
     file_signatures = [
