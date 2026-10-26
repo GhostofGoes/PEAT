@@ -1,4 +1,6 @@
 import socket
+import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -7,7 +9,7 @@ import paramiko
 import pytest
 
 from peat import CommError, config, datastore
-from peat.protocols.ssh import SSH, host_key_fingerprint
+from peat.protocols.ssh import SSH, host_key_fingerprint, save_host_key
 
 
 class _FakeSFTP:
@@ -214,3 +216,52 @@ def test_ssh_password_registered_as_secret():
     # e.g. a module's default credentials, which aren't in the config
     SSH("127.0.0.1", username="Admin", password="SSH-late-pw-7f3a")
     assert log_utils.redact_secrets("pw SSH-late-pw-7f3a") == "pw <redacted>"
+
+
+def test_known_hosts_never_read_partially_written(tmp_path):
+    path = tmp_path / "known_hosts"
+    key = paramiko.RSAKey.generate(1024)
+    host_keys = paramiko.HostKeys()
+    for i in range(1500):
+        host_keys.add(f"10.0.{i // 250}.{i % 250}", "ssh-rsa", key)
+    host_keys.add("known.example", "ssh-rsa", key)
+    host_keys.save(str(path))
+
+    stop = threading.Event()
+
+    def writer() -> None:
+        n = 0
+        while not stop.is_set():
+            save_host_key(path, f"new-{n}", key)
+            n += 1
+
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    try:
+        missing = 0
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            # Not under the lock, like a different PEAT process reading the file
+            loaded = paramiko.HostKeys(str(path))
+            if loaded.lookup("known.example") is None:
+                missing += 1
+    finally:
+        stop.set()
+        thread.join(5)
+    assert missing == 0
+
+
+def test_save_host_key_atomic(mocker, tmp_path):
+    path = tmp_path / "known_hosts"
+    key = paramiko.RSAKey.generate(1024)
+    save_host_key(path, "first.example", key)
+    original = path.read_bytes()
+    if sys.platform != "win32":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    # A failed write leaves the existing file as it was, and no temporary file
+    mocker.patch.object(paramiko.HostKeys, "save", side_effect=OSError("disk full"))
+    with pytest.raises(OSError, match="disk full"):
+        save_host_key(path, "second.example", key)
+    assert path.read_bytes() == original
+    assert [p.name for p in tmp_path.iterdir()] == ["known_hosts"]

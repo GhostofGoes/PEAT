@@ -11,6 +11,8 @@ Authors
 
 import base64
 import hashlib
+import os
+import tempfile
 import threading
 import traceback
 from copy import deepcopy
@@ -23,7 +25,7 @@ import paramiko
 import peat
 from peat import CommError, config, consts, log, utils
 
-#: Serializes updates to the PEAT known_hosts file between threads
+#: Serializes reads and updates of the PEAT known_hosts file between threads
 _known_hosts_lock: Final = threading.Lock()
 
 
@@ -61,9 +63,33 @@ def known_hosts_path() -> Path | None:
     return Path(config.SSH_KNOWN_HOSTS).expanduser()
 
 
+def _remove_host(host_keys: paramiko.HostKeys, hostname: str) -> None:
+    # "del host_keys[hostname]" only removes the first entry for the host
+    while True:
+        try:
+            del host_keys[hostname]
+        except KeyError:
+            break
+
+
+def load_host_keys(path: Path, host_keys: paramiko.HostKeys) -> None:
+    """
+    Load the keys in a known_hosts file into ``host_keys``, if the file exists.
+
+    The file is read under the same lock used for saving it, so a partially
+    written file is never read by another thread.
+    """
+    with _known_hosts_lock:
+        if path.is_file():
+            host_keys.load(str(path))
+
+
 def save_host_key(path: Path, hostname: str, key: paramiko.PKey, replace: bool = False) -> None:
     """
     Add a host key to a known_hosts file, creating the file if needed.
+
+    The file is replaced atomically, so it's never seen partially written,
+    even by another process.
 
     Args:
         path: known_hosts file to update
@@ -79,14 +105,23 @@ def save_host_key(path: Path, hostname: str, key: paramiko.PKey, replace: bool =
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
         if replace:
-            while True:
-                try:
-                    del host_keys[hostname]
-                except KeyError:
-                    break
+            _remove_host(host_keys, hostname)
 
         host_keys.add(hostname, key.get_name(), key)
-        host_keys.save(str(path))
+
+        # Write a temporary file in the same directory and rename it over the
+        # file (or a symbolic link's target). mkstemp() creates it with mode 0600.
+        real_path = Path(os.path.realpath(path))
+        fd, tmp_name = tempfile.mkstemp(
+            dir=real_path.parent, prefix=f".{real_path.name}.", suffix=".tmp"
+        )
+        os.close(fd)
+        try:
+            host_keys.save(tmp_name)
+            os.replace(tmp_name, real_path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
 
 
 class TrustOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
@@ -379,10 +414,10 @@ class SSH:
             except (OSError, paramiko.SSHException) as ex:
                 self.log.warning(f"Failed to load the system SSH known_hosts file: {ex}")
 
-            if known_hosts and known_hosts.is_file():
+            if known_hosts:
                 try:
-                    # NOTE: not load_host_keys(), so paramiko doesn't save the file itself
-                    self._comm.get_host_keys().load(str(known_hosts))
+                    # NOTE: not SSHClient.load_host_keys(), so paramiko doesn't save the file
+                    load_host_keys(known_hosts, self._comm.get_host_keys())
                 except (OSError, paramiko.SSHException) as ex:
                     self.log.warning(f"Failed to load SSH known_hosts '{known_hosts}': {ex}")
 
