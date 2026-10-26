@@ -35,7 +35,9 @@ REDACTED: Final[str] = consts.REDACTED
 #: to match unrelated text (e.g. an ION meter password of "0")
 MIN_SECRET_LENGTH: Final[int] = 4
 
-#: Device option keys with values that are secrets (passwords, SNMP communities, etc.)
+#: Device option keys with values that are secrets (passwords, SNMP communities,
+#: etc.). Keys ending in :data:`~peat.consts.SECRET_KEY_SUFFIXES` are secrets too,
+#: refer to :func:`~peat.consts.is_secret_key`.
 SECRET_OPTION_KEYS: Final[frozenset[str]] = consts.SECRET_KEYS
 
 _secrets: Final[set[str]] = set()
@@ -126,7 +128,7 @@ def redact_secrets(text: str) -> str:
 def _find_option_secrets(options: Any, is_secret: bool = False) -> Iterable[str]:
     if isinstance(options, dict):
         for key, value in options.items():
-            yield from _find_option_secrets(value, is_secret or key in SECRET_OPTION_KEYS)
+            yield from _find_option_secrets(value, is_secret or consts.is_secret_key(key))
     elif isinstance(options, list | tuple):
         for value in options:
             if (
@@ -146,10 +148,8 @@ def _find_option_secrets(options: Any, is_secret: bool = False) -> Iterable[str]
 def _url_secrets(url: str | None) -> list[str]:
     if not url:
         return []
-    try:
-        password = urllib.parse.urlsplit(url).password
-    except ValueError:
-        return []
+    # NOTE: not urlsplit(), which leaves a password containing "/" in the path
+    password = consts.url_password(url)
     if not password:
         return []
     return [password, urllib.parse.unquote(password)]
