@@ -12,7 +12,7 @@ Authors
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 from peat import config, log
 from peat.protocols.cip import *
@@ -20,6 +20,11 @@ from peat.protocols.data_packing import *
 from peat.protocols.enip import EnipDriver, EnipSocket
 
 from .clx_const import *
+
+#: Maximum number of requests for one multi-request read (e.g. an instance list
+#: or a tag that doesn't fit in one reply). The device decides when a read is
+#: complete, so this keeps a hostile or broken device from looping forever.
+MAX_REQUESTS_PER_READ: Final[int] = 10_000
 
 PathType = tuple | tuple[int, Any]
 TagData = int | bytes
@@ -431,14 +436,29 @@ class ClxCIP:
         service = TAG_SERVICES_REQUEST["Get Instance List"]
         tag_buffer = []
         next_instance = 0
+        requests = 0
 
         while next_instance != -1:
             path_string = path_to_string((*class_path, next_instance))
             reply = self.driver.send_connected_command(
                 service=service, path=path_string, cmd_data=b""
             )
-            reply_data, next_instance = get_instance_list_data_from_reply(reply)
+            requests += 1
+            reply_data, new_next_instance = get_instance_list_data_from_reply(reply)
             tag_buffer.extend(reply_data)
+
+            # The next instance must be after the instances already read,
+            # and fit in a 16-bit instance ID, or this would never end
+            if new_next_instance != -1 and not (
+                next_instance < new_next_instance <= 0xFFFF and requests < MAX_REQUESTS_PER_READ
+            ):
+                self.log.warning(
+                    f"Stopping instance list read of {class_path} after {requests} "
+                    f"requests: invalid next instance {new_next_instance} from device "
+                    f"(previous: {next_instance})"
+                )
+                break
+            next_instance = new_next_instance
 
         if config.DEBUG >= 4:
             self.log.debug(f"get_instance_list_tag_buffer: DONE. tag_buffer:\n{tag_buffer}")
@@ -468,8 +488,21 @@ class ClxCIP:
         attribute_reads_total = 0
         path_string = path_to_string(instance_path)
 
+        requests = 0
+
         while attribute_reads != -1:
             attribute_reads_total += attribute_reads
+            if requests and not (
+                0 < attribute_reads
+                and attribute_reads_total < len(attribute_list)
+                and requests < MAX_REQUESTS_PER_READ
+            ):
+                self.log.warning(
+                    f"Stopping attribute read of {instance_path} after {requests} "
+                    f"requests: invalid attribute count {attribute_reads} from device"
+                )
+                break
+            requests += 1
             attribute_list_remaining = attribute_list[attribute_reads_total:]
             rp = [
                 pack_uint(len(attribute_list_remaining)),
@@ -502,9 +535,13 @@ class ClxCIP:
 
         tag_buffer = []
         tag_size = 0
+        requests = 0
         path_string = path_to_string(instance_path)
 
         while tag_size != -1:
+            if requests and not _read_progress(self, instance_path, tag_size, requests):
+                break
+            requests += 1
             reply = self.driver.send_connected_command(
                 service=TAG_SERVICES_REQUEST["Read Tag"],
                 path=path_string,
@@ -512,7 +549,11 @@ class ClxCIP:
             )
             reply_data, tag_size = read_tag_data_from_reply(reply)
             tag_buffer.extend(reply_data)
-            tag_offset += tag_size
+            if tag_size != -1:
+                tag_offset += tag_size
+            if tag_offset > 0xFFFF:  # the offset is 16 bits in the request
+                self.log.warning(f"Stopping read of tag {instance_path}: offset {tag_offset}")
+                break
 
         if config.DEBUG >= 4:
             self.log.debug(f"read_tag: DONE. tag_buffer:\n{tag_buffer}")
@@ -535,10 +576,14 @@ class ClxCIP:
 
         tag_buffer = []
         tag_size = 0
+        requests = 0
         tag_address = b""
         path_string = path_to_string(instance_path)
 
         while tag_size != -1:
+            if requests and not _read_progress(self, instance_path, tag_size, requests):
+                break
+            requests += 1
             reply = self.driver.send_connected_command(
                 service=TAG_SERVICES_REQUEST["Read Tag Fragmented"],
                 path=path_string,
@@ -546,7 +591,11 @@ class ClxCIP:
             )
             reply_data, tag_size, tag_address = read_tag_fragmented_data_from_reply(reply)
             tag_buffer.extend(reply_data)
-            tag_offset += tag_size
+            if tag_size != -1:
+                tag_offset += tag_size
+            if tag_offset > 0xFFFF:  # the offset is 16 bits in the request
+                self.log.warning(f"Stopping read of tag {instance_path}: offset {tag_offset}")
+                break
 
         ret = list(tag_address) + tag_buffer
 
@@ -572,20 +621,29 @@ class ClxCIP:
 
         tag_buffer = []
         tag_offset = offset
-        remaining_size = size
+        # NOTE: the size comes from the device, the request field is 16 bits
+        remaining_size = max(0, min(size, 0xFFFF))
         tag_size = 0
+        requests = 0
         path_string = path_to_string(instance_path)
 
         while tag_size != -1:
+            if requests and not _read_progress(self, instance_path, tag_size, requests):
+                break
+            requests += 1
             reply = self.driver.send_connected_command(
                 service=TAG_SERVICES_REQUEST["Read Tag"],
                 path=path_string,
                 cmd_data=pack_dint(tag_offset) + pack_uint(remaining_size),
             )
             reply_data, tag_size = read_tag_data_from_reply(reply)
-            tag_offset += tag_size
             tag_buffer.extend(reply_data)
-            remaining_size = size - tag_offset
+            if tag_size == -1:
+                break
+            tag_offset += tag_size
+            remaining_size = min(size - tag_offset, 0xFFFF)
+            if remaining_size <= 0:  # the device sent more than the size of the template
+                break
 
         if config.DEBUG >= 4:
             self.log.debug(f"read_template: DONE. tag_buffer:\n{tag_buffer}")
@@ -622,6 +680,22 @@ class ClxCIP:
         if config.DEBUG >= 4:
             self.log.debug(f"read_tag_with_size: DONE. tag_buffer:\n{tag_buffer}")
         return tag_buffer
+
+
+def _read_progress(cip: ClxCIP, instance_path: PathType, size: int, requests: int) -> bool:
+    """
+    Check if a multi-request tag read should continue: the previous reply had
+    to contain data (otherwise the same request would be sent forever), and
+    the number of requests is limited by :data:`MAX_REQUESTS_PER_READ`.
+    """
+    if size > 0 and requests < MAX_REQUESTS_PER_READ:
+        return True
+
+    cip.log.warning(
+        f"Stopping read of tag {instance_path} after {requests} requests: "
+        f"reply size {size} from device"
+    )
+    return False
 
 
 def get_size_of_type(
@@ -739,6 +813,12 @@ def get_instance_list_data_from_reply(cip_data: bytes) -> DataListType:
         if config.DEBUG >= 4:
             log.debug("get_instance_list: reading reply: SUCCESS")
     elif SERVICE_STATUS[cip_status] == "Insufficient Packet Space":
+        if not instance_list_data or len(instance_list_data) % 4 != 0:
+            log.warning(
+                f"get_instance_list reply: invalid instance list data "
+                f"length {len(instance_list_data)} (must be a non-zero multiple of 4)"
+            )
+            return instance_list_data, -1
         next_instance = (
             max(
                 unpack_dint(instance_list_data[i : i + 4])
@@ -947,12 +1027,23 @@ def path_to_string(path: PathType) -> bytes:
 
     Returns:
         Byte string representation of the path (:class:`bytes`)
+
+    Raises:
+        ValueError: A class or instance ID isn't 0-65535, or the path has an odd length
     """
     path_string = b""
+
+    if len(path) % 2 != 0:
+        raise ValueError(f"CIP path must have pairs of class and instance IDs: {path}")
 
     for idx in range(0, len(path), 2):
         class_code = path[idx]
         instance_code = path[idx + 1]
+
+        # IDs may come from the device, and only 8 and 16-bit IDs are supported
+        for code in (class_code, instance_code):
+            if not isinstance(code, int) or not 0 <= code <= 0xFFFF:
+                raise ValueError(f"Invalid CIP class or instance ID {code!r} in path {path}")
 
         if class_code <= 0xFF:
             path_string += CLASS_ID["8-bit"]
