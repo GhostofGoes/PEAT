@@ -28,6 +28,17 @@ from peat import CommError, config, consts, log, utils
 #: Serializes reads and updates of the PEAT known_hosts file between threads
 _known_hosts_lock: Final = threading.Lock()
 
+#: Host keys trusted during this run, so they're still checked by later
+#: connections if the known_hosts file can't be saved (or saving is disabled)
+_session_host_keys: Final = paramiko.HostKeys()
+
+#: known_hosts files that a warning about failing to load or save was logged for
+_known_hosts_warned: Final[set[str]] = set()
+
+#: Errors from reading or writing a known_hosts file (ValueError includes
+#: UnicodeDecodeError from a file that isn't text)
+_KNOWN_HOSTS_ERRORS: Final = (OSError, ValueError, paramiko.SSHException)
+
 
 def host_key_fingerprint(key: paramiko.PKey) -> str:
     """
@@ -124,6 +135,22 @@ def save_host_key(path: Path, hostname: str, key: paramiko.PKey, replace: bool =
             raise
 
 
+def _warn_known_hosts_error(path: Path, action: str, ex: Exception, logger: Any) -> None:
+    # Warn once per file, since this would otherwise be logged for every connection
+    msg = f"Failed to {action} SSH known_hosts file '{path}': {ex}"
+    if str(path) in _known_hosts_warned:
+        logger.debug(msg)
+        return
+    _known_hosts_warned.add(str(path))
+    unchecked = "Keys saved in it can't be checked, and h" if action == "load" else "H"
+    logger.warning(
+        f"{msg}. {unchecked}ost keys trusted in this run are only kept in memory "
+        f"(a key that changes during the run is still refused). To not use a PEAT "
+        f"known_hosts file, set ssh_known_hosts to an empty string in the config "
+        f'(ssh_known_hosts: "").'
+    )
+
+
 class TrustOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
     """
     Accept and save host keys for hosts that don't have a known key
@@ -154,8 +181,16 @@ class TrustOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
             )
 
         client.get_host_keys().add(hostname, key.get_name(), key)
+        with _known_hosts_lock:
+            if self.replace:
+                _remove_host(_session_host_keys, hostname)
+            _session_host_keys.add(hostname, key.get_name(), key)
+
         if self.known_hosts:
-            save_host_key(self.known_hosts, hostname, key, replace=self.replace)
+            try:
+                save_host_key(self.known_hosts, hostname, key, replace=self.replace)
+            except _KNOWN_HOSTS_ERRORS as ex:
+                _warn_known_hosts_error(self.known_hosts, "save", ex, self.log)
 
 
 class PinnedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -411,15 +446,22 @@ class SSH:
         if not self.trust_new_host_key:
             try:
                 self._comm.load_system_host_keys()
-            except (OSError, paramiko.SSHException) as ex:
+            except _KNOWN_HOSTS_ERRORS as ex:
                 self.log.warning(f"Failed to load the system SSH known_hosts file: {ex}")
 
+            host_keys = self._comm.get_host_keys()
             if known_hosts:
                 try:
                     # NOTE: not SSHClient.load_host_keys(), so paramiko doesn't save the file
-                    load_host_keys(known_hosts, self._comm.get_host_keys())
-                except (OSError, paramiko.SSHException) as ex:
-                    self.log.warning(f"Failed to load SSH known_hosts '{known_hosts}': {ex}")
+                    load_host_keys(known_hosts, host_keys)
+                except _KNOWN_HOSTS_ERRORS as ex:
+                    _warn_known_hosts_error(known_hosts, "load", ex, self.log)
+
+            # Keys trusted earlier in this run, which may not have been saved
+            with _known_hosts_lock:
+                for hostname, keys in _session_host_keys.items():
+                    for key_type, key in keys.items():
+                        host_keys.add(hostname, key_type, key)
 
         self._comm.set_missing_host_key_policy(
             TrustOnFirstUsePolicy(known_hosts, self.log, replace=self.trust_new_host_key)

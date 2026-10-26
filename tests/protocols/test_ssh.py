@@ -9,6 +9,7 @@ import paramiko
 import pytest
 
 from peat import CommError, config, datastore
+from peat.protocols import ssh
 from peat.protocols.ssh import SSH, host_key_fingerprint, save_host_key
 
 
@@ -110,6 +111,8 @@ def known_hosts(mocker, tmp_path) -> Path:
     path = tmp_path / "peat" / "known_hosts"
     mocker.patch.dict(config["CONFIG"], {"SSH_KNOWN_HOSTS": path})
     mocker.patch.object(datastore, "objects", [])
+    mocker.patch.object(ssh, "_session_host_keys", paramiko.HostKeys())
+    mocker.patch.object(ssh, "_known_hosts_warned", set())
     return path
 
 
@@ -265,3 +268,35 @@ def test_save_host_key_atomic(mocker, tmp_path):
         save_host_key(path, "second.example", key)
     assert path.read_bytes() == original
     assert [p.name for p in tmp_path.iterdir()] == ["known_hosts"]
+
+
+@pytest.mark.parametrize("problem", ["unwritable", "corrupt"])
+def test_ssh_known_hosts_errors(ssh_server, known_hosts, log_messages, mocker, problem):
+    if problem == "unwritable":
+        # e.g. a read-only or missing home directory
+        known_hosts.parent.write_text("not a directory", encoding="utf-8")
+        known_hosts = known_hosts.parent / "known_hosts"
+        mocker.patch.dict(config["CONFIG"], {"SSH_KNOWN_HOSTS": known_hosts})
+    else:
+        known_hosts.parent.mkdir()
+        known_hosts.write_bytes(b"\xff\xfe not a known_hosts file\n")
+    original = known_hosts.parent.read_bytes() if problem == "unwritable" else b""
+
+    # Connections still work, with a single warning about the file
+    _connect(ssh_server)
+    _connect(ssh_server)
+    assert len(ssh_server.creds) == 2
+    warnings = [m for m in log_messages if f"SSH known_hosts file '{known_hosts}'" in m]
+    assert len([m for m in warnings if 'ssh_known_hosts: ""' in m]) == 1
+
+    # The file isn't overwritten
+    if problem == "unwritable":
+        assert known_hosts.parent.read_bytes() == original
+    else:
+        assert known_hosts.read_bytes() == b"\xff\xfe not a known_hosts file\n"
+
+    # A key that changes during the run is still refused
+    ssh_server.host_key = paramiko.RSAKey.generate(1024)
+    with pytest.raises(CommError, match="has CHANGED"):
+        _connect(ssh_server)
+    assert len(ssh_server.creds) == 2

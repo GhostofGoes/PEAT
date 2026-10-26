@@ -181,6 +181,7 @@ PEAT checks the host key of every device it connects to with SSH, before sending
 - **New host**: the key is trusted on first use and saved to PEAT's known_hosts file, and a warning with its fingerprint (``SHA256:...``, the format output by ``ssh-keygen -lf``) is logged. If possible, check the fingerprint against the device.
 - **Changed key**: the connection is refused and an error is logged with the expected and actual fingerprints. This can mean the connection is being intercepted, or that the device's key changed (e.g. after a firmware update or device replacement). If the change is expected, remove the old key from the known_hosts file, or set the ``ssh.trust_new_host_key`` option to ``true`` for the host to accept and save the new key.
 - **Pinned key**: set the ``ssh.host_key_fingerprint`` option for a host to only accept a key with that fingerprint (``SHA256:...`` or MD5 hex). Pinned keys are not saved to the known_hosts file.
+- **Unusable known_hosts file**: if PEAT's known_hosts file can't be read or saved (e.g. a read-only home directory, or a file that isn't a known_hosts file), a warning is logged once and connections continue. Keys trusted during the run are kept in memory, so a key that changes during the run is still refused. Set ``ssh_known_hosts: ""`` to not use a PEAT known_hosts file.
 
 .. code-block:: yaml
    :caption: Pin the SSH host key of a single host
