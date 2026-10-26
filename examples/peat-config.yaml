@@ -106,7 +106,7 @@ tls_ca_bundle: null
 
 # File where PEAT saves the SSH host keys of devices (OpenSSH known_hosts format).
 # Keys of new hosts are trusted on first use and saved here. If a host's key
-# changes, the connection is refused. Set to null to not save host keys.
+# changes, the connection is refused. Set to "" to not save host keys.
 ssh_known_hosts: "~/.peat/known_hosts"
 
 # -----------------------------------------------------------------------------
