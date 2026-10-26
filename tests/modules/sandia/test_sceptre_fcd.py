@@ -73,3 +73,44 @@ def test_parse_sceptre_fcd(
     # Ensure nothing abormal occurred
     assert "ERROR" not in caplog.text
     assert "CRITICAL" not in caplog.text
+
+
+def _parse_with_name(mocker, tmp_path, examples_dir, name: str, drop_ip: bool = False):
+    run_dir = tmp_path / "run"
+    mocker.patch.dict(
+        config["CONFIG"],
+        {"RUN_DIR": run_dir, "DEVICE_DIR": run_dir / "devices", "TEMP_DIR": tmp_path / "temp"},
+    )
+    mocker.patch.object(datastore, "objects", [])
+    xml = (examples_dir / "devices" / "sceptre" / "soap" / "rtu-1_config.xml").read_text(
+        encoding="utf-8"
+    )
+    xml = xml.replace("<name>rtu-1</name>", f"<name>{name}</name>", 1)
+    if drop_ip:  # so the name is used for the device's directory
+        xml = xml.replace("<endpoint>tcp://10.117.4.101:20000</endpoint>", "")
+    source = tmp_path / "input" / "rtu-1_config.xml"
+    source.parent.mkdir()
+    source.write_text(xml, encoding="utf-8")
+    return run_dir, SCEPTRE.parse(source)
+
+
+@pytest.mark.parametrize("drop_ip", [False, True])
+def test_parse_sceptre_real_config(mocker, tmp_path, examples_dir, drop_ip):
+    run_dir, dev = _parse_with_name(mocker, tmp_path, examples_dir, "rtu-1", drop_ip)
+    assert dev.name == "rtu-1"
+    assert dev.get_out_dir().parent == run_dir / "devices"
+    if drop_ip:
+        assert dev.get_out_dir().name == "rtu-1"
+    assert (dev.get_out_dir() / "device-data-summary.json").is_file()
+
+
+@pytest.mark.parametrize("name", ["..", "../../escape", "..\\..\\escape"])
+def test_parse_sceptre_dotdot_name(mocker, tmp_path, examples_dir, name):
+    """<name>..</name> made the run directory the device's output directory."""
+    with pytest.raises(ValueError, match="invalid identifier"):
+        _parse_with_name(mocker, tmp_path, examples_dir, name, drop_ip=True)
+    run_dir = tmp_path / "run"
+    # Nothing written outside the devices directory
+    assert not list(run_dir.glob("*.json"))
+    assert not list(run_dir.glob("*.xml"))
+    assert not list(tmp_path.rglob("escape*"))

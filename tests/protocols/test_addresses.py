@@ -1,10 +1,12 @@
 import unittest
 from ipaddress import AddressValueError, IPv4Address, IPv4Network
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
 from peat import PeatError
 from peat.protocols import (
+    address_to_pathname,
     clean_ipv4,
     clean_mac,
     expand_commas_and_clean_strings,
@@ -327,3 +329,46 @@ def test_clean_mac():
     assert clean_mac("00-A0-A9-8-12-1") == "00:A0:A9:08:12:01"
     assert clean_mac("  00-A0-A9-8-12-1   ") == "00:A0:A9:08:12:01"
     assert clean_mac("00:b0:b9:08:12:01") == "00:B0:B9:08:12:01"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("192.0.2.1", "192.0.2.1"),
+        ("FEEDER 1", "feeder_1"),
+        ("STATION A/B", "station_a_b"),
+        ("relay\\1", "relay_1"),
+        ("00:11:22:33:44:55", "00_11_22_33_44_55"),  # ":" is invalid on Windows
+        ("a\x00b\x1fc", "a_b_c"),
+        ("name.", "name"),
+    ],
+)
+def test_address_to_pathname(value, expected):
+    assert address_to_pathname(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "..",
+        ".",
+        " .. ",
+        "...",
+        "../..",
+        "../../etc",
+        "..\\..\\..\\Users\\Public\\x",
+        "/etc/cron.d",
+        "C:\\Windows\\System32",
+        "\\\\server\\share\\x",
+    ],
+)
+def test_address_to_pathname_untrusted(value):
+    """The result must be one safe directory name, on POSIX and on Windows."""
+    name = address_to_pathname(value)
+    assert name
+    assert name not in (".", "..")
+    assert not set(name) & set('/\\:*?"<>|')
+    for base in (PurePosixPath("/out/run/devices"), PureWindowsPath("C:\\out\\run\\devices")):
+        joined = base / name
+        assert joined.parent == base
+        assert joined.name == name

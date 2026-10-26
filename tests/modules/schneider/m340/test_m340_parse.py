@@ -56,3 +56,23 @@ def test_parse_blob_decompresses_once(mocker, tmp_path):
     dev = M340._parse_blob(blob, dev=DeviceData(id="m340-test"))
     assert dev.id == "m340-test"
     assert spy.call_count == 1
+
+
+@pytest.mark.parametrize("project_name", ["../../../escape", "..\\..\\escape", "a/b", ".."])
+def test_generate_openplc_project_contained(mocker, tmp_path, project_name):
+    """The APX project name is used in a directory name, it must stay in the device's dir."""
+    mocker.patch.object(datastore, "objects", [])
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path / "devices"})
+    dev = DeviceData(ip="192.0.2.1")
+    dev._runtime_options["m340"] = {"generate_openplc_project": "dev_out_dir"}
+    dev.logic.formats["tc6"] = "<project/>"
+    object.__setattr__(dev.logic, "name", project_name)  # as if from the APX file
+    tc6 = mocker.MagicMock()
+    tc6.element_empty.return_value = False
+    dev._cache["tc6"] = tc6
+
+    proj_path = M340.generate_openplc_project(dev)
+    assert proj_path.parent == dev.get_out_dir()
+    assert proj_path.name.startswith("openplc_project_")
+    assert (proj_path / "plc.xml").read_text(encoding="utf-8") == "<project/>"
+    assert not list(tmp_path.rglob("escape*"))

@@ -1,3 +1,4 @@
+import hashlib
 import itertools
 import json
 import re
@@ -13,7 +14,7 @@ from ipaddress import (
 )
 from pathlib import Path
 
-from peat import ParseError, log, state
+from peat import ParseError, consts, log, state
 
 ADDR_RANGE_REGEX = re.compile(
     r"((\d{1,3}|\d{1,3}-\d{1,3})"
@@ -27,8 +28,23 @@ ADDR_RANGE_REGEX = re.compile(
 def address_to_pathname(address: str) -> str:
     """
     Converts a address or other host identifier to a suitable filepath name.
+
+    The identifier may come from a device or a parsed file (e.g. a device or
+    project name), so the result is always a single, safe directory name:
+    path separators (``/`` and ``\\``), control characters, and characters
+    that are invalid on Windows are replaced with ``_``, as are spaces.
+    If nothing usable is left (e.g. ``..``), a name derived from a hash of
+    the identifier is returned instead (``unsafe-id-<hash>``).
     """
-    return address.strip().lower().replace("/", "_").replace(" ", "_")
+    name = address.strip().lower().replace(" ", "_")
+    name = consts.sanitize_filename(name.replace("\\", "_").replace("/", "_"))
+    name = name.strip(". ")
+
+    if not name:
+        digest = hashlib.sha256(address.encode("utf-8", errors="replace")).hexdigest()
+        name = f"unsafe-id-{digest[:12]}"
+
+    return name
 
 
 @lru_cache(maxsize=2048)
