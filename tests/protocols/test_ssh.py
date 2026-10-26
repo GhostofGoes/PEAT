@@ -206,3 +206,11 @@ def test_ssh_write_sensitive_not_logged(mocker, log_messages):
 
     assert any("Writing SSH command: ls" in m for m in log_messages)
     assert not any("SSH-UNIQUE-pw-1" in m for m in log_messages)
+
+
+def test_ssh_password_registered_as_secret():
+    from peat import log_utils
+
+    # e.g. a module's default credentials, which aren't in the config
+    SSH("127.0.0.1", username="Admin", password="SSH-late-pw-7f3a")
+    assert log_utils.redact_secrets("pw SSH-late-pw-7f3a") == "pw <redacted>"

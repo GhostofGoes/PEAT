@@ -98,3 +98,13 @@ def test_ftp_download_default_path_contained(fake_ftp, tmp_path, method):
     assert len(written) == 2
     for path in written:
         assert path.is_relative_to(ftp_dir), path
+
+
+def test_ftp_login_password_registered_as_secret(mocker):
+    from peat import log_utils
+
+    inst = FTP("127.0.0.1")
+    inst.ftp = mocker.Mock()
+    assert inst.login("Admin", "FTP-late-pw-7f3a")
+    inst.ftp.login.assert_called_once_with("Admin", "FTP-late-pw-7f3a")
+    assert log_utils.redact_secrets("pw FTP-late-pw-7f3a") == "pw <redacted>"

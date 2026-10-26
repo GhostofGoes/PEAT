@@ -132,6 +132,14 @@ class FTP:
         Returns:
             If the login was successful
         """
+        if passwd:
+            # Imported here to avoid a circular import
+            from peat.log_utils import register_secret
+
+            # The password may not be in the config (e.g. a module's default
+            # credentials), so ensure it's redacted from log messages.
+            register_secret(passwd)
+
         self.log.debug(f"Attempting login as user '{user}'")
 
         try:

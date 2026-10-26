@@ -215,6 +215,13 @@ class SSH:
         self.all_output: list[str] = []
         self.username: str | None = username
         self.password: str | None = password
+        if password:
+            # Imported here to avoid a circular import
+            from peat.log_utils import register_secret
+
+            # The password may not be in the config (e.g. a module's default
+            # credentials), so ensure it's redacted from log messages.
+            register_secret(password)
 
         if kwargs is None:
             kwargs = {}

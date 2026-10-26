@@ -534,6 +534,15 @@ def mock_encrypted_peat_results(mock_peat_results, tmp_path) -> Path:
     return encrypted_zip_path
 
 
+@pytest.fixture(autouse=True)
+def _clear_log_secrets() -> Generator[None, None, None]:
+    """Don't let secrets registered for redaction in one test affect other tests."""
+    yield
+    from peat import log_utils
+
+    log_utils.clear_secrets()
+
+
 @pytest.fixture
 def log_messages() -> Generator[list[str], None, None]:
     """
