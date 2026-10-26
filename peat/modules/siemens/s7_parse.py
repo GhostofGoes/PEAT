@@ -46,6 +46,7 @@ import re
 import struct
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
@@ -98,6 +99,10 @@ IPV4_RE = re.compile(
 )
 TIA_PROJECT_RE = re.compile(r"\.ap\d{2}$", re.IGNORECASE)
 TIA_ARCHIVE_RE = re.compile(r"\.zap\d{2}$", re.IGNORECASE)
+
+# Maximum size of a single file read from a project or archive, to avoid
+# exhausting memory on corrupt files or zip bombs
+MAX_FILE_SIZE = 256 * 1024 * 1024
 
 
 def convert_s7_timestamp(raw: bytes) -> datetime | None:
@@ -160,12 +165,13 @@ class _ProjectFiles:
     def __init__(self, source: Path):
         self.source = source
         self._zip: zipfile.ZipFile | None = None
-        self._files: dict[str, str | Path] = {}
+        self._files: dict[str, zipfile.ZipInfo | Path] = {}
 
         if source.is_file() and zipfile.is_zipfile(source):
             self._zip = zipfile.ZipFile(source)
-            names = [n for n in self._zip.namelist() if not n.endswith("/")]
-            self._files = {n.lower(): n for n in names}
+            self._files = {
+                info.filename.lower(): info for info in self._zip.infolist() if not info.is_dir()
+            }
         else:
             root = source.parent if source.is_file() else source
             for pth in root.rglob("*"):
@@ -174,6 +180,7 @@ class _ProjectFiles:
 
         s7p_files = sorted(n for n in self._files if n.endswith(".s7p"))
         if not s7p_files:
+            self.close()
             raise ParseError(f"No STEP 7 project file (.s7p) found in '{source}'")
         if len(s7p_files) > 1:
             log.warning(
@@ -184,7 +191,7 @@ class _ProjectFiles:
         self.s7p_name = s7p_files[0]
         entry = self._files[self.s7p_name]
         self.s7p_original_name = (
-            entry.name if isinstance(entry, Path) else PurePosixPath(entry).name
+            entry.name if isinstance(entry, Path) else PurePosixPath(entry.filename).name
         )
         parent = PurePosixPath(self.s7p_name).parent.as_posix()
         self.prefix = "" if parent == "." else f"{parent}/"
@@ -210,9 +217,11 @@ class _ProjectFiles:
         if key not in self._files:
             raise FileNotFoundError(name)
         entry = self._files[key]
-        if self._zip is not None:
-            return self._zip.read(str(entry))
-        return Path(entry).read_bytes()
+        if isinstance(entry, zipfile.ZipInfo):
+            return _read_zip_member(self._zip, entry)  # type: ignore[arg-type]
+        if entry.stat().st_size > MAX_FILE_SIZE:
+            raise ParseError(f"'{name}' is too large ({entry.stat().st_size} bytes)")
+        return entry.read_bytes()
 
     def read_dbf(self, name: str, raw_fields: set[str] | None = None) -> DBFTable | None:
         """Read a DBF table and its memo file, if they exist."""
@@ -225,6 +234,24 @@ class _ProjectFiles:
         except ParseError as ex:
             log.warning(f"Failed to read STEP 7 table '{name}': {ex}")
             return None
+
+
+def _read_zip_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    """Read a file from a zip archive, refusing files that are too large."""
+    if info.file_size > MAX_FILE_SIZE:
+        raise ParseError(f"'{info.filename}' is too large ({info.file_size} bytes)")
+    with zf.open(info) as fp:
+        data = fp.read(MAX_FILE_SIZE + 1)
+    if len(data) > MAX_FILE_SIZE:  # the size in the archive's directory was wrong
+        raise ParseError(f"'{info.filename}' is too large (more than {MAX_FILE_SIZE} bytes)")
+    return data
+
+
+def _convert_unix_time(value: int) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(value, tz=UTC) if value > 0 else None
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _parse_programs(files: _ProjectFiles) -> list[dict]:
@@ -401,11 +428,7 @@ def _parse_symbol_tables(files: _ProjectFiles) -> list[dict]:
                 "id": table_id,
                 "name": _clean(row.get("_UNAME")),
                 "program_id": links.get(table_id),
-                "last_modified": (
-                    datetime.fromtimestamp(_to_int(row.get("_TIME")), tz=UTC)
-                    if _to_int(row.get("_TIME"))
-                    else None
-                ),
+                "last_modified": _convert_unix_time(_to_int(row.get("_TIME"))),
                 "symbols": symbols,
             }
         )
@@ -525,10 +548,10 @@ def parse_tia_archive(source: Path) -> dict:
                     continue
                 contents.append({"name": info.filename, "size": info.file_size})
                 if TIA_PROJECT_RE.search(info.filename) and "/" not in info.filename.strip("/"):
-                    project_xml = zf.read(info)
+                    project_xml = _read_zip_member(zf, info)
                     name = info.filename
                 elif info.filename.lower().endswith("system/pedata.plf"):
-                    pe_data = zf.read(info)
+                    pe_data = _read_pe_data(lambda info=info: _read_zip_member(zf, info))
     else:
         root = source.parent if source.is_file() else source
         project_files = [source] if source.is_file() else sorted(root.glob("*.ap[0-9][0-9]"))
@@ -537,7 +560,7 @@ def parse_tia_archive(source: Path) -> dict:
             name = project_files[0].name
         plf = root / "System" / "PEData.plf"
         if plf.is_file():
-            pe_data = plf.read_bytes()
+            pe_data = _read_pe_data(lambda: _read_file(plf))
         for pth in sorted(root.rglob("*")):
             if pth.is_file():
                 contents.append(
@@ -569,6 +592,21 @@ def parse_tia_archive(source: Path) -> dict:
         project["ipv4_addresses"] = _find_prefixed_ipv4(pe_data)
 
     return project
+
+
+def _read_file(path: Path) -> bytes:
+    if path.stat().st_size > MAX_FILE_SIZE:
+        raise ParseError(f"'{path.name}' is too large ({path.stat().st_size} bytes)")
+    return path.read_bytes()
+
+
+def _read_pe_data(reader: Callable[[], bytes]) -> bytes:
+    # The project data is optional, the project metadata is still useful without it
+    try:
+        return reader()
+    except ParseError as ex:
+        log.warning(f"Skipping TIA Portal project data: {ex}")
+        return b""
 
 
 def _find_prefixed_ipv4(data: bytes) -> list[str]:
@@ -621,8 +659,10 @@ def _child_text(element: ET.Element | None, name: str) -> str:
 
 def _multilingual_text(element: ET.Element, composition_name: str) -> dict[str, str]:
     """Texts of a MultilingualText object (e.g. a block title or comment), by culture."""
-    texts = {}
-    for mlt in element.iter():
+    texts: dict[str, str] = {}
+    # Only the object's own texts, not those of nested objects such as networks
+    object_list = _child(element, "ObjectList")
+    for mlt in object_list if object_list is not None else []:
         if (
             _local_name(mlt.tag) != "MultilingualText"
             or mlt.get("CompositionName") != composition_name
@@ -695,14 +735,18 @@ def _network_source(compile_unit: ET.Element) -> tuple[str, str]:
     return language, ""
 
 
+# Maximum count of a repeated whitespace token in a SimaticML network
+MAX_REPEAT = 1024
+
+
 def _token_text(element: ET.Element) -> str:
     name = _local_name(element.tag)
     if name in ("Token", "Text"):
         return element.get("Text", element.text or "")
     if name == "Blank":
-        return " " * int(element.get("Num", "1"))
+        return " " * min(_to_int(element.get("Num"), default=1), MAX_REPEAT)
     if name == "NewLine":
-        return "\n" * int(element.get("Num", "1"))
+        return "\n" * min(_to_int(element.get("Num"), default=1), MAX_REPEAT)
     if name == "LineComment":
         return "//" + "".join(_token_text(c) for c in element)
     if name == "Comment":
@@ -825,6 +869,13 @@ def parse_simaticml(data: str | bytes) -> dict:
     except ET.ParseError as ex:
         raise ParseError(f"Invalid SimaticML XML: {ex}") from None
 
+    try:
+        return _parse_simaticml_document(root)
+    except RecursionError:
+        raise ParseError("Invalid SimaticML XML: elements are nested too deeply") from None
+
+
+def _parse_simaticml_document(root: ET.Element) -> dict:
     if _local_name(root.tag) != "Document":
         raise ParseError(f"Not a SimaticML document (root element is '{root.tag}')")
 
@@ -887,7 +938,7 @@ BLOCK_KEYWORDS: dict[str, str] = {
 }
 
 BLOCK_START_RE = re.compile(
-    r"^\s*(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK|TYPE)\s+"
+    r"^[ \t]*(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK|TYPE)\s+"
     r"(\"[^\"]+\"|[A-Za-z_][\w]*(?:\s*\d+)?)"
     r"(?:\s*:\s*([\w\"]+))?",
     re.IGNORECASE | re.MULTILINE,
@@ -896,9 +947,11 @@ VAR_SECTION_RE = re.compile(
     r"^\s*(VAR_INPUT|VAR_OUTPUT|VAR_IN_OUT|VAR_TEMP|VAR_STAT|VAR\s+CONSTANT|VAR)\b",
     re.IGNORECASE,
 )
+# Name, attributes, and AT overlay of a member declaration. The rest of the
+# declaration (data type and start value) is split without a regex, since
+# patterns with adjacent optional whitespace backtrack heavily on long lines.
 MEMBER_RE = re.compile(
-    r"^\s*\"?([A-Za-z_][\w]*)\"?\s*(?:\{[^}]*\})?\s*(?:AT\s+\w+\s*)?:\s*"
-    r"([^;:=]+?)\s*(?::=\s*([^;]+?))?\s*;?\s*$",
+    r"\"?([A-Za-z_]\w*)\"?[ \t]*(?:\{[^}]*\}[ \t]*)?(?:AT[ \t]+\w+[ \t]*)?:(?!=)(.*)",
 )
 COMMENT_RE = re.compile(r"//\s*(.*)$|\(\*\s*(.*?)\s*\*\)")
 SECTION_NAMES: dict[str, str] = {
@@ -910,6 +963,25 @@ SECTION_NAMES: dict[str, str] = {
     "VAR CONSTANT": "Constant",
     "VAR": "Static",
 }
+
+
+def _split_member(declaration: str) -> tuple[str, str, str] | None:
+    """
+    Split a member declaration, such as ``Speed : INT := 10;``, into the
+    name, data type, and start value. Returns :obj:`None` if the line isn't
+    a member declaration.
+    """
+    match = MEMBER_RE.fullmatch(declaration)
+    if not match:
+        return None
+    rest = match.group(2).strip()
+    if rest.endswith(";"):
+        rest = rest[:-1]
+    data_type, _, start_value = rest.partition(":=")
+    data_type = data_type.strip()
+    if not data_type or ";" in rest or any(c in data_type for c in ":="):
+        return None
+    return match.group(1), data_type, start_value.strip()
 
 
 def _parse_source_block(keyword: str, name: str, return_type: str, body: str) -> dict:
@@ -930,10 +1002,10 @@ def _parse_source_block(keyword: str, name: str, return_type: str, body: str) ->
         if value:
             block[key] = value
 
-    if re.search(r"^\s*KNOW_HOW_PROTECT\b", body, re.IGNORECASE | re.MULTILINE):
+    if re.search(r"^[ \t]*KNOW_HOW_PROTECT\b", body, re.IGNORECASE | re.MULTILINE):
         block["know_how_protected"] = True
 
-    attributes = re.search(r"^\s*\{([^}]*)\}", body, re.MULTILINE)
+    attributes = re.search(r"^[ \t]*\{([^}]*)\}", body, re.MULTILINE)
     if attributes and ":=" in attributes.group(1):
         pairs = (a.partition(":=") for a in attributes.group(1).split(";"))
         block["attributes"] = {k.strip(): v.strip().strip("'") for k, _, v in pairs if k.strip()}
@@ -965,14 +1037,14 @@ def _parse_source_block(keyword: str, name: str, return_type: str, body: str) ->
 
         comment = COMMENT_RE.search(stripped)
         declaration = COMMENT_RE.sub("", stripped).strip()
-        match = MEMBER_RE.match(declaration)
-        if not match:
+        parsed = _split_member(declaration)
+        if parsed is None:
             continue
-        data_type = match.group(2).strip()
+        name, data_type, start_value = parsed
         if depth == 0:
-            member = {"name": match.group(1), "data_type": data_type}
-            if match.group(3):
-                member["start_value"] = match.group(3).strip()
+            member = {"name": name, "data_type": data_type}
+            if start_value:
+                member["start_value"] = start_value
             if comment and (comment.group(1) or comment.group(2)):
                 member["comment"] = (comment.group(1) or comment.group(2)).strip()
             interface.setdefault(section, []).append(member)
@@ -982,9 +1054,9 @@ def _parse_source_block(keyword: str, name: str, return_type: str, body: str) ->
     if interface:
         block["interface"] = interface
 
-    code = re.split(r"^\s*BEGIN\b", body, maxsplit=1, flags=re.IGNORECASE | re.MULTILINE)
+    code = re.split(r"^[ \t]*BEGIN\b", body, maxsplit=1, flags=re.IGNORECASE | re.MULTILINE)
     if len(code) == 2:
-        networks = re.findall(r"^\s*NETWORK\b", code[1], re.IGNORECASE | re.MULTILINE)
+        networks = re.findall(r"^[ \t]*NETWORK\b", code[1], re.IGNORECASE | re.MULTILINE)
         if networks:
             block["network_count"] = len(networks)
         code_lines = sum(
@@ -1014,7 +1086,7 @@ def parse_s7_source(text: str, filename: str = "") -> dict:
         end_keyword = f"END_{match.group(1).upper()}"
         stop = starts[i + 1].start() if i + 1 < len(starts) else len(text)
         body = text[match.end() : stop]
-        end = re.search(rf"^\s*{end_keyword}\b", body, re.IGNORECASE | re.MULTILINE)
+        end = re.search(rf"^[ \t]*{end_keyword}\b", body, re.IGNORECASE | re.MULTILINE)
         if end:
             body = body[: end.start()]
         elif match.group(1).upper() == "TYPE" and "STRUCT" not in body.upper():
@@ -1029,7 +1101,7 @@ def parse_s7_source(text: str, filename: str = "") -> dict:
         language = "STL"
     elif suffix == ".scl":
         language = "SCL"
-    elif re.search(r"^\s*NETWORK\b", text, re.IGNORECASE | re.MULTILINE):
+    elif re.search(r"^[ \t]*NETWORK\b", text, re.IGNORECASE | re.MULTILINE):
         language = "STL"
     else:
         language = "SCL" if ":=" in text else ""
@@ -1141,7 +1213,8 @@ def detect_file_type(source: Path) -> str:
             return "tia_project"
         return ""
 
-    head = source.read_bytes()[:4096]
+    with source.open("rb") as fp:
+        head = fp.read(4096)
     if b"DataInfoValueData" in head and b'Type="Project"' in head:
         return "tia_project"
     if b"<Document" in head and (b"<Engineering" in head or b"<SW." in head):

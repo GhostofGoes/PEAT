@@ -1,4 +1,5 @@
 import shutil
+import time
 import zipfile
 from datetime import UTC, datetime
 
@@ -365,3 +366,96 @@ def test_parse_symbol_table_sdf():
     ]
     with pytest.raises(ParseError):
         s7_parse.parse_symbol_table("", "empty.sdf")
+
+
+def test_read_dbf_malformed():
+    header = bytearray(32)
+    header[0] = 0x03
+    header[4:12] = (
+        (1).to_bytes(4, "little") + (4096).to_bytes(2, "little") + (10).to_bytes(2, "little")
+    )
+    with pytest.raises(ParseError):
+        read_dbf(bytes(header) + b"\x0d")
+
+
+def test_parse_step7_project_bad_zip(tmp_path):
+    bad = tmp_path / "project.zip"
+    bad.write_bytes(b"PK\x03\x04" + b"\x00" * 100)
+    with pytest.raises((ParseError, zipfile.BadZipFile)):
+        s7_parse.parse_step7_project(bad)
+
+
+def test_parse_s7_source_pathological_input():
+    """Inputs that caused catastrophic regex backtracking parse quickly."""
+    start = time.monotonic()
+    s7_parse.parse_s7_source("\n" * 50000 + "FUNCTION_BLOCK FB1\nEND_FUNCTION_BLOCK\n")
+    s7_parse.parse_s7_source(
+        "FUNCTION_BLOCK FB1\nVAR_INPUT\n a : t" + " " * 5000 + ";;\nEND_VAR\nEND_FUNCTION_BLOCK\n"
+    )
+    assert time.monotonic() - start < 5
+
+
+def test_parse_s7_source_member_declarations():
+    source = s7_parse.parse_s7_source(
+        "FUNCTION_BLOCK FB1\nVAR_INPUT\n"
+        "  Speed : INT := 10;  // Motor speed\n"
+        '  "Quoted" : ARRAY[0..9] OF BOOL;\n'
+        "  Flags {S7_SetPoint := 'True'} : WORD;\n"
+        "  Bad := 5;\n"
+        "END_VAR\nBEGIN\nEND_FUNCTION_BLOCK\n"
+    )
+    members = source["blocks"][0]["interface"]["Input"]
+    assert members == [
+        {"name": "Speed", "data_type": "INT", "start_value": "10", "comment": "Motor speed"},
+        {"name": "Quoted", "data_type": "ARRAY[0..9] OF BOOL"},
+        {"name": "Flags", "data_type": "WORD"},
+    ]
+
+
+def test_parse_simaticml_block_title_not_network_title(datapath):
+    data = datapath("codegeneratoropenness/GraphJump.xml").read_bytes()
+    # The block's own title comes after the networks (CompileUnits) in exports
+    marker = b'CompositionName="Title"'
+    last = data.rfind(marker)
+    assert last != data.find(marker), "fixture should have network and block titles"
+    item = data.index(b"<Text />", last)
+    patched = data[:item] + b"<Text>Block Real Title</Text>" + data[item + len(b"<Text />") :]
+    block = s7_parse.parse_simaticml(patched)["blocks"][0]
+    assert next(iter(block["title"].values())) == "Block Real Title"
+
+
+def test_parse_simaticml_hostile_input():
+    blank = (
+        b'<Document><SW.Blocks.FC ID="0"><AttributeList><Name>X</Name></AttributeList>'
+        b'<ObjectList><SW.Blocks.CompileUnit ID="1"><AttributeList><NetworkSource>'
+        b'<StructuredText><Blank Num="1000000000"/><Token Text="x"/></StructuredText>'
+        b"</NetworkSource><ProgrammingLanguage>SCL</ProgrammingLanguage></AttributeList>"
+        b"</SW.Blocks.CompileUnit></ObjectList></SW.Blocks.FC></Document>"
+    )
+    network = s7_parse.parse_simaticml(blank)["blocks"][0]["networks"][0]
+    assert len(network["source"]) <= s7_parse.MAX_REPEAT + 1
+
+    nested = (
+        b'<Document><SW.Blocks.FC ID="0"><AttributeList><Name>X</Name></AttributeList>'
+        b'<ObjectList><SW.Blocks.CompileUnit ID="1"><AttributeList><NetworkSource>'
+        b"<StructuredText>" + b"<Access>" * 5000 + b"</Access>" * 5000 + b"</StructuredText>"
+        b"</NetworkSource></AttributeList></SW.Blocks.CompileUnit></ObjectList>"
+        b"</SW.Blocks.FC></Document>"
+    )
+    with pytest.raises(ParseError, match="nested too deeply"):
+        s7_parse.parse_simaticml(nested)
+
+
+def test_parse_tia_archive_oversized_member(datapath, tmp_path, mocker):
+    """Oversized project data (e.g. a zip bomb) is skipped, not read into memory."""
+    with zipfile.ZipFile(datapath("dotnetsiemensplctoolboxlibrary/TestProjekt.zap19")) as zf:
+        project_xml = zf.read("TestProjekt.ap19")
+    mocker.patch.object(s7_parse, "MAX_FILE_SIZE", len(project_xml) + 1024)
+    archive = tmp_path / "big.zap19"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("TestProjekt.ap19", project_xml)
+        zf.writestr("System/PEData.plf", b"6ES7 515-2AN03-0AB0" * 10000)
+
+    project = s7_parse.parse_tia_archive(archive)
+    assert project["name"] == "TestProjekt"
+    assert not project.get("order_numbers")

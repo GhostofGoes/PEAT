@@ -55,6 +55,9 @@ S7_PROTOCOL_ID = 0x32
 GROUP_BLOCK = 0x03
 GROUP_SZL = 0x04
 
+# Maximum number of fragments of a userdata response to reassemble
+MAX_FRAGMENTS = 64
+
 # Block type codes used by the "list blocks" userdata function
 BLOCK_TYPES: dict[int, str] = {
     0x38: "OB",
@@ -246,17 +249,22 @@ def parse_userdata_response(pdu: bytes) -> UserdataResponse:
     param_len, data_len = struct.unpack(">HH", pdu[6:10])
     params = pdu[10 : 10 + param_len]
     data = pdu[10 + param_len : 10 + param_len + data_len]
-    if len(params) < 12 or len(data) < 4:
+    if len(params) < 12:
         raise CommError(f"Truncated S7 userdata response: {pdu.hex()}")
 
+    error_code = struct.unpack(">H", params[10:12])[0]
+    if len(data) < 4 and not error_code:
+        raise CommError(f"Truncated S7 userdata response: {pdu.hex()}")
+
+    # Error responses may not have a data section, keep the error code for the caller
     return UserdataResponse(
         group=params[5] & 0x0F,
         subfunction=params[6],
         sequence=params[7],
         last_data_unit=params[9] == 0x00,
-        error_code=struct.unpack(">H", params[10:12])[0],
-        return_code=data[0],
-        data=data[4 : 4 + struct.unpack(">H", data[2:4])[0]],
+        error_code=error_code,
+        return_code=data[0] if data else 0,
+        data=data[4 : 4 + struct.unpack(">H", data[2:4])[0]] if len(data) >= 4 else b"",
     )
 
 
@@ -408,14 +416,21 @@ class S7CommClient:
     _pdu_ref: int = field(default=0, repr=False)
 
     def __enter__(self) -> "S7CommClient":
-        self.connect()
+        if self._sock is None:
+            self.connect()
         return self
 
     def __exit__(self, *args) -> None:
         self.disconnect()
 
     def connect(self) -> None:
-        """Open the TCP connection, then perform the COTP and S7 handshakes."""
+        """
+        Open the TCP connection, then perform the COTP and S7 handshakes.
+
+        Raises:
+            OSError: If the TCP connection failed (e.g. the port is closed)
+            CommError: If the TCP connection succeeded, but a handshake failed
+        """
         self.disconnect()
         self._sock = socket.create_connection((self.ip, self.port), timeout=self.timeout)
 
@@ -429,6 +444,11 @@ class S7CommClient:
             self.pdu_size = parse_setup_communication(
                 self._transact(build_setup_communication(self._next_ref()))
             )
+        except OSError as ex:
+            # Distinguish a failed handshake, e.g. a CPU that ignores a
+            # connection request for the wrong slot, from a closed port.
+            self.disconnect()
+            raise CommError(f"S7comm handshake failed: {ex!r}") from ex
         except Exception:
             self.disconnect()
             raise
@@ -466,17 +486,22 @@ class S7CommClient:
     def _reassemble(
         self, response: UserdataResponse, group: int, subfunction: int, what: str
     ) -> bytes:
-        if response.error_code or response.return_code != 0xFF:
-            raise CommError(
-                f"Reading {what} failed (error 0x{response.error_code:04x}, "
-                f"return code 0x{response.return_code:02x})"
-            )
-
-        data = response.data
+        data = b""
         # Guard against a PLC that never sets the "last data unit" flag
-        for _ in range(64):
+        for _ in range(MAX_FRAGMENTS):
+            if response.error_code or response.return_code != 0xFF:
+                raise CommError(
+                    f"Reading {what} failed (error 0x{response.error_code:04x}, "
+                    f"return code 0x{response.return_code:02x})"
+                )
+            if response.group != group or response.subfunction != subfunction:
+                raise CommError(
+                    f"Reading {what} failed: unexpected response "
+                    f"(group {response.group}, subfunction {response.subfunction})"
+                )
+            data += response.data
             if response.last_data_unit:
-                break
+                return data
             response = self._userdata(
                 build_userdata_request(
                     group,
@@ -487,8 +512,7 @@ class S7CommClient:
                     continuation=True,
                 )
             )
-            data += response.data
-        return data
+        raise CommError(f"Reading {what} failed: more than {MAX_FRAGMENTS} response fragments")
 
     def _userdata(self, request: bytes) -> UserdataResponse:
         return parse_userdata_response(self._transact(request))

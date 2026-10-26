@@ -49,7 +49,7 @@ def _read_memo(memo: bytes, block_num: int, block_size: int) -> bytes:
         return b""
 
     # dBASE IV memos have a 8-byte header: 0xFFFF0800 + length (incl. header)
-    if memo[start : start + 4] == b"\xff\xff\x08\x00":
+    if memo[start : start + 4] == b"\xff\xff\x08\x00" and len(memo) >= start + 8:
         length = struct.unpack("<I", memo[start + 4 : start + 8])[0]
         return memo[start + 8 : start + length]
 
@@ -73,7 +73,7 @@ def _convert(raw: bytes, fld: DBFField, memo: bytes | None, block_size: int):
         return {b"T": True, b"Y": True, b"F": False, b"N": False}.get(raw.upper()[:1])
     if fld.type == "M":
         text = raw.decode(ENCODING).strip()
-        if not text or memo is None:
+        if not text.isdigit() or memo is None:
             return b""
         return _read_memo(memo, int(text), block_size)
     if fld.type == "D":
@@ -115,6 +115,12 @@ def read_dbf(
     version = dbf[0]
     num_records, header_len, record_len = struct.unpack("<IHH", dbf[4:12])
 
+    if header_len > len(dbf) or record_len == 0:
+        raise ParseError(
+            f"Not a dBASE table, invalid header (header length {header_len}, "
+            f"record length {record_len}, file size {len(dbf)})"
+        )
+
     fields = []
     offset = 32
     while offset + 32 <= header_len and dbf[offset] != 0x0D:
@@ -135,6 +141,9 @@ def read_dbf(
     block_size = 512
     if memo and len(memo) >= 22:
         block_size = struct.unpack("<H", memo[20:22])[0] or 512
+
+    # Don't trust the record count in the header, it may be corrupt
+    num_records = min(num_records, (len(dbf) - header_len) // record_len)
 
     table = DBFTable(version=version, fields=fields)
     for i in range(num_records):

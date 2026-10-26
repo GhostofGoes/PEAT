@@ -117,6 +117,36 @@ def test_client_read_szl_fragmented():
         plc.close()
 
 
+def test_client_read_szl_too_many_fragments():
+    plc = FakePLC({0x001C: SZL_001C}, fragment_size=1)
+    try:
+        with S7CommClient("127.0.0.1", port=plc.port, timeout=5) as client:
+            with pytest.raises(CommError, match="more than 64 response fragments"):
+                client.read_szl(0x001C)
+    finally:
+        plc.close()
+
+
+def test_client_reassemble_error_fragment(mocker):
+    """An error in a continuation fragment fails the read, not truncates it."""
+    client = S7CommClient("127.0.0.1")
+    first = parse_userdata_response(userdata_response(SZL_001C[:50], last=False, sequence=3))
+    error = parse_userdata_response(userdata_response(b"", error=0xD401, return_code=0x0A))
+    mocker.patch.object(client, "_userdata", return_value=error)
+    with pytest.raises(CommError, match="error 0xd401"):
+        client._reassemble(first, 0x04, 0x01, "SZL 0x001c")
+
+
+def test_parse_userdata_error_without_data():
+    resp = userdata_response(b"", error=0xD401, return_code=0x0A)
+    # Strip the data section, like CPUs that send only the parameters on errors
+    params_len = struct.unpack(">H", resp[6:8])[0]
+    pdu = resp[:8] + b"\x00\x00" + resp[10 : 10 + params_len]
+    parsed = parse_userdata_response(pdu)
+    assert parsed.error_code == 0xD401
+    assert parsed.data == b""
+
+
 def test_client_connection_refused():
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))

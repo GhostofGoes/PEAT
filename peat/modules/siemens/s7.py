@@ -35,6 +35,8 @@ Authors
 """
 
 import json
+import struct
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
@@ -69,6 +71,14 @@ def _is_step7_archive(data: BinaryIO) -> bool:
 
 def _is_tia_archive(data: BinaryIO) -> bool:
     return s7_parse.is_tia_archive(data)  # type: ignore[arg-type]
+
+
+def _decode_text(raw: bytes) -> str:
+    # TIA Portal writes UTF-8, STEP 7 V5.x writes the Windows ANSI code page
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
 
 
 def _json_default(obj: object) -> str:
@@ -143,11 +153,21 @@ class S7(DeviceModule):
         """
         port = dev.options["s7comm"]["port"]
         timeout = dev.options["s7comm"]["timeout"]
-        conn_type = CONNECTION_TYPES.get(
-            str(dev.options["s7"]["connection_type"]).lower(), CONNECTION_TYPES["pg"]
-        )
+        conn_name = str(dev.options["s7"]["connection_type"]).lower()
+        if conn_name not in CONNECTION_TYPES:
+            raise CommError(
+                f"Invalid S7 'connection_type' option '{conn_name}', "
+                f"must be one of {', '.join(CONNECTION_TYPES)}"
+            )
+        conn_type = CONNECTION_TYPES[conn_name]
 
-        rack_slots = [tuple(rs) for rs in dev.options["s7"]["rack_slots"]]
+        try:
+            rack_slots = [(int(rack), int(slot)) for rack, slot in dev.options["s7"]["rack_slots"]]
+        except (TypeError, ValueError):
+            raise CommError(
+                f"Invalid S7 'rack_slots' option {dev.options['s7']['rack_slots']!r}, "
+                f"must be a list of [rack, slot] pairs"
+            ) from None
         if dev._cache.get("s7_rack_slot") in rack_slots:
             rack_slots.remove(dev._cache["s7_rack_slot"])
             rack_slots.insert(0, dev._cache["s7_rack_slot"])
@@ -163,8 +183,9 @@ class S7(DeviceModule):
                 return client
             except (CommError, OSError) as ex:
                 errors.append(f"rack {rack} slot {slot}: {ex}")
-                # A closed port won't work for other slots either
-                if isinstance(ex, (ConnectionRefusedError, TimeoutError)):
+                # A TCP connection failure (closed or filtered port) won't work for
+                # other slots either. Handshake failures are raised as CommError.
+                if not isinstance(ex, CommError):
                     break
 
         raise CommError(f"S7comm connection to {dev.ip}:{port} failed ({'; '.join(errors)})")
@@ -224,6 +245,13 @@ class S7(DeviceModule):
                         results[key] = read_func()
                     except CommError as ex:
                         cls.log.warning(f"Failed to read {key.replace('_', ' ')}: {ex}")
+                    except OSError as ex:
+                        # The connection is gone, keep what was already read
+                        cls.log.warning(
+                            f"Failed to read {key.replace('_', ' ')}, "
+                            f"skipping the remaining reads: {ex!r}"
+                        )
+                        break
         except (CommError, OSError) as ex:
             cls.log.error(f"Failed to pull from {dev.ip} using S7comm: {ex}")
             return False
@@ -294,31 +322,65 @@ class S7(DeviceModule):
         file_type = s7_parse.detect_file_type(file)
         cls.log.debug(f"Detected file type of '{file.name}' as '{file_type}'")
 
+        if not file_type and file.is_dir():
+            return cls._parse_directory(file, dev)
+
+        try:
+            return cls._parse_file(file, file_type, dev)
+        except (
+            ParseError,
+            OSError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+            RuntimeError,  # e.g. encrypted zip archive members
+            struct.error,
+            zipfile.BadZipFile,
+        ) as ex:
+            cls.log.error(f"Failed to parse '{file.name}' ({file_type or 'unknown'}): {ex!r}")
+            return None
+
+    @classmethod
+    def _parse_file(cls, file: Path, file_type: str, dev: DeviceData | None) -> DeviceData | None:
         if file_type == "step7_project":
             return cls._parse_step7_project(file, dev)
         if file_type == "tia_project":
             return cls._parse_tia_project(file, dev)
-
-        if not file.is_file():
-            cls.log.error(f"Unable to parse '{file}': not a STEP 7 or TIA Portal project")
+        if not file_type or not file.is_file():
+            cls.log.error(f"Unable to parse '{file.name}': unknown or unsupported file type")
             return None
 
-        # TIA Portal writes UTF-8, STEP 7 V5.x writes the Windows ANSI code page
         raw = file.read_bytes()
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = raw.decode("cp1252", errors="replace")
-
         if file_type == "simaticml":
-            return cls._parse_simaticml(file, text, dev)
+            # The XML parser handles the encoding from the XML declaration
+            return cls._parse_simaticml(file, raw, dev)
+
+        text = _decode_text(raw)
         if file_type == "symbol_table":
             return cls._parse_symbol_table(file, text, dev)
-        if file_type == "source":
-            return cls._parse_source(file, text, dev)
+        return cls._parse_source(file, text, dev)
 
-        cls.log.error(f"Unable to parse '{file.name}': unknown or unsupported file type")
-        return None
+    @classmethod
+    def _parse_directory(cls, directory: Path, dev: DeviceData | None) -> DeviceData | None:
+        """
+        Parse a directory of exported files, such as SimaticML XML exports,
+        STL/SCL sources, and symbol tables, into a single device.
+        """
+        parsed = None
+        for pth in sorted(directory.rglob("*")):
+            if not pth.is_file():
+                continue
+            file_type = s7_parse.detect_file_type(pth)
+            if not file_type:
+                continue
+            if dev is None:
+                dev = datastore.get(directory.name, "id")
+            result = cls._parse(pth, dev)
+            parsed = result or parsed
+
+        if parsed is None:
+            cls.log.error(f"No STEP 7 or TIA Portal files found in directory '{directory}'")
+        return parsed
 
     @classmethod
     def _get_dev(cls, dev: DeviceData | None, name: str, file: Path) -> DeviceData:
@@ -326,7 +388,7 @@ class S7(DeviceModule):
             return dev
         if not name:
             name = file.stem
-            cls.log.warning(f"No project or block name found in '{file.name}', using '{name}'")
+            cls.log.warning(f"No project name found in '{file.name}', using '{name}'")
         return datastore.get(name, "id")
 
     @classmethod
@@ -413,9 +475,9 @@ class S7(DeviceModule):
         return dev
 
     @classmethod
-    def _parse_simaticml(cls, file: Path, text: str, dev: DeviceData | None) -> DeviceData | None:
+    def _parse_simaticml(cls, file: Path, raw: bytes, dev: DeviceData | None) -> DeviceData | None:
         try:
-            export = s7_parse.parse_simaticml(text.encode("utf-8"))
+            export = s7_parse.parse_simaticml(raw)
         except ParseError as ex:
             cls.log.error(f"Failed to parse SimaticML file '{file.name}': {ex}")
             return None
@@ -423,7 +485,7 @@ class S7(DeviceModule):
         names = [b["name"] for b in export["blocks"] + export["types"] + export["tag_tables"]]
         dev = cls._get_dev(dev, names[0] if names else "", file)
         cls._set_logic_from_blocks(dev, export["blocks"], file)
-        dev.logic.original = text
+        dev.logic.original = _decode_text(raw)
         if export.get("created"):
             dev.logic.created = export["created"]
 
@@ -442,7 +504,8 @@ class S7(DeviceModule):
             cls.log.error(f"Failed to parse S7 source file '{file.name}': {ex}")
             return None
 
-        dev = cls._get_dev(dev, source["blocks"][0]["name"], file)
+        # Block names like "OB1" are common to most programs, use the file name
+        dev = dev if dev is not None else datastore.get(file.stem, "id")
         cls._set_logic_from_blocks(dev, source["blocks"], file)
         dev.logic.original = text
         language = source["format"].split(" ")[0].lower()

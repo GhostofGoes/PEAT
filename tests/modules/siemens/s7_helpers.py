@@ -49,10 +49,15 @@ BLOCK_COUNTS = bytes.fromhex("3038000130410003304300023045000130440010")
 
 
 def userdata_response(
-    data: bytes, last: bool = True, sequence: int = 0, error: int = 0, return_code: int = 0xFF
+    data: bytes,
+    last: bool = True,
+    sequence: int = 0,
+    error: int = 0,
+    return_code: int = 0xFF,
+    group: int = s7comm.GROUP_SZL,
 ) -> bytes:
     params = struct.pack(
-        ">BBBBBBBBBBH", 0x00, 0x01, 0x12, 0x08, 0x12, 0x84, 0x01, sequence, 0x00,
+        ">BBBBBBBBBBH", 0x00, 0x01, 0x12, 0x08, 0x12, 0x80 | group, 0x01, sequence, 0x00,
         0x00 if last else 0x01, error,
     )  # fmt: skip
     body = struct.pack(">BBH", return_code, 0x09, len(data)) + data
@@ -66,7 +71,8 @@ class FakePLC:
 
     Unknown SZL IDs get an error response, like a CPU that doesn't support them.
     Connections for any rack/slot other than ``accept_slot`` are refused at the
-    COTP level, like a CPU in a different slot.
+    COTP level, like a CPU in a different slot. If ``drop_after`` is set, the
+    connection is closed after that many userdata requests.
     """
 
     def __init__(
@@ -75,11 +81,13 @@ class FakePLC:
         fragment_size: int = 0,
         blocks: bytes = BLOCK_COUNTS,
         accept_slot: int | None = None,
+        drop_after: int | None = None,
     ):
         self.szls = szls
         self.fragment_size = fragment_size
         self.blocks = blocks
         self.accept_slot = accept_slot
+        self.drop_after = drop_after
         self.requests: list[bytes] = []
         self.connections = 0
         self.sock = socket.socket()
@@ -131,12 +139,15 @@ class FakePLC:
         self._send(conn, struct.pack(">BBHHHHBB", 0x32, 0x03, 0, 1, 8, 0, 0, 0) + params)
 
         pending = b""
+        group = s7comm.GROUP_SZL
         while True:
             packet = self._recv(conn)
             if not packet:
                 return
             pdu = packet[7:]
             self.requests.append(pdu)
+            if self.drop_after is not None and len(self.requests) > self.drop_after:
+                return
             if not pending:
                 param_len = struct.unpack(">H", pdu[6:8])[0]
                 group = pdu[15] & 0x0F
@@ -151,7 +162,7 @@ class FakePLC:
                     pending = self.szls[szl_id]
             size = self.fragment_size or len(pending)
             chunk, pending = pending[:size], pending[size:]
-            self._send(conn, userdata_response(chunk, last=not pending, sequence=7))
+            self._send(conn, userdata_response(chunk, last=not pending, sequence=7, group=group))
 
     def close(self) -> None:
         self.sock.close()

@@ -1,9 +1,11 @@
 import json
+import shutil
 import socket
 
 import pytest
 
-from peat import S7, config, datastore, module_api, parse
+from peat import S7, CommError, config, datastore, module_api, parse
+from peat.modules.siemens import s7comm
 
 from .s7_helpers import SZL_001C, SZL_0011, SZL_0424_RUN, FakePLC
 
@@ -164,6 +166,44 @@ def test_verify_s7comm():
     assert dev.service[0].status == "verified"
 
 
+def test_verify_s7comm_single_connection():
+    plc = FakePLC({0x0011: SZL_0011})
+    try:
+        assert S7._verify_s7comm(make_dev(plc.port, rack_slots=[[0, 2]])) is True
+    finally:
+        plc.close()
+    assert plc.connections == 1
+
+
+def test_connect_continues_after_handshake_timeout(mocker):
+    """A CPU that ignores a connection request for the wrong slot times out."""
+    plc = FakePLC({0x0011: SZL_0011}, accept_slot=0)
+    real_connect = s7comm.S7CommClient.connect
+
+    def connect(client):
+        if client.slot == 2:
+            raise CommError("S7comm handshake failed: TimeoutError('timed out')")
+        real_connect(client)
+
+    mocker.patch.object(s7comm.S7CommClient, "connect", connect)
+    try:
+        dev = make_dev(plc.port, rack_slots=[[0, 2], [0, 0]])
+        assert S7._verify_s7comm(dev) is True
+    finally:
+        plc.close()
+    assert dev._cache["s7_rack_slot"] == (0, 0)
+
+
+def test_connect_invalid_options():
+    dev = make_dev(102)
+    dev._runtime_options["s7"] = {"connection_type": "bogus"}
+    with pytest.raises(CommError, match="connection_type"):
+        S7._connect(dev)
+    dev._runtime_options["s7"] = {"connection_type": "pg", "rack_slots": [[0]]}
+    with pytest.raises(CommError, match="rack_slots"):
+        S7._connect(dev)
+
+
 def test_verify_s7comm_closed_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -209,6 +249,20 @@ def test_pull_optional_reads_unsupported(caplog):
     assert "Failed to read component identification" in caplog.text
 
 
+def test_pull_connection_dropped(caplog):
+    """Identification that was already read is kept if the PLC drops the connection."""
+    plc = FakePLC({0x0011: SZL_0011, 0x001C: SZL_001C}, drop_after=1)
+    try:
+        dev = make_dev(plc.port, rack_slots=[[0, 2]])
+        assert S7.pull(dev) is True
+    finally:
+        plc.close()
+
+    assert dev.part_number == "6ES7 315-2EH14-0AB0"
+    assert (dev.get_out_dir() / "s7comm-pull.json").is_file()
+    assert "Failed to read component identification" in caplog.text
+
+
 def test_pull_against_snap7_server():
     snap7_server = pytest.importorskip("snap7.server")
     server = snap7_server.Server()
@@ -226,3 +280,46 @@ def test_pull_against_snap7_server():
     assert dev.part_number == "6ES7 315-2EH14-0AB0"
     assert dev.description.model == "CPU 315-2 PN/DP"
     assert dev.name == "SNAP7-SERVER"
+
+
+def test_parse_directory_of_exports(datapath, tmp_path):
+    """A directory of exported files (not a project) is parsed into one device."""
+    exports = tmp_path / "exported_blocks"
+    exports.mkdir()
+    for name in (
+        "tia-portal-openness-mcp/MCPVerify_FC_SCL_E2E.xml",
+        "tia-portal-openness-mcp/MCP_E2E_Tags.xml",
+        "awlsim/trafficlights_2.awl",
+        "awlsim/trafficlights_2.asc",
+    ):
+        shutil.copy(datapath(name), exports)
+    (exports / "notes.txt").write_text("not a S7 file")
+
+    dev = S7.parse(exports)
+    assert dev is not None
+    assert dev.id == "exported_blocks"
+    tag_names = {tag.name for tag in dev.tag}
+    assert {"StartPB", "StopPB"} <= tag_names
+    assert len(datastore.objects) == 1
+
+
+def test_parse_malformed_files(tmp_path):
+    bad_zip = tmp_path / "project.zap19"
+    bad_zip.write_bytes(b"PK\x03\x04" + b"\x00" * 64)
+    assert S7.parse(bad_zip) is None
+
+    bad_xml = tmp_path / "block.xml"
+    bad_xml.write_text("<Document><Engineering version='V17'/><SW.Blocks.FC>")
+    assert S7.parse(bad_xml) is None
+
+
+def test_parse_sources_with_same_block_names(tmp_path):
+    """Unrelated source files that both start with "OB1" aren't merged."""
+    for name in ("plant_a", "plant_b"):
+        (tmp_path / f"{name}.awl").write_text(
+            "ORGANIZATION_BLOCK OB1\nBEGIN\nNETWORK\nEND_ORGANIZATION_BLOCK\n"
+        )
+    dev_a = S7.parse(tmp_path / "plant_a.awl")
+    dev_b = S7.parse(tmp_path / "plant_b.awl")
+    assert dev_a is not dev_b
+    assert {dev_a.id, dev_b.id} == {"plant_a", "plant_b"}

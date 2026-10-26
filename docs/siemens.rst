@@ -50,7 +50,7 @@ This data was collected via standard "SNMP GET" requests. Due to time constraint
 Siemens SIMATIC S7 PLCs
 -----------------------
 .. warning::
-   The S7 module is new (TRL 3). The scan and pull functionality has been developed and tested against the python-snap7 S7 server emulator, but not yet against physical PLCs or Siemens' own simulators. The parsers have been tested with the public example files listed in :ref:`siemens-s7-examples`.
+   The S7 module is new (TRL 3). The scan and pull functionality has been tested against a simulated S7comm server in the unit tests, and against the python-snap7 S7 server emulator when it's installed (python-snap7 isn't a PEAT dependency, so those tests are skipped otherwise). It hasn't been tested against physical PLCs or Siemens' own simulators yet. The parsers have been tested with the public example files listed in :ref:`siemens-s7-examples`.
 
 The SIMATIC S7 family are Siemens' PLCs, and among the most widely deployed PLCs in the world. The current product lines are the S7-1200 (small) and S7-1500 (medium to large). The S7-300 (medium) and S7-400 (large) are being phased out by Siemens, but are still very common in the field. The S7-200 and S7-200 SMART are small PLCs with their own engineering software, and aren't supported by PEAT.
 
@@ -224,7 +224,7 @@ Physical S7 PLCs aren't always available for development, so several virtual or 
      - The original Snap7 C library includes a server that can be run with ``python-snap7`` 1.x or the Snap7 examples.
    * - `Conpot <https://github.com/mushorg/conpot>`__
      - GPL-2.0, free
-     - Low. Emulates a S7-200 with configurable identification data in its default template.
+     - Low. Answers S7comm identification (SZL) reads with configurable values. The default template describes a S7-200, which PEAT doesn't support, so the template needs to be changed to look like a S7-300/400/1200/1500.
      - ICS honeypot, also emulates Modbus, HTTP, SNMP, and other protocols. Useful for testing scans of a "realistic looking" device with multiple services.
    * - S7-PLCSIM (TIA Portal)
      - Included with STEP 7 Professional (trial license available)
