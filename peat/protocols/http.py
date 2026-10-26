@@ -38,8 +38,9 @@ TLS_VERIFY_HINT: Final[str] = (
 MAX_HTTP_BODY: Final[int] = 64 * 1024 * 1024
 
 #: Maximum number of redirects followed for a request. Only redirects to
-#: the same host are followed.
-MAX_HTTP_REDIRECTS: Final[int] = 3
+#: the same host are followed. This allows for login pages that redirect
+#: several times, but stops a device from redirecting endlessly.
+MAX_HTTP_REDIRECTS: Final[int] = 10
 
 #: Maximum number of responses kept in :attr:`HTTP.page_cache`
 MAX_PAGE_CACHE_ENTRIES: Final[int] = 256
@@ -441,9 +442,12 @@ class HTTP:
         :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them), and read
         the body of the response, up to ``max_body_size`` bytes.
 
+        A redirect that isn't followed (to another host, or after too many
+        redirects) is logged, and the redirect response is returned, the same
+        as :class:`~peat.protocols.http.SameHostSession` does.
+
         Raises:
-            CommError: The device redirected to another host, there were too many
-                redirects, or the response body was larger than ``max_body_size``
+            CommError: The response body was larger than ``max_body_size``
         """
         if max_body_size is None:
             max_body_size = MAX_HTTP_BODY
@@ -458,22 +462,28 @@ class HTTP:
 
         history: list[Response] = []
         while follow_redirects and response.is_redirect:
-            # Don't read the body of redirect responses, they're discarded
-            response.close()
+            code = response.status_code
             location = Session.get_redirect_target(self.session, response) or ""
             target = urllib.parse.urljoin(response.url, location)
 
             if not is_safe_url(location) or not is_same_host(target, url):
-                raise consts.CommError(
-                    f"refusing to follow redirect from '{response.url}' "
-                    f"to a different host: '{target}'"
+                self.log.warning(
+                    f"Not following redirect ({code}) from '{response.url}' "
+                    f"to a different host: {location!r}"
                 )
+                break
 
             if len(history) >= MAX_HTTP_REDIRECTS:
-                raise consts.CommError(f"too many redirects (more than {MAX_HTTP_REDIRECTS})")
+                self.log.warning(
+                    f"Not following redirect ({code}) from '{response.url}': "
+                    f"too many redirects (more than {MAX_HTTP_REDIRECTS})"
+                )
+                break
+
+            # Don't read the body of redirect responses that are followed
+            response.close()
 
             # Change the method the same way requests and browsers do
-            code = response.status_code
             if method != "HEAD" and (code in (302, 303) or (code == 301 and method == "POST")):
                 method = "GET"
                 for key in ("data", "json", "files"):
@@ -611,7 +621,9 @@ class HTTP:
         Perform a HTTP ``GET`` request and return the response.
 
         Redirects are only followed to the same host, and at most
-        :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them.
+        :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. If a redirect
+        isn't followed, the redirect response is returned if ``allow_errors``
+        is set, otherwise the request fails.
 
         .. warning::
            Results of queries for an identical URL are cached by default for
@@ -727,7 +739,8 @@ class HTTP:
         Perform a HTTP ``POST`` request and return the response.
 
         Redirects are only followed to the same host, and at most
-        :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them.
+        :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. If a redirect
+        isn't followed, the request fails.
 
         .. note::
            The response object will have three additional attributes:

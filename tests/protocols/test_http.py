@@ -472,3 +472,38 @@ def test_http_redirect_strips_auth_on_scheme_or_port_change(
         assert "Authorization" not in sent
     else:
         assert sent["Authorization"].startswith("Basic ")
+
+
+def test_http_get_off_host_redirect_returned_with_allow_errors(
+    http_env,  # noqa: ARG001
+    requests_mock,
+    log_messages,
+):
+    requests_mock.get(
+        "http://192.0.2.10:80/redir",
+        status_code=302,
+        headers={"Location": "http://device.example/home"},
+    )
+    other = requests_mock.get("http://device.example/home", text="x")
+
+    response = HTTP("192.0.2.10").get("redir", use_cache=False, allow_errors=True)
+    assert response is not None
+    assert response.status_code == 302
+    assert response.headers["Location"] == "http://device.example/home"
+    assert not other.called
+    assert any("different host" in m for m in log_messages)
+
+
+def test_http_get_follows_login_redirect_chain(http_env, requests_mock):  # noqa: ARG001
+    for i in range(5):
+        requests_mock.get(
+            f"http://192.0.2.10:80/step{i}",
+            status_code=302,
+            headers={"Location": f"/step{i + 1}"},
+        )
+    requests_mock.get("http://192.0.2.10:80/step5", text="logged in")
+
+    response = HTTP("192.0.2.10").get("step0", use_cache=False)
+    assert response is not None
+    assert response.text == "logged in"
+    assert len(response.history) == 5

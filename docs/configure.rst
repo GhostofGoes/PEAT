@@ -176,7 +176,7 @@ PEAT verifies TLS (SSL) certificates for HTTPS connections, including connection
 
 HTTP redirects and response sizes
 ---------------------------------
-PEAT only follows HTTP redirects from a device to the same host (the scheme and port may change, e.g. ``http://`` to ``https://``), and at most :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. A redirect to a different host is refused and logged as a failed request, so a device can't make PEAT send requests (with its session cookies) to other systems, or have their responses saved and parsed as if they came from the device. Response bodies larger than :data:`~peat.protocols.http.MAX_HTTP_BODY` (64 MiB) are refused.
+PEAT only follows HTTP redirects from a device to the same host (the scheme and port may change, e.g. ``http://`` to ``https://``), and at most :data:`~peat.protocols.http.MAX_HTTP_REDIRECTS` of them. A redirect to a different host isn't followed (it's logged, and the request fails unless the caller accepts the redirect response), so a device can't make PEAT send requests (with its session cookies) to other systems, or have their responses saved and parsed as if they came from the device. Credentials aren't sent again when a redirect changes the scheme or port (except ``http://`` to ``https://`` on the default ports). Response bodies larger than :data:`~peat.protocols.http.MAX_HTTP_BODY` (64 MiB) are refused.
 
 
 .. _ssh-host-keys:
