@@ -200,9 +200,15 @@ class HTTP:
         """
         verify = self.tls_verify
         if verify is False:
-            return ssl._create_unverified_context()
-
-        return ssl.create_default_context(cafile=verify if isinstance(verify, str) else None)
+            context = ssl._create_unverified_context()
+        else:
+            context = ssl.create_default_context(
+                cafile=verify if isinstance(verify, str) else None
+            )
+        # Python 3.10+ already defaults to this; set it explicitly so the
+        # minimum is not left to the interpreter's build-time defaults.
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return context
 
     @property
     def session(self) -> Session:
