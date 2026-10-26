@@ -248,11 +248,15 @@ def recv_exact(sock: socket.socket, length: int, deadline: float | None = None) 
                 raise CommError(
                     f"Timed out after receiving {len(data)} of {length} bytes of a UMAS response"
                 )
-            sock.settimeout(remaining if timeout is None else min(timeout, remaining))
+            # If the deadline is sooner than the socket timeout, a timeout of
+            # recv() is the deadline (it can fire slightly before the clock
+            # reaches the deadline, e.g. with the coarse timers on Windows)
+            deadline_bound = timeout is None or remaining <= timeout
+            sock.settimeout(remaining if deadline_bound else timeout)
             try:
                 part = sock.recv(length - len(data))
             except TimeoutError as ex:
-                if time.monotonic() < deadline:
+                if not deadline_bound and time.monotonic() < deadline:
                     raise  # the socket timeout, as before
                 raise CommError(
                     f"Timed out after receiving {len(data)} of {length} bytes of a UMAS response"
