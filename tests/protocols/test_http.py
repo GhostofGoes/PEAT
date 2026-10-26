@@ -507,3 +507,15 @@ def test_http_get_follows_login_redirect_chain(http_env, requests_mock):  # noqa
     assert response is not None
     assert response.text == "logged in"
     assert len(response.history) == 5
+
+
+def test_http_get_redirect_from_url_with_space(http_env, requests_mock):  # noqa: ARG001
+    # The requested URL isn't a redirect target, so its unquoted space is fine
+    requests_mock.get(
+        "http://192.0.2.10:80/a%20page", status_code=302, headers={"Location": "/home"}
+    )
+    requests_mock.get("http://192.0.2.10:80/home", text="home")
+
+    response = HTTP("192.0.2.10").get("a page", use_cache=False)
+    assert response is not None
+    assert response.text == "home"

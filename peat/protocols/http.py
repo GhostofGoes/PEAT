@@ -505,13 +505,15 @@ class HTTP:
             method, url, timeout=timeout, allow_redirects=False, stream=True, **kwargs
         )
 
+        # The URL as requests sent it (e.g. with spaces quoted), to compare redirects with
+        origin = response.url
         history: list[Response] = []
         while follow_redirects and response.is_redirect:
             code = response.status_code
             location = Session.get_redirect_target(session, response) or ""
             target = urllib.parse.urljoin(response.url, location)
 
-            if not is_safe_url(location) or not is_same_host(target, url):
+            if not is_safe_url(location) or not is_same_host(target, origin):
                 self.log.warning(
                     f"Not following redirect ({code}) from '{response.url}' "
                     f"to a different host: {location!r}"
