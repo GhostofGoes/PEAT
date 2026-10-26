@@ -34,6 +34,11 @@ RUN set -ex \
 # - libxml, libxslt: required for TC6/XML parsing
 # - libpq: required for PostgreSQL comms used by some modules
 # - qemu-img, kmod, libkmod-dev: required for PEAT Pillage (disk image processing)
+# - zeek-9.0-core: required for the HEAT FTPExtractor (processes PCAP files).
+#   Zeek 9.0 is the current Long Term Support (LTS) release, installed to /opt/zeek/.
+#   The Zeek project removes packages for releases that reach end of life (e.g.
+#   "zeek-6.0-core"), so bump this to the next LTS release before 9.0 reaches EOL.
+#   Don't use "zeek-lts-core", the Zeek project no longer supports that package name.
 #
 # Note: the tools (ping, wget, etc.) only add ~9MB to final image size.
 # They're useful to have when stuck in an offline environment
@@ -47,7 +52,7 @@ RUN set -ex \
     tcpdump libpcap0.8 libpcap-dev lrzsz \
     libxml2 libxslt1.1 libpq5 \
     qemu-utils kmod libkmod-dev \
-    zeek-6.0-core \
+    zeek-9.0-core \
   && ls -lAh /var/cache/apt/archives/ \
   && mkdir /deb-files \
   && cd /deb-files \
@@ -131,7 +136,7 @@ RUN --mount=type=bind,from=builder,source=/deb-files,target=/deb-files \
     tcpdump libpcap0.8 libpcap-dev lrzsz \
     libxml2 libxslt1.1 libpq5 \
     qemu-utils kmod libkmod-dev \
-    zeek-6.0-core \
+    zeek-9.0-core \
   && apt-get autoclean \
   && apt-get --purge -y autoremove \
   && rm -f /etc/apt/sources.list.d/static-packages.list \
