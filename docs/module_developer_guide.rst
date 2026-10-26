@@ -19,11 +19,11 @@ Introduction
 ============
 Each OT device that PEAT supports is implemented as a PEAT device "module", which is a Python class that encapsulates the functionality for the device. The PEAT device module API is class-based, and provides an interface for interaction with specific devices. Subclasses of :class:`~peat.device.DeviceModule` are known as "PEAT modules" and provide a set of methods to interact with a device.  A module consists of a directory in ``/peat/modules/`` containing a subclass of :class:`~peat.device.DeviceModule` with the "public" functions for that device model, various code files implementing the functionality the class provides, and any resources the module needs (e.g. :term:`SNMP` MIBs, :term:`XML` specs, special binaries, etc.).
 
-The core logic of the module is implemented by subclassing :class:`~peat.device.DeviceModule` and overriding (implementing) the appropriate methods, :meth:`~peat.device.DeviceModule.pull_project` or :meth:`~peat.device.DeviceModule._parse`. The methods (functions) of :class:`~peat.device.DeviceModule` take an instance of :class:`~peat.data.models.DeviceData` as an argument. The :class:`~peat.data.models.DeviceData` instance contains information about a specific device being interacted with and manages the data and state for that device. In other words, :class:`~peat.device.DeviceModule` is the implementation of methods to interact with a *type of device* (e.g. a Rockwell Allen-Bradley ControlLogix PLC), and :class:`~peat.data.models.DeviceData` stores and manages data from a *specific physical device* (e.g. the ControlLogix on a factory floor you're doing a forensic pull from).
+The core logic of the module is implemented by subclassing :class:`~peat.device.DeviceModule` and overriding (implementing) the appropriate methods, :meth:`~peat.device.DeviceModule._pull`, :meth:`~peat.device.DeviceModule._push`, or :meth:`~peat.device.DeviceModule._parse`. The methods (functions) of :class:`~peat.device.DeviceModule` take an instance of :class:`~peat.data.models.DeviceData` as an argument. The :class:`~peat.data.models.DeviceData` instance contains information about a specific device being interacted with and manages the data and state for that device. In other words, :class:`~peat.device.DeviceModule` is the implementation of methods to interact with a *type of device* (e.g. a Rockwell Allen-Bradley ControlLogix PLC), and :class:`~peat.data.models.DeviceData` stores and manages data from a *specific physical device* (e.g. the ControlLogix on a factory floor you're doing a forensic pull from).
 
 :class:`~peat.data.models.DeviceData` manages device data and state and is the implementation of the PEAT "data model". It contains a set of defined structures for storing device information and state, such as config, logic, firmware, status, and other information or artifacts. Module configuration is stored in :attr:`~peat.data.models.DeviceData.options`, which is simply a dictionary of key-value pairs with configurations for the module, such as credentials or ports to use for services (e.g. FTP). If no options are given, then the defaults for that device are used.
 
-When you do a scan with the API, it returns a :class:`dict` :class:`~peat.data.models.DeviceData` objects. Each :class:`~peat.data.models.DeviceData` object contains information about the device, while the corresponding :class:`~peat.device.DeviceModule` class provides methods to perform actions on that :class:`~peat.data.models.DeviceData` object, such as :meth:`~peat.device.DeviceModule.pull_project`, :meth:`~peat.device.DeviceModule.parse`, etc.
+When you do a scan with the API, it returns a :class:`dict` :class:`~peat.data.models.DeviceData` objects. Each :class:`~peat.data.models.DeviceData` object contains information about the device, while the corresponding :class:`~peat.device.DeviceModule` class provides methods to perform actions on that :class:`~peat.data.models.DeviceData` object, such as :meth:`~peat.device.DeviceModule.pull`, :meth:`~peat.device.DeviceModule.parse`, etc.
 
 The design and architecture is explained in more detail in :doc:`design_documents`.
 
@@ -168,8 +168,45 @@ Contributing a new module to be included in PEAT's codebase.
 
 #. Add the device information (vendor, model, known tested, firmware, etc.) to the table of supported devices in Introduction section of the PEAT documentation
 #. Write a basic set of tests for your module (refer to the existing tests as well as the :ref:`test-docs`)
+#. Check the module with ``pdm run check-modules <ModuleName>`` and fix any errors (see :ref:`checking-modules`). Fix the warnings too, unless there's a good reason not to.
 #. (Optional) Create a dedicated documentation page with details on the device in the documentation. A few examples of this are ``sel.rst`` and ``siemens.rst``.
 
+
+.. _checking-modules:
+
+Checking a module
+=================
+``scripts/check_module.py`` checks that a module correctly implements the module API. It finds mistakes that break a module or keep PEAT from using parts of it, and suggests improvements to modules written for older versions of the API. Examples of what it checks:
+
+- Class attributes have the right types and values, e.g. ``device_type`` is set and ``filename_patterns`` is a list of strings
+- What the module implements can be used by PEAT, e.g. a module that implements ``_parse()`` has ``filename_patterns``, ``file_signatures``, or ``can_parse_dir``
+- ``_pull()``, ``_push()``, and ``_parse()`` are classmethods that accept the arguments PEAT calls them with
+- Identification methods have callable ``identify_function`` values, and their protocols have default options
+- ``filename_patterns`` and ``module_aliases`` have no duplicates (both are case-insensitive), and aliases aren't used by other modules
+- ``annotate_fields`` are fields in the :doc:`data_model`, and ``default_options`` merge with PEAT's options
+- Misspelled API attributes, and names from older versions of the API
+- Modules included with PEAT are imported in ``peat/modules/__init__.py``, have tests, and have their options documented in ``examples/peat-config.yaml``
+
+Each problem is an ``error`` (the module is broken, or PEAT won't use part of it), a ``warning`` (it works, but should be fixed), or ``info`` (an optional suggestion, shown with ``--verbose``). The exit code is 1 if there are errors, or warnings with ``--strict``. ``pdm run lint`` checks all modules included with PEAT.
+
+.. code-block:: bash
+
+   # Check all modules included with PEAT
+   pdm run check-modules
+
+   # Check modules by name or alias, and show suggestions
+   pdm run check-modules -v SELRelay sage
+
+   # Check a module that isn't included with PEAT, the same way it's imported by "peat -I"
+   pdm run check-modules examples/example_peat_module/awesome_module.py
+
+   # Also parse a real file with the module, and check the results
+   pdm run check-modules examples/example_peat_module/awesome_module.py --parse examples/example_peat_module/awesome_output.json
+
+   # Results as JSON
+   pdm run check-modules --json
+
+The script only checks what it can find without a device. Test the module against real devices or files too.
 
 Development tips and tricks
 ===========================
@@ -203,7 +240,7 @@ Then, invoke it:
    >>> some_other_dev = SELRelay.parse(Path('some_other_file.txt'))
    >>> from peat import datastore
    >>> pull_dev = datastore.get("192.0.2.22")
-   >>> SELRelay.pull_project(pull_dev)
+   >>> SELRelay.pull(pull_dev)
    >>> pull_dev.firmware.version
 
 Debugging from the CLI
