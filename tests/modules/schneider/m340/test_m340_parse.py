@@ -1,3 +1,4 @@
+import signal
 import struct
 import zlib
 
@@ -29,6 +30,26 @@ def test_extract_chunk_multiple_zlib_streams():
     data = b"ab" + zlib.compress(b"hello world", 9) + b"cd" + zlib.compress(b"second", 6)
     assert m340_parse.extract_chunk(data) == b"abhello worldcdsecond"
     assert m340_parse.chunkify(_apx(data))[32]["data"] == b"abhello worldcdsecond"
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="needs SIGALRM")
+@pytest.mark.parametrize("content", [b"", b"A", b"AAAA", b"hello world"])
+def test_extract_chunk_identical_zlib_streams(content):
+    """The offset after a stream was found with data.find(), which found the earlier
+    identical stream, so two identical streams (16 bytes) looped forever."""
+
+    def timeout(*_):
+        raise TimeoutError("extract_chunk did not return")
+
+    previous = signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(5)
+    try:
+        stream = zlib.compress(content)
+        assert m340_parse.extract_chunk(stream * 2) == content * 2
+        assert m340_parse.extract_chunk(stream * 3 + b"z") == content * 3 + b"z"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def test_extract_chunk_zlib_bomb():

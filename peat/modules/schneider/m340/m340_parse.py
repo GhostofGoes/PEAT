@@ -215,7 +215,10 @@ def extract_chunk(data: bytes, limit: int | None = None) -> bytes:
                 if len(zo.unused_data) == 0:
                     break
 
-                i = data.find(zo.unused_data)
+                # NOTE: the offset of the unused data, not data.find(), which
+                # finds an earlier copy of it (e.g. of a repeated stream) and
+                # would move backwards forever
+                i = len(data) - len(zo.unused_data)
             except zlib.error:
                 extracted.append(data[i])
                 i += 1
