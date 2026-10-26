@@ -129,6 +129,16 @@ dependencies = [
     # due to how old some of the devices PEAT interacts with are). For now,
     # leave it pinned at 2.29
     # Details: https://urllib3.readthedocs.io/en/latest/v2-migration-guide.html
+    #
+    # WARNING: requests 2.29.0 and urllib3 1.26.x have open advisories that are
+    # only fixed in requests 2.31-2.33 and urllib3 2.5-2.8, notably decompression
+    # and chunked-encoding denial of service in urllib3, which a hostile device
+    # can use to exhaust memory during a scan or pull.
+    # - urllib3: CVE-2025-50181, CVE-2025-66418, CVE-2025-66471, CVE-2026-21441,
+    #   CVE-2026-44431, CVE-2026-97687, CVE-2026-97689
+    # - requests: CVE-2023-32681, CVE-2024-35195, CVE-2024-47081, CVE-2026-25645
+    # They're ignored by the pip-audit step in .github/workflows/tests.yml
+    # until PEAT is migrated to requests 2.33+ and urllib3 2.x.
     "requests==2.29.0",
 
     # Get local network interface configuration and status

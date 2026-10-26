@@ -118,6 +118,52 @@ jobs:
           pdm run lint
           pdm run check-sdist --inject-junk
 
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            files.pythonhosted.org:443
+            github.com:443
+            pdm-project.org:443
+            pdm.fming.dev:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Setup PDM
+        uses: pdm-project/setup-pdm@94a823180e06fcde4ad29308721954a521c96ed0 # v4
+        with:
+          python-version: "3.12"
+          cache: true
+      - name: Install dependencies
+        run: |
+          pdm sync --prod --no-self
+          python -m pip install pip-audit==2.10.1
+      # Non-blocking: reports known vulnerabilities in the locked runtime dependencies.
+      # Ignored: requests 2.29.0 and urllib3 1.26.x advisories, until PEAT is
+      # migrated to urllib3 2.x (refer to the comment for requests in pyproject.toml).
+      - name: Audit dependencies
+        continue-on-error: true
+        run: |
+          SITE_PACKAGES="$(pdm run python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+          python -m pip_audit --path "$SITE_PACKAGES" --progress-spinner off --desc on \
+            --ignore-vuln PYSEC-2023-74 \
+            --ignore-vuln PYSEC-2026-1873 \
+            --ignore-vuln PYSEC-2026-1872 \
+            --ignore-vuln PYSEC-2026-2275 \
+            --ignore-vuln PYSEC-2026-1999 \
+            --ignore-vuln PYSEC-2026-1998 \
+            --ignore-vuln PYSEC-2026-1994 \
+            --ignore-vuln PYSEC-2026-1996 \
+            --ignore-vuln PYSEC-2026-141 \
+            --ignore-vuln PYSEC-2026-4177 \
+            --ignore-vuln PYSEC-2026-4175
+
   unit-tests:
     name: Unit Tests
     runs-on: ${{ matrix.platform }}
