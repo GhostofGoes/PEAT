@@ -49,7 +49,7 @@ SECRET_OPTION_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 
-_secrets: set[str] = set()
+_secrets: Final[set[str]] = set()
 _secrets_lock: Final = threading.Lock()
 # Compiled pattern matching any registered secret, or None if there aren't any.
 # Replaced (never mutated) when secrets are added, so it can be read without a lock.

@@ -28,7 +28,7 @@ TLS_VERIFY_HINT: Final[str] = (
     "PEAT_TLS_VERIFY=false."
 )
 
-_tls_warned_hosts: set[str] = set()
+_tls_warned_hosts: Final[set[str]] = set()
 _tls_warn_lock: Final = threading.Lock()
 
 
