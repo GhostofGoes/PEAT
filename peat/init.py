@@ -25,7 +25,7 @@ from peat import (
 )
 from peat.data.default_options import DEFAULT_OPTIONS
 
-from .log_utils import print_logo, register_secret, setup_logging
+from .log_utils import print_logo, redact_config, register_secret, setup_logging
 
 #: CLI commands that only encrypt or decrypt files. These don't create a
 #: results directory or log files (which would record the command line).
@@ -427,7 +427,7 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
             )
 
     # Log the arguments for debugging
-    log.trace4(f"initialize_peat conf\n{pformat(conf, indent=4)}\n")
-    log.trace2(f"global_options\n{pformat(datastore.global_options, indent=4)}")
+    log.trace4(f"initialize_peat conf\n{pformat(redact_config(conf), indent=4)}\n")
+    log.trace2(f"global_options\n{pformat(redact_config(datastore.global_options), indent=4)}")
 
     state.peat_initialized = True

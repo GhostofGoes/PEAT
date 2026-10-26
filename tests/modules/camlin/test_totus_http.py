@@ -1,4 +1,4 @@
-from peat import DeviceData
+from peat import DeviceData, config
 from peat.modules.camlin.totus_http import TotusHTTP
 
 
@@ -55,3 +55,15 @@ def test_parse_modbus_map_malformed():
     dev = DeviceData(ip="192.0.2.1")
     TotusHTTP.process_modbus_map(dev, [{"register": "x"}, {"address": "40001", "register": "q"}])
     assert len(dev.registers) == 1
+
+
+def test_totus_login_does_not_log_password(mocker, log_messages):
+    mocker.patch.dict(config["CONFIG"], {"DEBUG": 3})
+    totus = TotusHTTP("192.0.2.1", 80)
+    profile = mocker.Mock(cookies={"XSRF-TOKEN": "tok"})
+    mocker.patch.object(totus, "get", return_value=profile)
+    mocker.patch.object(totus, "post", return_value=mocker.Mock(status_code=200))
+
+    assert totus.login("admin", "Totus-UNIQUE-pw")
+    assert any("admin" in m for m in log_messages)
+    assert not any("Totus-UNIQUE-pw" in m for m in log_messages)

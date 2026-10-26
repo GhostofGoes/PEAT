@@ -263,3 +263,54 @@ def test_setup_logging_strips_control_chars(secrets, mocker, tmp_path, capfd):  
         assert "PWNED-TITLE" not in text, name
         assert "\x1b" not in text, name
         assert "\\u001b" not in text, name
+
+
+def test_redact_config(secrets):  # noqa: ARG001
+    log_utils.register_secret("Registered-UNIQUE-1")
+    conf = {
+        "user-password": "Cli-UNIQUE-pw",
+        "elastic_server": "https://elastic:Es-UNIQUE-pw@localhost:9200/",
+        "note": "contains Registered-UNIQUE-1",
+        "DEVICE_OPTIONS": {
+            "ssh": {"user": "admin", "pass": "Ssh-UNIQUE-pw", "port": 22},
+            "ftp": {"creds": [("ftpuser", "Ftp-UNIQUE-pw")]},
+            "sel": {"creds": {"acc": "Sel-UNIQUE-pw"}},
+            "snmp": {"community": "Comm-UNIQUE", "communities": ["Comm-UNIQUE-2"]},
+            "web": {"pass": ""},
+        },
+    }
+    redacted = log_utils.redact_config(conf)
+    text = json.dumps(redacted)
+    for secret in ["UNIQUE-pw", "Comm-UNIQUE", "Registered-UNIQUE-1"]:
+        assert secret not in text
+
+    options = redacted["DEVICE_OPTIONS"]
+    assert options["ssh"] == {"user": "admin", "pass": "<redacted>", "port": 22}
+    assert options["ftp"]["creds"] == [("ftpuser", "<redacted>")]
+    assert options["web"]["pass"] == ""
+    assert redacted["elastic_server"] == "https://elastic:<redacted>@localhost:9200/"
+    # The original isn't modified
+    assert conf["DEVICE_OPTIONS"]["ssh"]["pass"] == "Ssh-UNIQUE-pw"
+
+
+def test_debug_info_file_redacts_config(secrets, mocker, tmp_path):  # noqa: ARG001
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "LOG_DIR": None,
+            "QUIET": True,
+            "DEBUG": 3,
+            "ELASTIC_SERVER": None,
+            "HEAT_ELASTIC_SERVER": "https://elastic:Es-UNIQUE-pw@localhost:9200/",
+            "DEVICE_OPTIONS": {"telnet": {"user": "Admin", "pass": "Telnet-UNIQUE-pw"}},
+            "HOSTS": [],
+        },
+    )
+    debug_file = tmp_path / "debug-info.txt"
+    log_utils.setup_logging(debug_info_file=debug_file)
+
+    text = debug_file.read_text(encoding="utf-8")
+    assert "raw config dump" in text
+    assert "Telnet-UNIQUE-pw" not in text
+    assert "Es-UNIQUE-pw" not in text
+    assert '"user": "Admin"' in text

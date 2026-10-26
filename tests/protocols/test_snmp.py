@@ -76,3 +76,10 @@ def test_snmp_walk_deadline(mocker):
     assert 2 <= calls["count"] < 500
 
     assert SNMP(ip="127.0.0.1").walk_deadline == snmp_module.DEFAULT_WALK_DEADLINE
+
+
+def test_snmp_repr_no_community(log_messages):
+    snmp = SNMP(ip="127.0.0.1", community="Comm-UNIQUE-123")
+    assert "Comm-UNIQUE-123" not in repr(snmp)
+    assert "127.0.0.1" in repr(snmp)
+    assert not any("Comm-UNIQUE-123" in m for m in log_messages)

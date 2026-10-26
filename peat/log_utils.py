@@ -7,7 +7,7 @@ import re
 import sys
 import threading
 import urllib.parse
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC
 from pathlib import Path
 from pprint import pformat
@@ -199,6 +199,59 @@ def strip_control_chars(text: str) -> str:
 def patch_strip_control_chars(record: loguru.Record) -> None:
     """Loguru patcher that removes terminal control sequences from the message."""
     record["message"] = strip_control_chars(record["message"])
+
+
+#: Matches the password in a URL, e.g. ``https://user:password@host``
+_URL_PASSWORD_RE: Final[re.Pattern[str]] = re.compile(r"(?<=://)([^/@:\s]*):([^/@\s]+)@")
+
+
+def _is_secret_key(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    key = key.lower().replace("-", "_")
+    return key in SECRET_OPTION_KEYS or key.endswith(
+        ("password", "passwd", "passphrase", "_pass", "community", "secret")
+    )
+
+
+def redact_config(value: Any, _is_secret: bool = False) -> Any:
+    """
+    Copy of a configuration value (e.g. CLI arguments, device options, or a
+    dump of the configuration) that's safe to log or write to a debug file.
+
+    Values of keys that are secrets (refer to
+    :data:`~peat.log_utils.SECRET_OPTION_KEYS`, as well as keys ending with
+    ``password``, ``_pass``, etc.) and passwords in URLs are replaced with
+    ``<redacted>``, as are any registered secrets. For ``(username, password)``
+    pairs, only the password is replaced.
+    """
+    if isinstance(value, Mapping):
+        return {k: redact_config(v, _is_secret or _is_secret_key(k)) for k, v in value.items()}
+
+    if isinstance(value, list | tuple | set):
+        if (
+            _is_secret
+            and isinstance(value, list | tuple)
+            and len(value) == 2
+            and all(isinstance(v, str) for v in value)
+        ):
+            pair = [value[0], REDACTED]  # A (username, password) pair
+            return tuple(pair) if isinstance(value, tuple) else pair
+
+        redacted = [redact_config(v, _is_secret) for v in value]
+        if isinstance(value, tuple):
+            return tuple(redacted)
+        if isinstance(value, set):
+            return set(redacted)
+        return redacted
+
+    if _is_secret and value not in (None, "", False):
+        return REDACTED
+
+    if isinstance(value, str):
+        return redact_secrets(_URL_PASSWORD_RE.sub(rf"\1:{REDACTED}@", value))
+
+    return value
 
 
 def patch_redact_secrets(record: loguru.Record) -> None:
@@ -608,7 +661,8 @@ def setup_logging(
         # Raw config dump only when debugging internals
         if config.DEBUG >= 3:
             info += (
-                f"\n\n** raw config dump ***\n\n{json.dumps(consts.convert(config), indent=2)}\n"
+                f"\n\n** raw config dump (secrets redacted) ***\n\n"
+                f"{json.dumps(redact_config(consts.convert(config)), indent=2)}\n"
             )
 
         df.write_text(info, encoding="utf-8")

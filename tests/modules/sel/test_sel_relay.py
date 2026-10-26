@@ -1,5 +1,7 @@
 import zlib
 
+from peat import DeviceData
+from peat.data.models import Service
 from peat.modules.sel import relay_parse, sel_relay
 from peat.modules.sel.sel_relay import SELRelay
 
@@ -44,3 +46,18 @@ def test_cid_signature_bomb(mocker):
     bomb = _as_7801(zlib.compress(CID_XML + b" " * (8 * 1024 * 1024), 9))
     assert len(bomb) < 20_000
     assert not _cid_signature().matches(bomb)
+
+
+def test_setup_ftp_does_not_log_password(mocker, log_messages):
+    dev = DeviceData(ip="192.0.2.1")
+    dev._module = SELRelay
+    dev._runtime_options["ftp"] = {"creds": [("FTPUSER", "Ftp-UNIQUE-pw")]}
+    dev.store("service", Service(port=21, transport="tcp", status="open"), lookup="port")
+
+    ftp = mocker.MagicMock()
+    ftp.__enter__.return_value.login.return_value = False
+    mocker.patch.object(sel_relay, "FTP", return_value=ftp)
+
+    assert SELRelay._setup_ftp(dev) is False
+    assert any("FTPUSER" in m for m in log_messages)
+    assert not any("Ftp-UNIQUE-pw" in m for m in log_messages)
