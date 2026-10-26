@@ -173,6 +173,11 @@ def test_http_tls_failure_hint_logged_once_per_host(tls_env, https_server, log_m
 
 
 def test_http_get_self_signed_trusted_bundle(tls_env, mocker, https_server):  # noqa: ARG001
+    # Negative control: refused with the default CA certificates
+    http = HTTP("127.0.0.1", https_server.port, protocol="https")
+    assert http.get("index.html", use_cache=False) is None
+    assert https_server.requests == []
+
     mocker.patch.dict(config["CONFIG"], {"TLS_CA_BUNDLE": https_server.cert_path})
     http = HTTP("127.0.0.1", https_server.port, protocol="https")
     response = http.get("index.html", use_cache=False)
@@ -181,6 +186,11 @@ def test_http_get_self_signed_trusted_bundle(tls_env, mocker, https_server):  # 
 
 
 def test_http_get_self_signed_verify_disabled(tls_env, https_server):  # noqa: ARG001
+    # Negative control: refused while verification is enabled
+    http = HTTP("127.0.0.1", https_server.port, protocol="https")
+    assert http.get("index.html", use_cache=False) is None
+    assert https_server.requests == []
+
     dev = datastore.get("127.0.0.1")
     dev._runtime_options["https"] = {"verify": False}
     http = HTTP("127.0.0.1", https_server.port, protocol="https", dev=dev)
