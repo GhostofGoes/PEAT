@@ -258,7 +258,8 @@ class EnipDriver:
         """
         services_response = self._get_services()
         service_names = [
-            svc.serviceName.decode().replace("\x00", "") for svc in services_response.listItems
+            svc.serviceName.decode("utf-8", errors="replace").replace("\x00", "")
+            for svc in services_response.listItems
         ]
         return service_names
 
@@ -279,7 +280,8 @@ class EnipDriver:
         interfaces = []
         if interfaces_response.listItems:
             interfaces = [
-                svc.itemData.decode().replace("\x00", "") for svc in interfaces_response.listItems
+                svc.itemData.decode("utf-8", errors="replace").replace("\x00", "")
+                for svc in interfaces_response.listItems
             ]
         return interfaces
 

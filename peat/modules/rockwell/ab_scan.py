@@ -201,12 +201,17 @@ def enumerate_device_modules(
                 slots[slot] = {}
                 break
 
-            # Process the response
-            encap_data = EncapData(ENIP(raw_slot_data).data)
-            attributes = GetAttributesAllResponse(encap_data.data[4:])
+            # Process the response. A malformed reply for one slot
+            # shouldn't stop the enumeration of the other slots.
+            try:
+                encap_data = EncapData(ENIP(raw_slot_data).data)
+                attributes = GetAttributesAllResponse(encap_data.data[4:])
 
-            # Extract metadata from the processed response
-            info = extract_info_response(attributes)
+                # Extract metadata from the processed response
+                info = extract_info_response(attributes)
+            except Exception as err:
+                log.warning(f"Failed to parse response for slot {slot} on {ip}: {err}")
+                continue
 
             # Save slot metadata if it's there (not a empty dict)
             if info:
@@ -229,7 +234,7 @@ def extract_info_response(
         return {}
 
     # Remove null characters and strip whitespace from product name
-    p_name = " ".join(info.productName.decode().split())
+    p_name = " ".join(info.productName.decode("utf-8", errors="replace").split())
     p_name = p_name.replace("\u0000", "").strip()
 
     extracted = {
