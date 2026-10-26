@@ -21,16 +21,6 @@ try:
 except ImportError:
     pass
 
-# Stop urllib3 from yelling at us about insecure certificates
-warnings.filterwarnings("ignore", module="urllib3")
-
-try:
-    import urllib3
-
-    urllib3.disable_warnings()
-except ImportError:
-    pass
-
 try:  # tzlocal can be problematic sometimes (Macs, Docker containers, etc.)
     import tzlocal
 

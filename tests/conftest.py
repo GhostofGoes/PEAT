@@ -9,12 +9,17 @@ Explanation of conftest.py and other pytest features: https://stackoverflow.com/
 import atexit
 import json
 import os
+import ssl
 import sys
-from collections.abc import Callable
-from datetime import UTC, datetime
+import threading
+from collections.abc import Callable, Generator
+from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from ipaddress import ip_address
 from pathlib import Path
 from platform import system, version
 from subprocess import PIPE, CompletedProcess, Popen, run
+from types import SimpleNamespace
 
 import pytest
 from deepdiff import DeepDiff
@@ -527,3 +532,96 @@ def mock_encrypted_peat_results(mock_peat_results, tmp_path) -> Path:
     encrypted_zip_path = tmp_path / "encrypted_mock_peat_results.zip"
     results_crypto.zip_encrypt_results(mock_peat_results, tmp_path, "testpass")
     return encrypted_zip_path
+
+
+@pytest.fixture
+def log_messages() -> Generator[list[str], None, None]:
+    """
+    Messages logged via loguru (PEAT's logger) while the test runs,
+    after any patching (e.g. redaction), at all levels.
+    """
+    from peat import log
+
+    messages: list[str] = []
+    handler_id = log.add(lambda m: messages.append(m.record["message"]), level=0)
+    yield messages
+    log.remove(handler_id)
+
+
+def _gen_self_signed_cert(cert_path: Path, key_path: Path) -> None:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+
+
+@pytest.fixture
+def https_server(tmp_path) -> Generator[SimpleNamespace, None, None]:
+    """
+    In-process HTTPS server on 127.0.0.1 with a freshly generated self-signed
+    certificate. Records the path and headers of every request it receives.
+
+    Attributes: ``url``, ``port``, ``cert_path`` (PEM), ``requests`` (list of dicts).
+    """
+    cert_path = tmp_path / "server_cert.pem"
+    key_path = tmp_path / "server_key.pem"
+    _gen_self_signed_cert(cert_path, key_path)
+    received: list[dict] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            received.append({"path": self.path, "headers": dict(self.headers)})
+            body = b'{"tagline": "You Know, for Search", "version": "4.0.0"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    port = server.server_address[1]
+    yield SimpleNamespace(
+        url=f"https://127.0.0.1:{port}/",
+        port=port,
+        cert_path=cert_path,
+        requests=received,
+    )
+
+    server.shutdown()
+    server.server_close()

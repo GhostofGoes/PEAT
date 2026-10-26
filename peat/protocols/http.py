@@ -4,15 +4,87 @@ import re
 import socket
 import ssl
 import tempfile
+import threading
 import urllib.parse
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Final, Literal
 
+import urllib3
 from bs4 import BeautifulSoup
 from requests import Response, Session
+from requests.exceptions import SSLError
 
 import peat  # Avoid circular imports
 from peat import config, consts, log, utils
+
+#: Added to errors about failed TLS certificate verification
+TLS_VERIFY_HINT: Final[str] = (
+    "If the server uses a self-signed or otherwise untrusted certificate (common "
+    "with older OT devices), either add its CA certificate to a bundle set with "
+    "'tls_ca_bundle', disable verification for that host with "
+    "'options: {https: {verify: false}}' in the 'hosts' section of the config file "
+    "(or for all devices in 'device_options'), or disable it everywhere with "
+    "'tls_verify: false' in the config file or the environment variable "
+    "PEAT_TLS_VERIFY=false."
+)
+
+_tls_warned_hosts: set[str] = set()
+_tls_warn_lock: Final = threading.Lock()
+
+
+def resolve_tls_verify(
+    host: str = "", device_verify: bool = True, warn: bool = True
+) -> bool | str:
+    """
+    Determine if TLS certificates should be verified for a connection to a host.
+
+    Verification is enabled unless it's been disabled globally with
+    :attr:`TLS_VERIFY <peat.settings.Configuration.TLS_VERIFY>` or for the
+    device with the ``https.verify`` device option. If verification is disabled,
+    a warning is logged (once per host) and urllib3's ``InsecureRequestWarning``
+    is silenced, since the user has explicitly chosen to disable it.
+
+    Args:
+        host: Host (and optionally port) the connection is for, used for logging
+        device_verify: Value of the ``https.verify`` option for the device, if any
+        warn: If a warning should be logged when verification is disabled
+
+    Returns:
+        Value for the ``verify`` argument of :mod:`requests`: :obj:`False` if
+        verification is disabled, the path to the CA bundle set with
+        :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>`,
+        or :obj:`True` to use the default CA certificates.
+    """
+    if config.TLS_VERIFY and device_verify:
+        if config.TLS_CA_BUNDLE:
+            return str(config.TLS_CA_BUNDLE)
+        return True
+
+    if warn:
+        with _tls_warn_lock:
+            first_warning = not _tls_warned_hosts
+            already_warned = host in _tls_warned_hosts
+            _tls_warned_hosts.add(host)
+
+        if first_warning:
+            # The user turned verification off, don't spam warnings for every request
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        if not already_warned:
+            if not config.TLS_VERIFY:
+                how = "'tls_verify' is false. To enable it, set 'tls_verify: true'"
+            else:
+                how = (
+                    "the device option 'https.verify' is false. To enable it, remove "
+                    "the option or set it to true"
+                )
+            log.warning(
+                f"TLS certificate verification is DISABLED for {host or 'all servers'}, "
+                f"since {how}. The connection can be intercepted, and any credentials "
+                f"sent over it can be captured."
+            )
+
+    return False
 
 
 class HTTP:
@@ -77,9 +149,41 @@ class HTTP:
         return f"{self.protocol}://{self.ip}:{self.port}"
 
     @property
+    def tls_verify(self) -> bool | str:
+        """
+        If TLS certificates should be verified for this host, as determined by
+        :func:`~peat.protocols.http.resolve_tls_verify` using the global
+        configuration and the device's ``https.verify`` option.
+        """
+        dev = self.dev
+        if dev is None:
+            dev = peat.data.datastore.search(self.ip, "ip")
+
+        device_verify = True
+        if dev is not None:
+            device_verify = bool(dev.options.get("https", {}).get("verify", True))
+
+        return resolve_tls_verify(
+            host=f"{self.ip}:{self.port}",
+            device_verify=device_verify,
+            warn=self.protocol != "http",
+        )
+
+    def ssl_context(self) -> ssl.SSLContext:
+        """
+        SSL context for raw TLS sockets that honors the TLS verification settings
+        (refer to :attr:`~peat.protocols.http.HTTP.tls_verify`).
+        """
+        verify = self.tls_verify
+        if verify is False:
+            return ssl._create_unverified_context()
+
+        return ssl.create_default_context(cafile=verify if isinstance(verify, str) else None)
+
+    @property
     def session(self) -> Session:
         if self._session is None:
-            self._session = self.gen_session()
+            self._session = self.gen_session(verify=self.tls_verify)
             if self.DEFAULT_HEADERS:
                 self._session.headers.update(self.DEFAULT_HEADERS)
         return self._session
@@ -273,6 +377,8 @@ class HTTP:
                 response.file_path = file_path
                 self.page_cache[url] = response
                 return response
+        except SSLError as ex:
+            err = f"TLS certificate verification failed: {ex}. {TLS_VERIFY_HINT}"
         except Exception as ex:
             err = str(ex)
 
@@ -347,6 +453,8 @@ class HTTP:
                 self.page_cache[url] = response
 
                 return response
+        except SSLError as ex:
+            err = f"TLS certificate verification failed: {ex}. {TLS_VERIFY_HINT}"
         except Exception as ex:
             err = str(ex)
 
@@ -375,6 +483,9 @@ class HTTP:
             #   context.options &= ~ssl.OP_NO_SSLv3
             #   context.check_hostname = False
             #   context.verify_mode = ssl.CERT_NONE
+            #
+            # NOTE: the certificate is deliberately NOT verified here, since
+            # this only records the certificate (no credentials are sent).
             #
             context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
             context.set_ciphers("DEFAULT")
@@ -522,15 +633,24 @@ class HTTP:
         return BeautifulSoup(text, features=consts.BS4_PARSER)
 
     @staticmethod
-    def gen_session() -> Session:
+    def gen_session(verify: bool | str | None = None) -> Session:
         """
-        Session with SSL certificate verification disabled and no
-        proxies from environment (e.g. ``http_proxy``/``https_proxy``).
+        Session with no proxies, ``.netrc`` credentials, or CA bundles
+        from the environment (e.g. ``https_proxy`` or ``REQUESTS_CA_BUNDLE``).
+
+        Args:
+            verify: TLS certificate verification setting for the session
+                (the ``verify`` argument of :mod:`requests`). If :obj:`None`,
+                the global configuration is used (refer to
+                :func:`~peat.protocols.http.resolve_tls_verify`).
         """
+        if verify is None:
+            verify = resolve_tls_verify()
+
         session = Session()
-        session.verify = False
+        session.verify = verify
         session.trust_env = False
         return session
 
 
-__all__ = ["HTTP"]
+__all__ = ["HTTP", "TLS_VERIFY_HINT", "resolve_tls_verify"]

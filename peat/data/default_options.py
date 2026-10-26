@@ -25,7 +25,7 @@ DEFAULT_OPTIONS: dict[str, dict[str, ConfigVal] | ConfigVal] = {
         "look_for_keys": False,
     },
     "http": {"port": 80, "timeout": config.DEFAULT_TIMEOUT},
-    "https": {"port": 443, "timeout": config.DEFAULT_TIMEOUT},
+    "https": {"port": 443, "timeout": config.DEFAULT_TIMEOUT, "verify": True},
     "snmp": {
         "port": 161,
         "timeout": config.DEFAULT_TIMEOUT,

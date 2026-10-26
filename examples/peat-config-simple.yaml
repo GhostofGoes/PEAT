@@ -24,6 +24,8 @@ assume_online: false
 max_threads: 260
 override_max_file_discovery_threads: 0
 default_timeout: 5.0
+tls_verify: true
+tls_ca_bundle: null
 
 resolve_ip: true
 resolve_mac: true

@@ -147,6 +147,31 @@ Configuration options can be set via system environment variables that are prefi
 Additional topics
 =================
 
+.. _tls-verification:
+
+TLS certificate verification
+----------------------------
+PEAT verifies TLS (SSL) certificates for HTTPS connections, including connections to devices and to Elasticsearch/OpenSearch. Many older OT devices use self-signed certificates, which fail verification, and PEAT will log a warning explaining how to proceed when this happens. There are three ways to connect to these devices:
+
+- **Trust the certificate (recommended)**: add the device's certificate, or the CA that issued it, to a PEM file and set :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>` (``tls_ca_bundle: /path/to/ca-bundle.pem``).
+- **Disable verification for specific hosts**: set the ``https.verify`` option to ``false`` for the host. Setting it in ``device_options`` disables verification for all devices, while still verifying the Elasticsearch server.
+- **Disable verification everywhere**: set :attr:`TLS_VERIFY <peat.settings.Configuration.TLS_VERIFY>` to false (``tls_verify: false`` in the config file, or ``PEAT_TLS_VERIFY=false``).
+
+.. code-block:: yaml
+   :caption: Disable TLS certificate verification for a single host
+
+   hosts:
+   - label: "SEL-3530"
+     identifiers:
+       ip: 192.0.2.30
+     options:
+       https:
+         verify: false
+
+.. warning::
+   When verification is disabled, anyone who can intercept the connection can capture credentials PEAT sends over it (e.g. web logins). PEAT logs a warning for each host that verification is disabled for.
+
+
 Disabling file output
 ---------------------
 Setting directory-related configuration options (e.g. :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>`) to an empty string will **disable** any output to that directory. For example, setting :attr:`LOG_DIR <peat.settings.Configuration.LOG_DIR>` to an empty string (e.g. ``LOG_DIR=""``) will disable writing of logging data to files, including PEAT's logging and any protocols that log to a file (such as Telnet).

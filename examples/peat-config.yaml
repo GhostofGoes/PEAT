@@ -91,6 +91,19 @@ override_max_file_discovery_threads: 0
 # Default timeout for sockets and potentially other things
 default_timeout: 5.0
 
+# If TLS (SSL) certificates should be verified for HTTPS connections, including
+# to devices and to Elasticsearch/OpenSearch. Many older OT devices use self-signed
+# certificates, which fail verification. To disable verification for specific
+# devices, set "verify: false" under "https" in their options (in the "hosts"
+# section, or in "device_options" for all devices). Setting this to false disables
+# it everywhere. A warning is logged for each host verification is disabled for.
+# WARNING: without verification, credentials sent over HTTPS can be intercepted.
+tls_verify: true
+
+# CA certificates (PEM file) to use to verify TLS certificates, instead of
+# the default CA certificates. Only used if "tls_verify" is true.
+tls_ca_bundle: null
+
 # -----------------------------------------------------------------------------
 
 # --- Options for controlling lookups of addresses ---
@@ -726,6 +739,10 @@ device_options:
   https:
     port: 443
     timeout: 5.0
+    # If TLS certificates should be verified. Set to false for devices with
+    # self-signed certificates (preferably per-host, in the "hosts" section).
+    # Verification is also disabled if the global "tls_verify" option is false.
+    verify: true
 
   # Simple Network Management Protocol (SNMP)
   #
