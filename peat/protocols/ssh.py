@@ -17,7 +17,7 @@ import threading
 import traceback
 from copy import deepcopy
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 from typing import Any, Final
 
 import paramiko
@@ -267,6 +267,9 @@ class SSH:
     READ_DELAY: float = 0.0
     LINE_TERMINATOR: str = "\n"
     MAX_BYTES: int = 60000
+    #: Maximum number of bytes returned by one :meth:`read` or :meth:`read_until`,
+    #: so a device that keeps sending data can't exhaust memory (16 MiB)
+    MAX_READ_SIZE: int = 16 * 1024 * 1024
 
     def __init__(
         self,
@@ -672,25 +675,46 @@ class SSH:
 
         Returns:
             Decoded data read from the SSH receive stream
+
+        Raises:
+            CommError: No data was received within the timeout
+                (``self.timeout`` seconds), or the channel was closed
         """
         if delay is None:
             delay = self.READ_DELAY
 
         sleep(delay)
 
+        # The device controls how long these loops run, so limit
+        # them by time and size to avoid hanging the whole run.
+        deadline = monotonic() + self.timeout
+
         # Wait until there's data available
         if wait_until_ready:
             while not self.channel.recv_ready():
+                if self.channel.closed or self.channel.exit_status_ready():
+                    raise CommError(f"SSH channel to {self.ip} was closed while reading")
+                if monotonic() > deadline:
+                    raise CommError(f"No SSH data from {self.ip} within {self.timeout} seconds")
                 sleep(0.1)
 
         # Pull data while there's still data to get
-        output = b""
+        output = bytearray()
         while self.channel.recv_ready():
-            output += self.channel.recv(self.MAX_BYTES)
+            part = self.channel.recv(self.MAX_BYTES)
+            if not part:  # channel closed
+                break
+            output += part
+            if len(output) >= self.MAX_READ_SIZE or monotonic() > deadline:
+                self.log.warning(
+                    f"Stopped reading SSH data from {self.ip} after {len(output)} bytes "
+                    f"(limit: {self.MAX_READ_SIZE} bytes or {self.timeout} seconds)"
+                )
+                break
             if sleep_between_recvs:
                 sleep(0.1)
 
-        return self._add_data(output, strip_whitespace)
+        return self._add_data(bytes(output), strip_whitespace)
 
     def read_until(
         self,
@@ -730,17 +754,31 @@ class SSH:
 
         sleep(delay)
 
+        # The timeout of the channel applies to each recv(), so a device that
+        # sends a byte at a time would never time out without a deadline.
+        deadline = monotonic() + timeout
+
         output = bytearray()
         while True:
             try:
                 part = self.channel.recv(self.MAX_BYTES)
-                output += part
-                if until in output:
-                    break
             except TimeoutError:
                 break
+            if not part:  # recv() returns b"" forever once the channel is closed
+                self.log.debug(f"SSH channel to {self.ip} closed before {until!r} was received")
+                break
+            output += part
+            if until in output:
+                break
+            if monotonic() > deadline or len(output) >= self.MAX_READ_SIZE:
+                self.log.warning(
+                    f"Stopped waiting for {until!r} from {self.ip} after "
+                    f"{len(output)} bytes (limit: {self.MAX_READ_SIZE} bytes "
+                    f"or {timeout} seconds)"
+                )
+                break
 
-        return self._add_data(output, strip_whitespace)
+        return self._add_data(bytes(output), strip_whitespace)
 
     def _add_data(self, raw_data: bytes, strip_whitespace: bool = True) -> str:
         """
