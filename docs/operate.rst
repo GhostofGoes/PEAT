@@ -787,7 +787,7 @@ HEAT FTP Extractor
 ^^^^^^^^^^^^^^^^^^
 The ``FTPExtractor`` plug-in for HEAT uses the Zeek network monitoring tool to parse pcap files. A ``.pcap`` file must be present locally to use this plugin. The location of the pcap file can be specified using the ``--pcaps`` argument when calling HEAT.
 
-It's **strongly** recommended to use the Docker container version of PEAT, as it bundles the correct version of Zeek (6.0) and it's dependencies. If you are unable to use the container, then ensure you have Zeek 6.0 installed on your host and in the system PATH variable (or in ``/opt/zeek/``).
+It's **strongly** recommended to use the Docker container version of PEAT, as it bundles Zeek 9.0 (the current Long Term Support release) and its dependencies. If you are unable to use the container, then install Zeek 9.0 on your host and ensure ``zeek`` is in the system PATH variable (or in ``/opt/zeek/bin/``). The FTP Extractor has been tested with Zeek 6.0, 8.0, and 9.0.
 
 .. code-block:: shell
 

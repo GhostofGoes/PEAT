@@ -1,0 +1,1 @@
+Fixed the Docker image build, which failed because the ``zeek-6.0-core`` package was removed from the Zeek package repository (upstream issue #92). The image now installs Zeek 9.0 (``zeek-9.0-core``), the current Long Term Support release, and the Docker workflow builds and smoke-tests the image on pull requests that change it and weekly without the build cache.

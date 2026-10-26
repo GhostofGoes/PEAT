@@ -12,6 +12,16 @@ on:
     tags:
       - 'v*.*.*'  # tags such as v1.2.3
       - 'v*.*.*-prerelease'  # tags such as v1.2.3
+  # Build and check, but don't push, the image when a PR changes it, and
+  # weekly without the build cache, so broken dependencies (e.g. an apt package
+  # removed from the Zeek repository) are caught before a release needs them.
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker.yml
+  schedule:
+    - cron: '17 6 * * 1'  # Mondays at 06:17 UTC
   workflow_dispatch:
 
 jobs:
@@ -61,6 +71,7 @@ jobs:
             type=sha,prefix=,suffix=,format=short
 
       - name: Log in to GitHub Docker Registry
+        if: github.event_name != 'pull_request' && github.event_name != 'schedule'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
         with:
           registry: ghcr.io
@@ -75,7 +86,9 @@ jobs:
         with:
           build-args: |
             PDM_BUILD_SCM_VERSION=${{ steps.tag_ts.outputs.TAG }}
-          push: true
+          push: ${{ github.event_name != 'pull_request' && github.event_name != 'schedule' }}
+          load: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # TODO: dedicated builder image for caching like we did in GitLab?
@@ -84,3 +97,13 @@ jobs:
           # https://docs.docker.com/build/cache/backends/gha/
           cache-from: type=gha,mode=max,scope={{ github.ref }}
           cache-to: type=gha,mode=max,scope={{ github.ref }}
+
+      - name: Check PEAT and Zeek in the image
+        if: github.event_name == 'pull_request' || github.event_name == 'schedule'
+        env:
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        run: |
+          docker run --rm "$IMAGE" --version
+          docker run --rm --entrypoint zeek "$IMAGE" --version
+          # Parse-only check that the HEAT FTPExtractor script works with this Zeek version
+          docker run --rm --entrypoint zeek "$IMAGE" -a /PEAT/peat/heat/ftp_extractor_zeek_script.zeek
