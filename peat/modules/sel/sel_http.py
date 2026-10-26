@@ -127,7 +127,7 @@ class SELHTTP(HTTP):
 
         login_url = f"{self.url}/login"
         self.log.trace(f"Sending login POST request to {login_url}")
-        resp = self.session.post(url=login_url, data=login_data, timeout=self.timeout)
+        resp = self._request("POST", login_url, timeout=self.timeout, data=login_data)
 
         if not resp or resp.status_code != 200:
             self.log.error(
@@ -222,7 +222,7 @@ class SELHTTP(HTTP):
     def _get_page(self, url: str) -> str:
         self.log.trace2(f"Getting page: {url}")
 
-        response = self.session.get(url, timeout=self.timeout)
+        response = self._request("GET", url, timeout=self.timeout)
 
         if response.status_code != 200:
             if self._found_url:
@@ -771,10 +771,11 @@ class SELHTTP(HTTP):
         """
         self.log.info("Getting RTAC system log data (soe.csv)")
 
-        response = self.session.get(
+        response = self._request(
+            "GET",
             f"{self.url}/soe.csv",
-            params=self._rtac_session,
             timeout=self.timeout + 10.0,
+            params=self._rtac_session,
         )
 
         if not response or not response.text:

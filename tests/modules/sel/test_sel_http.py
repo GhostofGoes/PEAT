@@ -4,8 +4,9 @@ import pytest
 import requests
 import requests_mock as requests_mock_module
 
-from peat import config, datastore
+from peat import PeatError, config, datastore
 from peat.modules.sel.sel_http import SELHTTP
+from peat.protocols import http as http_module
 from peat.protocols.http import HTTP
 
 LOGIN_PAGE = '<html><input type="hidden" value="12345"></html>'
@@ -116,3 +117,48 @@ def test_sel_http_login_rejects_unsafe_session_link(sel_env, requests_mock, href
     sel = SELHTTP("192.0.2.10", 80)
     assert sel.login() is False
     assert sel._session_url == ""
+
+
+@pytest.fixture
+def small_body_limit(mocker):
+    mocker.patch.object(http_module, "MAX_HTTP_BODY", 1024)
+
+
+def test_sel_http_read_page_body_limit(sel_env, requests_mock, small_body_limit):  # noqa: ARG001
+    requests_mock.get("http://192.0.2.10:80/protected/N1/sta.html", content=b"A" * 4096)
+    sel = SELHTTP("192.0.2.10", 80)
+    sel._session_url = "http://192.0.2.10:80/protected/N1/"
+    sel._url_parts = ("", ".html")
+
+    with pytest.raises(PeatError, match="too large"):
+        sel.read_page("sta")
+
+
+def test_sel_http_login_body_limit(sel_env, requests_mock, small_body_limit):  # noqa: ARG001
+    requests_mock.get("http://192.0.2.10:80/", text=LOGIN_PAGE)
+    requests_mock.post("http://192.0.2.10:80/login", content=b"A" * 4096)
+
+    with pytest.raises(PeatError, match="too large"):
+        SELHTTP("192.0.2.10", 80).login()
+
+
+def test_sel_http_view_syslog_body_limit(sel_env, requests_mock, small_body_limit):  # noqa: ARG001
+    requests_mock.get("http://192.0.2.10:80/soe.csv", content=b"A" * 4096)
+    with pytest.raises(PeatError, match="too large"):
+        SELHTTP("192.0.2.10", 80).view_syslog(datastore.get("192.0.2.10"))
+
+
+def test_sel_http_read_page_off_host_redirect(sel_env, requests_mock):  # noqa: ARG001
+    requests_mock.get(
+        "http://192.0.2.10:80/protected/N1/sta.html",
+        status_code=302,
+        headers={"Location": "http://127.0.0.1/sta.html"},
+    )
+    other = requests_mock.get("http://127.0.0.1/sta.html", text="x")
+    sel = SELHTTP("192.0.2.10", 80)
+    sel._session_url = "http://192.0.2.10:80/protected/N1/"
+    sel._url_parts = ("", ".html")
+
+    with pytest.raises(PeatError):
+        sel.read_page("sta")
+    assert not other.called

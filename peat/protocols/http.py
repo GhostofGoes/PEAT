@@ -433,8 +433,9 @@ class HTTP:
         self,
         method: str,
         url: str,
-        timeout: float,
+        timeout: float | None,
         max_body_size: int | None = None,
+        session: Session | None = None,
         **kwargs,
     ) -> Response:
         """
@@ -446,24 +447,40 @@ class HTTP:
         redirects) is logged, and the redirect response is returned, the same
         as :class:`~peat.protocols.http.SameHostSession` does.
 
+        Modules should use this (or :meth:`get` and :meth:`post`) instead of
+        calling methods of :attr:`session` directly, so these limits apply.
+
+        Args:
+            method: HTTP method, e.g. ``"GET"``
+            url: URL to request
+            timeout: Timeout for the request (:obj:`None` for no timeout)
+            max_body_size: Maximum size of the response body, in bytes.
+                If :obj:`None`, :data:`~peat.protocols.http.MAX_HTTP_BODY` is used.
+            session: Session to use instead of :attr:`session`
+            kwargs: Passed to :meth:`requests.Session.request`. ``stream`` is
+                ignored, since the body is always read (up to ``max_body_size``).
+
         Raises:
             CommError: The response body was larger than ``max_body_size``
         """
         if max_body_size is None:
             max_body_size = MAX_HTTP_BODY
 
+        if session is None:
+            session = self.session
+
         # The response is always streamed, so the size of the body can be limited
         kwargs.pop("stream", None)
         follow_redirects = kwargs.pop("allow_redirects", True)
 
-        response: Response = self.session.request(
+        response: Response = session.request(
             method, url, timeout=timeout, allow_redirects=False, stream=True, **kwargs
         )
 
         history: list[Response] = []
         while follow_redirects and response.is_redirect:
             code = response.status_code
-            location = Session.get_redirect_target(self.session, response) or ""
+            location = Session.get_redirect_target(session, response) or ""
             target = urllib.parse.urljoin(response.url, location)
 
             if not is_safe_url(location) or not is_same_host(target, url):
@@ -495,7 +512,7 @@ class HTTP:
             # Don't send credentials if the scheme or port changes (except
             # http to https on the default ports), the same as requests does
             # when it follows redirects, e.g. for a redirect to plain HTTP.
-            if self.session.should_strip_auth(response.url, target):
+            if session.should_strip_auth(response.url, target):
                 kwargs.pop("auth", None)
                 headers = CaseInsensitiveDict(kwargs.get("headers") or {})
                 headers["Authorization"] = None  # Removes the session's header too
@@ -503,7 +520,7 @@ class HTTP:
 
             self.log.debug(f"Following redirect ({code}) from '{response.url}' to '{target}'")
             history.append(response)
-            response = self.session.request(
+            response = session.request(
                 method, target, timeout=timeout, allow_redirects=False, stream=True, **kwargs
             )
 
