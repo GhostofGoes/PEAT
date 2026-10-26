@@ -398,9 +398,10 @@ pillage:
   recursive: true
   # Skip files larger than this many bytes (256 MiB). Set to 0 to disable.
   max_file_size: 268435456
-  # Format of disk images: raw, qcow2, vmdk, vhdx, vdi, vpc (VHD), or "auto"
-  # (from the file extension). The format is never probed from the image.
-  image_format: raw
+  # Format of disk images: "auto" (from the file extension, "raw" for other
+  # extensions), raw, qcow2, vmdk, vhdx, vdi, or vpc (VHD).
+  # The format is never probed from the contents of the image.
+  image_format: auto
   default:
     locations: []
     filenames: []

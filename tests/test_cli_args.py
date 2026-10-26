@@ -43,3 +43,10 @@ def test_pull_skip_scan_default_none(mocker):
     mocker.patch("sys.argv", ["peat", "pull", "-i", "192.168.0.1"])
     result = cli_args.parse_peat_arguments()
     assert not result.pull_skip_scan
+
+
+def test_pillage_image_format():
+    parser = cli_args.build_argument_parser(version="2019.01.01")
+    args = parser.parse_args(["pillage", "-P", "disk.img", "--image-format", "qcow2"])
+    assert args.image_format == "qcow2"
+    assert parser.parse_args(["pillage", "-P", "disk.img"]).image_format is None

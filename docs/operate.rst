@@ -76,6 +76,8 @@ Basics
    # NOTE: pillage MUST be run as root, using sudo or by su'ing to root ("sudo su")
    peat pillage -c ./examples/peat-config.yaml -P <raw-image-file>
    peat pillage -c ./examples/peat-config.yaml -P <local-filesystem-path>
+   # The image format is from the file extension (e.g. ".qcow2"), or "raw" for other extensions
+   peat pillage -c ./examples/peat-config.yaml -P <image-file> --image-format qcow2
 
    # List available device modules
    # NOTE: currently this shows ALL modules, including ones not supported for the command (e.g. scan)

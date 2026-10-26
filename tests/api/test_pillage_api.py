@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -183,7 +185,8 @@ def test_copy_file_symlinked_parent_dir(tmp_path):
 @pytest.mark.parametrize(
     ("option", "filename", "expected"),
     [
-        (None, "disk.qcow2", "raw"),  # the default is raw, never probed
+        (None, "disk.qcow2", "qcow2"),  # the default is auto (never probed)
+        (None, "disk.img", "raw"),
         ("raw", "disk.qcow2", "raw"),
         ("QCOW2", "disk.img", "qcow2"),
         ("vmdk", "disk.img", "vmdk"),
@@ -198,6 +201,9 @@ def test_copy_file_symlinked_parent_dir(tmp_path):
 def test_get_image_format(mocker, option, filename, expected):
     mocker.patch.dict(config["CONFIG"], {"PILLAGE": {"image_format": option}})
     assert pillage_api.get_image_format(Path(filename)) == expected
+    # The argument (e.g. "peat pillage --image-format") overrides the option
+    assert pillage_api.get_image_format(Path(filename), "vdi") == "vdi"
+    assert pillage_api.get_image_format(Path(filename), option) == expected
 
 
 def test_find_free_nbd_device(sys_block):
@@ -208,7 +214,7 @@ def test_find_free_nbd_device(sys_block):
     assert pillage_api.find_free_nbd_device() is None
 
 
-@pytest.mark.parametrize(("option", "expected"), [(None, "raw"), ("vdi", "vdi")])
+@pytest.mark.parametrize(("option", "expected"), [(None, "raw"), ("auto", "raw"), ("vdi", "vdi")])
 def test_mount_image_qemu_nbd_args(mocker, tmp_path, sys_block, option, expected):  # noqa: ARG001
     """qemu-nbd must be given the format (no probing) and a free device (not nbd1)."""
     mocker.patch.dict(config["CONFIG"], {"PILLAGE": {"image_format": option}})
@@ -262,3 +268,112 @@ def test_mount_image_no_free_nbd_device(mocker, tmp_path, sys_block):
     # Nothing was connected, so nothing (e.g. another program's nbd1) is disconnected
     assert remove_nbd_device() is True
     call.assert_not_called()
+
+
+def _qemu_img_info(image, data: dict) -> bytes:
+    return json.dumps(
+        {
+            "filename": str(image),
+            "format": "x",
+            "format-specific": {"type": "x", "data": data},
+        }
+    ).encode()
+
+
+@pytest.mark.parametrize(
+    ("image_format", "data"),
+    [
+        # qcow2 with an external data file (on the system running PEAT)
+        ("qcow2", {"compat": "1.1", "data-file": "/dev/sda", "data-file-raw": False}),
+        # VMDK with a flat extent that is a file on the system running PEAT
+        (
+            "vmdk",
+            {
+                "create-type": "monolithicFlat",
+                "extents": [{"filename": "/etc/shadow", "format": "FLAT"}],
+            },
+        ),
+        # VMDK with an extent next to the image, but not named after it
+        (
+            "vmdk",
+            {"create-type": "twoGbMaxExtentFlat", "extents": [{"filename": "other.img"}]},
+        ),
+        # VMDK with an extent that's a symbolic link named after the image
+        ("vmdk", {"create-type": "vmfs", "extents": [{"filename": "disk-link.vmdk"}]}),
+        # VMDK with an extent without a file name
+        ("vmdk", {"extents": [{"format": "FLAT"}]}),
+    ],
+)
+def test_mount_image_refuses_other_files(mocker, tmp_path, sys_block, image_format, data):  # noqa: ARG001
+    """qemu-img reports these under "format-specific", not as backing files."""
+    mocker.patch("peat.api.pillage_api.list_loaded_modules", return_value=["nbd"])
+    image = tmp_path / f"disk.{image_format}"
+    image.write_bytes(b"")
+    (tmp_path / "other.img").write_bytes(b"")
+    (tmp_path / "disk-link.vmdk").symlink_to("/etc/passwd")
+    info = _qemu_img_info(image, data)
+    mocker.patch("peat.api.pillage_api.subprocess.check_output", return_value=info)
+    call = mocker.patch("peat.api.pillage_api.subprocess.call", return_value=0)
+
+    assert pillage_api.has_backing_file(image, image_format) is True
+    assert mount_image(image, tmp_path / "mnt") is False
+    call.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"compat": "1.1", "lazy-refcounts": False},  # qcow2 without a data file
+        # monolithicSparse VMDK: the only extent is the image itself
+        {"create-type": "monolithicSparse", "extents": [{"filename": "disk.vmdk"}]},
+        # "split" VMDK: the extents are files next to the image named after it
+        {
+            "create-type": "twoGbMaxExtentSparse",
+            "extents": [{"filename": "disk-s001.vmdk"}, {"filename": "SUBDIR/../disk-s002.vmdk"}],
+        },
+    ],
+)
+def test_has_backing_file_allows_own_files(mocker, tmp_path, data):
+    image = tmp_path / "disk.vmdk"
+    for name in ["disk.vmdk", "disk-s001.vmdk", "disk-s002.vmdk"]:
+        (tmp_path / name).write_bytes(b"")
+    (tmp_path / "SUBDIR").mkdir()
+    info = _qemu_img_info(image, data)
+    mocker.patch("peat.api.pillage_api.subprocess.check_output", return_value=info)
+
+    assert pillage_api.has_backing_file(image, "vmdk") is False
+
+
+@pytest.mark.parametrize(
+    "side_effect",
+    [
+        subprocess.TimeoutExpired(["qemu-img"], 60),
+        subprocess.CalledProcessError(1, ["qemu-img"]),
+        OSError("not installed"),
+    ],
+)
+def test_has_backing_file_check_fails(mocker, tmp_path, side_effect):
+    check_output = mocker.patch(
+        "peat.api.pillage_api.subprocess.check_output", side_effect=side_effect
+    )
+    assert pillage_api.has_backing_file(tmp_path / "disk.qcow2", "qcow2") is True
+    assert check_output.call_args.kwargs["timeout"] == pillage_api.QEMU_IMG_TIMEOUT
+    for invalid in [
+        b"[]",
+        b'{"format-specific": []}',
+        b'{"format-specific": {"data": {"extents": [1]}}}',
+    ]:
+        check_output.side_effect = None
+        check_output.return_value = invalid
+        assert pillage_api.has_backing_file(tmp_path / "disk.qcow2", "qcow2") is True, invalid
+
+
+def test_pillage_image_format_argument(mocker, tmp_path, monkeypatch, pillage_config):  # noqa: ARG001
+    monkeypatch.chdir(tmp_path)
+    image = tmp_path / "disk.img"
+    image.write_bytes(b"")
+    mocker.patch("peat.api.pillage_api.validate_image_mounting", return_value=True)
+    mount = mocker.patch("peat.api.pillage_api.mount_image", return_value=False)
+
+    assert pillage_api.pillage(str(image), "qcow2") is False
+    assert mount.call_args.args[2] == "qcow2"

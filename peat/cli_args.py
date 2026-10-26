@@ -365,6 +365,10 @@ peat pillage -c peat-config.json -P raw_disk.vmdk -e
 
 # Pillage files from a qcow2 image and upload results to a remote Elasticsearch server
 peat pillage -c peat-config.json -P raw_disk.qcow2 -e http://192.0.2.33:9200/
+
+# Pillage files from a qcow2 image without a ".qcow2" file extension
+# (by default, the format is from the extension, and "raw" for other extensions)
+peat pillage -c peat-config.json -P disk.img --image-format qcow2
 """  # End pillage examples
 
 
@@ -1119,6 +1123,18 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         'specified. If the source is a "split" VMware VMDK disk '
         "(e.g. multiple VMDK files that make up a single disk), "
         'use the file without the "-sXXX" in the name as the source.',
+    )
+    pillage_parser.add_argument(
+        "--image-format",
+        type=str,
+        required=False,
+        metavar="FORMAT",
+        dest="image_format",
+        help="Format of the disk image to pillage: auto, raw, qcow2, vmdk, vhdx, "
+        "vdi, or vpc (VHD). Overrides the 'image_format' Pillage option. "
+        'The default, "auto", uses the file extension (e.g. ".qcow2" or ".vmdk") '
+        'and "raw" for other extensions. The format is never detected from the '
+        "contents of the image.",
     )
     add_list_module_args(pillage_parser)  # Hack to add "--list-*" commands
 
