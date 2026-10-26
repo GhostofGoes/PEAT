@@ -33,7 +33,7 @@
 # exhaust memory; make_unique() is O(1) per name; and
 # rectangular arrays are indexed directly instead of with eval and exec.
 
-__all__ = ['read_stream', 'serialization', 'JSONEncoder']
+__all__ = ['read_stream', 'serialization', 'JSONEncoder', 'MAX_JSON_SIZE']
 
 import enum, itertools, json, math, re, sys
 from array       import array as Array, typecodes
@@ -64,6 +64,10 @@ MAX_TOTAL_SPARSE_ELEMENTS: Final = 16 * 1024 * 1024
 
 #: Maximum rank (number of dimensions) of a BinaryArray (.NET's limit is 32)
 MAX_ARRAY_RANK: Final = 32
+
+#: Default maximum size (approximate number of characters) of the JSON
+#: produced by JSONEncoder
+MAX_JSON_SIZE: Final = 256 * 1024 * 1024
 
 
 # Decorator which adds an enum value (an int or a length-one bytes) and its associated
@@ -823,9 +827,76 @@ def read_stream(streamfile):
     '''
     return serialization(streamfile).read_stream()
 
-# A JSONEncoder which can convert an object returned by read_stream() into json
-# (can't handle circular references; primarily intended for debugging purposes)
+# A JSONEncoder which can convert an object returned by read_stream() into json.
+# An object referenced more than once (e.g. with NRBF MemberReferences, which
+# would otherwise be expanded again for every reference, exponentially if
+# nested) is only encoded the first time. Later references to it, including
+# circular references, are encoded as {"$ref": "<path of the first one>"},
+# e.g. {"$ref": "$[0]['name']"}. Raises ValueError if the JSON would be
+# larger than about max_size characters.
 class JSONEncoder(json.JSONEncoder):
+    def __init__(self, *args, max_size = MAX_JSON_SIZE, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_size = max_size
+
+    def iterencode(self, o, _one_shot = False):
+        return super().iterencode(self._expand_once(o), _one_shot)
+
+    # Returns a copy of o made of JSON types, in which each list, dict, etc.
+    # is only expanded once (see above), and checks the size of the result
+    def _expand_once(self, root):
+        seen = {}  # id() of each expanded object -> its path
+        size = 0
+        if self.indent is None:
+            indent = 0
+        elif isinstance(self.indent, int):
+            indent = self.indent
+        else:
+            indent = len(self.indent)
+
+        def add_size(count):
+            nonlocal size
+            size += count
+            if size > self.max_size:
+                raise ValueError(f'invalid NRBF data: the JSON would be larger '
+                                 f'than {self.max_size} characters')
+
+        def expand(o, path, depth):
+            if isinstance(o, str):
+                add_size(len(o) + 2)
+                return o
+            if o is None or isinstance(o, (bool, int, float)):
+                add_size(5)
+                return o
+            is_container = isinstance(o, (list, tuple, dict, set, Array)) or hasattr(o, '_asdict')
+            if not is_container:
+                o = self.default(o)  # datetime, Decimal, etc.
+                if isinstance(o, str):
+                    add_size(len(o) + 2)
+                    return o
+                return expand(o, path, depth)
+            if len(o) and id(o) in seen:
+                add_size(len(seen[id(o)]) + 12)
+                return {'$ref': seen[id(o)]}
+            if len(o):
+                seen[id(o)] = path
+            add_size(2)
+            item_size = 2 + indent * (depth + 1)
+            if isinstance(o, dict) or hasattr(o, '_asdict'):
+                items = self.default(o) if hasattr(o, '_asdict') else o
+                result = OrderedDict()
+                for key, value in items.items():
+                    add_size(item_size + len(str(key)) + 4)
+                    result[key] = expand(value, f'{path}[{key!r}]', depth + 1)
+                return result
+            result = []
+            for index, value in enumerate(o.tolist() if isinstance(o, Array) else o):
+                add_size(item_size)
+                result.append(expand(value, f'{path}[{index}]', depth + 1))
+            return result
+
+        return expand(root, '$', 0)
+
     def default(self, o):
         if hasattr(o, '_asdict'):
             d = OrderedDict(_class_name=o.__class__.__name__)  # prepend the class name

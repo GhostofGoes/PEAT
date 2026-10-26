@@ -2,7 +2,7 @@ import io
 from pathlib import Path
 from typing import Any
 
-from .csharp_reader import JSONEncoder, read_stream
+from .csharp_reader import MAX_JSON_SIZE, JSONEncoder, read_stream
 
 
 def parse_wset(_file: Any) -> dict[int, str]:
@@ -14,6 +14,10 @@ def parse_wset(_file: Any) -> dict[int, str]:
 
     Returns:
         The JSON-encoded root object of each NRBF stream in the file, by index
+
+    Raises:
+        ValueError: The file is invalid, or the JSON would be larger
+            than :data:`~peat.modules.woodward.csharp_reader.MAX_JSON_SIZE`
     """
     # Determine if valid file type
     if isinstance(_file, Path):
@@ -28,8 +32,8 @@ def parse_wset(_file: Any) -> dict[int, str]:
     # and produces (relatively) reasonabilty sized files
     # https://gitlab.com/malie-library/netfleece
 
-    json_encoder = JSONEncoder(indent=4)
     output_dict = {}
+    output_size = 0
     i = 0
 
     with streamfile:
@@ -37,7 +41,11 @@ def parse_wset(_file: Any) -> dict[int, str]:
         streamfile.seek(10)
 
         while True:
+            # NOTE: objects referenced more than once are only expanded once,
+            # and the total size of the JSON of all streams is limited
+            json_encoder = JSONEncoder(indent=4, max_size=MAX_JSON_SIZE - output_size)
             output_dict[i] = json_encoder.encode(read_stream(streamfile))
+            output_size += len(output_dict[i])
             i += 1
             if streamfile.peek(1) == b"":
                 break
