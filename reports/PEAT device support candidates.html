@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PEAT device support candidates</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Layout: sticky section nav beside a 70ch reading column; wide tables scroll inside their own wrapper. */
+  --bg: #f3f6f7;
+  --surface: #ffffff;
+  --ink: #15222c;
+  --muted: #5d6e7a;
+  --accent: #0e6c86;
+  --accent-soft: #e0eff3;
+  --rule: #d5dde2;
+  --ok: #1d7a4c;
+  --warn: #9c6400;
+  --bad: #b03838;
+  --na: #6a7985;
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1418;
+    --surface: #161e25;
+    --ink: #e3eaef;
+    --muted: #97a7b3;
+    --accent: #5cc4d8;
+    --accent-soft: #163039;
+    --rule: #263139;
+    --ok: #4fc08b;
+    --warn: #e0a94c;
+    --bad: #e5736e;
+    --na: #8c9eab;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1418;
+  --surface: #161e25;
+  --ink: #e3eaef;
+  --muted: #97a7b3;
+  --accent: #5cc4d8;
+  --accent-soft: #163039;
+  --rule: #263139;
+  --ok: #4fc08b;
+  --warn: #e0a94c;
+  --bad: #e5736e;
+  --na: #8c9eab;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.masthead {
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule);
+}
+.masthead-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 2rem;
+}
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 0.75rem;
+}
+h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(2rem, 4.5vw, 3.1rem);
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  margin: 0 0 0.75rem;
+  text-wrap: balance;
+  max-width: 24ch;
+}
+.standfirst {
+  font-size: clamp(1.15rem, 2vw, 1.4rem);
+  line-height: 1.35;
+  color: var(--muted);
+  margin: 0 0 1.5rem;
+  max-width: 48ch;
+  text-wrap: balance;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.meta b { color: var(--ink); font-weight: 600; }
+
+.frame {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 3rem;
+  align-items: start;
+}
+nav.toc {
+  position: sticky;
+  top: 1.25rem;
+  max-height: calc(100vh - 2.5rem);
+  overflow-y: auto;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+nav.toc .toc-title {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin: 0 0 0.75rem;
+}
+nav.toc ol { list-style: none; margin: 0; padding: 0; }
+nav.toc > ol > li { padding: 0.35rem 0; border-top: 1px solid var(--rule); }
+nav.toc > ol > li:first-child { border-top: 0; }
+nav.toc a { color: var(--ink); text-decoration: none; display: block; }
+nav.toc a:hover { color: var(--accent); }
+nav.toc ol.sub { margin: 0.3rem 0 0.2rem 0.75rem; border-left: 2px solid var(--accent-soft); padding-left: 0.6rem; }
+nav.toc ol.sub li { padding: 0.15rem 0; color: var(--muted); }
+nav.toc ol.sub a { color: var(--muted); font-size: 0.8rem; }
+nav.toc details { display: none; }
+
+article { min-width: 0; max-width: none; }
+article > p, article > ul, article > ol { max-width: 70ch; }
+article p.lead {
+  font-size: 1.15rem;
+  line-height: 1.55;
+  padding-left: 1rem;
+  border-left: 3px solid var(--accent);
+  margin: 0 0 2rem;
+}
+article h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.65rem;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin: 3rem 0 1rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+  text-wrap: balance;
+}
+article h2:first-of-type { margin-top: 1.5rem; }
+article h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.2rem;
+  line-height: 1.25;
+  margin: 2.25rem 0 0.75rem;
+  text-wrap: balance;
+}
+article p { margin: 0 0 1.1rem; }
+article strong { font-weight: 600; }
+article code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--accent-soft);
+  padding: 0.05em 0.3em;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 1.75rem 0 2rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--surface);
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+table.ranked { min-width: 980px; }
+table.deferred { min-width: 860px; }
+thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 0.7rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+tbody td {
+  padding: 0.65rem 0.75rem;
+  vertical-align: top;
+  border-top: 1px solid var(--rule);
+}
+tbody tr:first-child td { border-top: 0; }
+tbody tr:hover td { background: var(--accent-soft); }
+table.ranked td:first-child {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--accent);
+  text-align: right;
+  width: 3rem;
+}
+table.ranked td:nth-child(2) { font-weight: 600; min-width: 13rem; }
+table.ranked td:nth-child(3), table.ranked td:nth-child(4) { min-width: 12rem; }
+table code { font-size: 0.9em; }
+
+.verdict {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1;
+  padding: 0.3em 0.5em;
+  border-radius: 3px;
+  margin-right: 0.35em;
+  vertical-align: 0.1em;
+  color: #fff;
+}
+.v-yes { background: var(--ok); }
+.v-no { background: var(--bad); }
+.v-part { background: var(--warn); }
+.v-na { background: var(--na); }
+
+footer.colophon {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+footer.colophon p { margin: 0 0 0.5rem; max-width: 80ch; }
+
+@media (max-width: 960px) {
+  .frame { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+  nav.toc { position: static; max-height: none; overflow: visible; }
+  nav.toc .toc-title, nav.toc > ol { display: none; }
+  nav.toc details { display: block; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); padding: 0.6rem 0.9rem; }
+  nav.toc details summary { cursor: pointer; font-weight: 600; }
+  nav.toc details > ol { display: block; margin-top: 0.5rem; }
+  nav.toc details > ol > li { padding: 0.35rem 0; border-top: 1px solid var(--rule); }
+}
+@media (max-width: 480px) {
+  body { font-size: 1rem; }
+  .masthead-inner, .frame, footer.colophon { padding-left: 1rem; padding-right: 1rem; }
+  article p.lead { font-size: 1.05rem; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead-inner">
+    <p class="eyebrow">Research report · PEAT · 31 October 2026</p>
+    <h1>PEAT device support candidates</h1>
+    <p class="standfirst">Emulators unlock thirteen hardware-free PEAT modules</p>
+    <div class="meta">
+      <span><b>Question</b> Which OT devices or vendors could PEAT support with parse plus scan modules, built and tested without buying hardware?</span>
+      <span><b>Basis</b> Eight research streams, 167 cited sources</span>
+      <span><b>Companion</b> Per-vendor notes in <code>research_notes/</code> on the <code>docs/device-support-candidates</code> branch</span>
+    </div>
+  </div>
+</header>
+<div class="frame">
+  <nav class="toc" aria-label="Sections">
+    <p class="toc-title">Sections</p>
+    <ol class="toc-list"><li><a href="#pure-python-emulators-and-open-xml-decide-the-ranking">Pure-Python emulators and open XML decide the ranking</a></li><li><a href="#tier-1-controllers-s7-iec-61850-automationdirect-unitronics-and-codesys">Tier 1 controllers: S7, IEC 61850, AutomationDirect, Unitronics and CODESYS</a><ol class="sub"><li><a href="#iec-61850-generic-ied-rank-1">IEC 61850 generic IED (rank 1)</a></li><li><a href="#siemens-simatic-s7-300400-and-s7-12001500-rank-2">Siemens SIMATIC S7-300/400 and S7-1200/1500 (rank 2)</a></li><li><a href="#automationdirect-click-do-more-and-productivity-rank-5">AutomationDirect CLICK, Do-more and Productivity (rank 5)</a></li><li><a href="#unitronics-vision--samba-rank-6">Unitronics Vision / Samba (rank 6)</a></li><li><a href="#codesys-v3-generic-runtime-rank-7">CODESYS V3 generic runtime (rank 7)</a></li></ol></li><li><a href="#cheap-extensions-reuse-controllogix-openplc-m340-and-eds-code">Cheap extensions reuse ControlLogix, OpenPLC, M340 and EDS code</a><ol class="sub"><li><a href="#compactlogix--guardlogix-via-the-controllogix-module-rank-3">CompactLogix / GuardLogix via the ControlLogix module (rank 3)</a></li><li><a href="#openplc-runtime-v3-via-the-v4-module-rank-4">OpenPLC Runtime v3 via the v4 module (rank 4)</a></li><li><a href="#m580--quantum--premium--momentum-via-the-m340-umas-code-rank-13">M580 / Quantum / Premium / Momentum via the M340 UMAS code (rank 13)</a></li><li><a href="#micro800-and-connected-components-workbench-rank-12">Micro800 and Connected Components Workbench (rank 12)</a></li><li><a href="#eds-based-identity-enrichment-fleet-wide">EDS-based identity enrichment (fleet-wide)</a></li></ol></li><li><a href="#network-infrastructure-opnsense-mikrotik-and-vyos-boot-free-under-kvm">Network infrastructure: OPNsense, MikroTik and VyOS boot free under KVM</a></li><li><a href="#software-targets-kepware-ignition-twincat-vtscada-and-niagara">Software targets: Kepware, Ignition, TwinCAT, VTScada and Niagara</a></li><li><a href="#standards-based-primitives-multiply-vendor-coverage">Standards-based primitives multiply vendor coverage</a></li><li><a href="#licensing-traps-oracles-you-cannot-use-libraries-you-cannot-link">Licensing traps: oracles you cannot use, libraries you cannot link</a></li><li><a href="#deferred-candidates-and-what-unblocks-each">Deferred candidates and what unblocks each</a></li><li><a href="#verification-gaps-the-researchers-could-not-close">Verification gaps the researchers could not close</a></li><li><a href="#conclusion">Conclusion</a></li></ol>
+    <details><summary>Sections</summary><ol class="toc-list"><li><a href="#pure-python-emulators-and-open-xml-decide-the-ranking">Pure-Python emulators and open XML decide the ranking</a></li><li><a href="#tier-1-controllers-s7-iec-61850-automationdirect-unitronics-and-codesys">Tier 1 controllers: S7, IEC 61850, AutomationDirect, Unitronics and CODESYS</a><ol class="sub"><li><a href="#iec-61850-generic-ied-rank-1">IEC 61850 generic IED (rank 1)</a></li><li><a href="#siemens-simatic-s7-300400-and-s7-12001500-rank-2">Siemens SIMATIC S7-300/400 and S7-1200/1500 (rank 2)</a></li><li><a href="#automationdirect-click-do-more-and-productivity-rank-5">AutomationDirect CLICK, Do-more and Productivity (rank 5)</a></li><li><a href="#unitronics-vision--samba-rank-6">Unitronics Vision / Samba (rank 6)</a></li><li><a href="#codesys-v3-generic-runtime-rank-7">CODESYS V3 generic runtime (rank 7)</a></li></ol></li><li><a href="#cheap-extensions-reuse-controllogix-openplc-m340-and-eds-code">Cheap extensions reuse ControlLogix, OpenPLC, M340 and EDS code</a><ol class="sub"><li><a href="#compactlogix--guardlogix-via-the-controllogix-module-rank-3">CompactLogix / GuardLogix via the ControlLogix module (rank 3)</a></li><li><a href="#openplc-runtime-v3-via-the-v4-module-rank-4">OpenPLC Runtime v3 via the v4 module (rank 4)</a></li><li><a href="#m580--quantum--premium--momentum-via-the-m340-umas-code-rank-13">M580 / Quantum / Premium / Momentum via the M340 UMAS code (rank 13)</a></li><li><a href="#micro800-and-connected-components-workbench-rank-12">Micro800 and Connected Components Workbench (rank 12)</a></li><li><a href="#eds-based-identity-enrichment-fleet-wide">EDS-based identity enrichment (fleet-wide)</a></li></ol></li><li><a href="#network-infrastructure-opnsense-mikrotik-and-vyos-boot-free-under-kvm">Network infrastructure: OPNsense, MikroTik and VyOS boot free under KVM</a></li><li><a href="#software-targets-kepware-ignition-twincat-vtscada-and-niagara">Software targets: Kepware, Ignition, TwinCAT, VTScada and Niagara</a></li><li><a href="#standards-based-primitives-multiply-vendor-coverage">Standards-based primitives multiply vendor coverage</a></li><li><a href="#licensing-traps-oracles-you-cannot-use-libraries-you-cannot-link">Licensing traps: oracles you cannot use, libraries you cannot link</a></li><li><a href="#deferred-candidates-and-what-unblocks-each">Deferred candidates and what unblocks each</a></li><li><a href="#verification-gaps-the-researchers-could-not-close">Verification gaps the researchers could not close</a></li><li><a href="#conclusion">Conclusion</a></li></ol></details>
+  </nav>
+  <article>
+<p class="lead">Thirteen candidates let PEAT reach its PARSE-plus-SCAN baseline without buying hardware, and two lead the field. A <strong>generic IEC 61850 IED module</strong> (SCL XML parse plus MMS nameplate scan) is the only candidate with fully redistributable public fixtures (libiec61850's GPLv3 ICD/CID files, OpenSCD's Apache-2.0 SCDs, the IEC XSDs under the attribution-only CC-EULA) <em>and</em> a free headless server for CI, and it covers ABB/Hitachi, Siemens SIPROTEC 5, GE, SEL, Schneider and Beckwith relays in one module. A <strong>Siemens S7 module</strong> has the best-verified scan target of any candidate: the pure-Python, MIT-licensed <code>python-snap7</code> 3.x server and the <code>s7commplus</code> emulator pip-install on Linux, Windows and macOS runners, run on unprivileged ports, and answer exactly the SZL/identity queries a fingerprint issues — and the August 2026 NSA/CISA AA26-231A advisory on adversary reconnaissance of S7 PLCs gives it the strongest security mandate. Behind them, three cheap extensions (CompactLogix via the ControlLogix module tested against cpppo/Conpot, OpenPLC v3 via the v4 module in Docker, M580/Quantum via the M340 UMAS code) and new modules for <strong>Unitronics Vision</strong> (documented PCOM protocol, ZIP <code>.vlp</code> projects, the AA23-335A water-sector campaign), <strong>AutomationDirect CLICK/Do-more</strong>, <strong>CODESYS V3</strong> (one container fingerprints WAGO, Schneider M241–M262, Festo, ABB and Eaton runtimes), <strong>Ignition</strong>, and three network OSes that boot free under KVM (<strong>OPNsense/pfSense, MikroTik CHR, VyOS</strong>) all clear both bars. Standards-based scan primitives — Modbus FC43 via the pymodbus simulator, BACnet via bacpypes3/bacnet-stack, OPC UA via Microsoft's OPC PLC container, DNP3 Group 0 via opendnp3 or Sandia's bennu — multiply vendor coverage per line of code but have no file to parse. The recurring weakness across every vendor cluster is fixtures, not formats: open XML/text formats exist for Siemens, Beckhoff, Kepware, VTScada, SCALANCE and RUGGEDCOM, yet almost no vendor publishes redistributable samples, so most parse fixtures must be self-generated with free or trial engineering software (often Windows-only) and committed as PEAT-authored content. The legal tripwires are concrete and avoidable: Step Function I/O's DNP3 library forbids use as a test oracle, GPLv2-only Omron and Gurux libraries cannot link into GPLv3 PEAT, <code>s7commplus</code> bundles reverse-engineered Siemens key material, and the Rockwell, Schneider, Siemens and CODESYS EULAs prohibit reverse engineering and gate downloads behind accounts.</p>
+<h2 id="pure-python-emulators-and-open-xml-decide-the-ranking">Pure-Python emulators and open XML decide the ranking</h2>
+<p>The maintainer's two weights — (1) redistributable sample files to build and test a parser and (2) a free, network-reachable simulator that answers on real TCP/UDP ports so a scan can run in CI — sort the field cleanly, because the two properties are almost never found together in one vendor. Pure-Python simulators (python-snap7, s7commplus, pymodbus, bacpypes3, asyncua, pyclickplc's <code>ClickServer</code>) are the gold standard for criterion 2 because they run on all three GitHub Actions runner OSes without Docker or KVM; official Docker images (OpenPLC, Ignition, Conpot, OPC PLC, bacnet-stack, CODESYS Virtual Control) are a half-step down because they confine scan tests to the Linux job; KVM-booted network OS images (OPNsense, VyOS, CHR, vJunos) are another half-step down because they need <code>/dev/kvm</code>, which GitHub exposed on 2-vCPU hosted Linux runners only in April 2024 (<a href="https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available/">GitHub Changelog</a>); Windows-only GUI simulators (Control Expert, Logix Echo, PLCSIM Advanced, Do-more DMSim, Kepware demo) are usable for manual regression but not unattended CI. For criterion 1, the ideal is a permissively licensed public corpus (IEC 61850 SCL, ntc-templates, VyOS smoketests, python-comtrade, Beckhoff's 0BSD repos); next best is a free IDE that lets PEAT developers author and commit their own fixtures with no redistribution question (VisiLogic, CLICK, CCW Standard, Kepware demo, VTScadaLIGHT, OPNsense/CHR/VyOS VMs); weakest is a format whose only samples are vendor-copyrighted demos or require paid or 21-to-30-day trial software (Schneider <code>.xef</code>, TIA Openness XML, Studio 5000 L5X beyond pycomm3's test file).</p>
+<p>The table below is ordered by those two criteria, with ties broken by critical-infrastructure relevance and effort. Entries marked "(ext)" extend an existing PEAT module. "Parse" and "Scan" verdicts are strictly "achievable and testable without hardware"; pull and push are noted only where they come free. Effort uses the researchers' scale: small = days, medium = weeks, large = months.</p>
+<div class="table-wrap"><table class="ranked">
+<thead>
+<tr>
+<th>Rank</th>
+<th>Candidate</th>
+<th>Parse without hardware</th>
+<th>Scan without hardware</th>
+<th>CI test target (runner OS)</th>
+<th>Fixture source and caveat</th>
+<th>Effort (parse + scan)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>IEC 61850 generic IED (SCL parse + MMS nameplate scan)</td>
+<td><span class="verdict v-yes">Yes</span> — SCD/ICD/CID/IID/SED XML</td>
+<td><span class="verdict v-yes">Yes</span> — MMS Identify, LLN0.NamPlt, LPHD.PhyNam over TCP 102</td>
+<td>libiec61850 <code>server_example_basic_io</code> (Docker, Linux); <code>iec61850</code> PyPI <code>IedServer.from_scl</code> (pip, Py≥3.11; wheel coverage unverified)</td>
+<td>libiec61850 ICD/CID (GPLv3), OpenSCD SCDs (Apache-2.0), IEC XSDs (CC-EULA) — all redistributable</td>
+<td>Small + medium</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Siemens S7-300/400 and S7-1200/1500 (S7comm, S7comm-plus)</td>
+<td><span class="verdict v-yes">Yes</span> — TIA Openness SimaticML/AML XML and <code>.scl</code>/<code>.awl</code> text; fixtures self-generated</td>
+<td><span class="verdict v-yes">Yes</span> — SZL 0x0011/0x001C identity, block list, protection level; S7comm-plus order-number handshake</td>
+<td><code>python-snap7</code> <code>Server</code> + <code>s7commplus.S7CommPlusServer</code> (pip, all three OSes); Conpot s7comm (Docker, Linux)</td>
+<td><span class="verdict v-no">No</span> public corpus; generate with 21-day TIA Portal trial (Windows); EULA unread</td>
+<td>Medium + small</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Rockwell CompactLogix/GuardLogix 5370/5380/5480 (ext)</td>
+<td><span class="verdict v-yes">Yes</span> — shared L5X parser</td>
+<td><span class="verdict v-yes">Yes</span> — CIP ListIdentity/Get-Attributes-All with 1769/5069 identities</td>
+<td>cpppo <code>enip_server</code> with <code>cpppo.cfg</code> identity (pip, GPLv3; Py 3.11+ unverified); Conpot ENIP (Docker)</td>
+<td>pycomm3 MIT test L5X (controller family unverified); self-generated L5X needs paid Studio 5000</td>
+<td>Small + small</td>
+</tr>
+<tr>
+<td>4</td>
+<td>OpenPLC Runtime v3 (ext of v4 module)</td>
+<td><span class="verdict v-yes">Yes</span> — PLCopen TC6 <code>plc.xml</code> fixture already in repo</td>
+<td><span class="verdict v-yes">Yes</span> — HTTP 8080 login, HTTPS 8443 <code>/api</code>, Modbus 502</td>
+<td>Docker build from archived GPL-3 repo (Linux)</td>
+<td>In-repo <code>Relay_Blink_PLC.zip</code>; Beremiz examples (GPL)</td>
+<td>Small + small</td>
+</tr>
+<tr>
+<td>5</td>
+<td>AutomationDirect CLICK / CLICK PLUS (+ Do-more, Productivity)</td>
+<td><span class="verdict v-yes">Yes</span> — nickname CSV and DataView CDV via MIT pyclickplc; <code>.ckp</code> undocumented but holds recoverable credentials</td>
+<td><span class="verdict v-yes">Yes</span> — Modbus/TCP identity via pyclickplc <code>ClickServer</code>; Do-more DMSim on TCP 28784 + Modbus</td>
+<td>pyclickplc <code>ClickServer</code> (pip, all OSes); Do-more Designer simulator (Windows runner only)</td>
+<td>Self-generated with free CLICK/Do-more software (Windows); vendor samples non-redistributable</td>
+<td>Small–medium + small–medium</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Unitronics Vision/Samba (VisiLogic, PCOM)</td>
+<td><span class="verdict v-yes">Yes</span> — <code>.vlp</code> is a ZIP; inner member encoding must be inspected</td>
+<td><span class="verdict v-yes">Yes</span> — PCOM/TCP 20256 ID/UG/GF; protocol spec public</td>
+<td>Self-written PCOM mock from the Unitronics PDF, MIT <code>pcom</code>, Claroty PCOM-Tools, Nerva (pure Python, all OSes); no vendor simulator</td>
+<td>Self-generated with free VisiLogic (Windows); EULA unread</td>
+<td>Medium + small–medium</td>
+</tr>
+<tr>
+<td>7</td>
+<td>CODESYS V3 generic runtime (WAGO, M241–M262, Festo, ABB, Eaton…)</td>
+<td><span class="verdict v-yes">Yes</span> — PLCopen TC6 XML and native <code>*.export</code> XML</td>
+<td><span class="verdict v-yes">Yes</span> — UDP 1740 name-service discovery, TCP 11740 CmpDevice version</td>
+<td>CODESYS Virtual Control SL container (Docker/Podman, Linux; 2-hour demo; account-gated download)</td>
+<td>Self-generated with free Windows IDE or CODESYS Forge (per-project licence check)</td>
+<td>Small–medium + medium</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Inductive Automation Ignition</td>
+<td><span class="verdict v-yes">Yes</span> — <code>.gwbk</code> ZIP with SQLite <code>db_backup_sqlite.idb</code> and project JSON</td>
+<td><span class="verdict v-yes">Yes</span> — Gateway HTTP 8088/8043</td>
+<td>Official <code>inductiveautomation/ignition</code> Docker image (Linux); 2-hour trial, unlimited resets</td>
+<td>Self-generated <code>.gwbk</code> from trial container</td>
+<td>Medium + small</td>
+</tr>
+<tr>
+<td>9</td>
+<td>MikroTik RouterOS (CHR)</td>
+<td><span class="verdict v-yes">Yes</span> — <code>/export</code> <code>.rsc</code> text</td>
+<td><span class="verdict v-yes">Yes</span> — SSH 22, HTTP(S) 80/443, Winbox 8291, API 8728, REST</td>
+<td>CHR raw image under QEMU/KVM (Linux runner); Free licence, indefinite</td>
+<td>ntc-templates <code>mikrotik_routeros</code> ~47 templates with <code>.raw</code> fixtures (Apache-2.0)</td>
+<td>Small–medium</td>
+</tr>
+<tr>
+<td>10</td>
+<td>OPNsense (+ pfSense CE sharing the parser)</td>
+<td><span class="verdict v-yes">Yes</span> — <code>config.xml</code></td>
+<td><span class="verdict v-yes">Yes</span> — HTTPS 443 login page, SSH 22, REST API</td>
+<td>OPNsense <code>nano</code> image → qcow2 under KVM (Linux runner); BSD-2</td>
+<td><span class="verdict v-part">Partial</span> official <code>config.xml.sample</code> (BSD-2) plus VM-generated configs; pfSense default config not retrieved</td>
+<td>Small–medium</td>
+</tr>
+<tr>
+<td>11</td>
+<td>VyOS</td>
+<td><span class="verdict v-yes">Yes</span> — <code>config.boot</code> text</td>
+<td><span class="verdict v-yes">Yes</span> — SSH, HTTP API</td>
+<td>Rolling ISO under KVM (Linux runner); free</td>
+<td>52 official smoketest configs in vyos-1x</td>
+<td>Small</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Rockwell Micro800 + Connected Components Workbench</td>
+<td><span class="verdict v-part">Likely</span> — <code>.acproj</code>/<code>.ccwsln</code> XML (inferred from XXE CVE-2022-1018; unconfirmed)</td>
+<td><span class="verdict v-yes">Yes</span> — CIP identity with Micro8xx product codes, no slot path</td>
+<td>cpppo/Conpot identity emulation (as rank 3); Micro800 Simulator is Windows GUI, NIC exposure unconfirmed</td>
+<td>Self-generated with free CCW Standard (Windows); format must be inspected first</td>
+<td>Medium + small</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Schneider M580 / Quantum / Premium / Momentum (ext of M340)</td>
+<td><span class="verdict v-yes">Yes</span> — Control Expert <code>.xef</code> XML export (same format as M340)</td>
+<td><span class="verdict v-yes">Yes</span> — reuse UMAS + Modbus FC43 code</td>
+<td>pymodbus simulator with Schneider-like FC43 identity (pip, all OSes) or a PEAT-built UMAS responder; Control Expert simulator (Windows, 30-day) for manual regression</td>
+<td>Demo <code>.xef</code> ship with Control Expert and a public FAQ but are Schneider-copyrighted; ship synthetic XEF instead</td>
+<td>Small–medium + small</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Modbus FC43 generic fingerprint</td>
+<td><span class="verdict v-na">N/A</span> (scan primitive)</td>
+<td><span class="verdict v-yes">Yes</span> — FC43/MEI 14 VendorName/ProductCode/Revision</td>
+<td>pymodbus 3.x simulator with <code>identity</code> block (pip, BSD-3, all OSes)</td>
+<td><span class="verdict v-na">N/A</span></td>
+<td>Small</td>
+</tr>
+<tr>
+<td>15</td>
+<td>BACnet/IP generic</td>
+<td><span class="verdict v-na">N/A</span> (no vendor-neutral file)</td>
+<td><span class="verdict v-yes">Yes</span> — Who-Is/I-Am, Device object ReadProperty</td>
+<td>bacnet-stack <code>bacserv</code> (Docker, UDP 47808); bacpypes3 <code>mini-device</code> (pip, MIT, all OSes); YABE DemoServer (MIT, Windows/Mono)</td>
+<td><span class="verdict v-na">N/A</span></td>
+<td>Small–medium</td>
+</tr>
+<tr>
+<td>16</td>
+<td>OPC UA generic identity</td>
+<td><span class="verdict v-na">N/A</span> (optional nodeset XML)</td>
+<td><span class="verdict v-yes">Yes</span> — FindServers/GetEndpoints, ServerStatus.BuildInfo</td>
+<td>Microsoft OPC PLC (Docker, MIT, anonymous on); asyncua <code>Server</code> (pip, LGPL-3, all OSes)</td>
+<td><span class="verdict v-na">N/A</span></td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>17</td>
+<td>Kepware Server / KEPServerEX / GE IGS / TOP Server</td>
+<td><span class="verdict v-yes">Yes</span> — documented JSON project export (6.0+)</td>
+<td><span class="verdict v-part">Partial</span> — Configuration API 57412/57512; only live target is the Windows demo</td>
+<td>Kepware demo (Windows runner only; 2-hour restartable; form-gated)</td>
+<td>Self-generated from free demo (unlimited tags)</td>
+<td>Small–medium + small</td>
+</tr>
+<tr>
+<td>18</td>
+<td>Beckhoff TwinCAT 3</td>
+<td><span class="verdict v-yes">Yes</span> — <code>.TcPOU</code>/<code>.TcDUT</code>/<code>.TcGVL</code>/<code>.plcproj</code>/<code>.tsproj</code> XML</td>
+<td>Code writable from public ADS spec; no CI target</td>
+<td>None free and headless (7-day Windows trial; container needs Beckhoff hardware)</td>
+<td>Beckhoff GitHub sample repos, several Zero-Clause BSD</td>
+<td>Small–medium + untestable</td>
+</tr>
+<tr>
+<td>19</td>
+<td>DNP3 Group 0 device attributes</td>
+<td><span class="verdict v-na">N/A</span></td>
+<td><span class="verdict v-yes">Yes</span> — unauthenticated g0v254/v255 reads (mfr, model, serial, SW/HW rev)</td>
+<td>opendnp3 3.1.1 <code>outstation</code> example (Apache-2.0, archived) or bennu field device (GPLv3) in Docker (Linux)</td>
+<td>Wireshark <code>packet-dnp.c</code> as object reference</td>
+<td>Medium (3–6 weeks, new stack)</td>
+</tr>
+<tr>
+<td>20</td>
+<td>COMTRADE event records</td>
+<td><span class="verdict v-yes">Yes</span> — CFG/DAT/CFF via MIT <code>comtrade</code></td>
+<td><span class="verdict v-na">N/A</span> (pull via existing FTP or MMS file services)</td>
+<td><span class="verdict v-na">N/A</span></td>
+<td>14 MIT fixtures in python-comtrade</td>
+<td>Small</td>
+</tr>
+<tr>
+<td>21</td>
+<td>Moxa NPort/EDS + Lantronix UDS/XPort discovery</td>
+<td><span class="verdict v-no">No</span> — <code>.ini</code>/CLI export schema undocumented</td>
+<td><span class="verdict v-yes">Yes</span> — UDP 4800 (Moxa) and UDP 30718 (Lantronix) probes fully documented</td>
+<td>Self-written mock responders (pure Python, all OSes)</td>
+<td>None</td>
+<td>Small (scan only)</td>
+</tr>
+<tr>
+<td>22</td>
+<td>Tridium Niagara (Fox)</td>
+<td><span class="verdict v-no">Blocked</span> — no <code>.dist</code>/<code>config.bog</code> samples; 4.15 bog encryption unverified</td>
+<td><span class="verdict v-yes">Yes</span> — Fox <code>hello</code> handshake on 1911/4911 documented in nmap</td>
+<td>Self-written mock from <code>fox-info.nse</code> grammar</td>
+<td>None</td>
+<td>Medium + small</td>
+</tr>
+<tr>
+<td>23</td>
+<td>Cisco IOS/IOS-XE/ASA incl. Rockwell Stratix and Catalyst IE</td>
+<td><span class="verdict v-yes">Yes</span> — running-config and <code>show</code> output</td>
+<td><span class="verdict v-part">Partial</span> — SSH banner/SNMP sysDescr logic testable only against recordings</td>
+<td>None legal (CML-Free images licensed to CML only)</td>
+<td>ntc-templates and Batfish test configs (Apache-2.0)</td>
+<td>Medium + small</td>
+</tr>
+<tr>
+<td>24</td>
+<td>Siemens SCALANCE / RUGGEDCOM ROS</td>
+<td><span class="verdict v-yes">Yes</span> in principle — <code>RunningCLI</code> text, <code>config.csv</code> ASCII</td>
+<td><span class="verdict v-part">Partial</span> — SNMP/HTTPS/SSH fingerprints against generic mocks</td>
+<td>None vendor-specific; snmpsim with donated walk</td>
+<td>None public; synthesize from manuals</td>
+<td>Small–medium (fixture-blocked)</td>
+</tr>
+<tr>
+<td>25</td>
+<td>Trihedral VTScada / VTScadaLIGHT</td>
+<td><span class="verdict v-yes">Yes</span> — <code>AppRoot.SRC</code>, <code>Settings.*</code> INI, <code>Servers.XML</code></td>
+<td><span class="verdict v-part">Partial</span> — HTTP(S) server; Windows-only live target</td>
+<td>VTScadaLIGHT (Windows runner)</td>
+<td>Self-authored in free VTScadaLIGHT</td>
+<td>Medium + small</td>
+</tr>
+</tbody>
+</table></div>
+<p>Four patterns in the table drive the rest of this report. First, every candidate in ranks 1–13 passes both bars, but only ranks 1, 3, 4, 9 and 11 do so with a <em>public</em> fixture corpus; the others rely on PEAT-authored fixtures generated in free software, which is legally cleaner than copying vendor samples but means a Windows session is on the critical path for Siemens, Rockwell, Unitronics, AutomationDirect and CODESYS. Second, the standards rows (14–16, 19, 20) are not modules in PEAT's sense but primitives that make a dozen vendor modules cheaper; FC43 alone upgrades scan coverage for M580, SCADAPack, ION meters, Eaton easyE4, Weintek, Horner and the AutomationDirect families. Third, the network-infrastructure rows (9–11) are the only candidates whose free soft target is the <em>actual vendor OS</em>, not an emulator, so scan fidelity is perfect — at the cost of Linux-only KVM jobs. Fourth, the parse-only rows (17, 18, 20, 23–25) carry the richest fixture bases of all but cannot be scan-tested in CI; they are worth doing as parse modules while scan code waits for hardware or donated captures.</p>
+<h2 id="tier-1-controllers-s7-iec-61850-automationdirect-unitronics-and-codesys">Tier 1 controllers: S7, IEC 61850, AutomationDirect, Unitronics and CODESYS</h2>
+<h3 id="iec-61850-generic-ied-rank-1">IEC 61850 generic IED (rank 1)</h3>
+<p>Documentation quality is the best of any candidate because the format is an international standard: the IEC 61850-6 SCL XSDs are republished by LF Energy's CoMPAS project under the IEC Code Components End-User Licence, which permits redistribution provided the copyright notice is retained and each component is attributed to IEC and the standard it derives from (<a href="https://github.com/com-pas/compas-scl-xsd">compas-scl-xsd</a>; <a href="https://raw.githubusercontent.com/com-pas/compas-scl-xsd/main/license/CC-EULA.pdf">IEC CC-EULA</a>). Redistributable fixtures exist in three places: libiec61850 ships <code>simpleIO_direct_control.icd</code> and <code>.cid</code> in its GPLv3 repository, with LLN0.NamPlt instantiated as vendor "MZ Automation", swRev "1.3.0" (<a href="https://github.com/mz-automation/libiec61850/tree/v1.6/examples/server_example_basic_io">server_example_basic_io</a>; <a href="https://raw.githubusercontent.com/mz-automation/libiec61850/v1.6/examples/server_example_basic_io/simpleIO_direct_control.icd">ICD file</a>); OpenSCD's Apache-2.0 repository holds at least seven <code>.scd</code> test files including <code>valid2003.scd</code>, <code>valid2007B.scd</code> and <code>valid2007B4.scd</code> (<a href="https://github.com/openscd/open-scd/tree/main/packages/openscd/test/testfiles">open-scd testfiles</a>); and KIT published a 2025 dataset of SCDs built with RTDS Configurator, SEL AcSELerator and OMICRON IEDScout, but under CC BY-NC 4.0, so it is suitable for local testing only (<a href="https://publikationen.bibliothek.kit.edu/1000186471">KITopen</a>).</p>
+<p>The simulator story is equally strong. libiec61850 (GPLv3 with commercial option) provides <strong>18 server examples</strong> including basic I/O, config-file, file-services, password-auth and TLS variants that build with CMake on Linux, Windows and macOS (<a href="https://github.com/mz-automation/libiec61850">libiec61850 README</a>; <a href="https://github.com/mz-automation/libiec61850/tree/v1.6/examples">examples</a>). Three Python libraries compete for the client role: <code>iec61850</code> 0.15.2 (uploaded 2026-10-30, "MIT OR Apache-2.0", Python ≥3.11) offers <code>load_scl()</code> returning an IED inventory, an async MMS client, and an <code>IedServer.from_scl</code> server — but is classified Pre-Alpha (<a href="https://pypi.org/pypi/iec61850/json">PyPI iec61850</a>); `pyiec61850-ng` 1.6.1.10 (GPLv3, Python 3.9–3.14) exposes "server identity, logical device and node discovery" with Linux and Windows wheels but no macOS wheels and a single maintainer who calls it experimental (<a href="https://pypi.org/project/pyiec61850-ng/">PyPI pyiec61850-ng</a>); `py61850` 0.6.0 ships <code>mms-scan</code> but is AGPL-3.0 and requires Python 3.13, which conflicts with PEAT's <code>&gt;=3.11,&lt;3.14</code> floor and would pull the combined work toward AGPL for network use (<a href="https://pypi.org/pypi/py61850/json">PyPI py61850</a>). Sandia's own bennu builds an IEC 61850 GOOSE library but no MMS server, so it is not a scan target (<a href="https://raw.githubusercontent.com/sandialabs/sceptre-bennu/main/src/bennu/devices/modules/comms/iec61850/protocol/CMakeLists.txt">bennu iec61850 CMakeLists</a>).</p>
+<p>Fit with PEAT is excellent on the parse side (lxml is already used for L5X, RTAC and M340 XML) and moderate on the scan side (MMS over ISO-TCP on port 102 is a new protocol, and it shares the port with S7comm, so the module must disambiguate an ISO-TCP peer that answers MMS Initiate from one that answers S7comm 0x32). Security relevance is high: the module would yield IED name, manufacturer, configVersion, per-AccessPoint IP/subnet/gateway, logical-device inventory and GOOSE/SV control blocks for every 61850 vendor, including GE UR relays (CISA ICSA-21-075-02, nine CVEs, overall CVSS 9.8 (<a href="https://www.cisa.gov/news-events/ics-advisories/icsa-21-075-02">CISA</a>)) and Hitachi Relion 670/650 (ICSA-21-336-05, CVSS 8.1/8.9 (<a href="https://www.cisa.gov/news-events/ics-advisories/icsa-21-336-05">CISA</a>)). Effort: SCL parse small (days to two weeks); MMS nameplate scan medium (two to four weeks), with the main risk being which Python MMS client to standardize on.</p>
+<h3 id="siemens-simatic-s7-300400-and-s7-12001500-rank-2">Siemens SIMATIC S7-300/400 and S7-1200/1500 (rank 2)</h3>
+<p>This candidate has the single best-verified CI target in the research. <code>python-snap7</code> 3.3.1 (released 2026-10-28, MIT, Python ≥3.10) is a pure-Python reimplementation with a <code>py3-none-any</code> wheel and no native dependency (<a href="https://pypi.org/project/python-snap7/">PyPI</a>); its `snap7.server.Server` "emulates a Siemens S7 PLC for testing" and starts on any TCP port (<a href="https://python-snap7.readthedocs.io/en/latest/API/server.html">Server API</a>). The research team installed it on Linux and confirmed that <code>Server().start(tcp_port=11102)</code> answered <code>get_cpu_info()</code> with module <code>CPU 315-2 PN/DP</code>, <code>get_order_code()</code> with <code>6ES7 315-2EH14-0AB0</code> V3.3.0, <code>get_protection()</code>, <code>get_cpu_state()</code>, <code>get_plc_datetime()</code>, <code>list_blocks()</code>, and SZL IDs 0x0000/0x0011/0x001C/0x0131/0x0232 — exactly the queries a fingerprint issues — while <code>full_upload(OB,1)</code> failed with "block not found", so logic pull is only partially testable. For the newer families, <code>s7commplus</code> 0.3.0 (2026-10-20, MIT, Python ≥3.10) is a pure-Python S7CommPlus client with "a server emulator for testing" covering protocol V1, V2 (TLS) and V3, and a 105-entry <code>DEVICE_NAMES</code> table that maps order numbers to models; the emulator reports <code>6ES7 215-1AG40-0XB0</code> V4.2 (a CPU 1215C) during the connect handshake (<a href="https://pypi.org/project/s7commplus/">PyPI s7commplus</a>; <a href="https://github.com/gijzelaerr/s7commplus">GitHub</a>). Conpot (GPL-2.0) is an independent second responder in Docker whose <code>s7comm.toml</code> exposes configurable SZL 0x1C identity strings on port 10201 (<a href="https://raw.githubusercontent.com/mushorg/conpot/master/conpot/templates/default/s7comm.toml">conpot s7comm.toml</a>), useful to prove PEAT's fingerprinting does not overfit snap7's constants.</p>
+<p>Documentation is adequate for classic S7comm (Wireshark's wiki hosts six sample pcaps and a "partially functional" dissector (<a href="https://wiki.wireshark.org/S7comm">Wireshark S7comm</a>); Snap7's compatibility matrix states which operations S7-1200/1500 refuse — block directory and upload are not available via classic S7 (<a href="https://snap7.sourceforge.net/snap7_client.html">Snap7 client</a>)) and weaker for S7comm-plus, which is proprietary and reverse-engineered (the Rogue7 team at Black Hat 2019 described session-key exchange, message integrity and a "stealth program injection" attack (<a href="https://i.blackhat.com/USA-19/Thursday/us-19-Bitan-Rogue7-Rogue-Engineering-Station-Attacks-On-S7-Simatic-PLCs-wp.pdf">Rogue7 whitepaper</a>)). The officially documented pull path for S7-1500 is the HTTPS JSON-RPC Web API at <code>/api/jsonrpc</code> (<code>Api.Login</code>, <code>PlcProgram.Browse/Read</code>, <code>Modules.ReadIdentificationMaintenance</code>, backup download) with a Siemens-published MIT .NET client (<a href="https://manualslib.com/manual/1662475/Siemens-Simatic-S7-1500.html?page=169">S7-1500 web server manual</a>; <a href="https://github.com/siemens/simatic-s7-webserver-api">siemens/simatic-s7-webserver-api</a>), but no free emulator exposes it; S7-PLCSIM Advanced (Windows, 21-day trial) is the only simulator with a working web server (<a href="https://cache.industry.siemens.com/dl/files/578/109955578/att_1267815/v1/s7-plcsim_advanced_function_manual_en-US.pdf">PLCSIM Advanced manual</a>), so Web API tests would use recorded JSON fixtures.</p>
+<p>Parse is the weak side. TIA Portal Openness documents XML export of blocks, tag tables, UDTs, HMI screens and AutomationML hardware (<a href="https://docs.tia.siemens.cloud/r/en-us/v20/tia-portal-openness-api-for-automation-of-engineering-workflows">TIA Openness V20 manual</a>), and <code>simaticml-decoder</code> (Python ≥3.11) proves LAD/FBD-to-SCL conversion is tractable, but it ships no sample XML and states its probe files are "not a distributable fixture corpus" (<a href="https://pypi.org/project/simaticml-decoder/">PyPI simaticml-decoder</a>). No redistributable SimaticML corpus was found anywhere; fixtures must be generated with the 21-day TIA Portal V20 trial on Windows (<a href="https://support.industry.siemens.com/forum/ww/en/post/1233927">Siemens forum</a>), and the trial EULA was not reviewed. Fit: PEAT's <code>pyproject.toml</code> already carries a commented <code>python-snap7==0.11</code> pin from a pre-rewrite era; a new module should target 3.x and drop the C-library dependency. Security relevance is the highest in this report: AA26-231A (Aug 19, 2026; NSA, CISA, FBI, DOE, EPA) describes adversaries using <code>python-snap7</code> and <code>snap7.dll</code> for "CPU property enumeration" against S7-200/300/400/1200/1500 in energy, water and chemical sectors, and its mitigations — inventory all S7 PLCs, verify firmware against a gold copy, review protection levels — read as PEAT's mission statement (<a href="https://www.cisa.gov/news-events/cybersecurity-advisories/aa26-231a">CISA AA26-231A</a>). That same fact means PEAT's S7 module will look like adversary tooling on the wire; it should be documented for defenders. Legal caveat: <code>s7commplus</code> probes "a bounded set of bundled keys" derived from HarpoS7 (MIT) for older PLCs unless <code>allow_legacy_key_fallback=False</code>; treat S7comm-plus as scan/identity only until counsel reviews. Effort: scan small; identity/SZL pull small-medium; SimaticML/<code>.scl</code> parse medium.</p>
+<h3 id="automationdirect-click-do-more-and-productivity-rank-5">AutomationDirect CLICK, Do-more and Productivity (rank 5)</h3>
+<p>AutomationDirect matters because of US small-utility ubiquity and a fresh advisory stream: CLICK PLUS ICSA-25-266-01 lists seven CVEs including a hard-coded AES key and CVSS v4 8.7 PRNG and RSA flaws (<a href="https://www.cisa.gov/news-events/ics-advisories/icsa-25-266-01">CISA</a>), and ICSA-26-022-02 (Jan 2026) reports that CLICK PLUS project files store passwords with weak encoding or in plaintext so "an attacker with access to the project file could use exposed credentials" (<a href="https://www.cisa.gov/news-events/ics-advisories/icsa-26-022-02">CISA</a>) — which makes a <code>.ckp</code> parser a high-value credential extractor for PEAT's user model, if the format can be understood. The tooling is unusually good: <code>pyclickplc</code> 0.4.1 (MIT, Oct 2026) is an async Modbus/TCP client plus a <code>ClickServer</code> that "simulates a CLICK PLC over Modbus TCP" for "development and testing without hardware", and reads the CLICK software's open nickname CSV and DataView CDV exports (<a href="https://pypi.org/pypi/pyclickplc/json">PyPI pyclickplc</a>; <a href="https://github.com/ssweber/pyclickplc">GitHub</a>). For Do-more, a long-time community expert reports that the Do-more Designer simulator "just listens on port 28784 (0x7070) and does not specifically bind to an adapter" and that a Modbus/TCP HMI connected to it via the PC's IP (<a href="https://community.automationdirect.com/s/question/0D53u000029KbeuCAC/connecting-an-hmi-simulator-to-the-domore-simulator">AutomationDirect Community</a>), making it the one free vendor simulator in this study that answers vendor-ish traffic on a NIC — but only on a Windows runner, and its silent-install behaviour is unverified. The Productivity Suite simulator (3.8+) exposes Modbus/TCP only (<a href="https://community.automationdirect.com/s/question/0D53u00002RftjpCAB/hmi-and-simulator">AutomationDirect Community</a>). Fit: PEAT's Modbus code is reusable; CLICK PLUS's native KOPS/KOPR session protocol and Do-more's native protocol are proprietary (large, EULA-risky). Legal: no AutomationDirect EULA text was retrievable; check before reverse-engineering <code>.ckp</code>/<code>.dmd</code>. Effort: CSV/CDV parse small, <code>.ckp</code> medium; Modbus-based scan small-medium.</p>
+<h3 id="unitronics-vision--samba-rank-6">Unitronics Vision / Samba (rank 6)</h3>
+<p>Unitronics is the highest-signal small-PLC target for Sandia's mission because it is tied to a confirmed nation-state campaign: AA23-335A documents IRGC-affiliated "CyberAv3ngers" compromising at least 75 Unitronics Vision devices, at least 34 in the US water and wastewater sector, by brute-forcing internet-exposed TCP 20256, erasing ladder logic and defacing HMIs (<a href="https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-335a">CISA AA23-335A</a>). The protocol is officially documented: Unitronics' PCOM specification defines ASCII and binary framing, the 6-byte TCP header (transaction ID, protocol 101/102, length), and the ID/UG/GF-style identity commands (<a href="https://www.unitronicsplc.com/Download/SoftwareUtilities/Unitronics%20PCOM%20Protocol.pdf">Unitronics PCOM PDF</a>). Reusable code is plentiful and GPLv3-compatible: <code>pcom</code> on PyPI is MIT (Ethernet only, v0.11 from 2022) (<a href="https://pypi.org/project/pcom/">PyPI pcom</a>); Claroty's PCOM-Tools provide a modular client with opcodes for Get PLC Name (0x0C), Read Operand (0x4D) and the ID/UG/GF identity strings (<a href="https://github.com/claroty/PCOM-Tools">claroty/PCOM-Tools</a>); Praetorian's Apache-2.0 Nerva fingerprinter documents the PCOM/TCP probe on 20256 (<a href="https://github.com/praetorian-inc/nerva">nerva</a>). No vendor simulator exists, but the protocol is simple enough that a mock PCOM server answering ID/UG/GF is a small, cross-platform CI fixture.</p>
+<p>File format: ZDI-16-375 states the VisiLogic <code>.vlp</code> project "uses the zip file format" (<a href="https://zerodayinitiative.com/advisories/ZDI-16-375/">ZDI-16-375</a>), and VisiLogic itself is free ("All Unitronics software &amp; utilities—plus updates—provided at no charge", latest 9.9.01 (<a href="https://www.unitronicsplc.com/software-visilogic-for-programmable-controllers/">Unitronics VisiLogic</a>)), so PEAT can author its own <code>.vlp</code> fixtures on Windows; the encoding of the inner ZIP members was not inspected and is the parse risk. Fit: PCOM/TCP is a new protocol driver but tiny. Legal: read the VisiLogic EULA before shipping a <code>.vlp</code> parser; do not redistribute vendor sample projects. Effort: parse medium; scan small-medium; pull of PLC name, unit ID and firmware via PCOM small once a mock exists.</p>
+<h3 id="codesys-v3-generic-runtime-rank-7">CODESYS V3 generic runtime (rank 7)</h3>
+<p>One CODESYS module fingerprints a very large installed base: CODESYS claims about 1,000 device types from more than 500 manufacturers (<a href="https://devices.codesys.com">devices.codesys.com</a>), Microsoft tested its CoDe16 vulnerabilities on Schneider Modicon TM251 and WAGO PFC200 (<a href="https://www.microsoft.com/en-us/security/blog/2023/08/10/multiple-high-severity-vulnerabilities-in-codesys-v3-sdk-could-lead-to-rce-or-dos/">Microsoft Security Blog</a>), and CISA's ICSA-25-093-03 covers ABB ACS880 drives "Containing CODESYS RTS" (<a href="https://www.cisa.gov/news-events/ics-advisories/icsa-25-093-03">CISA</a>). The simulator is official: the CODESYS Virtual Control SL datasheet lists "Demo-/Test-Mode: yes, 2 hours", delivery as a Debian package and a container image (x86_64/ARM64, Docker or Podman, kernel ≥6.1), and "Without a license, each controller runs in demo mode for two hours" (<a href="https://us.store.codesys.com/media/n98_media_assets/files/000138/2/CODESYS%20Virtual%20Control%20SL_en.pdf">Virtual Control SL datasheet</a>); Intel's ECI documentation confirms the Linux runtime "is free to use without a license" but stops after two hours and that the store download "requires an account" (<a href="https://eci.intel.com/docs/3.1/components/codesys.html">Intel ECI</a>). A two-hour limit is harmless for a CI job, but the account-gated EULA means the CI pipeline must fetch the package with credentials or use a private image rather than publishing one.</p>
+<p>Protocol documentation is unofficial but sufficient: Microsoft's MIT-licensed CoDe16 repository contains a Wireshark dissector for the CODESYS V3 protocol and an "active tool to extract the CODESYS V3 runtime version of devices" (archived June 2026, still cloneable) (<a href="https://github.com/microsoft/CoDe16">microsoft/CoDe16</a>); Kaspersky's 2019 analysis maps the four-layer PDU (block driver, datagram, channel, services) and service IDs such as CmpDevice 0x1 and CmpApp 0x2 (<a href="https://go.kaspersky.com/rs/802-IJN-240/images/06-Alexander-Nochvay-The-fall-of-CODESYS.-Researching-security-of-the-framework-for-PLC-control.pdf">Kaspersky PDF</a>); Nozomi documents a UDP-only discovery on ports 1740–1743 returning <code>device_name</code>, <code>node_name</code>, <code>serial_number</code>, <code>vendor_name</code> and <code>version</code> (<a href="https://technicaldocs.nozominetworks.com/products/discovery/autogenerated/topics/r_discovery_strategies_codesys.html">Nozomi</a>). File formats: CODESYS documents two exports — a native XML <code>*.export</code> "fully compatible with the CODESYS project format" and PLCopen XML, which "defines a subset" (<a href="https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_project_export_import.html">CODESYS Help</a>) — and PLCopen TC6 maps directly onto PEAT's existing PLCopen generator and the Beremiz-style <code>plc.xml</code> fixture already in the repo. The <code>.project</code> container is undocumented; do not attempt it. Pull of logic (CmpFileTransfer, CmpApp) requires the authenticated, partially encrypted channel and raises EULA questions, so scope pull to web/OPC UA/SSH side services. Effort: scan medium (two to four weeks including a packet capture against the container to pin the 72-byte discovery frame); parse small-medium.</p>
+<h2 id="cheap-extensions-reuse-controllogix-openplc-m340-and-eds-code">Cheap extensions reuse ControlLogix, OpenPLC, M340 and EDS code</h2>
+<h3 id="compactlogix--guardlogix-via-the-controllogix-module-rank-3">CompactLogix / GuardLogix via the ControlLogix module (rank 3)</h3>
+<p>Rockwell's own reference manual requires any third-party communications software for "a ControlLogix or CompactLogix controller" to follow the same Logix 5000 Data Access manual 1756-PM020 (<a href="https://manualmachine.com/rockwellautomation/controllogix/17911447-reference-manual">Logix 5000 reference manual</a>), and pycomm3 and pylogix both treat CompactLogix identically to ControlLogix (<a href="https://github.com/ottowayi/pycomm3">pycomm3</a>; <a href="https://pypi.org/project/pylogix/">pylogix</a>). The L5X schema is shared, so PEAT's parser works today; pycomm3's MIT repository contains an L5X test export usable as a fixture, though whether it came from a CompactLogix was not checked. For scan, cpppo's <code>enip_server</code> answers broadcast ListIdentity and lets <code>cpppo.cfg</code> override the Identity Object's Product Name (dual GPLv3/proprietary; 5.2.5 released Feb 2025; PyPI classifiers list only generic Python 2/3, so a 3.11–3.13 smoke test is required) (<a href="https://github.com/pjkundert/cpppo">cpppo GitHub</a>; <a href="https://pypi.org/project/cpppo/">PyPI</a>), and Conpot's Docker image ships an ENIP identity of VendorId 1, DeviceType 14, ProductCode 90, ProductName "1756-L61/B LOGIX5561" on port 44818 (<a href="https://raw.githubusercontent.com/mushorg/conpot/master/conpot/templates/default/enip.toml">conpot enip.toml</a>). That Conpot identity is a useful negative test: product code 90 is in PEAT's <code>MLX_PRODUCT_CODES</code> (MicroLogix 1400 or 1794-AENT) in <code>peat/modules/rockwell/clx_const.py</code>, so PEAT would brand it "MicroLogix" — an argument for the <code>(vendor, device_type, product_code)</code> lookup that <code>clx_const.py</code> and <code>ab_scan.py</code> already carry as <code>TODO</code>s. Caveats: Conpot's ENIP is <code>mode = "tcp"</code>, so UDP broadcast ListIdentity is likely unanswered; neither emulator supports connected messaging, program upload or PCCC, so pull/push remain untestable without FactoryTalk Logix Echo (30-day trial requiring Studio 5000 (<a href="https://www.rockwellautomation.com/en-us/company/news/blogs/factorytalk-logix-echo-30.html">Rockwell blog</a>)) or hardware; CompactLogix 5380/5480 use a different slot/path model than 1756 backplanes and enforce ANSI Extended Symbolic 0x91 segments, so <code>ab_scan.py</code>'s <code>chassis_size=8</code> enumeration needs a per-family strategy. Security relevance: SD1693/CVE-2024-6077 is a CIP Security Object DoS on CompactLogix 5380 requiring factory reset (<a href="https://www.rockwellautomation.com/en-us/trust-center/security-advisories/advisory.SD1693.html">Rockwell SD1693</a>). Effort: small.</p>
+<h3 id="openplc-runtime-v3-via-the-v4-module-rank-4">OpenPLC Runtime v3 via the v4 module (rank 4)</h3>
+<p>OpenPLC v3 is archived and "has reached End of Life", but it remains buildable: <code>./install.sh docker</code> or <code>docker build -t openplc:v3 .</code> then <code>-p 8080:8080</code> (<a href="https://github.com/thiagoralves/OpenPLC_v3">thiagoralves/OpenPLC_v3</a>). Its <code>webserver.py</code> is a Flask app on 0.0.0.0:8080 with a second Flask app on 8443 exposing a <code>/api</code> blueprint (<code>start-plc</code>, <code>stop-plc</code>, <code>status</code>, <code>upload-file</code>), plaintext password comparison, and routes <code>/programs</code>, <code>/users</code>, <code>/settings</code>, <code>/hardware</code>, <code>/runtime_logs</code>, <code>/upload-program</code>, <code>/compile-program</code> (<a href="https://raw.githubusercontent.com/thiagoralves/OpenPLC_v3/master/webserver/webserver.py">webserver.py</a>) — a direct adaptation of PEAT's <code>requests</code>-based <code>openplcv4.py</code>, whose CI already runs <code>ghcr.io/autonomy-logic/openplc-runtime:latest</code> in <code>.github/workflows/tests-container.yml</code>. PEAT's fixture <code>tests/modules/openplc/data_files/Relay_Blink_PLC.zip</code> already contains a PLCopen TC6 v2.01 <code>plc.xml</code>. Security relevance: an NVD keyword search returns 26 OpenPLC CVEs including CVE-2024-34026 (EtherNet/IP stack overflow RCE, 9.8), CVE-2025-1066 (arbitrary upload, 9.8) and CVE-2026-28205 (API auth bypass, 9.8) (<a href="https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=OpenPLC&amp;resultsPerPage=50">NVD</a>). Licence: GPL-3.0 runtime, compatible. Effort: small (days) for parse, scan, pull and push.</p>
+<h3 id="m580--quantum--premium--momentum-via-the-m340-umas-code-rank-13">M580 / Quantum / Premium / Momentum via the M340 UMAS code (rank 13)</h3>
+<p>Kaspersky's UMAS analysis confirms M340 and M580 share the protocol (Modbus function 0x5A, one-byte session key, UMAS function code), with differences only in fix versions (M340 3.50, M580 4.10) and in M580 4.x "secure UMAS" authentication (<a href="https://ics-cert.kaspersky.com/publications/reports/2022/09/29/the-secrets-of-schneider-electrics-umas-protocol/">Kaspersky ICS-CERT</a>); PEAT's <code>umas_codes.py</code>/<code>umas_packets.py</code> therefore extend with identity/CPU-model decoding per family. The parse path is Control Expert's <code>.xef</code> export, "an XML source format" containing I/O configuration, sections, DFB types, DDTs and variables, documented in the Operating Modes manual (<a href="https://www.se.com/au/en/faqs/FAQ000259996">se.com FAQ000259996</a>); demo `.xef` files (Quantum and Premium) ship with Control Expert and are attached to a public FAQ (<a href="https://www.se.com/be/en/faqs/FA364303">se.com FA364303</a>), but they are Schneider-copyrighted, so PEAT should commit a hand-authored minimal XEF instead. The highest-fidelity simulator is Control Expert's built-in PLC simulator: Cisco Talos documented that it "opens 0.0.0.0:502 on the host, allowing for any supported UMAS command" including the <code>TAKE_PLC_RESERVATION</code> sequence (<a href="https://talosintelligence.com/vulnerability_reports/TALOS-2019-0771">Talos TALOS-2019-0771</a>), and Control Expert "comes with a 30 day trial license" (<a href="https://www.se.com/us/en/faqs/FA369070">se.com FA369070</a>) — a Windows GUI, so manual regression only, and whether current V15/V16 versions still expose unauthenticated UMAS was not verified. For CI, the pymodbus simulator answering FC43 with Schneider-like strings (BMENOC modules "return vendor name, product name, and version through function code 43" (<a href="https://www.se.com/th/en/faqs/FA406524">se.com FA406524</a>)) or a PEAT-built UMAS responder covers scan. Effort: small-medium.</p>
+<h3 id="micro800-and-connected-components-workbench-rank-12">Micro800 and Connected Components Workbench (rank 12)</h3>
+<p>CCW Standard is free from Rockwell's PCDC and "includes a demo version of Micro800 Simulator" needing no activation (<a href="https://commerce.rockwellautomation.com/rockwell/en/USD/p/9328C-CCW/bundleBrand">Rockwell store</a>); the simulated controller is `2080-LC50-48QWB-SIM` (<a href="https://theautomationblog.com/how-to-use-the-micro800-simulator/">The Automation Blog</a>), and a forum report says the free version drops to Program mode after 10 minutes. The project format is almost certainly XML — CVE-2022-1018 is an XML external entity flaw in CCW ≤12.00 (<a href="https://www.wiz.io/vulnerability-database/cve/cve-2022-1018">wiz.io</a>) — but no primary source confirms the <code>.ccwsln</code>/<code>.ccwarc</code>/<code>.acproj</code> structure, so one Windows session to generate and inspect a project is the gating step. Scan reuses the cpppo/Conpot identity emulation of rank 3 with Micro8xx codes and no backplane path (pylogix: "you must set the Micro800 flag since the path is different" (<a href="https://github.com/dmroeder/pylogix">pylogix</a>)). Security relevance is fresh and critical: ICSA-25-226-25 (Aug 2025) covers Micro820/850/870 with Azure RTOS CVEs at CVSS 9.8 and CVE-2025-7693, a malformed CIP Forward Close that faults the controller (<a href="https://www.cisa.gov/news-events/ics-advisories/icsa-25-226-25">CISA</a>). Effort: parse medium (after format inspection); scan small.</p>
+<h3 id="eds-based-identity-enrichment-fleet-wide">EDS-based identity enrichment (fleet-wide)</h3>
+<p>EDS files are plain ASCII, distributed free via PCDC (<a href="https://www.rockwellautomation.com/en-us/support/product/product-downloads">Rockwell product downloads</a>), and are the canonical source for vendor/device-type/product-code-to-name mappings that PEAT's <code>clx_const.py</code> hard-codes today; <code>controllogix.py</code> already looks for <code>*.eds</code> on EN2T/EWEB FTP shares. Because EDS redistribution terms were not found, PEAT should ship a <em>derived</em> lookup table rather than the files. Effort: small once a bulk EDS source is obtained; it directly improves scan accuracy for PowerFlex, Kinetix, POINT/FLEX I/O and switches as well as controllers.</p>
+<h2 id="network-infrastructure-opnsense-mikrotik-and-vyos-boot-free-under-kvm">Network infrastructure: OPNsense, MikroTik and VyOS boot free under KVM</h2>
+<p>These three are the only candidates whose free soft target is the vendor's real operating system. GitHub's hosted 2-vCPU Linux runners have exposed KVM since April 2024 (the example workflow adds a <code>99-kvm4all.rules</code> udev rule) (<a href="https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available/">GitHub Changelog</a>), so an opt-in Linux integration job can boot one qcow2 and run scan and pull tests against it, while Windows/macOS jobs run parse tests only.</p>
+<p><strong>OPNsense (rank 10)</strong> is BSD-2-Clause (<a href="https://raw.githubusercontent.com/opnsense/core/master/LICENSE">LICENSE</a>), downloads anonymously from community mirrors as <code>dvd</code>/<code>vga</code>/<code>serial</code>/<code>nano</code> images with default credentials <code>root</code>/<code>opnsense</code> (<a href="https://docs.opnsense.org/manual/install.html">install docs</a>), and exposes a documented REST API at <code>https://&lt;host&gt;/api/&lt;module&gt;/&lt;controller&gt;/&lt;command&gt;</code> authenticated with a key/secret pair (<a href="https://docs.opnsense.org/development/api.html">API docs</a>). The <code>nano</code> image is pre-installed, avoiding the interactive installer, and a community KVM-in-Docker image (<code>koichirok/docker-opnsense</code>, needs <code>/dev/kvm</code>, stale by a year) shows the pattern (<a href="https://hub.docker.com/r/koichirok/docker-opnsense">Docker Hub</a>). The only official fixture is a partial <code>config.xml.sample</code> with <code>&lt;system&gt;</code>, <code>&lt;interfaces&gt;</code>, <code>&lt;nat&gt;</code> and an <code>&lt;OPNsense&gt;</code> model section but no <code>&lt;dhcpd&gt;</code>, <code>&lt;snmpd&gt;</code> or <code>&lt;syslog&gt;</code> (<a href="https://raw.githubusercontent.com/opnsense/core/master/src/etc/config.xml.sample">config.xml.sample</a>); full fixtures come from the VM. pfSense CE shares the <code>config.xml</code> lineage (Netgate documents it as "all configuration settings including settings for packages" without a schema (<a href="https://docs.netgate.com/pfsense/en/latest/config/xml-configuration-file.html">Netgate docs</a>)) but its download now routes through Netgate's store/installer (<a href="https://www.pfsense.org/download/">pfsense.org/download</a>), so treat pfSense as a parser sibling tested on the OPNsense VM. Fit: HTTPS and SSH are in PEAT; the Fortinet module (~1,660 lines) is the effort yardstick. <code>pyopnsense</code> (GPLv3) is stale since 2023 and not worth adopting. Effort: small-medium. OT prevalence of either firewall was not quantified.</p>
+<p><strong>MikroTik RouterOS CHR (rank 9)</strong> is the strongest incident-relevance story among network candidates: CISA warned in September 2026 of CVE-2026-84411, a CVSS 9.8 pre-authentication RCE in RouterOS web management before 7.24 (<a href="https://www.bleepingcomputer.com/news/security/cisa-warns-of-critical-pre-auth-rce-flaw-in-mikrotik-routeros/">BleepingComputer</a>), and MikroTik routers underpin the Mēris botnet and a reported ~230,000-router botnet-as-a-service. The CHR Free licence "runs indefinitely" with only a 1 Mbps per-interface cap, ships RAW/VMDK/VHDX/VDI images, and supports QEMU/KVM (<a href="https://help.mikrotik.com/docs/spaces/ROS/pages/18350234/Cloud+Hosted+Router+CHR">CHR docs</a>; <a href="https://manual.mikrotik.com/docs/getting-started/routeros-licensing/chr/chr-licensing">CHR licensing</a>). The REST API (RouterOS ≥7.1) uses HTTP basic auth with console credentials and <code>POST /rest/export</code> returns the configuration (<a href="https://help.mikrotik.com/docs/spaces/ROS/pages/47579162/REST+API">REST API docs</a>); `/export` produces a plain-text <code>.rsc</code> of <code>add</code>/<code>set</code> commands (omits passwords, certificates and SSH keys) (<a href="https://manual.mikrotik.com/docs/getting-started/configuration-management/">Configuration Management</a>). ntc-templates (Apache-2.0) ships about 47 <code>mikrotik_routeros</code> TextFSM templates with <code>.raw</code> fixtures (<a href="https://raw.githubusercontent.com/networktocode/ntc-templates/master/ntc_templates/templates/index">index</a>; <a href="https://raw.githubusercontent.com/networktocode/ntc-templates/master/LICENSE">LICENSE</a>). Effort: small-medium.</p>
+<p><strong>VyOS (rank 11)</strong> has the cleanest fixture base of the three — 52 smoketest <code>config.boot</code> files in <code>vyos-1x</code> (<a href="https://github.com/vyos/vyos-1x/tree/current/smoketest/configs">smoketest configs</a>) — free rolling ISOs as GitHub releases (LTS binaries are subscriber-only; "VyOS Stream" is free) (<a href="https://vyos.net/get">vyos.net/get</a>), and an HTTP API whose <code>/retrieve</code> and <code>/show</code> endpoints return the structured or flat-<code>set</code> configuration (<a href="https://docs.vyos.io/en/latest/automation/vyos-api.html">VyOS HTTP API</a>). It ranks last in Tier 1 only because no OT prevalence or advisory data was found. Effort: small.</p>
+<p><strong>Juniper vJunos</strong> is legally clean (free, non-production, no time limit, EULA at download (<a href="https://www.juniper.net/us/en/dm/vjunos-labs.html">Juniper vJunos labs</a>)) with Apache-2.0 fixtures (ntc-templates <code>juniper_junos</code>, Batfish) and PyEZ, but needs about 4 vCPU/5 GB, takes ~15 minutes to boot and "cannot be used in deployments launched from within a VM" per containerlab (<a href="https://containerlab.dev/manual/kinds/vr-vjunosswitch/">containerlab vJunos-switch</a>) — a nightly-job candidate at best.</p>
+<p><strong>Cisco IOS/IOS-XE/ASA (rank 23), including Rockwell Stratix and Catalyst IE rugged switches</strong>, has the richest fixture base of any candidate (ntc-templates <code>cisco_ios</code>/<code>cisco_asa</code>/<code>cisco_nxos</code>/<code>cisco_xr</code> and Batfish grammar tests, all Apache-2.0 (<a href="https://batfish.readthedocs.io/en/latest/supported_devices.html">Batfish supported devices</a>)) and the highest OT prevalence, but no legal free CI target: CML-Free allows 5 nodes on VMware or bare metal and "the Cisco VM images provided for download are only licensed for use within Cisco Modeling Labs" (<a href="https://developer.cisco.com/docs/modeling-labs/cml-free/">CML-Free docs</a>). Note that ntc-templates deliberately has no whole <code>show running-config</code> template for IOS, so PEAT would write its own indent parser (as the Fortinet module does) or adopt <code>ciscoconfparse2</code>, which is GPLv3 and compatible but heavyweight (<a href="https://pypi.org/project/ciscoconfparse2">PyPI ciscoconfparse2</a>). Stratix is security-relevant now — SD1749/CVE-2025-20352 is a KEV-listed Cisco IOS SNMP RCE/DoS affecting Stratix 5700/5400/5410/5200/5800 (<a href="https://www.rockwellautomation.com/en-us/trust-center/security-advisories/advisory.SD1749.html">Rockwell SD1749</a>) — but its Cisco lineage could not be confirmed from a primary source this session. A parse-first <code>peat/modules/cisco</code> with Stratix detection strings is the realistic design.</p>
+<p><strong>Moxa and Lantronix (rank 21)</strong> are scan-only wins. Metasploit's <code>moxa_discover</code> sends 8 bytes <code>01 00 00 08 00 00 00 00</code> to UDP/4800 and expects a 24-byte reply starting <code>0x81</code> with the Moxa OUI <code>00:90:e8</code> at bytes 14–16 (<a href="https://raw.githubusercontent.com/rapid7/metasploit-framework/master/modules/auxiliary/scanner/scada/moxa_discover.rb">moxa_discover.rb</a>); a 2019 Habr write-up adds the 6-byte model identifier and NPort control ports 966–969/4900 (<a href="https://habr.com/ru/post/478642">Habr</a>). Lantronix's discovery on UDP/30718 uses a <code>00 00 00 F8</code> probe and a <code>0xF9</code> setup record (<a href="https://raw.githubusercontent.com/rapid7/metasploit-framework/master/modules/auxiliary/scanner/telnet/lantronix_telnet_password.rb">lantronix_telnet_password.rb</a>). Both are 30-line mock responders for CI. Moxa carries many CISA advisories (ICSA-20-056-04 has four CVSS 9.8 CVEs on EDS-G516E/510E (<a href="https://www.cisa.gov/news-events/ics-advisories/icsa-20-056-04">CISA</a>)), but its <code>.ini</code>/CLI export schema is undocumented, so parse is blocked. Caution: the same ports leak credentials (CVE-2016-9361) and FortiGuard has an IDS signature for "Moxa UDP Device Discovery", so PEAT's probe must stay read-only and be documented.</p>
+<p><strong>Siemens SCALANCE and RUGGEDCOM ROS (rank 24)</strong> fit PEAT's SNMP/HTTPS/Telnet/SSH stack perfectly and have documented text exports — SCALANCE's Load&amp;Save <code>RunningCLI</code> is "a text file of the current configuration as CLI commands" with passwords masked and <code>LogFile</code> is plain ASCII, while <code>Config</code>/<code>ConfigPack</code>/<code>Firmware</code> are binary or "signed and encrypted" (<a href="https://manualslib.com/manual/1933699/Siemens-Simatic-Net-Scalance-S615.html?page=123">S615 WBM manual</a>); RUGGEDCOM ROS stores "the complete configuration database, in the form of a comma-delimited ASCII text file" <code>config.csv</code> with documented partial-update examples and a Modbus Product Identification register at 0x0000 (<a href="https://cache.industry.siemens.com/dl/files/570/108275570/att_59166/v1/ROS_RS416_User-Guide_EN.pdf">Siemens ROS v4.1 guide</a>) — but no public sample of either export exists and no emulator exists, so both are fixture-blocked until an operator donates a file or a recorded SNMP walk.</p>
+<h2 id="software-targets-kepware-ignition-twincat-vtscada-and-niagara">Software targets: Kepware, Ignition, TwinCAT, VTScada and Niagara</h2>
+<p><strong>Kepware Server (rank 17)</strong> is the best parse-only software target. PTC's 6.0 release notes added "exporting project files to a human-editable JSON format, which replaces the XML format previously used" (<a href="https://support.ptc.com/help/kepware/kepserverex/en/kepware/kepserverex/whats_new/whats_new_6_0_2107_0.html">PTC What's New 6.0</a>); the demo "will run for 2 hours at a time" with unlimited channels, devices and tags (<a href="https://ptc.com/products/kepware/KEPServerEX/demo-download">PTC demo</a>); and the JSON structure (<code>servermain.PROJECT_TITLE</code>, <code>channels[]</code>, <code>devices[]</code> with <code>servermain.DEVICE_ID_STRING</code> and driver keys such as <code>modbus_ethernet.DEVICE_ETHERNET_PORT_NUMBER</code>, <code>tags[]</code> with <code>servermain.TAG_ADDRESS</code>) is documented by third parties, as is the Configuration API on HTTP 57412/HTTPS 57512 whose <code>GET /config/v1/project?content=serialize</code> returns the same JSON (<a href="https://docs.cybus.io/guides/migration/migrating-from-kepware-kepserverex">Cybus migration guide</a>). The parser therefore doubles as a future pull module and yields a device inventory of everything the OPC server polls. ICSA-24-228-11 names "PTC Kepware Server V6, KEPServerEX V6, Software Toolbox TOP Server V6, and GE IGS V7.6x" as one codebase (<a href="https://cisa.gov/news-events/ics-advisories/icsa-24-228-11">CISA</a>), and earlier advisories reached CVSS 9.8 (ICSA-22-242-10, ICSA-20-352-02 (<a href="https://cisa.gov/ics/advisories/icsa-22-242-10">CISA</a>; <a href="https://us-cert.cisa.gov/ics/advisories/icsa-20-352-02">CISA</a>)), so one parser also covers GE iFIX's bundled Industrial Gateway Server. Caveat: "Project File Encryption" is on by default and must be disabled before JSON export. Scan is Windows-only and form-gated. Effort: parse small-medium.</p>
+<p><strong>Ignition (rank 8)</strong> has an official Docker image (<code>inductiveautomation/ignition</code>, &gt;1M pulls, <code>ACCEPT_IGNITION_EULA=Y</code>, port 8088) (<a href="https://hub.docker.com/r/inductiveautomation/ignition">Docker Hub</a>); unlicensed modules "run for two hours at a time" and "you can reset the timer as many times as you want" (<a href="https://docs.inductiveautomation.com/docs/8.1/platform/licensing-and-activation">Ignition licensing</a>). The <code>.gwbk</code> backup is a ZIP ("Rename it as .zip. Then extract") containing <code>db_backup_sqlite.idb</code> and project folders (<a href="https://forum.inductiveautomation.com/t/how-open-the-gwbk-file/79511.md">IA forum</a>), parseable with <code>zipfile</code>, <code>sqlite3</code> and <code>json</code>. Maker Edition is "for non-commercial, personal educational use only" (<a href="https://docs.inductiveautomation.com/docs/8.1/other-editions/ignition-maker-edition">Maker docs</a>) — do not use it for PEAT fixtures; use trial mode. CISA advisory history and OT prevalence were not researched (gap). Effort: parse medium, scan small.</p>
+<p><strong>Beckhoff TwinCAT 3 (rank 18)</strong> is the best fixture story and the worst scan story. <code>.TcPOU</code> files hold PLC code as XML with Declaration and Implementation sections, <code>.plcproj</code> is MSBuild XML and <code>.tsproj</code> is TcSmProject XML (<a href="https://pirminbleiker.github.io/st-lsp/features/twincat.html">ST-LSP TwinCAT</a>); Beckhoff's GitHub organisation (58 repositories) publishes sample projects such as <code>TF6100_Samples</code> "as-is under the Zero-Clause BSD license" (<a href="https://github.com/Beckhoff/TF6100_Samples">TF6100_Samples</a>; <a href="https://github.com/orgs/Beckhoff/repositories">Beckhoff org</a>), though many repos are labelled "Other" and need per-repo checks. ADS is fully documented — Command 0x0001 "ADS Read Device Info" returns version and a 16-byte device name; TCP 48898, UDP 48899 broadcast search, TCP 8016 Secure ADS (<a href="https://download.beckhoff.com/download/Document/automation/twincat3/TwinCAT_3_ADS_INTRO_EN.pdf">TE1000 ADS INTRO</a>) — and <code>pyads</code> is MIT (<a href="https://github.com/stlehmann/pyads">pyads</a>), so scan code can be written from the spec, but the runtime is a 7-day renewable Windows trial (<a href="https://infosys.beckhoff.com/content/1033/tc3_licensing/179888523.html">Beckhoff licensing</a>) and the containerized XAR "is designed for Beckhoff Industrial PCs running Beckhoff Real-Time Linux". Do TwinCAT as a parse module; keep the ADS probe untested until hardware appears.</p>
+<p><strong>VTScada / VTScadaLIGHT (rank 25)</strong> is free up to 50 I/O tags with "nearly all features enabled" (<a href="https://vtscada.com/free">VTScadaLIGHT</a>) and stores applications as text: <code>AppRoot.SRC</code>, <code>Settings.Dynamic</code>/<code>Settings.Startup</code> (INI-style), <code>Servers.XML</code>, <code>Pages/*.SRC</code> (<a href="https://vtscada.com/help/Content/Dev_Welcome/Dev_FilesAndFolders.htm">Files and Folders</a>). CISA's ICSA-22-300-04 (CVSS 7.5, VTScada ≤12.0.38 accepting HTTP(S)) lists energy and water/wastewater as exposed sectors (<a href="https://cisa.gov/uscert/ics/advisories/icsa-22-300-04">CISA</a>). Parse is feasible from self-authored fixtures (VTScada script syntax is the effort); scan is Windows-only.</p>
+<p><strong>Tridium Niagara (rank 22)</strong> is the highest-value building-automation target and the most frustrating. The Fox handshake is fully specified in nmap's <code>fox-info.nse</code>: probe <code>fox a 1 -1 fox hello\n{\nfox.version=s:1.0\nid=i:1\n};;</code> on 1911/4911, reply <code>fox a 0 {...}</code> with <code>hostName</code>, <code>app.name</code>, <code>app.version</code>, <code>vm.version</code>, <code>os.name</code>, <code>hostId</code>, <code>brandId</code> (<a href="https://svn.nmap.org/nmap/scripts/fox-info.nse">fox-info.nse</a>), so a PEAT fingerprinter and a mock responder are both small. Parse is blocked: a <code>.dist</code> backup "contains the entire station folder" plus <code>config.bog</code>, licences and certificates (<a href="https://community.se.com/t5/Building-Automation-Knowledge/Niagara-G3-AX-Station-Save-and-Backup-Station/ta-p/8749">Schneider community</a>), but no free Workbench exists, no sample <code>.dist</code>/<code>.bog</code> was found, and a "Niagara 4.15 Station Bog File Encryption Changes" article could not be opened. Relevance is high — Nozomi's 2025 research produced ten CVEs (CVE-2025-3936 to -3945) with an exploit chain to root and station TLS key theft on misconfigured systems (<a href="https://www.nozominetworks.com/blog/critical-vulnerabilities-found-in-tridium-niagara-framework">Nozomi</a>; <a href="https://www.runzero.com/blog/tridium-niagara/">runZero</a>).</p>
+<h2 id="standards-based-primitives-multiply-vendor-coverage">Standards-based primitives multiply vendor coverage</h2>
+<p><strong>Modbus FC43 Read Device Identification (rank 14)</strong> is the cheapest scan upgrade in this report. PEAT's M340 module already issues FC43 (<code>peat/modules/schneider/m340/m340.py</code>, "Method #1: Use Modbus/TCP Function Code 43"), but PEAT has no shared Modbus protocol module — Modbus exists ad hoc in the Woodward, Camlin and M340 code — so promoting FC43 to a generic <code>IPMethod</code> is both a refactor and a coverage win. The pymodbus 3.x simulator (BSD-3, pure Python, Python ≥3.10, 3.16.1 released Oct 2026) takes a JSON config whose server entries include an <code>identity</code> block with <code>VendorName</code>, <code>ProductCode</code>, <code>VendorUrl</code>, <code>ProductName</code>, <code>ModelName</code>, <code>MajorMinorRevision</code> and supports tcp/udp/serial/tls (<a href="https://pypi.org/project/pymodbus/">PyPI pymodbus</a>; <a href="https://pymodbus.readthedocs.io/en/latest/source/library/simulator/config.html">simulator config</a>) — a cross-platform CI fixture that can impersonate any Schneider, AutomationDirect, Eaton or Weintek identity. Caveat: "not all Modbus devices support this function", and which Schneider families return which objects was not enumerated. Effort: small.</p>
+<p><strong>BACnet/IP (rank 15)</strong> gives one module for every building-automation vendor because Device-object identity properties are standardized. Three free simulators exist: bacnet-stack's root <code>Dockerfile</code> runs <code>bacserv</code> on <code>47808/udp</code> with device instance 1234 and name <code>test_server</code> (core licence GPL-2.0-or-later with GCC linking exception; embedded in shipping Johnson Controls EasyIO controllers) (<a href="https://github.com/bacnet-stack/bacnet-stack/blob/master/Dockerfile">Dockerfile</a>; <a href="https://github.com/bacnet-stack/bacnet-stack">bacnet-stack</a>); bacpypes3 (MIT, 0.0.110 released Sept 2026) ships <code>mini-device-revisited.py</code>, <code>custom-server.py</code> and discovery samples in pure Python (<a href="https://github.com/JoelBender/BACpypes3/tree/main/samples">samples</a>; <a href="https://pypi.org/project/bacpypes3/">PyPI</a>); YABE (MIT) includes three demo servers on Windows/Mono (<a href="https://sourceforge.net/projects/yetanotherbacnetexplorer/">SourceForge</a>). Who-Is is UDP broadcast, so Docker tests need unicast Who-Is or host networking. There is no vendor-neutral BACnet file to parse. Effort: small-medium.</p>
+<p><strong>OPC UA (rank 16)</strong> is embedded in CODESYS, TwinCAT, Ignition, FUXA and most modern PLCs, and the standard's <code>FindServers</code> "does not require message security" and returns <code>applicationUri</code>, <code>applicationName</code> and <code>discoveryUrls</code>, while <code>BuildInfo</code> exposes <code>manufacturerName</code>, <code>productName</code>, <code>softwareVersion</code> (<a href="https://reference.opcfoundation.org/Core/Part4/v105/docs/5.5.2">OPC UA Part 4</a>; <a href="https://reference.opcfoundation.org/Core/Part5/v105/docs/12.4">Part 5</a>). Microsoft's OPC PLC is an MIT Docker image on port 50000 with "Anonymous and X.509 certificate authentication ... on by default" (<a href="https://github.com/Azure-Samples/iot-edge-opc-plc">iot-edge-opc-plc</a>); asyncua (LGPL-3.0, 2.1.0 Oct 2026) provides a pure-Python server and <code>uadiscover</code> for non-Docker runners (<a href="https://pypi.org/project/asyncua/">PyPI asyncua</a>). Effort: medium (new dependency; GetEndpoints plus ServerStatus and namespace reads).</p>
+<p><strong>DNP3 Group 0 device attributes (rank 19)</strong> are the best multi-vendor substation scan path PEAT lacks. Wireshark's dissector enumerates the variations: 242 software version, 243 hardware version, 245 location, 247 device name, 248 serial number, 250 product name and model, 252 manufacturer, 254 "non-specific all-attributes request", 255 list of variations, 209 Secure Authentication version (<a href="https://gitlab.com/wireshark/wireshark/-/raw/master/epan/dissectors/packet-dnp.c">packet-dnp.c</a>); DNP.org calls DNP3 "an open and public protocol" widely used in water, transportation and oil and gas (<a href="https://www.dnp.org/About/Overview-of-DNP3-Protocol">DNP.org</a>). CI oracles are Linux-only: opendnp3 3.1.1 (Apache-2.0, archived 2022 with an end-of-life notice (<a href="https://github.com/dnp3/opendnp3">opendnp3</a>)) has <code>outstation</code> examples, and Sandia's bennu vendors the same opendnp3 inside a GPLv3 Docker build (<a href="https://raw.githubusercontent.com/sandialabs/sceptre-bennu/main/src/bennu/devices/modules/comms/dnp3/protocol/CMakeLists.txt">bennu dnp3 CMakeLists</a>). Python options are weak — <code>dnp3-python</code> ships manylinux wheels only for CPython 3.8–3.10 (<a href="https://pypi.org/pypi/dnp3-python/json">PyPI</a>) and pydnp3 must be built from source — so PEAT would write a minimal pure-Python link/transport/application encoder (~1–2k lines, medium effort) and a stub outstation for Windows/macOS runners. Whether opendnp3's example outstation populates Group 0 by default was not verified.</p>
+<p><strong>COMTRADE (rank 20)</strong> is a near-free parse module that attaches event records to the existing SEL and GE relay modules and the new 61850 module: <code>comtrade</code> (dparrini/python-comtrade) is MIT, supports IEEE C37.111-1991/1999/2013 and IEC 60255-24, reads CFG+DAT and CFF, requires Python ≥3.11, and released 0.2.0 on 2026-10-21 (<a href="https://github.com/dparrini/python-comtrade">README</a>; <a href="https://pypi.org/pypi/comtrade/json">PyPI</a>); its `tests/sample_files` holds 14 fixtures across ASCII, binary, float32 and two encodings (<a href="https://github.com/dparrini/python-comtrade/tree/master/tests/sample_files">sample_files</a>). libiec61850's MMS file services are "needed for COMTRADE downloads" (<a href="https://github.com/mz-automation/libiec61850">libiec61850</a>), so pull comes with the 61850 module.</p>
+<p>Two further standards were evaluated and deprioritized: <strong>IEC 60870-5-104</strong> has in-process servers (<code>c104</code> GPLv3 with Linux/Windows wheels (<a href="https://pypi.org/pypi/c104/json">PyPI c104</a>); lib60870; Conpot) but carries no nameplate, so a scan yields only liveness and ASDU address, and US relevance is lower; <strong>IEEE C37.118</strong> has pyPMU's TinyPMU TCP simulator (BSD-3) and openPDC (MIT), but pyPMU's only release is a 2017 alpha (<a href="https://github.com/iicsys/pypmu">iicsys/pypmu</a>; <a href="https://github.com/GridProtectionAlliance/openPDC">openPDC</a>). <strong>SunSpec Modbus</strong> is mission-aligned — Sandia co-founded the SunSpec/Sandia DER Cybersecurity Work Group in 2017 (<a href="https://sunspec.org/cybersecurity-work-group/">SunSpec</a>) — with Apache-2.0 <code>pysunspec2</code> and JSON model definitions (<a href="https://github.com/sunspec/pysunspec2">pysunspec2</a>; <a href="https://github.com/sunspec/models">models</a>), but no official simulator exists; PEAT would load the model JSON into the pymodbus simulator's register map (medium effort). <strong>Redfish/IPMI</strong> are trivially testable (DMTF emulator BSD-3 on port 5000; <code>vaporio/ipmi-simulator</code> GPL-3 on UDP 623 (<a href="https://github.com/DMTF/Redfish-Interface-Emulator">Redfish emulator</a>; <a href="https://github.com/vapor-ware/ipmi-simulator">ipmi-simulator</a>)) but are generic IT.</p>
+<h2 id="licensing-traps-oracles-you-cannot-use-libraries-you-cannot-link">Licensing traps: oracles you cannot use, libraries you cannot link</h2>
+<p>The most dangerous trap is <strong>Step Function I/O's <code>dnp3</code> library</strong>. It is "publicly available under a non-commercial / non-production license, but it is not 'open source'" (<a href="https://github.com/stepfunc/dnp3">stepfunc/dnp3</a>), and Section 2.6 of its licence prohibits using the software "to design, develop, specify, test, validate, or improve any 'Other Implementation'" of the protocol, "including executing it as a test oracle or source of expected results" (<a href="https://raw.githubusercontent.com/stepfunc/dnp3/master/LICENSE.txt">LICENSE.txt</a>). It must not appear anywhere in PEAT's DNP3 CI; opendnp3 (Apache-2.0) and bennu (GPLv3) are the safe oracles.</p>
+<p><strong>GPLv2-only client libraries cannot be combined with GPLv3 PEAT.</strong> The most active Omron libraries — <code>fins</code> 1.0.5 and <code>aphyt</code> 0.1.30 — carry GPLv2 classifiers (<a href="https://pypi.org/project/fins/">PyPI fins</a>); the MIT `finscommand` avoids the problem (<a href="https://pypi.org/pypi/finscommand/json">PyPI finscommand</a>). Gurux's DLMS libraries are GPL-2.0 dual-licensed (<a href="https://github.com/Gurux/Gurux.DLMS.Python">Gurux.DLMS.Python</a>). Conpot is GPL-2.0 (<a href="https://github.com/mushorg/conpot">mushorg/conpot</a>) and must stay an external test container, never imported. <code>py61850</code> is AGPL-3.0 and Python 3.13-only; avoid. Everything else recommended above is MIT, BSD, Apache-2.0, LGPL or GPLv3: python-snap7, s7commplus, pcom, pyclickplc, bacpypes3, comtrade, <code>iec61850</code> (MIT/Apache), pymodbus (BSD-3), ntc-templates/textfsm/pysunspec2/PyEZ (Apache-2.0), asyncua (LGPL-3), cpppo/ciscoconfparse2/pyiec61850-ng/libiec61850/c104 (GPLv3). The bacpypes3 PyPI metadata disagrees with itself (MIT expression, BSD classifier) — trivial, both permissive.</p>
+<p><strong>Reverse-engineered key material is a separate question from licence text.</strong> <code>s7commplus</code> bundles legacy S7comm-plus session keys derived from HarpoS7 (MIT), and Rogue7 documents that this mechanism was reverse-engineered from TIA and firmware (<a href="https://i.blackhat.com/USA-19/Thursday/us-19-Bitan-Rogue7-Rogue-Engineering-Station-Attacks-On-S7-Simatic-PLCs-wp.pdf">Rogue7</a>); Sandia counsel should review before PEAT ships pull over S7comm-plus. The same logic applies to <code>acd-tools</code> (Apache-2.0, alpha, Kaitai-generated parsers for Studio 5000's proprietary <code>.ACD</code> databases (<a href="https://github.com/hutcheb/acd">hutcheb/acd</a>)) given Rockwell's EULA clause "You may not reverse assemble, reverse engineer, decompile, translate or create derivative works" (<a href="https://www.scribd.com/document/457220554/License">Rockwell EULA copy</a>), to any decryptor for Schneider's <code>.smbp</code> (Claroty showed weak 4-byte XOR and small-keyspace Diffie-Hellman on M221 (<a href="https://claroty.com/2020/11/10/blog-research-schneider-m221-plcs/">Claroty</a>)), and to capture-driven reverse engineering of MicroLogix ladder upload or Do-more's native protocol.</p>
+<p><strong>Vendor sample files are copyrighted; PEAT-authored fixtures are not.</strong> Rockwell's Sample Code Library prompts a per-download licence agreement whose text could not be retrieved (<a href="https://theautomationblog.com/?p=3615">The Automation Blog</a>); Schneider's demo <code>.xef</code> files are Schneider-copyrighted; Horner's water-treatment <code>.csp</code> demo is a marketing asset; KIT's SCDs are CC BY-NC; Cisco CML images are licensed to CML only; Juniper vJunos is "limited to lab use" under its EULA; Ignition Maker is non-commercial-only; NovaTech NCD "may be installed only on computers owned by the end user ... and only for an Orion-related project". The redistributable exceptions are the standards-body and open-source corpora already listed (IEC XSDs under CC-EULA with attribution, OpenSCD, libiec61850, python-comtrade, ntc-templates, Batfish, VyOS smoketests, Beckhoff 0BSD repos, pycomm3's L5X). For every other parser, generate fixtures in free software and record provenance; the TIA Portal, PLCSIM Advanced, CCW, VisiLogic, Kepware, VTScadaLIGHT and CODESYS Store EULAs were not read and should be before trial-generated exports are committed.</p>
+<p><strong>Probing is not free of operational risk.</strong> Moxa UDP/4800 and Lantronix UDP/30718 are the same services that leak credentials (CVE-2016-9361; Lantronix password disclosure rated CVSS 10.0), FortiGuard ships an application-control signature for Moxa discovery, and AA26-231A lists TCP 102 scanning and CPU property enumeration as indicators of compromise. PEAT's scan modules should be read-only by construction and documented so defenders can distinguish them from adversary tooling.</p>
+<h2 id="deferred-candidates-and-what-unblocks-each">Deferred candidates and what unblocks each</h2>
+<p>The following candidates fail one or both of the maintainer's weights today. Each is listed with the single fact that would move it into Tier 1.</p>
+<div class="table-wrap"><table class="deferred">
+<thead>
+<tr>
+<th>Candidate</th>
+<th>Why deferred</th>
+<th>Unblocker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rockwell MicroLogix 1100/1400, SLC 500, PLC-5 (PCCC)</td>
+<td><code>.RSS</code> is proprietary with no open reader; no PCCC-speaking emulator; ladder-upload encoding undocumented (DF1 manual and Wireshark list the function codes only)</td>
+<td>Scan via cpppo identity is possible now; a parse path needs a format spec that does not exist. High relevance (ICSA-22-354-04, threat-actor targeting) argues for a scan + S-file pull module rather than parse</td>
+</tr>
+<tr>
+<td>Rockwell PanelView Plus / FactoryTalk View ME</td>
+<td>Display XML and tag CSV exports are documented but FactoryTalk View Studio is paid; <code>.mer</code> compiled; <code>.apa</code>/<code>.vpd</code> undocumented</td>
+<td>Hand-authored XML/CSV fixtures; Microsoft's 2024 PanelView Plus CIP class write-up (404 at fetch) would open a pull path</td>
+</tr>
+<tr>
+<td>Studio 5000 <code>.ACD</code></td>
+<td>Parse-only via alpha <code>acd-tools</code>; no scan</td>
+<td>Convert ACD→L5X with acd-tools and reuse the L5X parser; counsel review</td>
+</tr>
+<tr>
+<td>Schneider M221 / Machine Expert - Basic <code>.smbp</code></td>
+<td>Reported XML-with-encrypted-contents (unverified); anti-RE risk</td>
+<td>Inspect a self-generated <code>.smbp</code> for PK magic; FC43 scan works today</td>
+</tr>
+<tr>
+<td>Schneider M241–M262 / Machine Expert <code>.project</code></td>
+<td>Proprietary CODESYS container; Windows soft-PLC</td>
+<td><span class="verdict v-na">Covered</span> at identity level by the CODESYS V3 module</td>
+</tr>
+<tr>
+<td>Schneider SCADAPack, ION meters, Geo SCADA Expert</td>
+<td><span class="verdict v-no">No</span> simulators; undocumented project formats (SCADAPack), proprietary ION protocol on 7700–7702, Windows/.NET-only Geo SCADA API</td>
+<td>FC43 scan covers ION/SCADAPack identity; ION needs the prior internal PEAT ION module revived (HTTP/Telnet/Modbus)</td>
+</tr>
+<tr>
+<td>Siemens S7-1500 Web API</td>
+<td>Officially documented pull; no free emulator (PLCSIM Advanced is Windows, 21-day)</td>
+<td>Record JSON fixtures once during a trial; mock HTTP in CI</td>
+</tr>
+<tr>
+<td>Siemens SIPROTEC 5 / DIGSI 5</td>
+<td>DIGSI 5 is paid (Compact/Standard/Premium); <code>.dz5</code> unconfirmed; no simulator</td>
+<td><span class="verdict v-na">Covered</span> by the generic IEC 61850 SCL module; DIGSI 4 XML export is a small extension of the existing SIPROTEC 4 module</td>
+</tr>
+<tr>
+<td>Siemens LOGO!, WinCC/HMI, IOT2050</td>
+<td>LOGO! has no SZL identity; WinCC runtimes have no free network-reachable instance; IOT2050 is generic Linux</td>
+<td>Low value</td>
+</tr>
+<tr>
+<td>Phoenix Contact PLCnext</td>
+<td>Virtual PLCnext container needs a CodeMeter licence server and PREEMPT_RT host</td>
+<td>A licence; <code>.pcwef</code> flat text is parse-plausible</td>
+</tr>
+<tr>
+<td>B&amp;R Automation Studio / ARsim</td>
+<td>Windows-only ARsim; ANSL undocumented; no public samples</td>
+<td>Verified redistributable <code>.apj</code> sample project</td>
+</tr>
+<tr>
+<td>WAGO-specific, Revolution Pi</td>
+<td><span class="verdict v-no">No</span> emulator (MPL-2.0 SDKs build SD images only); RevPi <code>config.rsc</code> is JSON but has no distinct service</td>
+<td>CODESYS module covers WAGO identity</td>
+</tr>
+<tr>
+<td>Mitsubishi MELSEC, Omron, Keyence</td>
+<td>GX Simulator3 and CX-Simulator reachable only via vendor middleware; file formats closed and trial-gated; Keyence KV STUDIO cost unverified</td>
+<td>Mock MC/SLMP or FINS servers; KV STUDIO confirmed free</td>
+</tr>
+<tr>
+<td>Horner Cscape, IDEC, Panasonic, LS, Eaton easyE4, Weintek, Red Lion Crimson</td>
+<td>Formats undocumented; simulator network exposure unverified</td>
+<td>Horner's downloadable <code>.csp</code> demos make it the first to revisit once EULA permits</td>
+</tr>
+<tr>
+<td>Hitachi RTU560, GE <code>.urs</code>, Schneider Easergy/MiCOM, Beckwith, Basler, Eaton Form 6, NovaTech Orion, SEL-2730M</td>
+<td><span class="verdict v-no">No</span> simulators; settings formats unverified or proprietary; NCD licence restrictions</td>
+<td>Donated sample files; generic 61850/DNP3/SNMP scans cover identity</td>
+</tr>
+<tr>
+<td>Palo Alto PAN-OS</td>
+<td>30-day trial with reported manual approval</td>
+<td>Parse-only from Batfish/ntc fixtures is viable now</td>
+</tr>
+<tr>
+<td>Hirschmann, Westermo, Sierra Wireless ALEOS, Cradlepoint, Digi</td>
+<td>Schema-less XML/text exports, undocumented L2 discovery, no fixtures or emulators</td>
+<td>Operator-donated exports</td>
+</tr>
+<tr>
+<td>Water RTUs (Ovarro TBox, Red Lion Sixnet)</td>
+<td>Highest CVSS history (ICSA-23-320-01 CVSS 10.0) but no simulators or samples</td>
+<td>Hardware or donated captures</td>
+</tr>
+<tr>
+<td>IEEE 2030.5, OCPP, DLMS</td>
+<td>Mutual-TLS required (2030.5), chargers are clients (OCPP), .NET-only GPLv2 simulator (DLMS)</td>
+<td>Not scan-fingerprintable without credentials</td>
+</tr>
+<tr>
+<td>FUXA, Rapid SCADA</td>
+<td>Easy Docker targets, MIT/Apache, but low critical-infrastructure relevance</td>
+<td>Useful only as generic HTTP fingerprint workloads</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="verification-gaps-the-researchers-could-not-close">Verification gaps the researchers could not close</h2>
+<p>Every researcher reported that the shared web-search budget ran out mid-task, so the following items are unverified rather than negative findings and should be the first follow-ups.</p>
+<p><strong>Python-version and wheel coverage.</strong> cpppo's PyPI classifiers list only generic Python 2 and 3; its behaviour on 3.11–3.13 is untested. The <code>iec61850</code> PyPI package's wheel list (Linux/Windows/macOS) was not inspected, and its Pre-Alpha server's stability as a CI fixture is unknown. <code>pyiec61850-ng</code> publishes no macOS wheels.</p>
+<p><strong>Emulator capabilities.</strong> Whether python-snap7's server can serve block uploads once blocks are registered was not tested (handlers exist; <code>full_upload</code> failed on an unregistered OB1). Whether cpppo's <code>[Identity]</code> override covers Vendor ID, Device Type, Product Code and Serial Number (not just Product Name) was not confirmed from source. Whether Conpot's TCP-only ENIP answers UDP ListIdentity, whether opendnp3's example outstation populates Group 0 by default, and whether the Micro800 Simulator, Do-more DMSim (silent install), Weintek on-line simulation or Red Lion's emulator expose services on the host NIC during unattended runs were not verified. Whether Control Expert V15/V16 still exposes unauthenticated UMAS on 502 (the Talos finding is from 2019) needs a hands-on test.</p>
+<p><strong>File formats.</strong> Unconfirmed from primary sources: CCW <code>.ccwsln</code>/<code>.ccwarc</code>/<code>.acproj</code> structure; <code>.apa</code>, <code>.vpd</code>, <code>.RSS</code> (CFBF or flat), <code>.smbp</code> (ZIP or encrypted blob), ZEF/STA containers, CODESYS <code>.project</code>, <code>.pcwex</code>, GE <code>.urs</code>, <code>.dz5</code>, <code>.lsc</code>, WinCC <code>.zap</code>, Niagara <code>.bog</code> container and 4.15 encryption, <code>.aaPKG</code>, iFIX/CIMPLICITY formats, and the inner encoding of Unitronics <code>.vlp</code> members.</p>
+<p><strong>Fixtures.</strong> No redistributable public corpus was confirmed for SimaticML, SCALANCE <code>RunningCLI</code>/<code>LogFile</code>, RUGGEDCOM <code>config.csv</code>, Moxa <code>.ini</code>, Hirschmann XML, pfSense's default <code>config.xml</code>, any vendor relay settings export, or any BAS backup. Whether pycomm3's test L5X is CompactLogix or ControlLogix and whether <code>acd-tools</code> ships <code>.ACD</code> test assets were not checked. Redistribution terms were not obtained for Rockwell's Sample Code Library (page returned 403), PCDC EDS files, DMTF Redfish mockups, PTC documentation samples, or Trihedral user-authored applications.</p>
+<p><strong>EULAs.</strong> No vendor EULA text was reviewed for TIA Portal, PLCSIM Advanced, LOGO! Soft Comfort, CCW, VisiLogic, Do-more Designer, CLICK, C-more, Cscape, KV STUDIO, GX Works3, Sysmac Studio, EasyBuilder Pro, Crimson, Kepware, VTScadaLIGHT, InTouch, iFIX, the CODESYS Store, or Juniper's vJunos download page (404 at fetch).</p>
+<p><strong>CI mechanics.</strong> Whether GitHub's current standard <code>ubuntu-latest</code> runners still expose <code>/dev/kvm</code> was not re-verified against runner documentation beyond the April 2024 changelog; whether Linux Docker containers, snapd (OnvifSim) or form-gated Windows demos (Kepware, VTScadaLIGHT, InTouch, iFIX) can run on hosted Windows/macOS runners was not tested.</p>
+<p><strong>Security and prevalence.</strong> CISA advisory identifiers were not captured for SCALANCE, LOGO!, SIPROTEC 5, Beckhoff, PLCnext, B&amp;R, Ignition, FUXA, Rapid SCADA, Revolution Pi, Hirschmann or RUGGEDCOM counts; no quantitative US install-base or internet-exposure data (Shodan/Censys) was obtained for any candidate except Unitronics (Shadowserver's 539 exposed instances in Dec 2023) and Sierra Wireless (Forescout's &gt;86,000 exposed AirLink routers). Rockwell Stratix's Cisco IOS lineage, the ICSA-25-352-07 Micro800 contents, and the exact CIP classes behind CVE-2023-2071 (PanelView Plus RCE) could not be read because the source pages returned 403/404.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>The research reframes the question. PEAT's constraint was assumed to be "which devices can we emulate," but the binding constraint turns out to be "which formats come with files we are allowed to commit." Simulators are now abundant and increasingly pure-Python — python-snap7, s7commplus, pymodbus, bacpypes3, asyncua and pyclickplc all run on every GitHub runner OS without Docker — while legally clean fixtures exist for only a handful of formats, nearly all of them standards-based (SCL, COMTRADE) or network-OS (ntc-templates, VyOS). That asymmetry argues for two structural decisions: build the standards layer first (FC43, 61850 SCL/MMS, BACnet, OPC UA, DNP3 Group 0, COMTRADE), because each primitive makes several vendor modules a configuration change rather than a protocol project; and adopt a fixture policy that prefers PEAT-authored exports from free engineering software, recorded with provenance, over any vendor-published sample.</p>
+<p>Two sequencing implications follow. A single Windows session with the free or trial IDEs (TIA Portal, CCW Standard, VisiLogic, CLICK, Control Expert, Kepware, VTScadaLIGHT) would unblock the parse side of six Tier 1 candidates at once and settle most of the open format questions, so it is the highest-leverage next step. And because the same emulators and probes PEAT would ship are already in adversary toolkits — AA26-231A names python-snap7 explicitly, AA23-335A describes PCOM brute-forcing on 20256 — each new scan module should be built read-only and documented as a defender's instrument from the first commit, so that the tool that inventories critical-infrastructure PLCs is distinguishable on the wire from the tools that attack them.</p>
+
+  </article>
+</div>
+<footer class="colophon">
+  <p>Verdicts in the tables mean "achievable and testable without hardware". Effort scale: small is days, medium is weeks, large is months. Items the researchers could not verify are listed under Verification gaps rather than asserted.</p>
+  <p>Generated from the Markdown report in <code>reports/</code> of the PEAT repository. PEAT is Sandia National Laboratories' open-source OT device interrogator, licensed GPLv3.</p>
+</footer>
+</body>
+</html>
