@@ -19,6 +19,10 @@ To test Postgres (connecting to the "3530" database table):
 
 Note: Nginx is the web server used by the SEL RTAC devices.
 
+The TLS certificate of the web server (HTTPS) is collected during the scan
+(identification) or the pull, and checked for the factory-default self-signed
+certificate. Refer to :ref:`sel-rtac-tls-certificate` for details.
+
 Listening network services
 
 - HTTP (TCP 80) (This redirects to 443 HTTPS)
@@ -39,34 +43,52 @@ Authors
 
 import base64
 import functools
+import hashlib
 import ipaddress
+import json
 import math
 import re
+import ssl
 import tarfile
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from copy import deepcopy
-from pathlib import Path
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from time import sleep
-from typing import Literal
+from typing import Any, Literal
+from urllib.parse import parse_qs, urlparse
 
 import psycopg2
+from requests import Response
 
 from peat import (
     DeviceData,
     DeviceModule,
     Interface,
     IPMethod,
+    config,
+    consts,
     datastore,
     exit_handler,
+    log,
     state,
     utils,
 )
 from peat.consts import DeviceError
 from peat.data.data_utils import merge_models
-from peat.data.models import Register, User
+from peat.data.models import X509, File, Hash, Register, Service, User
 from peat.data.validators import validate_hash
 from peat.file_signature import FileSignature
-from peat.protocols import HTTP
+from peat.protocols.tls import (
+    ParsedCertificate,
+    PeerCertificate,
+    fetch_peer_certificate,
+    parse_der_certificate,
+    validity_status,
+)
 
 from .rtac_parse import (
     build_structured_text,
@@ -100,6 +122,28 @@ from .sel_consts import (
     RTAC_TRANSIENT_KEYS,
 )
 from .sel_http import SELHTTP
+
+
+@dataclass(frozen=True)
+class _Digest:
+    """
+    Size and hashes of the contents of a file, so large
+    contents don't have to be kept in memory to record them.
+    """
+
+    size: int
+    sha256: str
+    """SHA-256 (lowercase hex), to find the file PEAT wrote with these contents."""
+    hashes: dict[str, str]
+    """Hashes from :func:`peat.utils.gen_hashes` (``HASH_ALGORITHMS``)."""
+
+    @classmethod
+    def of(cls, data: bytes) -> "_Digest":
+        return cls(
+            size=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+            hashes=utils.gen_hashes(data),
+        )
 
 
 class SELRTAC(DeviceModule):
@@ -159,6 +203,9 @@ class SELRTAC(DeviceModule):
         "sel": {
             "pull_http": True,
             "pull_postgres": True,
+            # One TLS handshake with the web server, which doesn't log in or
+            # send any requests. Skipped if the scan already got the certificate.
+            "pull_ssl_cert": True,
             "rtac_monitor_enable": False,
             "rtac_monitor_count": 3,
             "rtac_monitor_pause_for": 4.0,
@@ -189,6 +236,13 @@ class SELRTAC(DeviceModule):
 
     # Items in a project export that don't have any useful data
     _ignored_tags = {"NavigatorLayout"}
+
+    # Subject of the factory-default (self-signed) certificate of the RTAC web
+    # server, e.g. "CN=SEL-3530-4 RTAC,OU=Automation and Integration Engineering,
+    # O=Schweitzer Engineering Laboratories, Inc.,L=Pullman,ST=Washington,C=US"
+    _default_cert_organization = "Schweitzer Engineering Laboratories, Inc."
+    _default_cert_unit = "Automation and Integration Engineering"
+    _cert_cn_regex = re.compile(r"^SEL-(?P<model>\d{4}(?:-\d+)?)\s+RTAC\b")
 
     @classmethod
     def _verify_http(cls, dev: DeviceData, protocol: Literal["http", "https"] = "http") -> bool:
@@ -277,37 +331,241 @@ class SELRTAC(DeviceModule):
     def _verify_https_ssl_certificate(cls, dev: DeviceData) -> bool:
         """
         Verify a device is a SEL RTAC via inspection of the Common Name
-        attribute of a SSL certificate.
+        attribute of the TLS certificate of the web server (HTTPS).
         """
         timeout = dev.options["https"]["timeout"]
         port = dev.options["https"]["port"]
 
         cls.log.debug(f"Verifying {dev.ip}:{port} using SSL (timeout: {timeout})")
 
-        with HTTP(dev.ip, port, timeout, dev=dev) as http:
-            parsed_cert = http.get_ssl_certificate()
-
-        if not parsed_cert:
+        peer = fetch_peer_certificate(dev.ip, port, timeout)
+        if not peer:
             return False
 
-        merge_models(dev.x509, parsed_cert)
-
-        entity = parsed_cert.subject
-        if not entity.common_name:
-            entity = parsed_cert.issuer
-        if not entity.common_name:
+        try:
+            parsed = parse_der_certificate(peer.der)
+        except ValueError as ex:
+            cls.log.debug(f"Invalid TLS certificate from {dev.ip}:{port}: {ex}")
             return False
 
-        dev._cache["selrtac_ssl_fingerprinted"] = True
+        common_name = parsed.x509.subject.common_name or parsed.x509.issuer.common_name
+        if "SEL" not in common_name or "RTAC" not in common_name:
+            return False
 
-        if "SEL" in entity.common_name and "RTAC" in entity.common_name:
-            cls.log.debug(f"SSL verification successful for {dev.ip}:{port}")
-            dev.description.model = entity.common_name.partition(" ")[0].partition("-")[2]
-            dev.type = "RTAC"
-            cls.update_dev(dev)
+        cls.log.debug(f"SSL verification successful for {dev.ip}:{port}")
+        cls._process_ssl_certificate(dev, peer, port, parsed)
+        dev.type = "RTAC"
+        cls.update_dev(dev)
+        return True
+
+    @classmethod
+    def pull_ssl_certificate(cls, dev: DeviceData) -> bool:
+        """
+        Get and process the TLS certificate of the RTAC's web server (HTTPS),
+        if it wasn't already collected during the scan.
+
+        This is a single TLS handshake, which doesn't log in or send any
+        HTTP requests. If the RTAC only supports TLS 1.0 or 1.1, a second
+        handshake is done with a legacy TLS context.
+
+        Returns:
+            If the RTAC's certificate was collected (now or during the scan)
+        """
+        if dev.x509.original:
+            cls.log.debug(f"Already have the TLS certificate of {dev.ip}, skipping")
+            # The RTAC monitor clears dev.extra between pulls,
+            # keep the certificate summary in each pull.
+            if "ssl_certificate" not in dev.extra and dev._cache.get("ssl_certificate"):
+                dev.extra["ssl_certificate"] = deepcopy(dev._cache["ssl_certificate"])
             return True
 
-        return False
+        port = dev.options["https"]["port"]
+        timeout = dev.options["https"]["timeout"]
+        cls.log.info(f"Getting the TLS certificate of the web server on {dev.ip}:{port}")
+
+        peer = fetch_peer_certificate(dev.ip, port, timeout)
+        if not peer:
+            cls.log.warning(f"Failed to get the TLS certificate from {dev.ip}:{port}")
+            return False
+
+        return cls._process_ssl_certificate(dev, peer, port) is not None
+
+    @classmethod
+    def _process_ssl_certificate(
+        cls,
+        dev: DeviceData,
+        peer: PeerCertificate,
+        port: int,
+        parsed: ParsedCertificate | None = None,
+    ) -> ParsedCertificate | None:
+        """
+        Add the TLS certificate of the RTAC's web server to the device data.
+
+        - The certificate is merged into ``dev.x509`` (``X509.hash`` is the hash
+          of the PEM text, as it always has been).
+        - The DER fingerprints, the TLS session parameters and the results of
+          the checks (factory-default certificate, self-signed, expired,
+          days remaining) are saved in ``dev.extra["ssl_certificate"]``.
+        - The DER SHA-256 fingerprint and TLS version are added to the
+          ``extra`` of the HTTPS :class:`~peat.data.models.Service`.
+        - The model is set from a Common Name like ``SEL-3530-4 RTAC``
+          (the model ``3530-4``), if the model is unknown or less specific.
+        - The certificate is saved to ``ssl-certificate.pem``.
+
+        Everything that's parsed or checked is done before the device data is
+        changed, so a bad certificate doesn't leave the device half-updated.
+
+        Returns:
+            The parsed certificate, or :obj:`None` if it couldn't be parsed
+        """
+        if parsed is None:
+            try:
+                parsed = parse_der_certificate(peer.der)
+            except ValueError as ex:
+                cls.log.warning(f"Failed to parse the TLS certificate from {dev.ip}:{port}: {ex}")
+                return None
+
+        cert = parsed.x509
+        common_name = cert.subject.common_name or cert.issuer.common_name
+
+        summary = {
+            "port": port,
+            "tls_version": peer.tls_version,
+            "cipher": peer.cipher,
+            "legacy_tls": peer.legacy,
+            "fingerprints": dict(parsed.fingerprints),
+            "self_signed": parsed.self_signed,
+            "ca": parsed.ca,
+            "default_sel_certificate": cls._is_default_certificate(parsed),
+            "parser": parsed.parser,
+            **validity_status(cert),
+        }
+
+        # The rest of the chain, if the server sent one (Python 3.13+)
+        chain_pem = ""
+        if len(peer.chain) > 1:
+            summary["chain"] = cls._summarize_chain(peer.chain)
+            chain_pem = "".join(ssl.DER_cert_to_PEM_cert(der) for der in peer.chain)
+
+        if parsed.parser != "cryptography":
+            cls.log.warning(
+                f"The TLS certificate from {dev.ip}:{port} isn't a valid DER certificate, "
+                f"only some of its fields were parsed (with {parsed.parser})"
+            )
+
+        if dev.x509.original and dev.x509.original != cert.original:
+            cls.log.warning(
+                f"The TLS certificate from {dev.ip}:{port} is different from "
+                f"the certificate that was collected before, replacing it"
+            )
+            dev.x509 = X509()
+        merge_models(dev.x509, cert)
+        dev.x509.annotate(dev)
+
+        # The DER fingerprints are what other tools show and search for
+        for fingerprint in parsed.fingerprints.values():
+            dev.related.hash.add(fingerprint)
+
+        model_match = cls._cert_cn_regex.match(common_name)
+        if model_match:
+            model = model_match.group("model")
+            current_model = dev.description.model
+            # Use a more specific model, e.g. "3530-4" instead of "3530"
+            if not current_model or (model != current_model and model.startswith(current_model)):
+                dev.description.model = model
+            elif model != current_model:
+                cls.log.debug(
+                    f"Model '{model}' in the TLS certificate of {dev.ip} is "
+                    f"different from the model '{current_model}', keeping '{current_model}'"
+                )
+
+        if summary["default_sel_certificate"]:
+            cls.log.info(
+                f"{dev.ip} uses the factory-default self-signed TLS "
+                f"certificate of the RTAC ('{common_name}')"
+            )
+        if summary["expired"]:
+            cls.log.warning(f"The TLS certificate of {dev.ip} expired on {cert.not_after}")
+        elif summary["not_yet_valid"]:
+            cls.log.warning(f"The TLS certificate of {dev.ip} isn't valid until {cert.not_before}")
+
+        cls._write_and_record_file(
+            dev,
+            cert.original,
+            "ssl-certificate.pem",
+            source="tls_certificate",
+            transport="tls",
+            description=f"TLS certificate of the web server (port {port})",
+        )
+
+        if chain_pem:
+            cls._write_and_record_file(
+                dev,
+                chain_pem,
+                "ssl-certificate-chain.pem",
+                source="tls_certificate",
+                transport="tls",
+                description=f"TLS certificate chain of the web server (port {port})",
+            )
+
+        dev.extra["ssl_certificate"] = summary
+        dev._cache["ssl_certificate"] = deepcopy(summary)
+
+        service = Service(
+            port=port,
+            protocol="https",
+            transport="tcp",
+            status="verified",
+            extra={
+                "tls_version": peer.tls_version,
+                "tls_cipher": peer.cipher,
+                "tls_legacy": peer.legacy,
+                "certificate_sha256": parsed.fingerprints["sha256"],
+            },
+        )
+        if parsed.fingerprints.get("spki_sha256"):
+            service.extra["certificate_spki_sha256"] = parsed.fingerprints["spki_sha256"]
+        dev.store("service", service, interface_lookup={"ip": dev.ip})
+
+        return parsed
+
+    @classmethod
+    def _is_default_certificate(cls, parsed: ParsedCertificate) -> bool:
+        """
+        If a certificate looks like the factory-default certificate of an
+        RTAC web server: self-signed, issued to SEL, with a Common Name
+        like ``SEL-3530-4 RTAC``.
+        """
+        subject = parsed.x509.subject
+        return bool(
+            parsed.self_signed
+            and subject.organization == cls._default_cert_organization
+            and subject.organizational_unit == cls._default_cert_unit
+            and cls._cert_cn_regex.fullmatch(subject.common_name)
+        )
+
+    @classmethod
+    def _summarize_chain(cls, chain: list[bytes]) -> list[dict]:
+        """
+        Subject, issuer and DER SHA-256 fingerprint of each certificate in a
+        chain. Only the fingerprint is listed for a certificate that can't be parsed.
+        """
+        summary = []
+        for der in chain:
+            try:
+                parsed = parse_der_certificate(der)
+            except Exception as ex:  # Anything in the chain that isn't the leaf certificate
+                cls.log.debug(f"Failed to parse a certificate in the TLS certificate chain: {ex}")
+                summary.append({"sha256": utils.calc_hash(der, "sha256")})
+                continue
+            summary.append(
+                {
+                    "subject": parsed.x509.subject.distinguished_name,
+                    "issuer": parsed.x509.issuer.distinguished_name,
+                    "sha256": parsed.fingerprints["sha256"],
+                }
+            )
+        return summary
 
     @classmethod
     def _verify_postgres(cls, dev: DeviceData) -> bool:
@@ -540,6 +798,15 @@ class SELRTAC(DeviceModule):
         """Pull and parse configuration from an RTAC."""
         # NOTE: this method is used by update_history() and _pull()
         # NOTE: if web pull fails, attempt postgres pull anyway to make sure we get data
+        if dev.options["sel"]["pull_ssl_cert"]:
+            try:
+                cls.pull_ssl_certificate(dev)
+            except Exception:
+                cls.log.exception(f"failed to get the TLS certificate from {dev.ip}")
+                state.error = True
+        else:
+            cls.log.debug(f"Skipping TLS certificate pull from {dev.ip} (sel.pull_ssl_cert=False)")
+
         web_exception = None
         if dev.options["sel"]["pull_http"]:
             try:
@@ -582,16 +849,22 @@ class SELRTAC(DeviceModule):
 
         session = dev._cache["web_session"]
         if not session.rtac_logged_in:
+            # Credentials that worked during the scan, or the ones the user configured.
+            # NOTE: RTACs don't have default credentials (the first user is
+            # created by the operator), so PEAT doesn't guess any here.
             username = dev._cache.get("verified_web_user")
             if not username:
                 username = dev.options["web"]["user"]
-            if not username:
-                username = "ACC"
-            password = dev._cache.get("verified_web_user")
+            password = dev._cache.get("verified_web_pass")
             if not password:
                 password = dev.options["web"]["pass"]
-            if not password:
-                password = "OTTER"
+            if not username or not password:
+                cls.log.error(
+                    f"No web credentials for {dev.ip}, skipping the web pull. Set the "
+                    f"'web.user' and 'web.pass' options, or scan the RTAC first to try "
+                    f"the 'web.users' and 'web.passwords' options."
+                )
+                return None
             if not session.login_rtac(username, password, protocol):
                 cls.log.error(
                     f"Failed to login to web interface on {dev.ip} with user '{username}'"
@@ -620,23 +893,27 @@ class SELRTAC(DeviceModule):
         pulled_config = {}
         dev._cache["num_successful_methods"] = 0
 
-        for method in web_methods:
-            sleep(0.3)  # attempt to avoid overloading web server
+        # Files from the RTAC's file repository are captured, so they can be hashed
+        with _capture_downloads(session, cls._web_download_pages) as downloads:
+            for method in web_methods:
+                sleep(0.3)  # attempt to avoid overloading web server
 
-            cls.log.info(f"Running '{method.__name__}' for {dev.ip}:{port}")
-            try:
-                method_result = method(dev)  # type: dict
+                cls.log.info(f"Running '{method.__name__}' for {dev.ip}:{port}")
+                try:
+                    method_result = method(dev)  # type: dict
 
-                if not method_result or not any(bool(val) for val in method_result.values()):
-                    cls.log.warning(
-                        f"No data from HTTP method '{method.__name__}' on {dev.ip}:{port}"
-                    )
-                else:
-                    pulled_config.update(method_result)
-                    dev._cache["num_successful_methods"] += 1
-            except Exception:
-                cls.log.exception(f"'{method.__name__}' failed on {dev.ip}:{port}")
-                continue
+                    if not method_result or not any(bool(val) for val in method_result.values()):
+                        cls.log.warning(
+                            f"No data from HTTP method '{method.__name__}' on {dev.ip}:{port}"
+                        )
+                    else:
+                        pulled_config.update(method_result)
+                        dev._cache["num_successful_methods"] += 1
+                except Exception:
+                    cls.log.exception(f"'{method.__name__}' failed on {dev.ip}:{port}")
+                    continue
+
+        cls._record_web_downloads(dev, downloads, protocol)
 
         if dev._cache["num_successful_methods"] == 0:
             dev._cache["web_session"].disconnect()
@@ -648,15 +925,20 @@ class SELRTAC(DeviceModule):
             f"successful out of {len(web_methods)} methods attempted)"
         )
 
-        dev.write_file(pulled_config, "pulled-web-config.json")
+        cls._write_and_record_file(
+            dev,
+            pulled_config,
+            "pulled-web-config.json",
+            source="derived",
+            description="Data PEAT collected from the RTAC web interface",
+        )
 
         # Close the web session
         dev._cache["web_session"].disconnect()
 
         # Remove fields we don't want in elasticsearch
         for bad_field in ["web_syslog_events", "web_usagepolicy", "web_device_info"]:
-            if bad_field in pulled_config:
-                del bad_field
+            pulled_config.pop(bad_field, None)
 
         return pulled_config
 
@@ -966,10 +1248,24 @@ class SELRTAC(DeviceModule):
         # config is large and leads to excessive-sized device-data-summary.json
 
         # Can't save as JSON, too large and has some data types that are not human-reader friendly
-        dev.write_file(config, "raw-pulled-postgres-config.txt")
+        cls._write_and_record_file(
+            dev,
+            config,
+            "raw-pulled-postgres-config.txt",
+            source="command_output",
+            transport="postgres",
+            description="Tables PEAT read from the RTAC PostgreSQL database",
+        )
         del config["tag_task_settings"]
         del config["tags"]
-        dev.write_file(config, "pulled-postgres-config.json")
+        cls._write_and_record_file(
+            dev,
+            config,
+            "pulled-postgres-config.json",
+            source="command_output",
+            transport="postgres",
+            description="Tables PEAT read from the RTAC PostgreSQL database (without tags)",
+        )
 
         cursor.close()  # TODO: set cache to None?
         conn.close()  # TODO: set cache to None?
@@ -991,6 +1287,190 @@ class SELRTAC(DeviceModule):
                 sleep(0.1)
             # break out when successful
             break
+
+    # --------- File hashing ---------
+    # Page that sends the files in the RTAC's file repository (hashed by pull_web())
+    _web_download_pages = ("/download.sel",)
+
+    @classmethod
+    def _record_file(
+        cls,
+        dev: DeviceData,
+        data: bytes | _Digest,
+        name: str,
+        source: str,
+        local_path: Path | None = None,
+        path: str | None = None,
+        transport: str = "",
+        mtime: datetime | None = None,
+        description: str = "",
+        extra: dict | None = None,
+    ) -> File:
+        """
+        Hash a file and add it to ``dev.files`` (the hashes are also added to
+        ``dev.related.hash``). The hashes are of ``data``, so files are
+        recorded even if device file output is disabled.
+
+        Args:
+            dev: Device the file is from
+            data: Contents of the file, as they were received or written,
+                or their :class:`_Digest` (so the contents don't need to be kept)
+            name: Name of the file
+            source: What the file is, saved in ``File.extra["source"]``:
+                ``web_download`` (file from the web interface),
+                ``command_output`` (database query results),
+                ``tls_certificate`` (certificate from a TLS handshake),
+                ``derived`` (file PEAT made from other data), or
+                ``parse_input`` (file from a parsed project export)
+            local_path: The file PEAT saved, if any. It must have the same
+                contents as ``data``.
+            path: Path of the file on the device or in a parsed archive
+            transport: How the file was transferred, if it's from the
+                device (``http``, ``https``, ``postgres``, ``tls``)
+            mtime: Modification time of the file on the device or in the archive
+            description: Human-readable description of the file
+            extra: Additional values for ``File.extra``
+
+        Returns:
+            The :class:`~peat.data.models.File` that was added
+        """
+        file_extra: dict[str, Any] = {"source": source}
+        if transport:
+            file_extra["transport"] = transport
+        if extra:
+            file_extra.update(extra)
+
+        digest = data if isinstance(data, _Digest) else _Digest.of(data)
+        file_obj = File(
+            name=name,
+            size=digest.size,
+            hash=Hash.parse_obj(digest.hashes),
+            type="file",
+            peat_module=cls.__name__,
+            description=description,
+            extra=file_extra,
+        )
+        if path:
+            file_obj.path = PurePosixPath(path)
+        if local_path:
+            file_obj.local_path = local_path
+        if mtime:
+            file_obj.mtime = mtime
+
+        # NOTE: store() with a lookup compares every file in dev.files, which
+        # is slow for project exports with hundreds of files. Each file has
+        # a different local path, so just append it.
+        dev.store("files", file_obj, append=True)
+
+        return file_obj
+
+    @classmethod
+    def _write_and_record_file(
+        cls,
+        dev: DeviceData,
+        data: Any,
+        filename: str,
+        source: str,
+        name: str = "",
+        **kwargs,
+    ) -> File:
+        """
+        Write data to a file in the device's output directory (like
+        :meth:`~peat.data.models.DeviceData.write_file`), then hash and record
+        it with :meth:`_record_file`.
+
+        The recorded local path is the file that was actually written. If a
+        file with the name already exists, the ``<name>.<num>`` name that
+        :func:`peat.utils.write_file` would use is chosen before writing.
+        Nothing is written if device file output is disabled, but the file
+        is still hashed and recorded.
+
+        Args:
+            dev: Device the file is for
+            data: Data to write. If ``filename`` ends in ``.json``, it's
+                serialized to JSON, like :func:`peat.utils.write_file` does.
+            filename: Name of the file, which may include sub-directories
+            source: What the file is (refer to :meth:`_record_file`)
+            name: Name to record. Defaults to the name of ``filename``.
+            kwargs: Other arguments for :meth:`_record_file`
+
+        Returns:
+            The :class:`~peat.data.models.File` that was added
+        """
+        filename = consts.sanitize_filepath(filename)
+        raw = _serialize(data, filename)
+        digest = _Digest.of(raw)
+
+        local_path = None
+        if dev._out_dir or config.DEVICE_DIR:
+            target = dev.get_out_dir() / filename
+            if target.exists():
+                target = utils.dup_path(target)
+            # NOTE: write_file() serializes JSON itself, other data is written
+            # as the bytes that were hashed (the same bytes write_file() writes).
+            to_write = data if ".json" in target.suffixes else raw
+            if utils.write_file(to_write, target):
+                local_path = _matching_file([target], digest)
+        else:
+            cls.log.debug(f"Device file output is disabled, skipping write to file {filename}")
+
+        return cls._record_file(
+            dev,
+            digest,
+            name if name else PurePosixPath(filename).name,
+            source,
+            local_path=local_path,
+            **kwargs,
+        )
+
+    @classmethod
+    def _record_web_downloads(
+        cls, dev: DeviceData, downloads: list[tuple[str, _Digest]], protocol: str
+    ) -> None:
+        """
+        Record the files downloaded from the RTAC's file repository
+        (``download.sel``) by :meth:`SELHTTP.download_http_files()
+        <peat.modules.sel.sel_http.SELHTTP.download_http_files>`.
+
+        Args:
+            dev: The RTAC
+            downloads: URL and :class:`_Digest` of each download, from
+                :func:`_capture_downloads`
+            protocol: ``http`` or ``https``
+
+        The hashes are of the bytes the RTAC sent, and the modification
+        time and size are from the file listing (``dev.extra["web_files"]``).
+        """
+        web_files = dev.extra.get("web_files")
+        if not isinstance(web_files, dict):
+            web_files = {}
+
+        for response_url, digest in downloads:
+            url = urlparse(response_url)
+            filename = parse_qs(url.query).get("filename", [""])[0]
+            if not url.path.endswith("/download.sel") or not filename:
+                continue
+
+            listing = web_files.get(filename)
+            if not isinstance(listing, dict):
+                listing = {}
+
+            extra = {}
+            if isinstance(listing.get("size"), int):
+                extra["listed_size"] = listing["size"]
+            mtime = listing.get("timestamp")
+
+            cls._record_file(
+                dev,
+                digest,
+                PurePosixPath(filename).name,
+                "web_download",
+                local_path=_find_written_file(dev, filename, digest),
+                transport=protocol,
+                mtime=mtime if isinstance(mtime, datetime) else None,
+                description="File from the RTAC file repository",
+                extra=extra,
+            )
 
     @classmethod
     def parse_xml(cls, data: str, filename: str, device_info: dict) -> bool:
@@ -1083,7 +1563,15 @@ class SELRTAC(DeviceModule):
                         cls._parse_file(data, member.name, dev, device_info)
 
                     # still save the data to file even if parsing failed
-                    dev.write_file(data, f"extracted_files/{member.name}")
+                    cls._write_and_record_file(
+                        dev,
+                        data,
+                        f"extracted_files/{member.name}",
+                        source="parse_input",
+                        path=member.name,
+                        mtime=_tar_member_mtime(member),
+                        extra={"archive": file.name},
+                    )
         else:
             raise DeviceError(f"Unknown type of file for SEL RTAC parsing: {file.name}")
 
@@ -1215,7 +1703,13 @@ class SELRTAC(DeviceModule):
             dev.logic.formats["structured_text"] = st_logic
             if not dev.logic.parsed:
                 dev.logic.parsed = st_logic
-            dev.write_file(st_logic, "logic.st")
+            cls._write_and_record_file(
+                dev,
+                st_logic,
+                "logic.st",
+                source="derived",
+                description="Structured Text logic of the RTAC project",
+            )
 
     @classmethod
     def _process_ethernet_settings(cls, dev: DeviceData, eth_settings: dict) -> None:
@@ -1340,6 +1834,114 @@ class SELRTAC(DeviceModule):
                     reg.description = str(row["Comment"])
 
                 dev.store("registers", reg)
+
+
+def _tar_member_mtime(member: tarfile.TarInfo) -> datetime | None:
+    """
+    Modification time of a member of a tarball, or :obj:`None` if it's
+    not set or out of range (e.g. hand-made or damaged archives).
+    """
+    if not member.mtime:
+        return None
+    try:
+        return datetime.fromtimestamp(member.mtime, UTC)
+    except (ValueError, OverflowError, OSError) as ex:
+        log.debug(f"Invalid modification time {member.mtime!r} for '{member.name}': {ex}")
+        return None
+
+
+def _serialize(data: Any, filename: str) -> bytes:
+    """
+    The bytes :func:`peat.utils.write_file` writes for ``data``,
+    so the hash is the same if device file output is disabled.
+    """
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        return bytes(data)
+
+    if ".json" in PurePosixPath(filename).suffixes:
+        return json.dumps(consts.convert(data), indent=4).encode("utf-8")
+
+    return str(data).encode("utf-8")
+
+
+def _matching_file(candidates: Iterable[Path], digest: _Digest) -> Path | None:
+    """
+    The first of ``candidates`` that's a file with the contents of ``digest``.
+    """
+    for candidate in candidates:
+        try:
+            if not candidate.is_file() or candidate.stat().st_size != digest.size:
+                continue
+            with candidate.open("rb") as file:
+                if hashlib.file_digest(file, "sha256").hexdigest() == digest.sha256:
+                    return candidate.resolve()
+        except OSError:
+            continue
+
+    return None
+
+
+def _find_written_file(dev: DeviceData, filename: str, digest: _Digest) -> Path | None:
+    """
+    Find the file :meth:`~peat.data.models.DeviceData.write_file` saved the
+    contents of ``digest`` to, which may be ``<name>.<num>`` if the name
+    already existed.
+
+    Returns:
+        Path of the file, or :obj:`None` if file output is disabled or no
+        file in the device's output directory has the contents
+    """
+    if not dev._out_dir and not config.DEVICE_DIR:
+        return None
+
+    out_dir = dev.get_out_dir().resolve()
+    target = (out_dir / consts.sanitize_filepath(filename)).resolve()
+    if not target.is_relative_to(out_dir):
+        return None
+
+    candidates = [target]
+    while True:
+        duplicate = target.with_name(f"{target.name}.{len(candidates)}")
+        if not duplicate.exists():
+            break
+        candidates.append(duplicate)
+
+    # The most recent file is the one with the highest number
+    return _matching_file(reversed(candidates), digest)
+
+
+@contextmanager
+def _capture_downloads(
+    session: SELHTTP, pages: tuple[str, ...]
+) -> Iterator[list[tuple[str, _Digest]]]:
+    """
+    Hash the successful responses for the pages (URL paths ending in one of
+    ``pages``) that the session receives inside the ``with`` block, and
+    collect their URL and :class:`_Digest`.
+
+    This uses a ``requests`` response hook, so the content of downloads can be
+    hashed without changing :class:`~peat.modules.sel.sel_http.SELHTTP`. Each
+    response is hashed when it arrives, and isn't kept, so the contents of
+    large files aren't kept in memory until the end of the pull.
+    """
+    downloads: list[tuple[str, _Digest]] = []
+
+    def _capture(response: Response, **_kwargs) -> None:
+        if response.status_code != 200 or not urlparse(response.url).path.endswith(pages):
+            return
+        # NOTE: errors reading the response are left to the code that sent the request
+        content = response.content
+        try:
+            downloads.append((response.url, _Digest.of(content)))
+        except Exception as ex:  # Never break the download itself
+            log.warning(f"Failed to hash the download from '{response.url}': {ex}")
+
+    hooks = session.session.hooks.setdefault("response", [])
+    hooks.append(_capture)
+    try:
+        yield downloads
+    finally:
+        hooks.remove(_capture)
 
 
 SELRTAC.ip_methods = [
