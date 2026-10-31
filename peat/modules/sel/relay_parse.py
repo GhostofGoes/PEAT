@@ -314,6 +314,318 @@ def rdb_relay_to_set_all(streams: dict[str, bytes]) -> str:
     return combine_settings_files(files, save_info)
 
 
+#: Sections at the beginning of every settings file that describe the relay, rather than
+#: settings. On 400 series relays, the ``[INFO]`` section is followed by ``[IOBOARDS]`` and
+#: ``[COMCARDS]`` sections, e.g. the sample ``SET_G1.TXT`` and ``SET_P5.TXT`` files in the
+#: SEL-421 manual ("Oscillography" and "Direct Networking Example" in the Applications Handbook).
+HEADER_SECTION_NAMES: Final = ("INFO", "IOBOARDS", "COMCARDS")
+
+#: Sections of settings files that aren't settings classes
+NON_CLASS_SECTION_NAMES: Final = (*HEADER_SECTION_NAMES, "CLASSES", "STORAGE")
+
+#: Line in a DNP Binary map expanded by :func:`_format_dnpb_lines`, e.g. ``BI_1,"52A"``
+_DNPB_POINT_RE: Final = re.compile(r'^BI_\d+,"([^"]*)"$')
+
+
+def _split_text_lines(text: str) -> list[str]:
+    # str.splitlines() also splits on characters such as 0x1C and 0x85,
+    # which may be in settings files (0x85 is a character in Windows-1252).
+    return re.split(r"\r\n|\r|\n", text)
+
+
+def normalize_settings_file(data: bytes | str) -> bytes:
+    """
+    Clean an individual settings file (e.g. ``SET_1.TXT``) for uploading to a relay.
+
+    - The UTF-8 byte order mark, NUL (``0x00``) and substitution (``0x1A``)
+      characters are removed.
+    - QuickSet ends each settings line in a RDB stream with a file separator
+      (``0x1C``), which may be followed by a comment. The separator and
+      the rest of the line after it are removed.
+    - Blank lines are removed, and every line ends with CRLF.
+
+    Nothing else is changed. The data isn't decoded, so non-ASCII
+    characters are left as they are. Cleaning a file that's already
+    clean returns the same bytes.
+
+    Args:
+        data: The settings file. :class:`str` is encoded as UTF-8.
+
+    Returns:
+        The cleaned settings file
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+
+    data = data.removeprefix(b"\xef\xbb\xbf").replace(b"\x00", b"").replace(b"\x1a", b"")
+
+    lines = []
+    # bytes.splitlines() only splits on CR and LF (str.splitlines() also splits on 0x1C)
+    for line in data.splitlines():
+        line = line.split(b"\x1c", maxsplit=1)[0]
+        if line.strip():
+            lines.append(line)
+
+    if not lines:
+        return b""
+
+    return b"\r\n".join(lines) + b"\r\n"
+
+
+def settings_class_files(classes_lines: list[str]) -> dict[str, str]:
+    """
+    Get the name of the settings file for each settings class
+    from the lines in a ``[CLASSES]`` section.
+
+    The relay's ``CFG.TXT`` may list the file for each class, e.g.
+    ``"1","Group 1","SET_1.TXT","30C0490A"`` or ``S1,"Group 1","\\SETTINGS\\SET_S1.TXT"``.
+    Otherwise (e.g. ``Misc/Cfg.txt`` in a RDB file), the file for class
+    ``P1`` is ``SET_P1.TXT``. Lines with a single value, such as the "Saved on"
+    lines PEAT adds to a combined ``SET_ALL``, are skipped.
+
+    Args:
+        classes_lines: Lines in the ``[CLASSES]`` section
+
+    Returns:
+        Uppercase filenames keyed by the uppercase class code, in the order of the classes
+    """
+    files = {}  # type: dict[str, str]
+
+    for line in extract_csv_lines(classes_lines):
+        if len(line) < 2 or not line[0]:
+            continue
+
+        code = line[0].upper()
+        filename = f"SET_{code}.TXT"
+
+        if len(line) > 2 and line[2].upper().endswith(".TXT"):
+            filename = PurePosixPath(line[2].replace("\\", "/")).name.upper()
+
+        files.setdefault(code, filename)
+
+    return files
+
+
+def sort_settings_filenames(names: list[str], class_files: dict[str, str]) -> list[str]:
+    """
+    Sort settings filenames in the order of the settings classes (from
+    :func:`settings_class_files`), with any other files after them, sorted
+    naturally (``SET_2.TXT`` before ``SET_10.TXT``).
+    """
+    class_order = list(class_files.values())
+
+    def _order(name: str) -> tuple[int, list[int | str]]:
+        upper = name.upper()
+        position = class_order.index(upper) if upper in class_order else len(class_order)
+        return position, _natural_sort_key(upper)
+
+    return sorted(names, key=_order)
+
+
+def rdb_relay_settings_files(streams: dict[str, bytes]) -> dict[str, bytes]:
+    """
+    Convert the streams for a single relay in a RDB file into the individual
+    settings files used on the relay, e.g. ``set_p1.txt`` => ``SET_P1.TXT``.
+
+    Only the ``set_*.txt`` streams are included (not ``Misc/Cfg.txt`` or
+    other streams), and each one is cleaned with :func:`normalize_settings_file`.
+    The files are in the order of the classes in ``Misc/Cfg.txt``.
+
+    Args:
+        streams: Streams for a relay, from :func:`read_rdb_streams`
+
+    Returns:
+        Settings file data keyed by the uppercase filename. The ``[INFO]``
+        section in each file is from the RDB, and may have placeholder
+        values (e.g. ``FID=SEL-710-RXXX-VX-Z008004-DXXXXXXXX``).
+    """
+    files = {}  # type: dict[str, bytes]
+    class_files = {}  # type: dict[str, str]
+
+    for stream_path, data in streams.items():
+        name = PurePosixPath(stream_path).name.upper()
+
+        if name == "CFG.TXT":
+            for section, lines in split_raw_sections(clean_settings_text(data)):
+                if section.upper() == "CLASSES":
+                    class_files.update(settings_class_files(lines))
+            continue
+
+        if not SETTINGS_FILENAME_RE.match(name) or name == "SET_ALL.TXT":
+            continue
+
+        if name in files:
+            log.warning(f"Multiple '{name}' streams in RDB relay, using '{stream_path}'")
+
+        files[name] = normalize_settings_file(data)
+
+    return {
+        name: files[name]
+        for name in sort_settings_filenames(list(files), class_files)
+        if files[name]
+    }
+
+
+def rdb_to_settings_files(rdb_data: bytes, relay_name: str | None = None) -> dict[str, bytes]:
+    """
+    Extract the individual settings files (``SET_*.TXT``) for a relay in
+    a SEL QuickSet database (``*.rdb`` file), ready to be uploaded to the relay.
+
+    Args:
+        rdb_data: Binary data from an ``.rdb`` project file
+        relay_name: Name of the relay in the RDB file. This is required if
+            there's more than one relay in the file.
+
+    Returns:
+        Settings file data keyed by the uppercase filename,
+        from :func:`rdb_relay_settings_files`
+
+    Raises:
+        ParseError: The relay isn't in the file, there are multiple relays and
+            ``relay_name`` wasn't specified, or the file doesn't have the usual layout
+    """
+    relays = {name: s for name, s in read_rdb_streams(rdb_data).items() if name}
+
+    if not relays:
+        raise ParseError("No relays in the 'Relays' storage of the RDB file")
+
+    if relay_name is None:
+        if len(relays) > 1:
+            raise ParseError(
+                f"{len(relays)} relays in the RDB file, a relay name is "
+                f"required (relays: {', '.join(relays)})"
+            )
+        relay_name = next(iter(relays))
+    elif relay_name not in relays:
+        raise ParseError(
+            f"No relay named '{relay_name}' in the RDB file (relays: {', '.join(relays)})"
+        )
+
+    return rdb_relay_settings_files(relays[relay_name])
+
+
+def _undo_dnpb_lines(lines: list[str]) -> list[str]:
+    """
+    Convert ``BI_<n>`` lines created by :func:`_format_dnpb_lines`
+    back into a single ``DNPB`` line, as it is on the relay.
+    """
+    points = []  # type: list[str]
+    output = []  # type: list[str]
+    dnpb_index = None
+
+    for line in lines:
+        point = _DNPB_POINT_RE.match(line.strip())
+        if point:
+            if dnpb_index is None:
+                dnpb_index = len(output)
+                output.append("")
+            points.append(point.group(1))
+        else:
+            output.append(line)
+
+    if dnpb_index is not None:
+        output[dnpb_index] = f'DNPB,"{" ".join(points)}"'
+
+    return output
+
+
+def split_set_all(text: str) -> dict[str, str]:
+    """
+    Split settings in the ``SET_ALL.TXT`` format into the individual settings
+    files used on the relay (e.g. ``SET_1.TXT`` and ``SET_P1.TXT``). This is
+    the reverse of :func:`combine_settings_files`.
+
+    Each settings class section becomes a file, in the order of the sections.
+    The header sections (:data:`HEADER_SECTION_NAMES`: ``[INFO]``, and the
+    ``[IOBOARDS]`` and ``[COMCARDS]`` sections on 400 series relays) are copied
+    to the beginning of every file, like the files on a relay. Each file gets
+    the last header sections before its class section, or the first ones in
+    the text if there aren't any before it. The header sections, ``[CLASSES]``,
+    and ``[STORAGE]`` don't become files. The filename for each class is from
+    the ``[CLASSES]`` section if it lists one (e.g. ``"1","Group 1","SET_1.TXT"``),
+    otherwise it's ``SET_<class>.TXT``.
+
+    The ``BI_<n>`` lines that :func:`combine_settings_files` creates from the
+    ``DNPB`` map are converted back into a single ``DNPB`` line.
+
+    Args:
+        text: Settings in the ``SET_ALL.TXT`` format
+
+    Returns:
+        The text of each settings file (lines end with CRLF), keyed by the
+        uppercase filename. Sections with names that aren't valid in a settings
+        filename are skipped, and if a section is in the text more than once,
+        the last one is used (both are logged as warnings).
+    """
+    text = text.removeprefix("﻿").replace("\x00", "").replace("\x1a", "")
+
+    # Like split_raw_sections(), but only splitting lines on CR and LF
+    sections = []  # type: list[tuple[str, list[str]]]
+    for line in _split_text_lines(text):
+        line = line.split("\x1c", maxsplit=1)[0]
+        if not line.strip():
+            continue
+
+        header = SECTION_HEADER_RE.match(line)
+        if header:
+            sections.append((header.group(1).strip(), []))
+        elif sections:
+            sections[-1][1].append(line)
+
+    # The first of each header section, for classes that don't have one before them
+    first_headers = {}  # type: dict[str, list[str]]
+    class_files = {}  # type: dict[str, str]
+
+    for section, section_lines in sections:
+        upper = section.upper()
+        if upper in HEADER_SECTION_NAMES:
+            first_headers.setdefault(upper, section_lines)
+        elif upper == "CLASSES":
+            class_files.update(settings_class_files(section_lines))
+
+    # A combined SET_ALL from 400 series settings files (combine_settings_files())
+    # has the [IOBOARDS] and [COMCARDS] sections of each file before its class.
+    headers = dict(first_headers)
+    class_sections = {}  # type: dict[str, tuple[str, list[str], dict[str, list[str]]]]
+
+    for section, section_lines in sections:
+        upper = section.upper()
+        if upper in HEADER_SECTION_NAMES:
+            headers[upper] = section_lines
+            continue
+        if upper in NON_CLASS_SECTION_NAMES:
+            continue
+
+        filename = class_files.get(upper, f"SET_{upper}.TXT")
+
+        if not SETTINGS_FILENAME_RE.match(filename) or filename == "SET_ALL.TXT":
+            log.warning(f"Skipping settings section [{section}]: not a valid settings class")
+            continue
+
+        if filename in class_sections:
+            log.warning(f"Settings section [{section}] is in the settings more than once")
+            del class_sections[filename]  # Keep the order of the last one
+
+        if upper == "DNPB":
+            section_lines = _undo_dnpb_lines(section_lines)
+
+        class_sections[filename] = (section, section_lines, dict(headers))
+
+    if "INFO" not in first_headers:
+        log.warning("No [INFO] section in the settings, the settings files won't have one")
+
+    files = {}  # type: dict[str, str]
+    for filename, (section, section_lines, file_headers) in class_sections.items():
+        output = []
+        for header in HEADER_SECTION_NAMES:
+            if header in file_headers:
+                output.extend([f"[{header}]", *file_headers[header]])
+        output.extend([f"[{section}]", *section_lines])
+        files[filename] = "\r\n".join(output) + "\r\n"
+
+    return files
+
+
 def _concat_rdb_streams(rdb_data: bytes) -> str:
     """
     Concatenate every stream in a RDB file. This is a fallback for

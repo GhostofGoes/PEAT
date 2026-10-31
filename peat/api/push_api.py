@@ -41,7 +41,8 @@ def push(
             NOTE: this currently only applies to unicast_ip devices.
 
     Returns:
-        If the push was successful
+        If the push to every device was successful. If the push to a
+        device fails, the push to the remaining devices continues.
 
     Raises:
         PeatError: If the push failed due to an issue with configuration
@@ -85,6 +86,9 @@ def push(
         devices = datastore.verified  # type: list[DeviceData]
 
     log.info(f"Beginning push to {len(devices)} devices")
+
+    # A failed push to one device doesn't stop the push to the other devices
+    failed = []  # type: list[str]
     for device in devices:
         try:
             push_result = device._module.push(
@@ -93,11 +97,15 @@ def push(
                 push_type=push_type,
             )
         except Exception:
-            log.exception(f"Failed to push to {dev.get_id()}")
-            return False
+            log.exception(f"Failed to push to {device.get_id()}")
+            push_result = False
 
         if not push_result:
-            return False
+            failed.append(device.get_id())
+
+    if failed:
+        log.error(f"Push failed for {len(failed)} of {len(devices)} devices: {', '.join(failed)}")
+        return False
 
     log.info(f"Finished pushing to {len(devices)} devices")
     return True

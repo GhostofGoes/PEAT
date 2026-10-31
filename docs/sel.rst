@@ -82,7 +82,7 @@ These files are recorded:
 
 Each file's ``extra`` has:
 
-- ``source``: ``download`` (relay file system), ``web_page``, ``web_download``, ``command_output``, ``derived`` (created by PEAT), ``rdb_stream``, or ``parse_input``.
+- ``source``: ``download`` (relay file system), ``web_page``, ``web_download``, ``command_output``, ``derived`` (created by PEAT), ``rdb_stream``, ``parse_input``, or ``push`` (settings files prepared for ``peat push``, see `Pushing RDB and SET_ALL files`_).
 - ``transport``: ``ftp``, ``telnet``, ``serial``, ``http``, or ``https``.
 - ``file_transfer`` (relay downloads): ``ftp``, ``file_show`` (the ``FILE SHOW`` command over Telnet or serial), or ``ymodem`` (``FILE READ`` over serial).
 - ``derived_from``: the names of the files a derived file was created from.
@@ -235,6 +235,64 @@ A RDB file can have settings for multiple relays, with a storage for each relay:
 Filenames may be lowercase (``set_1.txt``) or uppercase (``SET_1.TXT``), and PEAT matches them without regard to case. PEAT combines each relay's ``Cfg.txt`` and settings files into the ``SET_ALL`` format (saved as ``extracted_SET_ALL.txt``), and parses it with the same code used for configurations pulled from devices. The "Saved on" date from ``Version`` is used for the logic's created and last updated times. The name of the relay in the RDB file is saved in ``extra.rdb_relay_name``.
 
 If there are multiple relays in the file, each relay is parsed into its own device and exported to files. Only the first relay is included in the parse results summary. Relays with the same IP address (e.g. defaults in templates) are kept as separate devices, with an ID of ``<rdb file name>_<relay name>``. The other relays are also exported to Elasticsearch, if it's enabled.
+
+Pushing RDB and SET_ALL files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``peat push -d selrelay`` uploads settings to a relay via FTP. Only the individual settings files (``SET_1.TXT``, ``SET_P1.TXT``, etc.) can be written on a relay, so PEAT converts the settings into those files. The settings to push can be:
+
+- A QuickSet database (``*.rdb``). PEAT pushes the settings for one of the relays in the file (see below for how it's chosen).
+- ``SET_ALL.TXT``, or another file with the settings for several classes. It's split into one file per class: ``[1]`` becomes ``SET_1.TXT`` and ``[P1]`` becomes ``SET_P1.TXT``. If the ``[CLASSES]`` section lists the file for a class (e.g. ``\SETTINGS\SET_S1.TXT`` on 400 series relays), that name is used. The ``[INFO]`` section is copied to the beginning of every file, like the files on a relay. On 400 series relays, each settings file also has ``[IOBOARDS]`` and ``[COMCARDS]`` sections after ``[INFO]``, which are copied the same way (they aren't settings classes).
+- An individual settings file, e.g. ``SET_1.TXT``. Its settings must be for the class in its name (``SET_1.TXT`` must have the ``[1]`` settings).
+- A directory of settings files, such as the ``relay_files`` directory from a pull or the settings files extracted from a RDB file. Files in a ``SETTINGS`` sub-directory are included, and filenames are case-insensitive (``set_p1.txt`` is uploaded as ``SET_P1.TXT``). If there's a ``CFG.TXT`` in the directory, the files are uploaded in the order of its ``[CLASSES]``. A ``SET_ALL.TXT`` in the directory is only used if there aren't any individual settings files.
+
+.. code-block:: bash
+
+   peat push -d selrelay -i 192.0.2.123 ./substation.rdb
+   peat push -d selrelay -i 192.0.2.123 ./SET_ALL.TXT
+   peat push -d selrelay -i 192.0.2.123 ./SET_1.TXT
+   peat push -d selrelay -i 192.0.2.123 ./relay_files/
+
+.. warning::
+   A push changes the settings of a live protection relay. The SEL-351S instruction manual (Section 9, "Settings Change Confirmation") says the relay is disabled for up to two seconds while it saves new Global, Report, or Text settings, or Group or Logic settings for the active group. Port settings (``SET_P*``) can change the relay's IP address and end PEAT's connection. Only push settings that were reviewed, to the relay they're for, when a settings change is allowed.
+
+Before connecting to the relay, PEAT saves the settings being pushed in the device results, and hashes and records them in the device's ``files`` (see `Downloaded file hashes`_). They're kept even if the push fails:
+
+- ``push_SET_ALL.txt``: the settings in the ``SET_ALL`` format. For a RDB file this is the same as ``extracted_SET_ALL.txt`` when parsing. It's created by PEAT, it's not a file on the relay.
+- ``push_files/<name>``: each settings file to upload, e.g. ``push_files/SET_1.TXT``.
+
+Then PEAT logs in to the relay via FTP, with the same credentials as for pulls, and follows the procedure in the "Virtual File Interface" sections of the SEL-351S and SEL-421 instruction manuals:
+
+#. Read ``CFG.TXT`` from the relay (saved as ``push_files/from_relay/CFG.TXT``). If the settings are for a different model than the relay, nothing is uploaded. The model is from ``RELAYTYPE``, or from the FID if ``RELAYTYPE`` doesn't have a model number (e.g. ``RELAYTYPE=SEL`` with ``FID=SEL-421-...``). If the settings version (the Z-number in the FID, e.g. ``Z008004``) is different from the relay's, PEAT logs a warning. If the device was identified as a different model when it was scanned, nothing is pushed and PEAT doesn't connect.
+#. Check that every file is on the relay, in its file listing or the ``[CLASSES]`` in its ``CFG.TXT``. If one isn't, nothing is uploaded, since it's usually the wrong settings for the relay. Set ``sel.push_unlisted_files`` to true to upload them anyway.
+#. The settings files in QuickSet templates have a placeholder FID in their ``[INFO]`` section, e.g. ``FID=SEL-710-RXXX-VX-Z008004-DXXXXXXXX``. It isn't known if relays accept that, so PEAT replaces the ``[INFO]`` section in those files with the relay's ``[INFO]`` section from its ``CFG.TXT``. The files it uploads are saved in ``push_files/uploaded/``.
+#. Upload the files one at a time, and read ``ERR.TXT`` after each file. The relay lists the problems with the settings file it got last in ``ERR.TXT``, and it's empty if the relay accepted the settings. If the relay rejects a file, PEAT saves the ``ERR.TXT`` as ``push_files/from_relay/ERR_<name>`` and stops: the other files aren't uploaded. The files the relay already accepted stay in effect, PEAT doesn't undo them.
+
+The files are uploaded in the order of the settings classes, except for the port settings (``SET_P*``), which are last, with the ports that have an IP address (Ethernet) at the very end. Changing the settings of the port PEAT is connected through ends the connection, so if the connection ends while the last port settings file is uploaded, that file is ``unverified`` and the push is successful. PEAT never writes ``SET_ALL.TXT``, ``CFG.TXT``, ``CFG.XML``, or ``ERR.TXT``, which are read-only on relays.
+
+The SEL-700 series instruction manuals (e.g. the SEL-710 and SEL-751A Port 1 settings) say that after Port 1 or Logic settings change, it may take up to two minutes before the relay accepts another settings change. It isn't known how the relay reports this, so on 700 series relays, in the two minutes after Port 1 or Logic settings were accepted:
+
+- If the relay refuses an upload (the FTP ``STOR`` fails), PEAT retries it every 10 seconds until the two minutes are up.
+- If the relay rejects a file (``ERR.TXT`` lists errors), PEAT uploads it again once, when the two minutes are up. A real error in the settings is only written twice, not over and over.
+
+If the model isn't known (it's not in the relay's ``CFG.TXT`` and the device wasn't scanned), there are no retries, and the push stops at the first failed or rejected file.
+
+The status of the push is in ``extra.push`` of the device (``device-data-full.json``): the overall ``status`` (``success`` or ``failed``), a ``message``, and the ``status`` of each file. If the push input can't be read, or the checks before connecting fail (e.g. the settings are for a different model than the device), PEAT doesn't connect, and the reason is in the ``message``. The file statuses are:
+
+- ``prepared``: not uploaded.
+- ``accepted``: uploaded, and ``ERR.TXT`` was empty.
+- ``rejected``: uploaded, and ``ERR.TXT`` listed errors (in the file's ``message``).
+- ``failed``: the upload failed, e.g. the relay refused it.
+- ``unverified``: uploaded, but ``ERR.TXT`` couldn't be read (e.g. relays that don't have it), or the connection ended after the last port settings file.
+
+The status of each file is also in ``extra.push`` of its entry in ``files``, and ``path`` of the files that were uploaded is their path on the relay (e.g. ``/SETTINGS/SET_1.TXT``). The device results are exported even if the push fails, and if the push to one of several devices fails, PEAT still pushes to the others. The relay isn't restarted after a push unless ``sel.restart_after_push`` is true, since saving settings doesn't require a restart.
+
+The relay in a RDB file that's pushed is:
+
+#. The relay named in the ``sel.push_rdb_relay`` option. This is the name of the relay's storage in the RDB file, which is also in ``extra.rdb_relay_name`` when the file is parsed.
+#. Otherwise, the only relay in the file.
+#. Otherwise, the relay whose settings match the device: the IP address (``IPADDR``), relay or terminal ID (``RID``/``TID``), or part number (``PARTNO``). A relay for a different model than the device is never chosen. If several relays match equally well, or none do, nothing is pushed.
+
+Only the relay's ``set_*.txt`` streams are pushed. QuickSet ends each settings line with a file separator character (``0x1C``), which may be followed by a comment. PEAT removes both, and NUL (``0x00``) and ``0x1A`` characters, and every line ends with CRLF. RDB files that don't have the usual ``Relays/<relay name>/`` layout can't be pushed.
 
 
 Configured IED Description (.CID) Files

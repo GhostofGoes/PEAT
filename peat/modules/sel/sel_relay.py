@@ -87,7 +87,6 @@ Authors
 
 import functools
 import time
-import timeit
 from copy import deepcopy
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -144,6 +143,13 @@ from .sel_files import (
     write_and_record_file,
 )
 from .sel_http import SELHTTP
+from .sel_push import (
+    PushPlan,
+    check_push_input,
+    prepare_push,
+    save_push_files,
+    upload_settings_files,
+)
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
 
@@ -331,6 +337,8 @@ class SELRelay(DeviceModule):
             "never_download_files": [],  # ["CFG.XML", "SWCFG.ZIP"]
             "never_download_dirs": [],  # ["EVENTS", "HMI"]
             "restart_after_push": False,
+            "push_rdb_relay": "",
+            "push_unlisted_files": False,
             "old_ftp": False,
             "handle_download_errors": True,
             "creds": {
@@ -1219,18 +1227,24 @@ class SELRelay(DeviceModule):
         push_type: consts.PushType,
     ) -> bool:
         """
-        Reconfigure the SEL device by writing config files.
+        Reconfigure the SEL device by writing settings files via FTP.
+
+        The input is converted into the individual settings files on the relay
+        (``SET_1.TXT``, ``SET_P1.TXT``, etc.), which are saved in the device results
+        before connecting (``push_SET_ALL.txt`` and ``push_files/``), then uploaded
+        one at a time, checking ``ERR.TXT`` after each file. Refer to
+        :mod:`~peat.modules.sel.sel_push` for details.
 
         .. warning::
            Modifying the port configuration (SET_P*) will kill any connections
            to that port. This can affect the port PEAT is using to push configs!
-
-        .. note::
-           Filenames must be capitalized, e.g. SET_ALL.TXT or SET_1.TXT
+           The port settings are uploaded last.
 
         Args:
             dev: Device to push to
-            to_push: Path to relay configuration files to upload (SET_*.TXT)
+            to_push: Path of the settings to upload: a QuickSet RDB file (``*.rdb``),
+                ``SET_ALL.TXT``, an individual settings file (e.g. ``SET_1.TXT``),
+                or a directory of settings files. Filenames are case-insensitive.
             push_type: this should be 'config'
 
         Returns:
@@ -1248,6 +1262,31 @@ class SELRelay(DeviceModule):
             )
             return False
 
+        cls.log.info(f"Reading settings to push from {to_push}")
+        plan = prepare_push(dev, to_push, rdb_relay=dev.options["sel"]["push_rdb_relay"])
+        if plan is None:
+            return False
+
+        # Save the files being pushed in the device results before checking
+        # and connecting, so they're in the results even if the push fails.
+        save_push_files(dev, plan, peat_module=cls.__name__)
+
+        if not check_push_input(dev, plan):
+            return False
+
+        result = cls._push_via_ftp(dev, plan)
+
+        if not result and not plan.started:
+            plan.fail(dev, "Nothing was uploaded, the FTP connection or login to the relay failed")
+
+        return result
+
+    @classmethod
+    def _push_via_ftp(cls, dev: DeviceData, plan: PushPlan) -> bool:
+        """
+        Upload the settings files in a push plan to the relay via FTP,
+        then restart the relay if ``sel.restart_after_push`` is enabled.
+        """
         # Ensure we can connect via FTP
         # TODO: before pushing, read FTP user out of config
         #   just do: dev.lookup("service", {"protocol": "ftp"}).user
@@ -1255,51 +1294,17 @@ class SELRelay(DeviceModule):
             cls.log.error(f"FTP push failed for {dev.ip}: failed setup")
             return False
 
-        # TODO: Ability to push using a SET_ALL to reconstruct files, e.g.
-        #   peat push -d selrelay -i 192.0.2.123 -- SET_ALL.TXT
-        # NOTE: I don't think we can push the actual SET_ALL.TXT,
-        #   may return a permission denied error.
-
         # TODO: support pushing multiple configs at once, e.g.
         #   peat push -d selrelay -i 192.0.2.123 -- SET_1.TXT SET_6.TXT
         #   This will require modifying the push API and CLI args a bit
         #   to support multiple filenames as arguments.
 
         # TODO: rebuild connection on failures, e.g. timeout mid-push
-        # TODO: if SET_P* file(s) have a different IP, they need to be
-        #   done last, otherwise the subsequent configs will fail.
-        #   sort config update order so SET_P* files are last, with
-        #   ethernet ports at the end.
         # TODO: if SET_P in config name, then prepare ftp connection
         #  to reconnect/rebuild, and update the IP used to connect
         #  if it was changed. set a internal PEAT flag indicating
         #  a IP change occurred during the same run.
         # TODO: option to pull current configs and only push those whose hash changed
-
-        # peat push -d selrelay -i 192.0.2.123 -- SET_1.TXT
-        cls.log.info(f"Reading config(s) from {to_push}")
-
-        if to_push.is_dir():
-            config_files = sorted(to_push.glob("SET_*.TXT"))
-            if "SET_ALL.TXT" in (x.name for x in config_files):
-                cls.log.warning(f"Ignoring SET_ALL.TXT in config files for push to {dev.ip}.")
-                config_files = [x for x in config_files if x.name != "SET_ALL.TXT"]
-            if not config_files:
-                cls.log.error(f"Push failed: couldn't find any configs in {to_push.as_posix()}")
-                return False
-            cls.log.debug(f"Using {len(config_files)} config files from dir {to_push}")
-        elif to_push.is_file():
-            # TODO: support pushing *.rdb files (just extract the set_all), e.g.
-            #   peat push -d selrelay -i 192.0.2.123 -- sel_351.rdb
-            # We'll need to implement splitting SET_ALL into separate config files
-            # before implementing this.
-            config_files = [to_push]
-            cls.log.debug(f"Push: using config file {to_push.as_posix()}")
-        else:
-            cls.log.critical(f"Invalid file for push to {dev.ip}: {to_push}")
-            return False
-
-        cls.log.trace(f"config_files: {config_files}")
 
         try:
             with FTP(dev.ip, dev.options["ftp"]["port"], 120.0) as relay:
@@ -1337,76 +1342,15 @@ class SELRelay(DeviceModule):
                 ):
                     populate_file_listing(dev, relay)
 
-                # Push only the files on the relay already and in
-                # the order the relay displays them
-                settings_root = dev.extra["settings_root_directory"]
-                on_relay = [x.upper() for x in dev.extra["file_listing"][settings_root]]
+                if not upload_settings_files(
+                    dev,
+                    relay,
+                    plan,
+                    allow_unlisted=dev.options["sel"]["push_unlisted_files"],
+                    peat_module=cls.__name__,
+                ):
+                    return False
 
-                # Compare local file names with those on the device
-                local_names = [x.name for x in config_files]
-                local_not_on_relay = [x for x in local_names if x not in on_relay]
-                if local_not_on_relay:
-                    cls.log.warning(
-                        f"{len(local_not_on_relay)} files being pushed are not "
-                        f"currently present on the relay (they're new files). "
-                        f"Ensure you are pushing the right files to the "
-                        f"appropriate device! List of files: "
-                        f"{local_not_on_relay}"
-                    )
-
-                on_relay_not_local = [x for x in on_relay if x not in local_names]
-                if on_relay_not_local:
-                    cls.log.debug(
-                        f"{len(on_relay_not_local)} files exist on the relay, "
-                        f"but are not present in the configs being pushed. This "
-                        f"is expected if you're pushing a subset of configs "
-                        f"(e.g. just SET_1.TXT). List of files: "
-                        f"{on_relay_not_local}"
-                    )
-
-                # If the settings are in a "SETTINGS" directory, then change
-                # directories before transferring configs ("cd SETTINGS")
-                if settings_root == "SETTINGS":
-                    cls.log.info("Changing directory to 'SETTINGS' before pushing configs")
-                    relay.cd("/SETTINGS")
-
-                file_delay = 2
-                cls.log.info(
-                    f"Preparing to transfer {len(config_files)} config "
-                    f"files to {dev.ip}. This will take at least "
-                    f"{file_delay * (len(config_files) + 1)} seconds."
-                )
-                transfer_start = timeit.default_timer()
-
-                # Transfer all configs except communication port configs
-                for conf_file in config_files:
-                    if "SET_P" not in conf_file.name:
-                        cls.log.info(
-                            f"Transferring config '{conf_file.name}' ({conf_file.as_posix()})"
-                        )
-                        with conf_file.open("rb") as f:
-                            relay.upload_text(conf_file.name, f)
-                        cls.log.info(f"{conf_file.name} config sent")
-                        cls.log.debug(f"Sleeping for {file_delay} seconds...")
-                        time.sleep(file_delay)
-
-                # Transfer configuration port configs
-                for conf_file in config_files:
-                    if "SET_P" in conf_file.name:
-                        cls.log.info(
-                            f"Transferring communication port config "
-                            f"'{conf_file.name}' ({conf_file.as_posix()})"
-                        )
-                        with conf_file.open("rb") as f:
-                            relay.upload_text(conf_file.name, f)
-                        cls.log.info(f"{conf_file.name} communication port config sent")
-                        cls.log.debug(f"Sleeping for {file_delay} seconds...")
-                        time.sleep(file_delay)
-                transfer_time = timeit.default_timer() - transfer_start
-                cls.log.info(
-                    f"Completed transfer of {len(config_files)} config "
-                    f"files to {dev.ip} in {utils.fmt_duration(transfer_time)}"
-                )
                 # Prevent disconnection errors from skipping restart
                 try:
                     relay.disconnect()
