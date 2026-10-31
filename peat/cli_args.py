@@ -1317,8 +1317,8 @@ def add_exclude_modules_arg(parser: argparse.ArgumentParser) -> None:
         'multiple modules (e.g. "-x ControlLogix -x sel=192.0.2.5"). This is combined '
         "with the excluded_modules option from the config file and the "
         "PEAT_EXCLUDED_MODULES environment variable: exclusions can only be added, "
-        "never removed. PEAT refuses to run if a name doesn't match any module or "
-        "a target can't be used.",
+        "never removed. PEAT refuses to run if a name does not match any module or "
+        "a target cannot be used.",
     )
 
 
