@@ -43,6 +43,7 @@ Data Collected
 - Protection schemes
 - Trip logic
 - Modbus and DNP3 register maps
+- Sequential Events Recorder (SER) and event history, and the uptime calculated from the SER
 
 Relays
 ------
@@ -251,6 +252,48 @@ To manually extract them without using PEAT:
    sudo apt install qpdf
    zlib-flate -uncompress < ./SET_61850.CID > SET_61850.xml
 
+Events and uptime
+^^^^^^^^^^^^^^^^^
+Relays keep two event logs: the Sequential Events Recorder (SER), which records changes of the relay elements in the SER trigger settings and automatic entries such as power-ups and settings changes, and the event history, a summary of each event report (trips and other triggers). PEAT parses them from:
+
+- Files downloaded from the relay (FTP, ``FILE SHOW``, or YMODEM): ``SER.TXT``, falling back to ``CSER.TXT`` if ``SER.TXT`` has no events, and ``HISTORY.TXT``, falling back to ``CHISTORY.TXT``.
+- The ``ser`` and ``his`` commands over Telnet or serial, if ``sel.attempt_more_commands`` is enabled.
+- The ``ser`` and ``his`` pages of the relay's web interface.
+- The same files when parsing a directory of relay files or a single file (``peat parse -d selrelay``). File names can have a prefix (e.g. ``192.0.2.1_SER.TXT``), and the kind of file is determined by the end of the name.
+
+All of these use the same parsers in :mod:`peat.modules.sel.relay_parse`:
+
+- SER rows are split into the element and state on two or more spaces, since both can have single spaces (``GROUND O/C 1 LINE 1   51S1 PICKED UP``, ``Power-up   Group 1``, ``Relay Powered Up``). Rows that can't be parsed (e.g. ``Invalid Data`` for a record corrupted by a power loss, or the analog lines of a SEL-551 SER) are skipped instead of stopping the parse.
+- History reports are parsed using the columns in their header, which vary by relay family (``LOCAT``, ``CURR`` or ``CURRENT``, ``FREQ`` or ``FREQX``, ``GRP``, ``SHOT``, ``TARGETS``). Unknown values (``$$$$$$$``, e.g. the fault location if the fault locator didn't run) are left out, the targets are kept as text, and ``Invalid History Data`` rows are skipped.
+- ``CSER.TXT`` and ``CHISTORY.TXT`` are Compressed ASCII (see below). Their values are mapped by the labels, so the different layouts work (e.g. ``"REC_NUM","DATE","TIME","ELEMENT","STATE"`` on the 700 series and ``"#","MONTH","DAY","YEAR",...`` on the 400 series), and the checksums are verified. A SER or history file that's Compressed ASCII is parsed as such, regardless of its name.
+- The status information before the events (relay and station ID, the relay's current time, FID, serial number) is added to the device, even when there are no events (``No data available``, ``History Buffer Empty``).
+- Data is decoded as UTF-8, or as Latin-1 if it isn't valid UTF-8 (e.g. a ``0xB0`` byte in a SER element name), instead of failing.
+
+Each event is an ``Event`` in the device's ``event`` list:
+
+- ``dataset`` is ``ser`` (SER and CSER) or ``history`` (HISTORY and CHISTORY), and ``extra.source_datasets`` lists where the event was read from (``SER.TXT``, ``SER`` for the command, ``Sequential Event Recorder ('ser')`` for the web page, etc.).
+- ``extra`` has the ``element`` and ``state`` of SER events, and the ``event``, ``current``, ``frequency``, ``targets``, ``locat`` (fault location), ``group``, and ``shot`` of history events, if the relay reports them. Events from Compressed ASCII rows with a wrong checksum have ``extra.checksum_valid`` set to ``false``.
+- ``sequence`` is the number in the report. ``1`` is the newest event, and the numbers change as events are added.
+- The same event from different sources (e.g. ``SER.TXT`` and the ``ser`` command, or ``SER.TXT`` and ``CSER.TXT``) is merged into one event, by its kind (SER or history), time, and element and state (or event). SER and history events are never merged.
+- Power-up records (``Relay newly powered up``, ``Relay Powered Up``, ``Power-up``, ``Diagnostic restart``) have the type ``start``. The whole element must be one of these, and its state can't be a Relay Word bit state (``Asserted``, ``Deasserted``), so a SER element or alias such as ``UPS POWER UP`` isn't a power-up. The SEL-551, 710, and 749M log ``Relay newly powered up or settings changed`` for both, so those have the types ``start`` and ``change``.
+- Event times are the relay's local time, without a timezone. The order of the date is the relay's ``DATE_F`` setting (``MDY``, ``YMD``, or ``DMY``) if it was parsed from the settings (saved in ``extra.date_format``). Otherwise, it's inferred from the dates (a year first is ``YMD``, a first number larger than 12 is ``DMY``), with ``MDY`` as the default. The settings are parsed before the event files during a pull, so ``DATE_F`` is known.
+
+.. warning::
+   On SEL-400 series relays, transferring ``SER.TXT`` (or ``CSER.TXT``) with ``FILE READ`` performs a ``SER CV`` for that port: the SER records that were viewed are cleared for that port, so later reads of the SER from the same port won't have them (the records aren't deleted from the relay, and other ports still have them). This is documented for ``FILE READ`` in the SEL-421 instruction manual (and its virtual file table says ``SER.TXT`` "clears SER when read"). It's inferred, not confirmed, that an FTP download does the same. PEAT downloads ``SER.TXT`` as before, so keep this in mind if someone else reads the SER from the same port after a PEAT pull.
+
+The uptime (``uptime`` and ``start_time``) of a relay isn't reported by any command, so PEAT calculates it from the SER: the uptime is the time between the newest power-up record and the relay's current time when the SER was read (the time in the header of the SER report, or if there isn't one, ``extra.device_time``). Both are from the relay's clock, so the relay's timezone doesn't matter. ``start_time`` is the time of the pull (UTC) minus the uptime. These are only set if they aren't already set. The device's ``extra`` has:
+
+- ``uptime_source``: how the uptime (or its lower bound) was determined: ``ser_power_up``, ``ser_ambiguous_power_up``, or ``ser_oldest_record``.
+- ``last_boot_device_time``: time of the newest power-up record (relay local time).
+- ``uptime_lower_bound``: if the uptime can't be calculated, the minimum uptime, either since the newest ``Relay newly powered up or settings changed`` record (SEL-551, 710, 749M), or if there's no power-up record, since the oldest SER record.
+
+Limitations of the uptime:
+
+- The SER is a ring buffer (512 to 1024 records, depending on the model), and ``SER C`` clears it, so the power-up record may not be there. Then only the lower bound is known.
+- On SEL-400 series relays, the ``ser`` command without arguments returns only the 20 newest records, so over Telnet or serial (``sel.attempt_more_commands``) the power-up record often isn't included. ``SER.TXT`` has all of the records.
+- If the relay's clock was changed after the power-up (e.g. it was set from IRIG-B or SNTP after starting with the wrong time), the uptime is wrong. Negative results are ignored.
+- When parsing files, the relay's current time isn't known, so only ``last_boot_device_time`` is saved.
+
 
 Developer notes on SEL communications
 -------------------------------------
@@ -326,3 +369,15 @@ What PEAT sees (note the 0x03 and 0x02 characters):
 .. code-block:: Python
 
    ['id', '\x02', '"FID=SEL-700G-R200-V0-Z006003-D20180629","08F0"', '"BFID=BOOTLDR-R501-V0-Z000000-D20140224","0947"', '"CID=59A0","025C"', '"DEVID=SEL-700G","0408"', '"DEVCODE=74","0312"', '"PARTNO=0700G12B1B1B7281A230","06C2"', '"CONFIG=112222010","041E"', '"SEL DISPLAY PACKAGE=1.0.50700.2000","087C"', '"CUSTOMER DISPLAY PACKAGE=1.574871567","09A2"', '"iedName=","0360"', '"type=","026F"', '"configVersion=","0609"', '"LIB61850ID=5C9A14CB","04F1"', '\x03\x02', '=>>\x03']
+
+Compressed ASCII
+^^^^^^^^^^^^^^^^
+Compressed ASCII is the comma-delimited form of SEL ASCII responses, meant to be read by programs. The ``ID`` command (above) answers in this format, as do the "C" commands (``CAS``, ``CST``, ``CHI``, ``CSE``, ``CEV``, ``CSU``, ...) and the ``CSER.TXT`` and ``CHISTORY.TXT`` files. PEAT parses it with :mod:`peat.modules.sel.sel_cascii`, which has no I/O, so it works on data from Telnet, serial, files, or captures. The format, from the Compressed ASCII sections of public SEL instruction manuals (e.g. SEL-421 Reference Manual section 5, SEL-351S Appendix K, SEL-551 Appendix E):
+
+- A message starts with STX (``0x02``) and ends with ETX (``0x03``). The relay echoes the command before it, and sends the prompt after it. Files may not have the STX and ETX, and PEAT parses them either way. XON/XOFF characters and binary SEL Fast frames (``0xA5 ...``), which can be mixed in on the same port, are removed.
+- Lines end with CR LF (CR on some older relays, such as the SEL-551). Fields are separated by commas. Strings are quoted, and numbers aren't (an empty field is no value, and placeholders like ``$$$$.$$`` are kept as text). Quotes inside strings aren't escaped (e.g. in the settings in ``CEV`` output), so the CSV module can't be used.
+- Each line ends with a checksum, four hex digits in quotes (upper or lower case): the sum of the bytes from the first byte of the line through the comma before the checksum, modulo 65536. For example, ``"No Data Available","0668"``. A record with a wrong checksum is kept, marked ``invalid``, and a warning is logged. A string that spans multiple lines (the ``CEV`` settings) is joined into one record. How the relay calculates the checksum of those isn't publicly documented, so if the checksum doesn't match, the record is marked ``unverified`` instead of ``invalid``.
+- Label lines (all strings) name the values in the lines after them. Rows can be shorter than the labels (e.g. ``Relay Powered Up`` has no state), and are mapped to the labels by name, not position. PEAT doesn't use the ``TERSE`` option, which removes the label lines.
+- ``CAS`` (``CASCII``) lists the compressed commands on the relay, the minimum access level for each, and their layout: ``"<n>H"`` lines with the labels and ``"<n>D"`` lines with the data types (``I`` integer, ``F`` float, ``<n>S`` string) and the maximum number of data lines. :func:`~peat.modules.sel.sel_cascii.parse_cas` parses it, and :func:`~peat.modules.sel.sel_cascii.parse_report` can use the layout instead of guessing which lines are labels.
+
+``ID`` output is parsed by :func:`~peat.modules.sel.sel_cascii.parse_id_output`: each ``KEY=VALUE`` is split at the first ``=``, with the spaces removed (700-series relays print ``"iedName =TEMPLATE"``), keys without a value (``"iedName="``) are skipped, and the checksums are verified. Some relays print ``PARSE FAILURE`` as the IEC 61850 values if their CID file is invalid. Those values aren't used, and the keys are listed in ``extra.iec61850_parse_failure``. The previous parser dropped the last two lines of the output (e.g. ``LIB61850ID``) and cut off values with a ``=`` in them.
