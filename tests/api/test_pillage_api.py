@@ -113,9 +113,15 @@ def test_pillage_skips_peat_output_directories(monkeypatch):
     assert pillage(None) is True
     assert copied_files(Path("pillage_results")) == {"SEL/set_all.txt": b"found"}
 
-    # Pillaging the output directory itself works
+    # Pillaging the output directory itself works. The names "SET_ALL.TXT" and
+    # "set_all.txt" collide on case-insensitive filesystems (e.g. Windows and macOS),
+    # where the pulled file is copied to "SET_ALL.TXT.1" instead (nothing is overwritten).
+    collides = Path("pillage_results/SEL/SET_ALL.TXT").exists()
     assert pillage(str(out_dir)) is True
-    assert copied_files(Path("pillage_results"))["SEL/SET_ALL.TXT"] == b"pulled"
+    assert copied_files(Path("pillage_results")) == {
+        "SEL/set_all.txt": b"found",
+        "SEL/SET_ALL.TXT.1" if collides else "SEL/SET_ALL.TXT": b"pulled",
+    }
 
 
 def test_is_output_dir(tmp_path, monkeypatch):

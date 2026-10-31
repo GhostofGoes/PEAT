@@ -344,18 +344,62 @@ def test_file_pool_limits_open_files(pillage_image_path, monkeypatch):
 def test_pooled_file_replaced(tmp_path):
     pth = tmp_path / "disk.001"
     pth.write_bytes(b"a" * 100)
+    (tmp_path / "disk.002").write_bytes(b"c" * 100)
     pool = pillage_image._FilePool(max_open=1)
     pooled = pillage_image._PooledFile(pool, pth)
-    other = pillage_image._PooledFile(pool, pth)
+    other = pillage_image._PooledFile(pool, tmp_path / "disk.002")
     assert pooled.read(4) == b"aaaa"
-    assert other.read(1) == b"a"  # Closes pooled's file, only 1 can be open
+    assert other.read(1) == b"c"  # Closes pooled's file, only 1 can be open
+
+    # A file can only be replaced while it's closed (open files can't be replaced on Windows)
+    assert pooled not in pool._open
     replacement = tmp_path / "new"
     replacement.write_bytes(b"b" * 100)
     os.replace(replacement, pth)
     with pytest.raises(OSError, match="replaced"):
         pooled.read(4)
+    assert pool.num_open == 0  # The replacement isn't left open
     with pytest.raises(OSError, match="not a regular file"):
         pillage_image._PooledFile(pool, tmp_path)
+
+
+def test_pooled_file_changed(tmp_path):
+    # Same device and inode, but a different size. On some filesystems st_ino doesn't
+    # identify the file (it's 0, or a reused FAT file ID on Windows), the size still does.
+    pth = tmp_path / "disk.001"
+    pth.write_bytes(b"a" * 100)
+    pool = pillage_image._FilePool(max_open=1)
+    pooled = pillage_image._PooledFile(pool, pth)
+    assert pooled.read(4) == b"aaaa"
+    pool.close()
+    with pth.open("ab") as fp:
+        fp.write(b"b")
+    with pytest.raises(OSError, match="changed"):
+        pooled.read(4)
+    assert pool.num_open == 0
+
+
+def test_pooled_file_identity_from_open_file(tmp_path, monkeypatch):
+    # On Windows, os.stat() doesn't always get st_dev and st_ino the same way as
+    # os.fstat() (e.g. they're 0 if it can only read the file's directory entry)
+    pth = tmp_path / "disk.001"
+    pth.write_bytes(b"a" * 100)
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if os.fspath(path) != os.fspath(pth):
+            return st
+        values = list(st)
+        values[1] = values[2] = 0  # st_ino, st_dev
+        return os.stat_result(values)
+
+    monkeypatch.setattr(os, "stat", _stat)
+    pool = pillage_image._FilePool(max_open=1)
+    pooled = pillage_image._PooledFile(pool, pth)
+    assert pooled.read(4) == b"aaaa"
+    pool.close()
+    assert pooled.read(4) == b"aaaa"
 
 
 def test_split_raw_parts(tmp_path):

@@ -668,7 +668,7 @@ When a valid file is found it will be copied into a ``./pillage_results/`` direc
 
 If no source is given with ``-P``, the current directory is searched. PEAT's own output (``./pillage_results/`` and the ``peat_results`` directory, :attr:`OUT_DIR <peat.settings.Configuration.OUT_DIR>`) is never searched. To pillage PEAT's output on purpose, use it as the source (e.g. ``-P peat_results``).
 
-Before a file is copied into a results sub-directory Pillage checks to see if a file with the same name already exists.  If it does then the new file is copied to the results sub-directory and renamed with an integer added.  For example if ``set_all.txt`` is found but a file with that same name already exists in ``./pillage_results/SEL/``, then the new file will be renamed to ``set_all.txt.1``
+Before a file is copied into a results sub-directory Pillage checks to see if a file with the same name already exists.  If it does then the new file is copied to the results sub-directory and renamed with an integer added.  For example if ``set_all.txt`` is found but a file with that same name already exists in ``./pillage_results/SEL/``, then the new file will be renamed to ``set_all.txt.1``. On case-insensitive filesystems (e.g. on Windows and macOS), names that only differ in case are the same name (e.g. ``SET_ALL.TXT`` is renamed to ``SET_ALL.TXT.1`` if ``set_all.txt`` exists).
 
 Refer to :ref:`pillage-config` for the available options and examples.
 
@@ -735,6 +735,8 @@ A small image can describe a lot of data (e.g. sparse files, or many hard links 
 - Copying stops with an error if the total size of the copied files would be larger than the ``max_total_size`` Pillage option (8 GiB by default), or if there would be less than 512 MiB of free disk space left
 
 These limits don't apply to directories, or to images that are mounted (the ``mount`` backend).
+
+The files of an image (e.g. EWF segments) must not be modified while Pillage reads them. A file of the image that was replaced, or whose size changed, isn't read again: the files and folders in the image that are stored in it are skipped with a warning.
 
 Each run with the ``library`` backend saves a summary to ``summaries/pillage-summary.json`` in the run directory. This includes the image format, partitions, filesystems, the metadata stored in the image, the files that were copied (where they were in the image, where they were copied to, their size and SHA256 hash), the hard links that weren't copied again, and why copying stopped early (if it did).
 

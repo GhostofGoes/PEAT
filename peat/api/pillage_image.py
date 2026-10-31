@@ -19,7 +19,8 @@ Disk images are untrusted input. This module:
   points inside an image (only files and directories in the image are read)
 - never opens files outside of the image's own directory
   (EWF segments, split raw parts and VMDK extent files)
-- keeps a limited number of files open, however many files an image has
+- keeps a limited number of files open, however many files an image has,
+  and refuses a file that was replaced or changed when it's opened again
 - refuses images that depend on a parent or backing file
   (differencing VHD/VHDX, VMDK snapshots, qcow2 backing files)
 - bounds the partition table parsing (CRC checks, entry limits, loop guards)
@@ -415,10 +416,26 @@ def _libyal_media(
     return _Media(_read_at, obj.get_media_size(), close, info)
 
 
+def _file_identity(st: os.stat_result) -> tuple[int, int, int]:
+    """
+    What a file of an image must still match when it's opened again:
+    its device, inode (the file ID on Windows) and size.
+
+    The size is included since ``st_ino`` only identifies a file if it's
+    not zero, which depends on the filesystem (e.g. WebDAV on Windows), and
+    FAT file IDs on Windows come from the file's directory entry.
+    """
+    return (st.st_dev, st.st_ino, st.st_size)
+
+
 class _FilePool:
     """
     Opens the files of an image when they're read, and keeps at most
     ``max_open`` of them open (the least recently used file is closed).
+
+    A file that's opened again must be the same file (see :func:`_file_identity`),
+    e.g. it wasn't replaced while it was closed. While a file is open it can't be
+    replaced on Windows, and on other systems the open file is still read.
     """
 
     def __init__(self, max_open: int | None = None) -> None:
@@ -448,8 +465,10 @@ class _FilePool:
         fp = pooled.path.open("rb")
         try:
             st = os.fstat(fp.fileno())
-            if (st.st_dev, st.st_ino) != pooled.file_id or not stat.S_ISREG(st.st_mode):
-                raise OSError(f"'{pooled.name}' was replaced while the image was being read")
+            if _file_identity(st) != pooled.file_id or not stat.S_ISREG(st.st_mode):
+                raise OSError(
+                    f"'{pooled.name}' was replaced or changed while the image was being read"
+                )
         except BaseException:
             fp.close()
             raise
@@ -479,13 +498,22 @@ class _PooledFile:
     """
 
     def __init__(self, pool: _FilePool, path: Path) -> None:
-        st = path.stat()
+        # Only regular files are opened (e.g. opening a FIFO would block)
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise OSError(f"'{path.name}' is not a regular file")
+
+        # Identify the file the same way as when it's opened again. On Windows,
+        # os.stat() and os.fstat() don't always get st_dev and st_ino the same way
+        # (e.g. os.stat() uses GetFileInformationByName() in Python 3.12+).
+        with path.open("rb") as fp:
+            st = os.fstat(fp.fileno())
         if not stat.S_ISREG(st.st_mode):
             raise OSError(f"'{path.name}' is not a regular file")
+
         self.path = path
         self.name = path.name
         self.size = st.st_size
-        self.file_id = (st.st_dev, st.st_ino)
+        self.file_id = _file_identity(st)
         self._pool = pool
         self._pos = 0
 
