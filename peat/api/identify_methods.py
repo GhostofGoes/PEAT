@@ -43,6 +43,10 @@ class IPMethod(IdentifyMethod):
     """
     Lowercase name of the protocol used.
 
+    By convention, this is the key of the protocol's options in the device
+    options (e.g. ``ftp``, ``http``, ``modbus_tcp``), where the port and
+    timeout for the protocol are configured.
+
     .. note::
        Similar protocols, such as ``http`` and ``https``,
        should be two separate :class:`~peat.api.identify_methods.IPMethod`
@@ -100,6 +104,15 @@ class SerialMethod(IdentifyMethod):
     Allowed values for this method (SerialMethod):
 
     - ``direct``
+    """
+
+    protocol: constr(strip_whitespace=True, to_lower=True) = "serial"
+    """
+    Lowercase name of the serial protocol used, e.g. ``servlink_serial``.
+
+    By convention, this is the key of the protocol's options in the device
+    options (where the timeout for the protocol is configured).
+    Defaults to ``serial``.
     """
 
 

@@ -190,6 +190,30 @@ class Configuration(SettingsManager):
     Force identification checks of all ports during scanning.
     """
 
+    PROTOCOL_FILTER: list[str] = []
+    """
+    Only use device modules that use at least one of these protocols or
+    ports for the command being run (``scan``, ``pull``, or ``push``).
+    This is the same as the ``-p`` (``--protocols``) :term:`CLI` argument.
+    If empty, modules aren't filtered by protocol.
+
+    Values can be protocol names (``ftp``, or ``modbus`` to match ``modbus_tcp``),
+    ports (``502``), port ranges (``20-25``), or ports with a transport
+    (``161/udp``). Example: ``["ftp", "502", "161/udp"]``.
+
+    This only applies to the ``scan``, ``pull``, and ``push`` CLI commands and
+    module listings (``--list-modules``). The Python API functions (e.g.
+    :func:`peat.api.scan_api.scan`) don't use it. Python API users can select
+    modules with :meth:`~peat.module_manager.ModuleManager.select_modules`.
+    If this option fails to load (e.g. a malformed ``PEAT_PROTOCOL_FILTER``
+    environment variable), these CLI commands exit with an error.
+
+    .. note::
+       This selects which modules are used. It doesn't prevent the selected
+       modules from using their other protocols. Run ``--list-modules`` or
+       ``--module-info`` to see which protocols a module uses.
+    """
+
     HASH_ALGORITHMS: list[str] = ["md5", "sha1", "sha256", "sha512"]
     """
     Hash algorithms to use wherever hashes are calculated.

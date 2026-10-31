@@ -55,6 +55,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     datastore,
     exit_handler,
     state,
@@ -107,6 +108,29 @@ class SELRTAC(DeviceModule):
     # These are what's known to work. Others may work as well
     supported_models = ["3530", "3530-4", "3350"]
     module_aliases = [f"sel-{x}" for x in supported_models]
+    protocols = [
+        ModuleProtocol(
+            name="http",
+            transport="tcp",
+            ports=[80],
+            operations=["pull"],
+            description="Web interface (sel.pull_http)",
+        ),
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[443],
+            operations=["pull"],
+            description="Web interface (sel.pull_http)",
+        ),
+        ModuleProtocol(
+            name="postgres",
+            transport="tcp",
+            ports=[5432],
+            operations=["pull"],
+            description="Query the RTAC PostgreSQL database (sel.pull_postgres)",
+        ),
+    ]
 
     default_options = {
         "web": {

@@ -14,7 +14,15 @@ import struct
 from pathlib import Path
 from typing import Any
 
-from peat import DeviceData, DeviceModule, Interface, SerialMethod, datastore, log
+from peat import (
+    DeviceData,
+    DeviceModule,
+    Interface,
+    ModuleProtocol,
+    SerialMethod,
+    datastore,
+    log,
+)
 from peat.protocols import open_serial_port, pretty_hex_bytes, serial_txn
 
 from .wdw_2301e_svl import *
@@ -48,6 +56,15 @@ class WDW2301E(DeviceModule):
     vendor_name = "Woodward, Inc"
     brand = "WDW"
     model = "2301E"
+    supported_models = ["2301E"]
+    protocols = [
+        ModuleProtocol(
+            name="servlink_serial",
+            transport="serial",
+            operations=["pull"],
+            description="ServLink system information and configuration over serial",
+        ),
+    ]
     filename_patterns = ["*.wset"]  # TODO: should wset and tc parsing belong here or 3500XT?
     # TODO: combine some common functions of 3500XT and 2301E?
     woodward_fallback_baudrates = [9600]
@@ -160,6 +177,7 @@ WDW2301E.serial_methods = [
         type="direct",
         identify_function=WDW2301E._verify_serial,
         reliability=3,
+        protocol="servlink_serial",
     )
 ]
 

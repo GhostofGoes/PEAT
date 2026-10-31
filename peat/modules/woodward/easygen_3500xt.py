@@ -20,6 +20,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     SerialMethod,
     datastore,
 )
@@ -62,6 +63,10 @@ easygen_data_types: dict[str, dict] = {
 
 
 class Easygen3500XT(DeviceModule):
+    """
+    Woodward easYgen-3500XT genset controller.
+    """
+
     device_type = "Genset Controller"  # Engine/Generator control and protector
     vendor_id = "Woodward"
     vendor_name = "Woodward, Inc"
@@ -69,6 +74,29 @@ class Easygen3500XT(DeviceModule):
     model = "3500XT"
     # TODO: should wset and tc parsing belong here or 3500XT?
     filename_patterns = ["*.wset", "*.tc"]
+    supported_models = ["3500XT"]
+    protocols = [
+        ModuleProtocol(
+            name="servlink_tcp",
+            transport="tcp",
+            ports=[666, 667],
+            operations=["pull"],
+            description="ServLink/TCP system information and parameters",
+        ),
+        ModuleProtocol(
+            name="ftp",
+            transport="tcp",
+            ports=[21],
+            operations=["pull"],
+            description="Download files",
+        ),
+        ModuleProtocol(
+            name="servlink_serial",
+            transport="serial",
+            operations=["pull"],
+            description="ServLink system information and parameters over serial",
+        ),
+    ]
     # TODO: combine some common functions of 3500XT and 2301E?
     easygen_fallback_baudrates = [9600]
     default_options = {
@@ -465,6 +493,7 @@ Easygen3500XT.serial_methods = [
         type="direct",
         identify_function=Easygen3500XT._verify_serial,
         reliability=6,
+        protocol="servlink_serial",
     )
 ]
 

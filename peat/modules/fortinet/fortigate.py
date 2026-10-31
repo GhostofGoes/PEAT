@@ -19,7 +19,7 @@ from pathlib import Path
 
 from scp import SCPClient
 
-from peat import DeviceData, DeviceModule, datastore, exit_handler
+from peat import DeviceData, DeviceModule, ModuleProtocol, datastore, exit_handler
 from peat.api.identify_methods import IPMethod
 from peat.file_signature import FileSignature
 from peat.protocols import HTTP, SSH
@@ -77,6 +77,23 @@ class Fortigate(DeviceModule):
     ]
     can_parse_dir: bool = True
     module_aliases = ["fg100", "fg"]
+    supported_models = ["FG-100F"]
+    protocols = [
+        ModuleProtocol(
+            name="ssh",
+            transport="tcp",
+            ports=[22],
+            operations=["pull"],
+            description="Download /config/sys_config via SCP (requires admin-scp)",
+        ),
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[443],
+            operations=["pull"],
+            description="Web interface login, download config and logs",
+        ),
+    ]
 
     default_options = {
         "fortigate": {

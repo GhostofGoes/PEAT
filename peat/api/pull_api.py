@@ -25,6 +25,8 @@ def pull(
         device_types: Names of device modules or module aliases to use
         skip_scan: If device verification (scanning) should be skipped.
             NOTE: this currently only applies to unicast_ip devices.
+            Hosts in the YAML config with a ``peat_module`` that isn't in
+            ``device_types`` are skipped (unless ``device_types`` is empty).
 
     Returns:
         :ref:`pull-summary` as a :class:`dict`, or :obj:`None` if an error occurred
@@ -38,19 +40,30 @@ def pull(
             state.error = True
             return None
 
-        # Build per-IP module map from YAML config hosts
+        # Build per-IP module map from YAML config hosts. If device_types is set,
+        # only modules in it are used, so modules that were excluded (e.g. by
+        # the protocol filter or because they can't pull) aren't used for a host.
+        allowed_modules = set(module_api.lookup_types(device_types)) if device_types else None
         host_module_map: dict = {}
+        excluded_ips: set[str] = set()
         for host in config.HOSTS or []:
             ip = host.get("identifiers", {}).get("ip")
             peat_module = host.get("peat_module")
             if ip and peat_module:
                 resolved = module_api.lookup_types([peat_module], filter_attr="ip_methods")
-                if resolved:
+                if resolved and allowed_modules is not None and resolved[0] not in allowed_modules:
+                    log.warning(
+                        f"Skipping {ip}: its module in the YAML config "
+                        f"('{resolved[0].__name__}') isn't one of the modules "
+                        f"selected for the pull"
+                    )
+                    excluded_ips.add(ip)
+                elif resolved:
                     host_module_map[ip] = resolved[0]
 
         # Fallback to the explicitly specified device types when no per-host mapping exists
         fallback_modules = module_api.lookup_types(device_types, filter_attr="ip_methods")
-        if len(fallback_modules) > 1 and not host_module_map:
+        if len(fallback_modules) > 1 and not host_module_map and not excluded_ips:
             raise PeatError(
                 "More than 1 device type specified with --skip-scan and no per-host "
                 "'peat_module' found in YAML config. Specify a single module using '-d' or "
@@ -60,6 +73,8 @@ def pull(
 
         devices = []
         for ip in ips:
+            if ip in excluded_ips:
+                continue
             module = host_module_map.get(ip) or fallback_module
             if module is None:
                 log.error(f"No module resolved for {ip}, unable to pull")

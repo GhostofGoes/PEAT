@@ -21,6 +21,7 @@ all_base = (
     "-v, --verbose",
     "-V, --debug",
     "--list-modules",
+    "--module-info MODULE",
     "--examples",
     "--all-examples",
 )
@@ -32,10 +33,19 @@ active_base = ("--host-file FILE", "-i HOSTS", "-s PORTS")
 @pytest.mark.parametrize(
     ("subcmd", "expected"),
     [
-        ("scan", [*all_base, *active_base, "--peat-modules TYPES "]),
+        ("scan", [*all_base, *active_base, "--peat-modules TYPES ", "--protocols PROTOCOL"]),
         ("parse", [*all_base, "--peat-modules TYPES"]),
-        ("pull", [*all_base, *active_base, "--peat-modules TYPE "]),
-        ("push", [*all_base, *active_base, "input_source", "--peat-modules DEVICE "]),
+        ("pull", [*all_base, *active_base, "--peat-modules TYPE ", "--protocols PROTOCOL"]),
+        (
+            "push",
+            [
+                *all_base,
+                *active_base,
+                "input_source",
+                "--peat-modules DEVICE ",
+                "--protocols PROTOCOL",
+            ],
+        ),
         ("pillage", [*all_base, "-P SOURCE"]),
         ("heat", [*all_base, "--heat-file-only"]),
         (
@@ -77,20 +87,50 @@ def test_cli_subcommand_help(run_peat, subcmd, expected):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("subcmd", ["scan", "parse", "pull", "push", "pillage", "heat"])
-def test_cli_list_modules(run_peat, subcmd):
+@pytest.mark.parametrize(
+    ("subcmd", "expected_module"),
+    [
+        ("scan", "ControlLogix"),
+        ("parse", "SELRelay"),
+        ("pull", "ControlLogix"),
+        ("push", "ControlLogix"),
+        ("pillage", "ControlLogix"),
+        ("heat", "ControlLogix"),
+    ],
+)
+def test_cli_list_modules(run_peat, subcmd, expected_module):
     output = run_peat([subcmd, "--list-all"])[0]
     assert "** Modules **" in output
     assert "** Aliases **" in output
     assert "'clx'" in output
+    assert "ControlLogix" in output
 
-    assert "ControlLogix" in run_peat([subcmd, "--list-modules"])[0]
+    list_output = run_peat([subcmd, "--list-modules"])[0]
+    assert expected_module in list_output
+    assert "Operations" in list_output
+
+    list_json = json.loads(run_peat([subcmd, "--list-modules", "--json"])[0])
+    assert expected_module in [m["name"] for m in list_json]
 
     assert '"clx"' in run_peat([subcmd, "--list-aliases"])[0]
 
     mappings_output = run_peat([subcmd, "--list-alias-mappings"])[0]
     assert '"clx"' in mappings_output
     assert '"ControlLogix"' in mappings_output
+
+
+@pytest.mark.slow
+def test_cli_list_modules_protocol_filter(run_peat):
+    output = run_peat(["scan", "--list-modules", "-p", "502"])[0]
+    assert "M340" in output
+    assert "SELRelay" not in output
+
+    data = json.loads(run_peat(["scan", "--list-modules", "-p", "502", "--json"])[0])
+    assert [m["name"] for m in data] == ["M340"]
+
+    info = run_peat(["pull", "--module-info", "selrelay"])[0]
+    assert "SELRelay (peat.modules.sel.sel_relay)" in info
+    assert "Identification methods (scan)" in info
 
 
 @pytest.mark.slow

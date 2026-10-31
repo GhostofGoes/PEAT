@@ -99,6 +99,7 @@ from .settings import config, state
 from .elastic import Elastic
 from .data import *
 from .api.identify_methods import IdentifyMethod, IPMethod, SerialMethod
+from .module_protocol import ModuleProtocol
 from .device import DeviceModule
 from .modules import *
 from .module_manager import module_api

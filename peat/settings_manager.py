@@ -58,6 +58,37 @@ yaml.SafeLoader.add_constructor("!ENV", _env_var_constructor)
 yaml.SafeLoader.add_constructor("!JOIN", _join_var_constructor)
 
 
+def _parse_container_str(value: str) -> list:
+    """
+    Parse a list from a string, e.g. from an environment variable or YAML scalar.
+
+    - Empty string (or only whitespace): empty list
+    - Starts with ``[``: a JSON or YAML flow sequence, e.g. ``'["a", "b"]'`` or ``[a, b]``
+    - Otherwise: comma-separated values, e.g. ``"a, b,c"``. Whitespace around
+      values is removed, and empty values are skipped.
+
+    Raises:
+        ValueError: If the value starts with ``[`` but isn't a list
+    """
+    s = value.strip()
+    if not s:
+        return []
+
+    if s[0] == "[":
+        # NOTE: JSON is (practically) a subset of YAML
+        try:
+            out = yaml.safe_load(s)
+        except yaml.YAMLError:
+            # NOTE: the YAML error isn't included, since it contains the
+            # value, which could be a secret (e.g. a password).
+            raise ValueError("value starts with '[' but isn't a valid JSON or YAML list") from None
+        if not isinstance(out, list):
+            raise ValueError(f"expected a list, got {type(out).__name__}")
+        return out
+
+    return [x.strip() for x in s.split(",") if x.strip()]
+
+
 class SettingsManager(dict):
     """
     Stores and manages configuration values from multiple sources.
@@ -96,6 +127,11 @@ class SettingsManager(dict):
         self["runtime_configs"] = {}
         self["env_configs"] = {}
         self["file_configs"] = {}
+
+        # Options that failed to load: option name -> error message.
+        # Errors can't be logged when environment variables are loaded at
+        # import time, so they're recorded for callers to check later.
+        self["load_errors"] = {}
 
         # Use the class's variable attributes and annotations for defaults,
         # much like a dataclass (In fact, it's exactly what a dataclass does!).
@@ -153,7 +189,10 @@ class SettingsManager(dict):
             if upper_conf.get(key) is not None:
                 try:
                     self[load_to][set_key] = self.typecast(set_key, upper_conf[key])
+                    self["load_errors"].pop(set_key, None)
                 except Exception as ex:
+                    # NOTE: the raw value isn't recorded, since it could be a secret
+                    self["load_errors"][set_key] = str(ex)
                     log.critical(f"Failed to load config '{key}': {ex}")
 
         # !! Hack to make metadata directory configuration seamless and flexible !!
@@ -405,6 +444,29 @@ class SettingsManager(dict):
         #   get_args(Union[str, Path]) => (str, Path)
         #   get_args(Optional[Union[Path, str]]) => (Path, str, None)
         args = get_args(typecast)
+
+        # Lists given as strings (e.g. environment variables or YAML scalars) are
+        # parsed, instead of being split into characters by list("abc").
+        container = (
+            og
+            if og in (list, set, tuple)
+            else (typecast if typecast in (list, set, tuple) else None)
+        )
+        if container is not None and isinstance(value, str):
+            parsed = _parse_container_str(value)
+            if args and args[0] is str:
+                parsed = [str(x) for x in parsed]
+            return container(parsed)
+        if container is not None and isinstance(value, (int, float)):
+            # A single number, e.g. "protocol_filter: 502" in a YAML config
+            return container([str(value)] if args and args[0] is str else [value])
+        if (
+            container is not None
+            and args
+            and args[0] is str
+            and isinstance(value, (list, set, tuple))
+        ):
+            return container(str(x) for x in value)
 
         if og and (og is Union or og is UnionType):
             if type(None) in args and value is None:

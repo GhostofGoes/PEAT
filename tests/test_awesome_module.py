@@ -38,6 +38,14 @@ def test_awesome_module_load_and_parse(mocker, tmp_path, example_module_file):
     )
     assert parsed_device.export() == expected
 
+    # Capability metadata
+    awesome = module_api.modules["awesometool"]
+    assert awesome.get_operations() == ["scan", "pull", "parse"]
+    pull_protocols = awesome.get_protocol_details("pull")
+    assert [(p.name, p.transport, p.ports) for p in pull_protocols] == [("http", "tcp", [8090])]
+    assert awesome.get_ports() == [8090]
+    assert awesome.supported_models == ["AwesomePLC 9000"]
+
 
 @pytest.mark.slow
 def test_import_awesome_module_parse_cli(run_peat, tmp_path, example_module_file):

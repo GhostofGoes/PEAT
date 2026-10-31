@@ -34,6 +34,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     ParseError,
     config,
     datastore,
@@ -77,6 +78,52 @@ class Sage(DeviceModule):
     vendor_name = "Schneider Electric"
     brand = "Sage"
     model = ""
+    supported_models = ["2400", "3030M"]
+    protocols = [
+        ModuleProtocol(
+            name="telnet",
+            transport="tcp",
+            ports=[23],
+            operations=["pull"],
+            description="Run shell commands",
+        ),
+        ModuleProtocol(
+            name="ssh",
+            transport="tcp",
+            ports=[22],
+            operations=["pull"],
+            description="Run shell commands and download files",
+        ),
+        ModuleProtocol(
+            name="sftp",
+            transport="tcp",
+            ports=[22],
+            operations=["pull"],
+            options_key="ssh",
+            description="Download files via SFTP over SSH",
+        ),
+        ModuleProtocol(
+            name="ftp",
+            transport="tcp",
+            ports=[21],
+            operations=["pull"],
+            description="Download files (sage.ftp_filesystems)",
+        ),
+        ModuleProtocol(
+            name="http",
+            transport="tcp",
+            ports=[80],
+            operations=["pull"],
+            description="Web interface pages",
+        ),
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[443],
+            operations=["pull"],
+            description="Web interface pages and TLS certificate ('ssl' pull method)",
+        ),
+    ]
     filename_patterns = [
         "*_Config*.tar.gz",
         "*_config*.tar.gz",

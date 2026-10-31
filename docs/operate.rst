@@ -77,19 +77,101 @@ Basics
    peat pillage -c ./examples/peat-config.yaml -P <raw-image-file>
    peat pillage -c ./examples/peat-config.yaml -P <local-filesystem-path>
 
-   # List available device modules
-   # NOTE: currently this shows ALL modules, including ones not supported for the command (e.g. scan)
-   #  A future version of PEAT will only show modules that support the command (e.g. scan)
+   # List the device modules that can be used with a command, with the
+   # operations (scan, pull, push, parse) and protocols they support
    peat scan --list-modules
    peat pull --list-modules
    peat parse --list-modules
    peat push --list-modules
-   peat pillage --list-modules
+
+   # Same as above, as JSON
+   peat pull --list-modules --json
+
+   # Details about modules, including protocols, ports, and supported models
+   peat pull --module-info sel
+
+   # List all modules, aliases, and alias mappings
+   peat scan --list-all
+
+   # Only use modules that use FTP or TCP port 502 (Modbus/TCP)
+   peat scan -p ftp 502 -i 192.0.2.0/24
 
    # Dry run where no commands will be executed
    # Useful for understanding PEAT's behavior and experimenting with configuration
    # options before packets are sent to OT devices.
    peat scan --dry-run -c ./examples/peat-config.yaml -vV -i 192.0.2.0/24
+
+
+.. _listing-modules:
+
+Listing device modules and their capabilities
+---------------------------------------------
+``--list-modules`` lists the device modules that can be used with the command it's run with, including modules imported with ``-I``. For example, ``peat push --list-modules`` only lists modules that can push to devices, and ``peat parse --list-modules`` only lists modules that can parse files. The ``-d`` and ``-p`` arguments are honored, so ``--list-modules`` can be used to preview the modules a command will use. The listing is a table with each module's device type, vendor, operations, and protocols:
+
+- **Operations** are the commands the module supports: ``scan``, ``pull``, ``push``, and ``parse``.
+- **Protocols** are the protocols the module uses for any operation (e.g. ``ftp``, ``http``, ``modbus_tcp``, or ``serial``).
+
+``--list-all`` lists all imported modules with the same table, followed by the module aliases and the mappings of aliases to modules.
+
+``--module-info <module>`` prints details about one or more modules (names or aliases, e.g. ``sel``), including:
+
+- The supported operations
+- The protocols the module uses, with their transport (``tcp``, ``udp``, ``both``, or ``serial``), default ports, and the operations that use each protocol. For example, the SELRelay module uses FTP to pull and push, but doesn't use it to identify relays (``scan``).
+- The identification methods used for scanning
+- The device models the module supports or is known to work with
+- The file names and patterns the module can parse
+
+Add ``--json`` (``-E``/``--print-results``) to get JSON output instead, e.g. for use in scripts. ``--list-modules --json`` and ``--module-info --json`` print a list of objects, one per module, with keys such as ``name``, ``operations``, ``protocols``, ``ports``, and ``supported_models``. ``--list-all --json`` prints an object with the keys ``modules``, ``aliases``, and ``alias_mappings``.
+
+.. code-block:: bash
+
+   # Names of the modules that can pull, using jq
+   peat pull --list-modules --json | jq -r '.[].name'
+
+.. note::
+   The ports listed are the *default* ports. The ports PEAT uses can be changed in the ``device_options`` section of a YAML config file (e.g. ``http: port: 8080``).
+
+
+.. _protocol-filter:
+
+Selecting modules by protocol or port
+-------------------------------------
+The ``-p`` (``--protocols``) argument of ``scan``, ``pull``, and ``push`` limits the device modules used to those that use at least one of the given protocols or ports *for that command*. Values are space- and/or comma-separated, case-insensitive, and can be:
+
+- A protocol name, e.g. ``ftp``, ``https``, ``snmp``, or ``servlink_tcp``. Names also match protocols they prefix, e.g. ``modbus`` matches ``modbus_tcp``. ``serial`` matches any serial protocol.
+- A port, e.g. ``502``
+- A range of ports, e.g. ``20-25``
+- A port or range of ports with a transport, e.g. ``161/udp`` or ``44818/tcp``
+
+Only the protocols a module uses for the command are considered. For example, the SELRelay module pulls files using FTP, but doesn't use FTP to identify devices, so ``peat pull -p ftp`` uses SELRelay, while ``peat scan -p ftp`` doesn't. The type of the targets is also considered: a broadcast scan (``-b``) only considers the protocols modules use to identify devices with broadcasts, and serial scans and pulls (``-s``) only consider serial protocols. For example, ``peat scan -b 192.0.2.255 -p 161/udp`` fails because no module uses SNMP broadcasts.
+
+If used with ``-d`` (or modules imported with ``-I``, or ``peat_module`` set for hosts in a YAML config), modules must match both. If no modules match, PEAT exits with an error that lists the protocols that are used by the selected modules. The filter can also be set with the ``protocol_filter`` option in a YAML config file or the ``PEAT_PROTOCOL_FILTER`` environment variable (e.g. ``PEAT_PROTOCOL_FILTER=ftp,502``).
+
+.. code-block:: bash
+
+   # Only use modules that identify devices using Modbus/TCP
+   peat scan -p modbus -i 192.0.2.0/24
+
+   # Only use modules that identify devices using TCP port 502 or UDP port 161
+   peat scan -p 502 161/udp -i 192.0.2.0/24
+
+   # Only use modules that pull using FTP or Telnet
+   peat pull -p ftp,telnet -i 192.0.2.20
+
+   # Preview the modules that would be used, without sending any traffic
+   peat pull -p ftp --list-modules
+
+.. warning::
+   ``-p`` selects *which modules* are used, it does not prevent the selected modules from using their other protocols. For example, ``peat pull -p modbus`` uses the M340 module, which also uses FTP and SNMP when pulling. Use ``--list-modules`` and ``--module-info`` to review the protocols a module will use before running it against a network, and the module's options (e.g. ``sel.pull_methods``) to limit the protocols a module uses to pull. Active scanning of an operational :term:`OT` network should be done with caution, since it can affect sensitive devices (refer to Appendix E of `NIST SP 800-82r3 <https://doi.org/10.6028/NIST.SP.800-82r3>`__).
+
+.. note::
+   Only the *default* ports of protocols are matched by port filters. If a protocol is configured to use a different port (e.g. ``http: port: 8080``), then filter by protocol name instead.
+
+.. note::
+   ``--skip-scan`` (``pull``) with a ``peat_module`` set for hosts in a YAML config skips hosts whose module was excluded by ``-d`` or ``-p``, with a warning.
+
+.. note::
+   If the ``protocol_filter`` option or the ``PEAT_PROTOCOL_FILTER`` environment variable can't be loaded (e.g. ``PEAT_PROTOCOL_FILTER='[502'``), then ``scan``, ``pull``, ``push`` and ``--list-modules`` exit with an error instead of using all modules.
 
 
 .. _windows-usage:

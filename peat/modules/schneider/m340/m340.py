@@ -42,6 +42,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     Service,
     config,
     datastore,
@@ -85,7 +86,40 @@ class M340(DeviceModule):
     vendor_name = "Schneider Electric"
     brand = "Modicon"
     model = "M340"
+    # TODO: confirm the CPU and Ethernet module part numbers
+    supported_models = ["BMX P34 2020"]
     filename_patterns = ["*.apx"]
+    protocols = [
+        ModuleProtocol(
+            name="umas",
+            transport="tcp",
+            ports=[502],
+            operations=["pull"],
+            options_key="modbus_tcp",
+            description="Download the project (Station.apx) via UMAS (Modbus FC 90)",
+        ),
+        ModuleProtocol(
+            name="modbus_tcp",
+            transport="tcp",
+            ports=[502],
+            operations=["pull"],
+            description="Modbus device identification (m340.use_network_for_config)",
+        ),
+        ModuleProtocol(
+            name="snmp",
+            transport="udp",
+            ports=[161],
+            operations=["pull"],
+            description="System and module information (m340.use_network_for_config)",
+        ),
+        ModuleProtocol(
+            name="ftp",
+            transport="tcp",
+            ports=[21],
+            operations=["pull"],
+            description="File metadata (m340.use_network_for_config)",
+        ),
+    ]
     file_signatures = [
         FileSignature(
             default_filename="project.apx",

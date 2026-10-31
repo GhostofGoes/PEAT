@@ -8,7 +8,7 @@ Authors
 - James Gallagher
 """
 
-from peat import DeviceData, DeviceModule, IPMethod, exit_handler
+from peat import DeviceData, DeviceModule, IPMethod, ModuleProtocol, exit_handler
 
 from .sel_http import SELHTTP
 
@@ -23,6 +23,16 @@ class SEL3620(DeviceModule):
     vendor_name = "Schweitzer Engineering Laboratories"
     brand = "SEL"
     module_aliases = ["sel-3620", "3620"]
+    supported_models = ["3620"]
+    protocols = [
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[443],
+            operations=["pull"],
+            description="Web interface pages (gateway status and configuration)",
+        ),
+    ]
     default_options = {
         "web": {
             "user": "",

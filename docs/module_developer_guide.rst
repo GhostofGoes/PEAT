@@ -142,6 +142,7 @@ Contributing a new module to be included in PEAT's codebase.
       # peat/modules/__init__.py
       from peat.modules.schneider import ION
 
+#. Describe the module's capabilities (see :ref:`module-capabilities`): declare the protocols the module uses to pull and push in :attr:`~peat.device.DeviceModule.protocols`, and list the device models it supports in :attr:`~peat.device.DeviceModule.supported_models`. Check the result with ``peat pull --module-info <ModuleName>``.
 #. Add command line usage examples to the docstrings for the relevant commands in ``peat/cli_args.py``, for example if your module supports scanning and pulling then you should add examples to ``scan_examples`` and ``pull_examples`` in ``peat/cli_args.py``.
 #. (Optional) If there are any device-specific configuration options needed (like a special username or whatever that needs to be configurable by the user), then do the following:
 
@@ -166,9 +167,75 @@ Contributing a new module to be included in PEAT's codebase.
 
    #. Add the options to the example YAML config file ``examples/peat-config.yaml``, including default values and detailed descriptions of the options and how they should be used. This will serve as documentation for the options. It's also the only way for users to know how to configure your module, so don't be afraid to go into detail!
 
-#. Add the device information (vendor, model, known tested, firmware, etc.) to the table of supported devices in Introduction section of the PEAT documentation
+#. Add the device information (vendor, model, known tested, firmware, etc.) to the table of supported devices in Introduction section of the PEAT documentation (``docs/supported_devices.csv``), and add the module to the rows of the protocols it uses in the table of TCP/IP protocols (``docs/tcp_ip_protocols_used_by_peat.csv``). The tests in ``tests/test_module_capabilities.py`` check that the modules and operations in these tables match the capabilities of the modules (protocols, ports, and the scan, pull, and push operations).
 #. Write a basic set of tests for your module (refer to the existing tests as well as the :ref:`test-docs`)
 #. (Optional) Create a dedicated documentation page with details on the device in the documentation. A few examples of this are ``sel.rst`` and ``siemens.rst``.
+
+
+.. _module-capabilities:
+
+Describing a module's capabilities
+==================================
+PEAT describes what a module can do using the module's class attributes. This is used by ``--list-modules``, ``--list-all``, and ``--module-info`` (refer to :ref:`listing-modules`), and to select modules by protocol or port with ``-p`` (refer to :ref:`protocol-filter`).
+
+Operations
+   The operations a module supports (``scan``, ``pull``, ``push``, and ``parse``) are determined automatically by :meth:`~peat.device.DeviceModule.get_operations`, using the same rules as PEAT's commands. A module supports ``scan`` if it has ``ip_methods`` or ``serial_methods``, ``pull`` and ``push`` if it can scan and implements ``_pull()`` or ``_push()``, and ``parse`` if it implements ``_parse()`` and has ``filename_patterns``, ``file_signatures``, or ``can_parse_dir``.
+
+Protocols
+   Protocols used to identify devices (scanning) are derived from ``ip_methods`` and ``serial_methods``. The protocols a module uses to pull from or push to devices must be declared in :attr:`~peat.device.DeviceModule.protocols` as a list of :class:`~peat.module_protocol.ModuleProtocol` objects. List *every* protocol used by ``_pull()`` and ``_push()``, including protocols also used for scanning. For example, SELRelay pulls files using FTP, but doesn't use FTP to identify relays:
+
+   .. code-block:: python
+
+      from peat import DeviceModule, ModuleProtocol
+
+      class SELRelay(DeviceModule):
+          protocols = [
+              ModuleProtocol(
+                  name="ftp",
+                  transport="tcp",
+                  ports=[21],
+                  operations=["pull", "push"],
+                  description="Download config and event files (pull), upload SET_*.TXT (push)",
+              ),
+              ModuleProtocol(
+                  name="telnet",
+                  transport="tcp",
+                  ports=[23],
+                  operations=["pull", "push"],
+                  description="Commands and file downloads (pull), sel.restart_after_push (push)",
+              ),
+          ]
+
+   - ``name`` is, by convention, the key of the protocol's options in the device options (e.g. ``ftp``, ``https``, ``modbus_tcp``, ``servlink_tcp``), which is where the protocol's port and timeout are configured. This is also the name used for :attr:`IPMethod.protocol <peat.api.identify_methods.IPMethod.protocol>`. If a protocol is configured by a different key, set ``options_key`` (e.g. ``sftp`` is configured by the ``ssh`` options).
+   - ``transport`` is ``tcp``, ``udp``, ``both`` (TCP and UDP), ``serial``, or ``other``.
+   - ``ports`` are the default ports, and are required for ``tcp``, ``udp``, and ``both``.
+   - ``operations`` are the operations that use the protocol (``scan``, ``pull``, and/or ``push``).
+   - Serial identification methods use the ``serial`` protocol, unless :attr:`SerialMethod.protocol <peat.api.identify_methods.SerialMethod.protocol>` is set (e.g. ``servlink_serial`` for the Woodward modules).
+
+   If a module implements ``_pull()`` or ``_push()`` but doesn't declare any protocols for that operation, then PEAT assumes the operation uses the scanning protocols. The tests in ``tests/test_module_capabilities.py`` require the modules included with PEAT to declare their protocols.
+
+   Protocol names from ``ip_methods`` and ``serial_methods`` that aren't valid ``ModuleProtocol`` names are normalized with :func:`~peat.module_protocol.normalize_protocol_name` (e.g. ``opc.ua`` becomes ``opc_ua``). A module whose ``protocols`` are invalid fails to import.
+
+Supported models
+   :attr:`~peat.device.DeviceModule.supported_models` lists the device models (or products) the module supports or is known to work with. These are shown by ``--module-info``.
+
+The capabilities can be queried with :meth:`~peat.device.DeviceModule.get_operations`, :meth:`~peat.device.DeviceModule.get_protocols`, :meth:`~peat.device.DeviceModule.get_ports`, :meth:`~peat.device.DeviceModule.get_method_names`, :meth:`~peat.device.DeviceModule.get_protocol_details`, and :meth:`~peat.device.DeviceModule.get_capabilities`. Modules can be selected by operation and protocol with :meth:`module_api.select_modules() <peat.module_manager.ModuleManager.select_modules>`.
+
+.. code-block:: python
+
+   from peat import SELRelay, module_api
+
+   SELRelay.get_operations()  # ['scan', 'pull', 'push', 'parse']
+   SELRelay.get_protocols("scan")  # ['http', 'https', 'serial', 'telnet']
+   SELRelay.get_protocols("push")  # ['ftp', 'telnet']
+   SELRelay.get_ports("pull", transport="tcp")  # [21, 23, 80, 443]
+   SELRelay.get_protocols("pull", comm_type="serial")  # ['serial', 'ymodem']
+
+   # Modules that use FTP to pull
+   module_api.select_modules(operation="pull", protocols="ftp")
+
+   # Modules that use CIP for broadcast scans
+   module_api.select_modules(operation="scan", protocols="cip", comm_type="broadcast_ip")
 
 
 Development tips and tricks

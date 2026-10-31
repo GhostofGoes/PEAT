@@ -11,6 +11,7 @@ from peat import (
     DeviceModule,
     Event,
     IPMethod,
+    ModuleProtocol,
     config,
     log,
     state,
@@ -248,6 +249,15 @@ class GERTU(DeviceModule):
     brand = "Multilin"
     model = "D25"
     supported_models = ["D25"]
+    protocols = [
+        ModuleProtocol(
+            name="telnet",
+            transport="tcp",
+            ports=[23],
+            operations=["pull"],
+            description="Navigate the D25 menus (I/O points, configuration, logs)",
+        ),
+    ]
     default_options = {
         "telnet": {
             "user": "User",

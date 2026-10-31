@@ -16,6 +16,10 @@ from peat.modules.uefi.uefi_spi_parse import parse_file
 
 
 class UEFI(DeviceModule):
+    """
+    UEFI firmware SPI dumps and hashes extracted with SPIExtract.
+    """
+
     device_type = "UEFI"
     filename_patterns = ["spi*.txt", "*hashes*.json"]
 
