@@ -1,0 +1,46 @@
+{#-
+  Macros for the PEAT HTML report.
+
+  SECURITY: everything rendered here is untrusted (mostly reported by devices).
+  - Never use the "safe" filter, Markup, or the "xmlattr" filter.
+  - Always double-quote attribute values.
+  - Never put data inside <script> or <style>, and never add inline style
+    attributes or event handlers (the Content-Security-Policy blocks them).
+  - Links (href) must ONLY come from safe_href() or "#" + anchor_id().
+-#}
+{% macro badge(b) %}<span class="badge badge-{{ b.kind }}"><span aria-hidden="true">{{ b.icon }}</span> {{ b.label }}</span>{% endmacro %}
+
+{% macro cell_content(c) -%}
+{%- if c.href %}<a href="{{ c.href }}">{{ c.text }}</a>{% else %}{{ c.text }}{% endif %}
+{%- for b in c.badges %} {{ badge(b) }}{% endfor -%}
+{%- endmacro %}
+
+{% macro table(t) -%}
+<div class="table-wrap">
+<table id="{{ t.id }}" class="data{% if t.sortable and t.rows|length > 1 %} sortable{% endif %}{% if t.filterable %} filterable{% endif %}">
+<caption>{{ t.caption }}{% if t.truncated %} <span class="muted">(showing the first {{ t.rows|length }} of {{ t.total_rows }} rows)</span>{% endif %}</caption>
+<thead><tr>{% for col in t.columns %}<th scope="col"{% if col.numeric %} class="num"{% endif %}{% if not col.sortable %} data-nosort="true"{% endif %}>{{ col.label }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for row in t.rows %}
+<tr>{% for c in row %}{% set cls = (("mono " if c.mono else "") ~ ("num" if t.columns[loop.index0].numeric else ""))|trim %}<td{% if c.sort is not none %} data-sort="{{ c.sort }}"{% endif %}{% if cls %} class="{{ cls }}"{% endif %}>{{ cell_content(c) }}</td>{% endfor %}</tr>
+{% else %}
+<tr><td colspan="{{ t.columns|length }}" class="empty">{{ t.empty_text }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{%- endmacro %}
+
+{% macro kv_list(items) -%}
+{% if items %}
+<dl class="kv">
+{% for kv in items %}
+<div><dt>{{ kv.label }}</dt><dd{% if kv.value.mono %} class="mono"{% endif %}>{{ cell_content(kv.value) }}</dd></div>
+{% endfor %}
+</dl>
+{% endif %}
+{%- endmacro %}
+
+{% macro block(b) -%}
+<details class="json"><summary>{{ b.title }}{% if b.truncated %} (truncated){% endif %}</summary><pre>{{ b.text }}</pre></details>
+{%- endmacro %}

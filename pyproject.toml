@@ -97,6 +97,10 @@ dependencies = [
     # YAML parsing and writing
     "PyYAML==6.0.2",
 
+    # HTML report templating (peat-report.html, "peat report"), with autoescaping.
+    # Also already required by pysmi (MIB compiler used by pysnmp).
+    "Jinja2>=3.1.6,<4",
+
     # Packet crafting and manipulation, as well as networking utilities
     "scapy==2.6.1",
 

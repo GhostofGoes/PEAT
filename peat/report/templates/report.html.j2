@@ -1,0 +1,123 @@
+{#-
+  PEAT HTML report. See the SECURITY notes in _macros.html.j2.
+  The stylesheet and script are inserted with NO surrounding whitespace,
+  so the element text matches the hashes in the Content-Security-Policy.
+-#}
+{% from "_macros.html.j2" import badge, table, kv_list, block %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{ csp }}">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="generator" content="PEAT {{ ctx.generator_version }}">
+<title>{{ ctx.title }}</title>
+<style>{{ css }}</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to main content</a>
+<header class="page-header">
+<p class="eyebrow">PEAT {{ ctx.command }} report</p>
+<h1>{{ ctx.run_name }}</h1>
+<p class="status">{{ badge(ctx.status) }}{% for b in ctx.extra_badges %} {{ badge(b) }}{% endfor %}</p>
+<ul class="tiles" aria-label="Key figures">
+{% for t in ctx.tiles %}
+<li class="tile"><span class="tile-label">{{ t.label }}</span><span class="tile-value">{{ t.value }}</span>{% if t.badge %}{{ badge(t.badge) }}{% endif %}</li>
+{% endfor %}
+</ul>
+</header>
+<nav class="toc no-print" aria-label="Report sections">
+<ul>
+{% for anchor, label in ctx.toc %}
+<li><a href="#{{ anchor }}">{{ label }}</a></li>
+{% endfor %}
+</ul>
+<p><button type="button" data-details="open" hidden>Expand all</button> <button type="button" data-details="close" hidden>Collapse all</button></p>
+</nav>
+<main id="main">
+{% if ctx.problems %}
+<section id="problems" class="callout" aria-labelledby="h-problems">
+<h2 id="h-problems">Problems reading this run</h2>
+<ul>
+{% for p in ctx.problems %}
+<li>{{ p }}</li>
+{% endfor %}
+</ul>
+</section>
+{% endif %}
+<section id="overview" aria-labelledby="h-overview">
+<h2 id="h-overview">Overview</h2>
+{{ kv_list(ctx.run_items) }}
+</section>
+<section id="operations" aria-labelledby="h-operations">
+<h2 id="h-operations">Operations</h2>
+{% for op in ctx.operations %}
+<section id="{{ op.anchor }}" aria-labelledby="h-{{ op.anchor }}">
+<h3 id="h-{{ op.anchor }}">{{ op.title }}</h3>
+{{ kv_list(op.items) }}
+{% for t in op.tables %}{{ table(t) }}{% endfor %}
+{% for b in op.blocks %}{{ block(b) }}{% endfor %}
+</section>
+{% else %}
+<p>No command summaries were found in this run directory.</p>
+{% endfor %}
+</section>
+<section id="hosts" aria-labelledby="h-hosts">
+<h2 id="h-hosts">Hosts and devices</h2>
+{{ table(ctx.hosts_table) }}
+</section>
+<section id="devices" aria-labelledby="h-devices">
+<h2 id="h-devices">Device details</h2>
+{% for d in ctx.devices %}
+<details class="device" id="{{ d.anchor }}"{% if d.open %} open{% endif %}>
+<summary><h3>{{ d.title }}</h3>{% for b in d.badges %} {{ badge(b) }}{% endfor %} <span class="muted">{{ d.subtitle }}</span></summary>
+<div class="device-body">
+{{ kv_list(d.identity) }}
+{% if d.counts %}<h4>Data collected</h4>{{ kv_list(d.counts) }}{% endif %}
+{% for t in d.tables %}{{ table(t) }}{% endfor %}
+{% for b in d.blocks %}{{ block(b) }}{% endfor %}
+{% if d.links %}
+<p class="links">{% for l in d.links %}<a href="{{ l.href }}">{{ l.text }}</a>{% if not loop.last %} &middot; {% endif %}{% endfor %}</p>
+{% endif %}
+</div>
+</details>
+{% else %}
+<p>No device data was collected or parsed in this run.</p>
+{% endfor %}
+</section>
+<section id="modules" aria-labelledby="h-modules">
+<h2 id="h-modules">Modules</h2>
+{{ table(ctx.modules_table) }}
+</section>
+<section id="logs" aria-labelledby="h-logs">
+<h2 id="h-logs">Warnings and errors</h2>
+{{ kv_list(ctx.logs_items) }}
+{{ table(ctx.logs_table) }}
+</section>
+<section id="files" aria-labelledby="h-files">
+<h2 id="h-files">Files</h2>
+{{ table(ctx.files_table) }}
+{{ table(ctx.outside_files_table) }}
+{{ table(ctx.elastic_table) }}
+</section>
+<section id="config" aria-labelledby="h-config">
+<h2 id="h-config">Configuration</h2>
+{{ kv_list(ctx.config_items) }}
+{{ table(ctx.config_table) }}
+{{ table(ctx.config_hosts_table) }}
+</section>
+<section id="environment" aria-labelledby="h-environment">
+<h2 id="h-environment">Environment</h2>
+{{ kv_list(ctx.environment_items) }}
+{{ table(ctx.interfaces_table) }}
+</section>
+</main>
+<footer class="page-footer">
+<p>Generated {{ ctx.generated_at }} by PEAT {{ ctx.generator_version }} ({{ ctx.mode }}). Regenerate with <code>peat report &lt;run-dir&gt;</code>.</p>
+<p>Values reported by devices are shown exactly as received and should be treated as untrusted. This report can contain sensitive information about the systems that were assessed: handle it like the rest of the run directory.</p>
+</footer>
+<script>{{ js }}</script>
+</body>
+</html>

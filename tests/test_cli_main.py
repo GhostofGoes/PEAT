@@ -150,6 +150,7 @@ def test_cli_write_readme(mocker, tmp_path):
     assert expected_path.is_file()
     first_text = expected_path.read_text(encoding="utf-8")
     assert "(PEAT)" in first_text
+    assert "peat-report.html" in first_text
 
     assert cli_main.write_readme()
 

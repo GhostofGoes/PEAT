@@ -116,3 +116,4 @@ from .api.crypto_api import (
     encrypt_results_api,
     decrypt_results_api,
 )
+from .api.report_api import report_api

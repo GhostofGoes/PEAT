@@ -566,6 +566,17 @@ class Configuration(SettingsManager):
     If JSON data should be formatted with 4 space indentation.
     """
 
+    HTML_REPORT: bool = True
+    """
+    Generate a self-contained HTML report (``peat-report.html``) in the run
+    directory (:attr:`RUN_DIR <peat.settings.Configuration.RUN_DIR>`) summarizing
+    everything PEAT did, when a ``scan``, ``pull``, ``push``, ``parse``,
+    ``pillage``, or ``heat`` command finishes on the :term:`CLI`.
+
+    Reports for existing run directories can be (re)generated with ``peat report``.
+    Refer to :ref:`html-report` for details.
+    """
+
 
 class State(SettingsManager):
     """

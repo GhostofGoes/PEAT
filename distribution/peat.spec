@@ -48,6 +48,14 @@ data_files.extend([
     (os.path.join(manuf_src, 'manuf'), manuf_dst),
 ])
 
+# HTML report templates, stylesheet and script (peat/report/templates)
+report_tpl_src = os.path.join('..', 'peat', 'report', 'templates')
+report_tpl_dst = 'peat/report/templates'
+data_files.extend([
+    (os.path.join(report_tpl_src, name), report_tpl_dst)
+    for name in ('report.html.j2', '_macros.html.j2', 'report.css', 'report.js')
+])
+
 # Windows EXE resources
 # NOTE: "SPECPATH" is a PyInstaller-provided variable
 version_info_path = os.path.abspath(os.path.join(SPECPATH, 'file_version_info.txt'))
@@ -65,6 +73,7 @@ hidden_imports = [
     'pysnmp.smi.exval', 'pysnmp.cache',
     'dataclasses', 'pydantic',
     'tzlocal', 'manuf',
+    'jinja2',  # HTML report rendering (imported lazily by peat.report.render)
 ]
 
 
