@@ -42,6 +42,9 @@ Pillage API
    :members:
    :undoc-members:
 
+.. automodule:: peat.api.pillage_image
+   :members:
+
 Network Discovery
 -----------------
 .. automodule:: peat.protocols.discovery

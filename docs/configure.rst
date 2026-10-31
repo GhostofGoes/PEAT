@@ -179,6 +179,10 @@ Pillage config reference
 ========================
 - ``auto_copy`` [True or False] If ``True`` automatically copy a file to the results directory.  If ``False`` ask for permission to copy first.  This can be helpful in the case when there may be lot of false positives and the user wants to verify prior to copying. For example if you are searching for ``xml`` files.
 - ``recursive`` [True of False] If ``True`` search in the source parent directory and all sub directories.  If ``False`` only search in the source parent directory and ignore all sub directories.
+- ``image_format`` [String, optional] Format of the disk image, if it can't be determined automatically from the file's contents or extension. One of ``raw``, ``split_raw``, ``ewf``, ``vmdk``, ``vhd`` (or ``vpc``), ``vhdx`` or ``qcow2``. Defaults to ``auto``. Refer to :ref:`pillage-images`.
+- ``max_file_size`` [Integer, optional] Files from disk images that are larger than this (in bytes) aren't copied. Defaults to ``268435456`` (256 MiB). Currently only applies to images read without mounting (the ``library`` backend).
+- ``max_total_size`` [Integer, optional] Copying files from a disk image stops (with an error) if the total size of the copied files would be larger than this (in bytes). Defaults to ``8589934592`` (8 GiB). Copying also stops if there would be less than 512 MiB of free disk space. Currently only applies to images read without mounting (the ``library`` backend). Refer to :ref:`pillage-images`.
+- How disk images are read (with or without mounting them) is configured by the top-level ``pillage_backend`` option (:attr:`PILLAGE_BACKEND <peat.settings.Configuration.PILLAGE_BACKEND>`), not in the ``pillage`` section. Refer to :ref:`pillage-images`.
 - Default/Brand specific search criteria:
 
   - ``locations`` [List of strings, each one should be a directory path] If empty search through all directories.  If directories exist only files in those directories will be considered. **Not yet implemented, Pillage currently searches through all directories regardless of what is listed here.**

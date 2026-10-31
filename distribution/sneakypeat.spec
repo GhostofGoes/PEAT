@@ -63,6 +63,8 @@ excludes = [
     'importlib_resources', 'pandas', 'numpy', 'PyInstaller', 'pyinstaller',
     # sneakypeat-specific excludes
     'manuf', 'tzlocal',
+    # libyal modules used by Pillage to read disk images without mounting them
+    'pyewf', 'pyvmdk', 'pyvhdi', 'pyqcow', 'pyfsntfs', 'pyfsfat', 'pyfsext',
 ]
 
 # Handle package metadata for importlib.metadata

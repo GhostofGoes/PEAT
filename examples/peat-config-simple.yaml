@@ -85,9 +85,13 @@ no_run_zeek: false
 zeek_dir: null
 formatted_output: true
 
+pillage_backend: auto
+
 pillage:
   auto_copy: true
   recursive: true
+  max_file_size: 268435456
+  max_total_size: 8589934592
   default:
     locations: []
     filenames: []

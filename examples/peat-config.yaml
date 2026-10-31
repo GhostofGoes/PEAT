@@ -375,9 +375,23 @@ zeek_dir: null
 # Filenames and extensions are matched case-insensitively.
 # For example, "set_all.txt" will also match "SET_ALL.TXT".
 
+# How "peat pillage" reads disk images (directories are always searched directly)
+#   auto: "library" if it supports the image, otherwise "mount"
+#   library: read files from the image without mounting it (any OS, no root needed)
+#   mount: mount the image with qemu-nbd (Linux only, requires root)
+pillage_backend: auto
+
 pillage:
   auto_copy: true
   recursive: true
+  # Format of disk images, if it can't be determined from the file's contents
+  # or extension: raw, split_raw, ewf, vmdk, vhd, vhdx or qcow2 (default: auto)
+  # image_format: auto
+  # Limits for disk images read without mounting them ("library" backend), in bytes.
+  # Larger files are skipped (default: 256 MiB). Copying stops if the total size
+  # of the copied files would be larger than max_total_size (default: 8 GiB).
+  max_file_size: 268435456
+  max_total_size: 8589934592
   default:
     locations: []
     filenames: []

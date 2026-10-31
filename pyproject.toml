@@ -210,6 +210,20 @@ dependencies = [
     # Library to load kernel modules for PEAT Pillage
     "kmodpy~=0.1.13;platform_system=='Linux'",
 
+    # Read files from disk images without mounting them in PEAT Pillage,
+    # on any OS and without root (the "library" Pillage backend).
+    # These are the libyal Python bindings (https://github.com/libyal),
+    # LGPL-3.0-or-later. They have binary wheels for Linux (x86_64, aarch64),
+    # Windows (amd64, arm64) and macOS (x86_64, arm64), for Python 3.10-3.14.
+    # They're imported lazily, so PEAT works without them (Pillage falls back to mounting).
+    "libewf-python>=20260924",  # EnCase/Expert Witness Format (E01, Ex01, S01)
+    "libvmdk-python>=20260714",  # VMware VMDK
+    "libvhdi-python>=20260901",  # VHD and VHDX
+    "libqcow-python>=20260703",  # qcow2
+    "libfsntfs-python>=20260827",  # NTFS
+    "libfsfat-python>=20260826",  # FAT12/16/32 and exFAT
+    "libfsext-python>=20260821",  # ext2/3/4
+
     # Library for initial parsing of L5X files
     # Required for: L5X
     "l5x==1.6",

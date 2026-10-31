@@ -357,6 +357,20 @@ pillage_examples = """
 # Pillage files from a raw disk image
 peat pillage -c peat-config.json -P raw_disk.img
 
+# Pillage files from an EnCase (EWF) image. The other
+# segments (.E02, .E03, ...) are found automatically.
+# This works on Windows, macOS and Linux, without root.
+peat pillage -c peat-config.json -P evidence/EWS01.E01
+
+# Pillage files from a VMware disk on Windows (no Administrator needed)
+peat pillage -c peat-config.json -P C:\\VMs\\EWS\\EWS.vmdk
+
+# Pillage files from a split raw image (disk.001, disk.002, ...)
+peat pillage -c peat-config.json -P disk.001
+
+# Mount the image with qemu-nbd instead of reading it directly (Linux, root)
+sudo peat pillage -c peat-config.json -P raw_disk.img --pillage-backend mount
+
 # Pillage files from a mounted drive or local directory
 peat pillage -c peat-config.json -P /home/user/pillage_this
 
@@ -1116,11 +1130,24 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         required=False,
         metavar="SOURCE",
         dest="pillage_source",
-        help="Source to pillage either a raw image file or directory "
-        "location. Defaults to local directory if nothing "
-        'specified. If the source is a "split" VMware VMDK disk '
-        "(e.g. multiple VMDK files that make up a single disk), "
-        'use the file without the "-sXXX" in the name as the source.',
+        help="Source to pillage, either a disk image file or a directory. "
+        "Defaults to the current directory if nothing is specified. "
+        "Supported images: raw (.img, .dd, .raw), split raw (.001), "
+        "EnCase/EWF (.E01, .Ex01, .S01), VMware VMDK, VHD, VHDX and qcow2. "
+        'For multi-file images (EWF segments, split raw, or a "split" VMDK disk), '
+        'use the first file (e.g. ".E01", ".001", or the VMDK without "-sXXX" in the name).',
+    )
+    pillage_parser.add_argument(
+        "--pillage-backend",
+        type=str,
+        choices=["auto", "library", "mount"],
+        default=None,
+        metavar="BACKEND",
+        dest="pillage_backend",
+        help='How disk images are read: "auto" (the default), "library" (read files '
+        'without mounting the image, works on any OS and doesn\'t need root) or "mount" '
+        "(mount the image with qemu-nbd, Linux and root only). "
+        "Overrides the PILLAGE_BACKEND configuration option.",
     )
     add_list_module_args(pillage_parser)  # Hack to add "--list-*" commands
 

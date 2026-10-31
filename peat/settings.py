@@ -520,6 +520,18 @@ class Configuration(SettingsManager):
     Configuration for ``peat pillage`` (:ref:`pillage`).
     """
 
+    PILLAGE_BACKEND: str = "auto"
+    """
+    How ``peat pillage`` reads disk images (directories are always searched directly).
+
+    - ``auto``: ``library`` if it supports the image, otherwise ``mount``
+    - ``library``: read files from the image without mounting it.
+      Works on any OS (Linux, Windows, macOS) and doesn't need root.
+    - ``mount``: mount the image with ``qemu-nbd``. Linux only, requires root.
+
+    Refer to :ref:`pillage-images` for details.
+    """
+
     DEVICE_OPTIONS: dict = {}
     """
     Protocol and module configuration options that apply to all hosts.
