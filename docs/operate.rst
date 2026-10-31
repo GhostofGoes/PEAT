@@ -91,6 +91,20 @@ Basics
    # options before packets are sent to OT devices.
    peat scan --dry-run -c ./examples/peat-config.yaml -vV -i 192.0.2.0/24
 
+   # Choose the PEAT modules to use with an environment variable (or
+   # "device_types" in the config file) instead of "-d"
+   PEAT_DEVICE_TYPES="sel,controllogix" peat scan -i 192.0.2.0/24
+
+   # Exclude PEAT modules, for all targets ("-x NAME") or for specific
+   # targets ("-x NAME=TARGET,TARGET"). Use a dry run to check the
+   # modules and exclusions that would be used.
+   peat scan -x M340 -x sel=192.0.2.5,192.0.2.6 -i 192.0.2.0/24
+   peat pull --dry-run -x clx=192.0.2.10 -i 192.0.2.0/24
+
+   # Use the targets, device types, and other settings from the
+   # "scan" section of a config file (no "-i" needed)
+   peat scan -c ./examples/peat-config-module-selection.yaml
+
 
 .. _windows-usage:
 

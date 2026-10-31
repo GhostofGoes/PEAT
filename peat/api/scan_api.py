@@ -2,6 +2,7 @@ import timeit
 import traceback
 from collections.abc import Callable
 from concurrent import futures
+from functools import partial
 from ipaddress import IPv4Address, IPv4Network
 from operator import itemgetter
 from pprint import pformat
@@ -27,7 +28,9 @@ from peat import (
     state,
     utils,
 )
+from peat.consts import PeatError
 from peat.data import DeviceData, datastore
+from peat.module_selection import ModuleExclusions, get_exclusions, select_modules
 from peat.protocols import (
     check_host,
     check_tcp_port,
@@ -215,16 +218,37 @@ def unicast_ip_scan(
         state.error = True
         return None
 
+    # * Filter device types to only those with unicast IP methods *
+    exclusions = get_exclusions()
+    exclusions.log_summary()
+    modules = select_modules(device_types, filter_attr="ip_methods", exclusions=exclusions)
+    modules = [m for m in modules if any(x.type == "unicast_ip" for x in m.ip_methods)]
+
+    # * Remove targets that have every module excluded *
+    # This happens before the online check so that no traffic is sent to them.
+    # NOTE: sweeps don't use any modules, so they aren't affected by exclusions.
+    probe_addrs = addrs
+    if config.SCAN_SWEEP:
+        exclusions.warn_unenforced("sweep")
+    elif exclusions:
+        probe_addrs = _prune_excluded_ips(addrs, modules, exclusions)
+        if not probe_addrs:
+            log.warning(
+                f"Every module is excluded for all {pluralize(len(addrs), 'target')}, "
+                f"nothing to scan"
+            )
+            return None
+
     # * Initial check of what hosts are active *
-    active_hosts = addrs
+    active_hosts = probe_addrs
     if config.ASSUME_ONLINE:
         log.warning("Skipping host online check, assuming all hosts are active")
     # If raw_socket_capable, perform online check using ARP/ICMP
     elif state.raw_socket_capable:
-        active_hosts = get_reachable_hosts(addrs)
+        active_hosts = get_reachable_hosts(probe_addrs)
         for ip in active_hosts:
             datastore.get(ip)._is_active = True
-        for addr in addrs:  # Indicate that host status has been checked
+        for addr in probe_addrs:  # Indicate that host status has been checked
             datastore.get(addr)._cache["online_status_checked"] = True
     # Use TCP SYN for "peat scan --sweep" if ARP/ICMP are unavailable
     elif config.SCAN_SWEEP:
@@ -266,10 +290,6 @@ def unicast_ip_scan(
         log.warning("Failed unicast_ip_scan: no hosts are active (lightweight checks or sweep)")
         return None
 
-    # * Filter device types to only those with unicast IP methods *
-    modules = module_api.lookup_types(device_types, filter_attr="ip_methods")
-    modules = [m for m in modules if any(x.type == "unicast_ip" for x in m.ip_methods)]
-
     log.info(
         f"Scanning {pluralize(len(active_hosts), 'IP')} "
         f"using {pluralize(len(modules), 'module')}: "
@@ -277,12 +297,61 @@ def unicast_ip_scan(
     )
 
     # * Scan each host, in parallel *
-    results = run_identify(check_host_unicast_ip, active_hosts, modules)
+    results = run_identify(
+        partial(check_host_unicast_ip, exclusions=exclusions), active_hosts, modules
+    )
 
     return results, modules, addrs
 
 
-def check_host_unicast_ip(ip: str, modules: list[type[DeviceModule]]) -> bool:
+def _prune_excluded_ips(
+    addrs: list[str],
+    modules: list[type[DeviceModule]],
+    exclusions: ModuleExclusions,
+) -> list[str]:
+    """
+    Remove IPs for which every module that would be used is excluded.
+    """
+    kept = []
+    pruned = []
+
+    for ip in addrs:
+        dev = datastore.search(ip, "ip")
+
+        # The module configured for the host in the YAML config ("peat_module")
+        # is the only module that would be used for the host.
+        if dev is not None and dev._module:
+            if exclusions.is_excluded(dev._module, dev=dev, target=ip):
+                log.warning(
+                    f"The PEAT module '{dev._module.__name__}' configured for {ip} "
+                    f"('peat_module' in the YAML config hosts) is excluded for this "
+                    f"host by excluded_modules, skipping {ip}"
+                )
+                pruned.append(ip)
+                continue
+        elif exclusions.fully_excluded(modules, dev=dev, target=ip):
+            for mod in modules:
+                exclusions.record_skip(mod, dev, ip)
+            pruned.append(ip)
+            continue
+
+        kept.append(ip)
+
+    if pruned:
+        shown = ", ".join(pruned[:20]) + (" ..." if len(pruned) > 20 else "")
+        log.info(
+            f"Skipping {pluralize(len(pruned), 'target')} that have every module "
+            f"excluded (no traffic will be sent to them): {shown}"
+        )
+
+    return kept
+
+
+def check_host_unicast_ip(
+    ip: str,
+    modules: list[type[DeviceModule]],
+    exclusions: ModuleExclusions | None = None,
+) -> bool:
     """
     Identifies an unknown device using unicast IP communication.
 
@@ -292,6 +361,9 @@ def check_host_unicast_ip(ip: str, modules: list[type[DeviceModule]]) -> bool:
     Args:
         ip: IPv4 address of the device
         modules: :class:`~peat.device.DeviceModule` classes to use for identification
+        exclusions: Module exclusions to apply. If :obj:`None`, the exclusions for
+            the current configuration are used
+            (:func:`~peat.module_selection.get_exclusions`).
 
     Returns:
         True if successfully identified, False if identification failed
@@ -314,6 +386,28 @@ def check_host_unicast_ip(ip: str, modules: list[type[DeviceModule]]) -> bool:
 
     # Get the device from the global store or create if it doesn't exist
     dev = datastore.get(ip)  # type: DeviceData
+
+    # Apply module exclusions (excluded_modules) for this host
+    if exclusions is None:
+        exclusions = get_exclusions()
+
+    if exclusions:
+        # NOTE: this is not an error, the user asked for this
+        if dev._module and exclusions.is_excluded(dev._module, dev=dev, target=ip):
+            _log.warning(
+                f"The PEAT module '{dev._module.__name__}' configured for {ip} "
+                f"('peat_module' in the YAML config hosts) is excluded for this "
+                f"host by excluded_modules, skipping {ip}"
+            )
+            return False
+
+        modules, removed = exclusions.filter_for(modules, dev=dev, target=ip)
+        if removed:
+            _log.debug(f"Modules excluded for {ip}: {', '.join(m.__name__ for m in removed)}")
+
+        if not modules:
+            _log.info(f"Every module is excluded for {ip}, skipping it")
+            return False
 
     # Edge case: PEAT module for a host is set in config file, but not in
     # the list of modules that are available to scan. In this case, PEAT
@@ -396,6 +490,26 @@ def check_host_unicast_ip(ip: str, modules: list[type[DeviceModule]]) -> bool:
     # If no services known, scan ports. This will happen if host active check
     # used ARP/ICMP instead of a port sweep and there's no informer data.
     dev.populate_fields(network_only=True)  # Create Interface object(s)
+
+    # The MAC address and hostname may be known now, check exclusions again
+    if exclusions:
+        newly_excluded = {
+            m[1] for m in methods if exclusions.is_excluded(m[1], dev=dev, target=ip)
+        }
+        if newly_excluded:
+            for mod in newly_excluded:
+                exclusions.record_skip(mod, dev, ip)
+            methods = [m for m in methods if m[1] not in newly_excluded]
+
+            if not methods:
+                _log.info(
+                    f"Every module is excluded for {ip} (matched by MAC "
+                    f"address or hostname), skipping it"
+                )
+                return False
+
+            protos = {m[0].protocol for m in methods}
+
     if not state.raw_socket_capable or not any(
         s.status in {"open", "verified"} for s in dev.service if s.protocol in protos
     ):
@@ -655,8 +769,22 @@ def broadcast_scan(
 
     # Filter device types to only those with ip_methods defined, and at least
     # one of their methods is of type "broadcast_ip".
-    modules = module_api.lookup_types(device_types, filter_attr="ip_methods")
+    # NOTE: broadcasts go to every host on a network, so only exclusions for every
+    # target prevent a module from being used. Responses from devices are checked
+    # for per-target exclusions below.
+    exclusions = get_exclusions()
+    exclusions.log_summary()
+    modules = select_modules(device_types, filter_attr="ip_methods", exclusions=exclusions)
     modules = [m for m in modules if any(x.type == "broadcast_ip" for x in m.ip_methods)]
+    if not modules:
+        log.warning(
+            "No modules with broadcast methods to use for the broadcast scan (none of "
+            "the device types support broadcasts, or the modules are excluded)"
+        )
+        return None
+
+    exclusions.warn_unenforced("broadcast")
+
     log.info(
         f"Broadcast scanning {pluralize(len(bcast_ip_targets), 'IP target')} using "
         f"{pluralize(len(modules), 'module')}: "
@@ -707,6 +835,18 @@ def broadcast_scan(
 
                 # Add devices to data model
                 for dev_desc in target_results:
+                    if exclusions and exclusions.is_excluded(
+                        module,
+                        dev=datastore.search(dev_desc["ip"], "ip"),
+                        target=dev_desc["ip"],
+                    ):
+                        exclusions.record_skip(module, target=dev_desc["ip"])
+                        log.info(
+                            f"Ignoring {module.__name__} broadcast response from "
+                            f"{dev_desc['ip']} (the module is excluded for this target)"
+                        )
+                        continue
+
                     dev = datastore.get(dev_desc["ip"])
                     svc = Service(
                         protocol=method.protocol,
@@ -785,6 +925,7 @@ def serial_scan(
     # Windows example : peat scan -s 0-4 --sweep -vV
     # Linux example   : sudo -H $(which peat) scan -s 0-4 --sweep -vV
     if config.SCAN_SWEEP:
+        get_exclusions().warn_unenforced("serial_sweep")
         active_ports = find_serial_ports(filter_list=serial_port_addresses)
         for port in active_ports:
             dev = datastore.get(port, "serial_port")
@@ -802,28 +943,56 @@ def serial_scan(
         return sweep_results, [], []  # no modules are used for sweep
 
     # * Filter device types to only those with Serial methods *
-    modules = module_api.lookup_types(device_types, filter_attr="serial_methods")
+    exclusions = get_exclusions()
+    exclusions.log_summary()
+    modules = select_modules(device_types, filter_attr="serial_methods", exclusions=exclusions)
     modules = [m for m in modules if any(x.type == "direct" for x in m.serial_methods)]
+
+    # * Remove serial ports that have every module excluded *
+    ports_to_scan = serial_port_addresses
+    if exclusions:
+        ports_to_scan = []
+        for port in serial_port_addresses:
+            dev = datastore.search(port, "serial_port")
+            if exclusions.fully_excluded(modules, dev=dev, target=port):
+                for mod in modules:
+                    exclusions.record_skip(mod, dev, port)
+                log.info(f"Skipping serial port {port}, every module is excluded for it")
+            else:
+                ports_to_scan.append(port)
+
+        if not ports_to_scan:
+            log.warning("Every module is excluded for all of the serial ports, nothing to scan")
+            return None
 
     # * Perform the scan in parallel *
     # TODO: should this be run serially (heh) instead of in parallel?
     log.info(
-        f"Scanning {pluralize(len(serial_port_addresses), 'serial port')} "
+        f"Scanning {pluralize(len(ports_to_scan), 'serial port')} "
         f"using {pluralize(len(modules), 'module')}: "
         f"{', '.join(x.__name__ for x in modules)}"
     )
-    results = run_identify(check_host_serial, serial_port_addresses, modules)
+    results = run_identify(
+        partial(check_host_serial, exclusions=exclusions), ports_to_scan, modules
+    )
 
     return results, modules, serial_port_addresses
 
 
-def check_host_serial(port: str, modules: list[type[DeviceModule]]) -> bool:
+def check_host_serial(
+    port: str,
+    modules: list[type[DeviceModule]],
+    exclusions: ModuleExclusions | None = None,
+) -> bool:
     """
     Identifies an unknown device using serial communication.
 
     Args:
         port: Serial port to check
         modules: :class:`~peat.device.DeviceModule` classes to use for identification
+        exclusions: Module exclusions to apply. If :obj:`None`, the exclusions for
+            the current configuration are used
+            (:func:`~peat.module_selection.get_exclusions`).
 
     Returns:
         True if successfully identified, False if identification failed
@@ -842,6 +1011,16 @@ def check_host_serial(port: str, modules: list[type[DeviceModule]]) -> bool:
         return False
 
     dev = datastore.get(port, "serial_port")
+
+    # Apply module exclusions (excluded_modules) for this serial port
+    if exclusions is None:
+        exclusions = get_exclusions()
+
+    if exclusions:
+        modules, _ = exclusions.filter_for(modules, dev=dev, target=port)
+        if not modules:
+            log.info(f"Every module is excluded for serial port {port}, skipping it")
+            return False
 
     # * Collect the methods from modules *
     methods = [
@@ -965,6 +1144,14 @@ def scan(
     if config.INTENSIVE_SCAN:
         log.warning("Intensive scanning is ENABLED")
 
+    # Resolve the module exclusions (excluded_modules) before doing anything
+    try:
+        exclusions = get_exclusions()
+    except PeatError as ex:
+        log.critical(f"Scan failed: {ex}")
+        state.error = True
+        return None
+
     start_time = timeit.default_timer()
 
     # * Scan using the scan_type *
@@ -1000,6 +1187,7 @@ def scan(
         return None
 
     scan_duration = timeit.default_timer() - start_time
+    exclusions.log_skip_summary()
 
     if not results:
         log.warning(

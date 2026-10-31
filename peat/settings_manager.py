@@ -57,6 +57,112 @@ def _join_var_constructor(loader, node):
 yaml.SafeLoader.add_constructor("!ENV", _env_var_constructor)
 yaml.SafeLoader.add_constructor("!JOIN", _join_var_constructor)
 
+#: Names of the configuration layers, from highest to lowest precedence.
+#: These are the keys of the dicts that make up ``SettingsManager["CONFIG"]``.
+_LAYERS: tuple[str, ...] = (
+    "runtime_configs",
+    "env_configs",
+    "section_configs",
+    "file_configs",
+    "default_configs",
+)
+
+#: Human-readable names of the configuration layers, used in log messages
+LAYER_DESCRIPTIONS: dict[str, str] = {
+    "runtime_configs": "command line or runtime",
+    "env_configs": "environment variable",
+    "section_configs": "command section of the config file",
+    "file_configs": "config file",
+    "default_configs": "default",
+}
+
+
+def yaml_error_summary(ex: yaml.YAMLError) -> str:
+    """
+    Describe a YAML (or JSON) syntax error without any of the input.
+
+    The string of a PyYAML error includes a snippet of the input, which may
+    contain sensitive values such as passwords (e.g. a malformed
+    ``PEAT_DEVICE_OPTIONS`` environment variable). The snippet must never
+    be logged, so only the problem and its position are used.
+
+    Args:
+        ex: The error raised by PyYAML
+
+    Returns:
+        Description of the error, e.g.
+        ``"expected ',' or '}', but got '<scalar>' (line 1, column 37)"``
+    """
+    problem = getattr(ex, "problem", None) or getattr(ex, "context", None) or "syntax error"
+    mark = getattr(ex, "problem_mark", None) or getattr(ex, "context_mark", None)
+
+    if mark is not None:
+        return f"{problem} (line {mark.line + 1}, column {mark.column + 1})"
+
+    return str(problem)
+
+
+def _redact_value(message: str, value: Any) -> str:
+    """
+    Remove a raw configuration value from an error message, since it may be sensitive.
+    """
+    raw = str(value).strip() if isinstance(value, (str, int, float)) else ""
+
+    # Very short values are skipped, since replacing them would mangle the message
+    if len(raw) >= 3 and raw in message:
+        message = message.replace(raw, "<value>")
+
+    return message
+
+
+def _parse_container_str(value: str, mapping: bool) -> list | dict:
+    """
+    Parse a string into a list or a mapping.
+
+    This is used for values that are set as strings for options that
+    are containers, e.g. environment variables (``PEAT_HASH_ALGORITHMS="md5,sha1"``)
+    or a single value in a YAML file for an option that's a list
+    (``hash_algorithms: md5``).
+
+    - An empty string results in an empty list or mapping
+    - Strings starting with ``[`` or ``{`` are parsed as YAML, which
+      accepts both JSON (``["a", "b"]``) and YAML "flow" syntax (``[a, b]``)
+    - Otherwise, the string is split on commas (lists only). Whitespace around
+      items is removed and empty items are skipped.
+
+    Args:
+        value: String to parse
+        mapping: If the result should be a mapping (:class:`dict`) instead of a list
+
+    Returns:
+        The parsed list or dict
+
+    Raises:
+        ValueError: If the string doesn't contain the expected type of container
+    """
+    text = value.strip()
+
+    if not text:
+        return {} if mapping else []
+
+    if text[0] in "[{":
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError as ex:
+            raise ValueError(f"invalid JSON or YAML value: {yaml_error_summary(ex)}") from None
+
+        if mapping and not isinstance(parsed, dict):
+            raise ValueError(f"expected a mapping, got a {type(parsed).__name__}")
+        if not mapping and not isinstance(parsed, list):
+            raise ValueError(f"expected a list, got a {type(parsed).__name__}")
+
+        return parsed
+
+    if mapping:
+        raise ValueError("expected a mapping, e.g. '{key: value}' or JSON")
+
+    return [item.strip() for item in text.split(",") if item.strip()]
+
 
 class SettingsManager(dict):
     """
@@ -74,10 +180,19 @@ class SettingsManager(dict):
 
     - Runtime changes (example: ``config.DEBUG = 2``), including CLI arguments
     - Environment variables (example: ``export PEAT_DEBUG=2``)
+    - Section of the configuration file for the current command, if any
+      (``section_configs``, populated by subclasses, e.g.
+      :meth:`~peat.settings.Configuration.apply_command_section`)
     - Configuration file (YAML or JSON)
     - Default values set in subclasses of this class (example: ``DEBUG: int = 0``)
 
     Precedence is managed by a :class:`collections.ChainMap`.
+
+    Values that fail to load (e.g. ``PEAT_MAX_THREADS=abc``) are skipped and
+    recorded in ``self["load_errors"]``, keyed by ``(layer, option name)``.
+    They're also logged, but note that values loaded before logging is
+    configured (e.g. environment variables loaded at import time) won't
+    appear in the logs unless they're logged again later.
 
     Args:
         label: The type of information being stored
@@ -95,7 +210,11 @@ class SettingsManager(dict):
         # NOTE(cegoes): dict preserves order in CPython 3.6+ and Python 3.7+
         self["runtime_configs"] = {}
         self["env_configs"] = {}
+        self["section_configs"] = {}
         self["file_configs"] = {}
+
+        # Errors from values that failed to load, keyed by (layer, option name)
+        self["load_errors"] = {}
 
         # Use the class's variable attributes and annotations for defaults,
         # much like a dataclass (In fact, it's exactly what a dataclass does!).
@@ -111,12 +230,7 @@ class SettingsManager(dict):
 
         # ChainMap dynamically manages the lookup order. Changes to the
         # underlying objects will be immediately reflected in the map.
-        self["CONFIG"] = ChainMap(
-            self["runtime_configs"],
-            self["env_configs"],
-            self["file_configs"],
-            self["default_configs"],
-        )
+        self["CONFIG"] = ChainMap(*(self[layer] for layer in _LAYERS))
 
         # NOTE: this must occur AFTER the ChainMap (self["CONFIG"]) has been set
         if init_env:
@@ -133,7 +247,7 @@ class SettingsManager(dict):
             conf: Configuration to load
             load_to: Where in the Settings object the loaded configuration
                 should be stored. Valid options are: ``runtime_configs``,
-                ``env_configs``, and ``file_configs``.
+                ``env_configs``, ``section_configs``, and ``file_configs``.
             key_prefix: Optional value to prepend to the keys being looked up.
                 Example use case is for loading environment variables
                 prefixed with ``PEAT_``, where ``config=dict(os.environ)``.
@@ -153,14 +267,25 @@ class SettingsManager(dict):
             if upper_conf.get(key) is not None:
                 try:
                     self[load_to][set_key] = self.typecast(set_key, upper_conf[key])
+                    self["load_errors"].pop((load_to, set_key), None)
                 except Exception as ex:
-                    log.critical(f"Failed to load config '{key}': {ex}")
+                    # NOTE: the raw value isn't stored or logged, since it may be sensitive
+                    err = _redact_value(str(ex), upper_conf[key])
+                    self["load_errors"][(load_to, set_key)] = err
+                    log.critical(f"Failed to load config '{key}': {err}")
 
         # !! Hack to make metadata directory configuration seamless and flexible !!
-        if self["label"] == "configuration" and upper_conf.get("OUT_DIR"):
-            self.OUT_DIR = self.OUT_DIR
-        if self["label"] == "configuration" and upper_conf.get("RUN_DIR"):
-            self.RUN_DIR = self.RUN_DIR
+        # Values from the config file and a command section stay in their own layer,
+        # so that a layer with a higher precedence (e.g. the command section) can
+        # still override them. Only the directories that depend on them are updated.
+        if self["label"] == "configuration":
+            for dir_key in ("OUT_DIR", "RUN_DIR"):
+                if not upper_conf.get(dir_key):
+                    continue
+                if load_to in ("file_configs", "section_configs"):
+                    self.fixup_dirs(getattr(self, dir_key), dir_key)
+                else:
+                    setattr(self, dir_key, getattr(self, dir_key))
 
     def load_from_dict(self, conf: dict[str, Any]) -> None:
         """
@@ -232,9 +357,41 @@ class SettingsManager(dict):
             )
             return False
 
+        return self.load_from_mapping(file_config, source=file.name)
+
+    def load_from_mapping(self, file_config: Any, source: str = "") -> bool:
+        """
+        Load values from an already-parsed configuration file.
+
+        This is used by :meth:`~peat.settings_manager.SettingsManager.load_from_file`
+        and for configuration files that are read in other ways, e.g.
+        encrypted configuration files that are decrypted in memory.
+
+        Args:
+            file_config: Parsed contents of a configuration file (YAML or JSON)
+            source: Name of the file, for log messages
+
+        Returns:
+            If the load was successful. Empty files are considered successful.
+        """
+        if file_config is None:
+            log.warning(f"Configuration file '{source}' is empty")
+            return True
+
+        if not isinstance(file_config, dict):
+            log.error(
+                f"Configuration file '{source}' must contain a mapping of option "
+                f"names to values at the top level, not a {type(file_config).__name__}"
+            )
+            return False
+
         # Legacy config structure that allowed multi-app configs (other tools)
-        if "PEAT" in file_config:
+        if isinstance(file_config.get("PEAT"), dict):
             file_config = file_config["PEAT"]
+
+        # Errors from a previously loaded file no longer apply
+        for err_key in [k for k in self["load_errors"] if k[0] == "file_configs"]:
+            del self["load_errors"][err_key]
 
         self._load_values(file_config, load_to="file_configs")
 
@@ -428,6 +585,22 @@ class SettingsManager(dict):
             )
             typecast = fallback
 
+        # Containers given as strings, e.g. environment variables
+        # (PEAT_HASH_ALGORITHMS="md5,sha1") or a single value in
+        # a YAML file for a list (hash_algorithms: md5).
+        # Without this, list("md5") would result in ['m', 'd', '5'].
+        if typecast in (list, set, tuple, dict) and isinstance(value, str):
+            value = _parse_container_str(value, mapping=typecast is dict)
+
+        # Coerce items of string containers to strings, e.g. "list[str]"
+        if (
+            typecast in (list, set, tuple)
+            and args
+            and args[0] is str
+            and isinstance(value, (list, set, tuple))
+        ):
+            value = [str(item) for item in value if item is not None]
+
         # Expand paths
         if typecast is Path and isinstance(value, str):
             if value == "":  # If value is empty string, don't set the path
@@ -454,7 +627,27 @@ class SettingsManager(dict):
             If the item has a value that *overrides* the default value. Note that
             this method will also return :class:`False` if the key isn't valid.
         """
-        return any(key in self[k] for k in ["runtime_configs", "env_configs", "file_configs"])
+        return any(key in self[k] for k in _LAYERS[:-1])
+
+    def source_of(self, key: str) -> str:
+        """
+        Name of the configuration layer that provides the current value of an item.
+
+        Args:
+            key: Name of the item to check
+
+        Returns:
+            The name of the layer: ``runtime_configs``, ``env_configs``,
+            ``section_configs``, ``file_configs``, or ``default_configs``.
+
+        Raises:
+            KeyError: If the item doesn't exist
+        """
+        for layer in _LAYERS:
+            if key in self[layer]:
+                return layer
+
+        raise KeyError(key)
 
     def is_default_value(self, key: str) -> bool:
         """
@@ -528,4 +721,4 @@ class SettingsManager(dict):
         self["runtime_configs"][key] = value
 
 
-__all__ = ["SettingsManager"]
+__all__ = ["LAYER_DESCRIPTIONS", "SettingsManager", "yaml_error_summary"]

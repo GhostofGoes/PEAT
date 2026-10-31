@@ -459,3 +459,72 @@ def test_cli_config_file_json(run_peat, tmp_path, datapath):
     written_files = sorted(state_data["written_files"])
     actual_files = sorted([x.as_posix() for x in tmp_path.rglob("*.*")])
     assert written_files == actual_files
+
+
+@pytest.mark.slow
+def test_cli_module_selection_config_dry_run(run_peat, examples_path, tmp_path):
+    config_path = examples_path("peat-config-module-selection.yaml")
+    stdout, stderr = run_peat(["scan", "--dry-run", "-c", str(config_path), "-o", str(tmp_path)])
+    output = stdout + stderr
+
+    assert "Applied the 'scan' section of the config" in output
+    assert "Using 1 target from 'scan' section of the config file" in output
+    assert "Excluded modules (all targets): SEL3620" in output
+    assert "Running scan of 1 target using 4 modules" in output
+    assert "CRITICAL" not in output
+
+    # The auto-generated config has the combined exclusions and can be reused
+    generated = next(tmp_path.rglob("peat_configuration.yaml"))
+    data = yaml.safe_load(generated.read_text(encoding="utf-8"))
+    assert data["excluded_modules"]["sel3620"] is True
+    assert data["targets"] == ["192.0.2.0/24"]
+
+
+@pytest.mark.slow
+def test_cli_device_types_env_var(run_peat, mocker, tmp_path):
+    mocker.patch.dict(os.environ, {"PEAT_DEVICE_TYPES": "clx"})
+    stdout, stderr = run_peat(["scan", "--dry-run", "-i", "192.0.2.1", "-o", str(tmp_path)])
+    assert "Running scan of 1 target using 1 module" in stdout + stderr
+
+
+@pytest.mark.slow
+def test_cli_exclude_modules_flag(run_peat, mocker, tmp_path):
+    mocker.patch.dict(os.environ, {"PEAT_EXCLUDED_MODULES": "selrtac"})
+    stdout, stderr = run_peat(
+        ["scan", "--dry-run", "-d", "sel", "-x", "sel3620", "-i", "192.0.2.1", "-o", str(tmp_path)]
+    )
+    output = stdout + stderr
+    assert "Excluded modules (all targets): SEL3620, SELRTAC" in output
+    assert "Running scan of 1 target using 1 module" in output
+
+
+@pytest.mark.slow
+def test_cli_exclude_modules_env_space_after_comma(run_peat, mocker, tmp_path):
+    # Regression test: the second target used to become a module name (and be ignored)
+    mocker.patch.dict(os.environ, {"PEAT_EXCLUDED_MODULES": "SEL=192.0.2.5, 192.0.2.6"})
+    stdout, stderr = run_peat(
+        ["scan", "--dry-run", "-d", "sel", "-i", "192.0.2.0/24", "-o", str(tmp_path)]
+    )
+    output = stdout + stderr
+    assert "for 2 targets: 192.0.2.5, 192.0.2.6" in output
+    assert "doesn't match any PEAT module" not in output
+
+
+@pytest.mark.slow
+def test_cli_unknown_excluded_module_fails(exec_peat, tmp_path):
+    result = exec_peat(
+        ["scan", "--dry-run", "-x", "ControlLgix", "-i", "192.0.2.1", "-o", str(tmp_path)]
+    )
+    assert result.returncode != 0
+    assert b"'ControlLgix' doesn't match any PEAT module" in result.stdout + result.stderr
+
+
+@pytest.mark.slow
+def test_cli_push_requires_device_type(exec_peat, tmp_path):
+    push_file = tmp_path / "SET_1.TXT"
+    push_file.write_text("test", encoding="utf-8")
+    result = exec_peat(
+        ["push", "--dry-run", "-i", "192.0.2.1", "-o", str(tmp_path), "--", str(push_file)]
+    )
+    assert result.returncode != 0
+    assert b"No device type specified for push" in result.stdout + result.stderr

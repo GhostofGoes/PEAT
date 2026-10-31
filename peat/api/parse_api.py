@@ -18,6 +18,7 @@ from peat import (
     state,
     utils,
 )
+from peat.module_selection import get_exclusions, select_modules
 
 
 def parse(
@@ -37,6 +38,9 @@ def parse(
 
     Returns:
         :ref:`pull-summary` as a :class:`dict`, or :obj:`None` if an error occurred
+
+    Raises:
+        PeatError: If a target in ``excluded_modules`` is invalid
     """
     if isinstance(filepaths, (str, Path)):
         filepaths = [filepaths]
@@ -50,10 +54,22 @@ def parse(
             return None
         paths.append(checked)
 
-    # Convert mixed device types/aliases into canonical PEAT device modules
-    mods = module_api.lookup_types(device_types)
+    # Convert mixed device types/aliases into canonical PEAT device modules,
+    # without any modules that are excluded (excluded_modules).
+    # NOTE: there are no targets when parsing, so only exclusions for all
+    # targets apply. The targets of the other exclusions aren't resolved,
+    # since parsing is passive (e.g. no DNS lookups of hostname targets).
+    exclusions = get_exclusions(global_only=True)
+    exclusions.log_summary()
+    if exclusions.ignored_target_keys:
+        log.debug(
+            f"Exclusions for specific targets don't apply to parsing, ignoring "
+            f"them: {', '.join(exclusions.ignored_target_keys)}"
+        )
+
+    mods = select_modules(device_types, exclusions=exclusions)
     if not mods:
-        log.error("No valid device types specified for parse")
+        log.error("No valid device types specified for parse (or all of them are excluded)")
         return None
 
     log.debug(
@@ -196,7 +212,7 @@ def parse(
         "peat_version": __version__,
         "peat_run_id": str(consts.RUN_ID),
         "parse_duration": parse_duration,
-        "parse_modules": module_api.lookup_names(device_types),
+        "parse_modules": module_api.lookup_names(mods),
         "input_paths": filepaths,
         "files_parsed": [r["path"] for r in parse_results],
         "num_files_parsed": len(parse_results),

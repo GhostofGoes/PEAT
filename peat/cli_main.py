@@ -24,6 +24,7 @@ from peat import (
     initialize_peat,
     log,
     module_api,
+    module_selection,
     parse,
     pillage,
     pull,
@@ -34,6 +35,7 @@ from peat import (
 )
 from peat.config_builder import launch_builder
 from peat.heat import HEAT_EXTRACTORS
+from peat.settings import COMMAND_SECTIONS, exclusions_to_tokens, normalize_excluded_modules
 
 TargetsType = tuple[list[str], consts.AllowedCommTypes, list[str]]
 
@@ -132,13 +134,7 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
             f"Saving configuration to {state.elastic.type} "
             f"(index basename: {config.ELASTIC_CONFIG_INDEX})"
         )
-        raw_config = config.export()
-
-        # BUGFIX: remove raw options from PEAT config pushed to Elasticsearch
-        # The dynamic mappings generated for these fields can vary and cause pushes to fail
-        for opt in ["DEVICE_OPTIONS", "HOSTS"]:
-            if raw_config.get(opt):
-                del raw_config[opt]
+        raw_config = config_for_elastic(config.export())
 
         if not state.elastic.push(config.ELASTIC_CONFIG_INDEX, raw_config):
             log.warning(f"Failed to save configuration to {state.elastic.type}")
@@ -180,6 +176,38 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
     else:
         log.debug("PEAT run finished successfully (no major errors)")
         sys.exit(0)
+
+
+def config_for_elastic(raw_config: dict[str, Any]) -> dict[str, Any]:
+    """
+    Prepare an exported configuration to be saved in Elasticsearch or OpenSearch.
+
+    Options with free-form nested values (``DEVICE_OPTIONS``, ``HOSTS``, and the
+    command sections, e.g. ``PULL``) are removed, since the dynamic mappings generated
+    for these fields can vary between runs and cause pushes to fail.
+    ``EXCLUDED_MODULES`` is converted to a list of strings in the format of the
+    ``-x`` argument (e.g. ``"SEL=192.0.2.5"``), since its values can be either
+    booleans or lists.
+
+    Args:
+        raw_config: Exported configuration (:meth:`~peat.settings_manager.SettingsManager.export`)
+
+    Returns:
+        The configuration to save
+    """
+    raw_config = dict(raw_config)
+
+    for opt in ["DEVICE_OPTIONS", "HOSTS", *COMMAND_SECTIONS.values()]:
+        raw_config.pop(opt, None)
+
+    if "EXCLUDED_MODULES" in raw_config:
+        try:
+            rules = normalize_excluded_modules(raw_config["EXCLUDED_MODULES"])
+            raw_config["EXCLUDED_MODULES"] = exclusions_to_tokens(rules)
+        except ValueError:
+            del raw_config["EXCLUDED_MODULES"]
+
+    return raw_config
 
 
 def oneshot_main(args: dict[str, Any]) -> bool:
@@ -259,21 +287,31 @@ def oneshot_main(args: dict[str, Any]) -> bool:
 
         device_types.update(module_names)
 
-        log.info(
-            f"Running {args['func']} of {pluralize(len(targets), 'target')} using "
-            f"{pluralize(len(device_types), 'module')} (comm_type: {comm_type})"
-        )
-        log.debug(f"{args['func']} targets: {targets}")
-        log.debug(f"{args['func']} modules: {list(device_types)}")
-
     elif args["func"] == "parse":
-        if args["device_types"] is None and not device_types:
+        configured, source = module_selection.configured_device_types(args)
+        if configured is not None:
+            module_selection.warn_unknown_device_types(configured, source)
+            device_types.update(configured)
+        elif not device_types:  # '-I mod.py' alone means only use the imported modules
             device_types.add("all")
-        elif args["device_types"] is not None:
-            device_types.update(args["device_types"])
 
     # Ensure inputs are deterministic (consistent order every run)
     sorted_device_types: list[str] = sorted(device_types)
+
+    # Resolve the modules to use, without any excluded modules (excluded_modules)
+    if args["func"] in ["scan", "pull", "push", "parse"]:
+        effective_modules = _resolve_modules(args, sorted_device_types)
+        if effective_modules is None:
+            return False
+
+        if args["func"] in ["scan", "pull", "push"]:
+            log.info(
+                f"Running {args['func']} of {pluralize(len(targets), 'target')} using "
+                f"{pluralize(len(effective_modules), 'module')} (comm_type: {comm_type})"
+            )
+            log.debug(f"{args['func']} targets: {targets}")
+
+        log.debug(f"{args['func']} modules: {[m.__name__ for m in effective_modules]}")
 
     if config.DRY_RUN:
         log.warning("Dry run enabled, skipping calling command functions")
@@ -349,6 +387,60 @@ def oneshot_main(args: dict[str, Any]) -> bool:
     return False
 
 
+def _resolve_modules(args: dict[str, Any], device_types: list[str]) -> list | None:
+    """
+    Resolve the modules a command will use and log the exclusions that apply.
+
+    This happens before the dry run check, so a dry run (``--dry-run``) can be used to
+    check the modules and exclusions that would be used without sending any traffic.
+
+    Returns:
+        The modules, or :obj:`None` if the command can't run (an error was logged)
+    """
+    try:
+        # parse has no targets, so only exclusions for every target apply. The targets
+        # of the other exclusions aren't resolved, since parse is passive (no DNS).
+        exclusions = module_selection.get_exclusions(global_only=args["func"] == "parse")
+    except PeatError as err:
+        log.critical(err)
+        return None
+
+    exclusions.log_summary()
+
+    # The scan functions warn about traffic that exclusions can't stop, but a dry run
+    # doesn't call them. A dry run should show everything about the exclusions.
+    if config.DRY_RUN:
+        if args["func"] == "scan" and config.SCAN_SWEEP:
+            sweep_kind = "serial_sweep" if state.comm_type == "serial" else "sweep"
+            exclusions.warn_unenforced(sweep_kind)
+        elif args["func"] in ["scan", "pull", "push"] and state.comm_type == "broadcast_ip":
+            exclusions.warn_unenforced("broadcast")
+
+    if not args.get("host_file"):
+        configured, source = module_selection.configured_device_types(args)
+        if configured:
+            module_selection.warn_requested_but_excluded(configured, exclusions, source)
+
+    effective_modules = module_selection.select_modules(device_types, exclusions=exclusions)
+
+    # Sweeps don't use any modules
+    if not effective_modules and not (args["func"] == "scan" and config.SCAN_SWEEP):
+        if exclusions.global_mods:
+            log.critical(
+                "No PEAT modules remain after applying excluded_modules "
+                "(and the device types set with '-d' or 'device_types')"
+            )
+        else:
+            log.critical(
+                f"No PEAT modules match the device types {device_types}. "
+                f"Run 'peat {args['func']} --list-all' to list the available "
+                f"modules and aliases."
+            )
+        return None
+
+    return effective_modules
+
+
 def export_device_data(args: dict[str, Any]) -> bool:
     """
     Export data from all devices in the datastore to files and/or Elasticsearch.
@@ -406,9 +498,16 @@ def get_targets(args: dict[str, Any]) -> TargetsType:
         except Exception as ex:
             raise PeatError(f"Failed to parse host file (scan summary) : {ex}") from ex
 
+        configured, source = module_selection.configured_device_types(args)
+        if configured is not None:
+            log.debug(
+                f"Ignoring device types from {source}, since the modules "
+                f"to use are read from the host file"
+            )
+
     # Read from CLI args
     else:
-        module_set = set(args["device_types"])  # type: set[str]
+        module_set = set(_command_device_types(args))  # type: set[str]
 
         id_key = "ip"
         if args.get("host_list"):
@@ -421,6 +520,14 @@ def get_targets(args: dict[str, Any]) -> TargetsType:
             comm_type = "serial"
             id_key = "serial_port"
             targets = args["port_list"]  # type: list[str]
+        elif config.TARGETS and args.get("func") != "push":
+            # No host argument supplied, use the targets from the config ("targets")
+            comm_type = "unicast_ip"
+            targets = [str(t) for t in config.TARGETS]
+            log.info(
+                f"Using {pluralize(len(targets), 'target')} from "
+                f"{module_selection.describe_source('TARGETS')}"
+            )
         elif config.HOSTS:
             # No host argument supplied — derive targets from the YAML config hosts
             comm_type = "unicast_ip"
@@ -440,7 +547,8 @@ def get_targets(args: dict[str, Any]) -> TargetsType:
                 )
         else:
             raise PeatError(
-                "No hosts specified. Provide -i/-s/-f/-b or define hosts in a YAML config with -c."
+                "No hosts specified. Provide -i/-s/-f/-b, set 'targets' in the config "
+                "file (or PEAT_TARGETS), or define hosts in a YAML config with -c."
             )
 
         if config.DEBUG >= 2:
@@ -513,6 +621,39 @@ def get_targets(args: dict[str, Any]) -> TargetsType:
     module_names = module_api.lookup_names(module_names)
 
     return targets, comm_type, module_names
+
+
+def _command_device_types(args: dict[str, Any]) -> list[str]:
+    """
+    Device types to use for scan, pull, or push (not including any from ``hosts``).
+
+    Raises:
+        PeatError: If no device types are configured for push
+    """
+    configured, source = module_selection.configured_device_types(args)
+
+    if configured is None:
+        if args.get("func") == "push":
+            raise PeatError(
+                "No device type specified for push. Specify one with '-d' (e.g. "
+                "'-d selrelay'), the PEAT_DEVICE_TYPES environment variable, or "
+                "'device_types' in the config file (in the 'push' section or "
+                "at the top level)."
+            )
+        return ["all"]
+
+    module_selection.warn_unknown_device_types(configured, source)
+
+    if args.get("func") == "push":
+        if source != "command line argument '-d'":
+            log.warning(f"Using device types {configured} from {source} for push")
+        if any(str(t).strip().lower() == "all" for t in configured):
+            log.warning(
+                "Pushing with the device type 'all' will use any module that "
+                "identifies a device. Consider specifying the module(s) to use."
+            )
+
+    return configured
 
 
 def parse_scan_summary(summary: dict[str, Any]) -> TargetsType:

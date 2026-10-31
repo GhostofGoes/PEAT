@@ -145,6 +145,79 @@ intensive_scan: false
 
 # -----------------------------------------------------------------------------
 
+# --- Options for selecting the PEAT modules and targets to use ---
+# Refer to the Configure section in the PEAT documentation for details.
+# https://sandialabs.github.io/PEAT/configure.html
+
+# PEAT modules to use, as module names or aliases (the same values as "-d").
+# The "-d" argument overrides this option. If empty, scan, pull, and parse
+# use all modules ("all"), and push requires a device type to be set.
+# This is ignored if a host file is used ("-f"), since the modules are read
+# from the host file.
+# Environment variable: PEAT_DEVICE_TYPES="sel,controllogix"
+# Example: [sel, controllogix]
+device_types: []
+
+# PEAT modules to never use, either for all targets ("true") or only
+# for specific targets (a list of IP addresses, subnets, IP ranges,
+# hostnames, labels of hosts in "hosts", MAC addresses, serial ports,
+# or host files). Names are module names or aliases (case-insensitive).
+#
+# Exclusions from all sources are combined (this file, the command sections
+# below, the PEAT_EXCLUDED_MODULES environment variable, and the "-x" argument).
+# Exclusions can only be added by those sources, never removed.
+#
+# If a name doesn't match any PEAT module or alias, or a target can't be used
+# (e.g. an invalid IP address or a hostname that doesn't resolve), PEAT refuses
+# to run. Use "--dry-run" to check exclusions.
+#
+# Example:
+#   excluded_modules:
+#     ControlLogix: true          # Never use the ControlLogix module
+#     SEL: [192.0.2.5, 192.0.2.6] # Don't use the SEL modules for these IPs
+#     all: [192.0.2.200]          # Don't use any module for this IP
+excluded_modules: {}
+
+# Network (IP) targets for scan and pull, used when no targets are given on the
+# command line (-i, -s, -f, or -b). Same format as "-i": IP addresses, subnets,
+# IP ranges, hostnames, labels of hosts in "hosts", "all", and host files.
+# push always requires targets on the command line.
+# Environment variable: PEAT_TARGETS="192.0.2.0/24,192.0.2.50"
+# Example: [192.0.2.0/24, example-host]
+targets: []
+
+# -----------------------------------------------------------------------------
+
+# --- Command sections ---
+# Settings that only apply to a single command (scan, pull, push, or parse).
+# Any of the options in this file can be set in a section, except for "metadata"
+# and the other sections. The short names "sweep" (in "scan") and "skip_scan"
+# (in "pull" and "push") can be used for "scan_sweep", "pull_skip_scan", and
+# "push_skip_scan".
+#
+# Only the section for the command being run is used. For example, "peat pull"
+# only uses the "pull" section, even though a pull also scans. Values in a
+# section override values at the top level of this file, and are overridden
+# by environment variables and command line arguments. Mappings (such as
+# "device_options") are merged with the top-level value, and other values
+# (including lists) replace it.
+#
+# Tip: use YAML anchors (&) and merge keys (<<) to share settings between sections.
+#
+# Example:
+#   pull:
+#     device_types: [sel]
+#     skip_scan: false
+#     device_options:
+#       sel:
+#         pull_methods: [ftp, telnet]
+scan: {}
+pull: {}
+push: {}
+parse: {}
+
+# -----------------------------------------------------------------------------
+
 # --- Options for configuring where PEAT saves files ---
 # Note: "!JOIN" is a custom YAML construct to join variables
 # and static strings into a single value.

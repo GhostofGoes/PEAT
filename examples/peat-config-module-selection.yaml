@@ -1,0 +1,65 @@
+# Example PEAT configuration for selecting the PEAT modules and targets to use,
+# with settings that only apply to specific commands (command sections).
+#
+# Refer to the Configure section in the PEAT documentation for details.
+# https://sandialabs.github.io/PEAT/configure.html
+#
+# Check what would be used for a command, without sending any traffic:
+#   peat scan --dry-run -c examples/peat-config-module-selection.yaml
+
+metadata:
+  name: "module-selection-example"
+  description: "Command sections, device_types, targets, and excluded_modules"
+  author: "peat"
+  created: "2026-10-31"
+  updated: ""
+
+# Used by every command, unless the section for the command overrides it.
+device_types: [sel, controllogix, m340]
+
+# Exclusions from every source (this file, the sections below,
+# PEAT_EXCLUDED_MODULES, and "-x") are combined: they can only be added.
+excluded_modules:
+  SEL3620: true        # Never use the SEL3620 module
+  ControlLogix:        # Don't use the ControlLogix module for these targets
+    - 192.0.2.5
+    - 192.0.2.64/26
+    - line-3-plc       # Label of a host in "hosts" below
+  all: [192.0.2.200]   # Fragile device: don't use any module for it
+
+# Settings shared by several sections (a YAML anchor and merge keys).
+# Unknown top-level keys like this one are ignored by PEAT.
+common_scan_settings: &common_scan
+  intensive_scan: false
+  assume_online: false
+
+scan:
+  <<: *common_scan
+  targets: [192.0.2.0/24]
+  sweep: false
+
+pull:
+  <<: *common_scan
+  device_types: [sel]
+  targets: [192.0.2.10-20]
+  skip_scan: false
+  device_options:      # Merged with the top-level device_options
+    sel:
+      pull_methods: [ftp, telnet]
+
+push:
+  device_types: [selrelay]
+  skip_scan: false
+
+parse:
+  device_types: [all]
+
+device_options:
+  ftp:
+    timeout: 10.0
+
+hosts:
+  - label: line-3-plc
+    identifiers:
+      ip: 192.0.2.77
+    peat_module: M340

@@ -158,6 +158,22 @@ peat scan --list-all
 # Useful for verifying configuration options before pulling the
 # metaphorical trigger on a scan.
 peat scan --dry-run -d clx -i 192.0.2.0/24 -c peat-config.yaml
+
+# Use the targets, device types, and other settings from a config file,
+# including the 'scan' section of the config file
+peat scan -c examples/peat-config-module-selection.yaml
+
+# Don't use the ControlLogix module
+peat scan -x ControlLogix -i 192.0.2.0/24
+
+# Don't use the M340 module, and don't use the SEL modules for 192.0.2.5 or 192.0.2.6
+peat scan -x M340 -x sel=192.0.2.5,192.0.2.6 -i 192.0.2.0/24
+
+# Select modules using an environment variable instead of '-d'
+PEAT_DEVICE_TYPES="sel,controllogix" peat scan -i 192.0.2.0/24
+
+# Check which modules and exclusions would be used, without sending any traffic
+peat scan --dry-run -c peat-config.yaml -x clx=192.0.2.10 -i 192.0.2.0/24
 """  # End scan_examples
 
 
@@ -242,6 +258,19 @@ peat pull --dry-run -d clx -i 192.0.2.0/24
 # Hosts must have a peat_module specified in the config. The -i argument is
 # not required when a config file with a hosts list is supplied.
 peat pull --skip-scan -c peat-config.yaml
+
+# Use the targets, device types, and other settings from a config file,
+# including the 'pull' section of the config file
+peat pull -c examples/peat-config-module-selection.yaml
+
+# Pull from SEL devices, except for the SEL RTAC module and 192.0.2.5
+peat pull -d sel -x selrtac -x sel=192.0.2.5 -i 192.0.2.0/24
+
+# Pull using the only SEL module that remains after excluding the others
+peat pull --skip-scan -d sel -x selrtac,sel3620 -i 192.0.2.10
+
+# Select modules using an environment variable instead of '-d'
+PEAT_DEVICE_TYPES="m340" peat pull -i 192.0.2.0/24
 """  # End pull examples
 
 
@@ -303,6 +332,12 @@ peat parse --run-name parse_example -d selrelay ./SET_ALL.TXT
 # YAML configuration file with PEAT settings
 # This enables fine-grained configuration, including login credentials
 peat parse -c peat-config.yaml -d sel ./SET_ALL.TXT
+
+# Parse a directory using any module except for the M340 module
+peat parse -x m340 ./folder/
+
+# Select modules using an environment variable instead of '-d'
+PEAT_DEVICE_TYPES="selrelay" peat parse ./SET_ALL.TXT
 """  # End parse examples
 
 
@@ -343,6 +378,12 @@ peat push -d selrelay -i 192.0.2.222 -c peat-config.yaml -- ./examples/devices
 # Useful for verifying configuration options before pulling the
 # metaphorical trigger on a push.
 peat push --dry-run -d selrelay -i 192.0.2.21 -c peat-config.yaml -- ./examples/devices
+
+# Push to all SEL relays on a subnet, except for 192.0.2.5
+peat push -d selrelay -x selrelay=192.0.2.5 -i 192.0.2.0/24 -- ./SET_1.TXT
+
+# Use the device type set in the 'push' section of a config file (or 'device_types')
+peat push -c peat-config.yaml -i 192.0.2.1 -- ./SET_1.TXT
 """  # End push examples
 
 
@@ -789,9 +830,13 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         dest="device_types",
         help="The type of the device(s) to parse using from. These can be the "
         'name of a PEAT module, device vendor, device type (e.g. "plc"), '
-        "or other aliases. This can be a single string or a space-separated list of strings. "
-        "Input from stdin (pipe/redirect) must be a single device type.",
+        "or other aliases. Use the argument multiple times to specify multiple "
+        'types (e.g. "-d sel -d m340"). '
+        "Input from stdin (pipe/redirect) must be a single device type. "
+        "If not specified, the device_types option from the config file or the "
+        'PEAT_DEVICE_TYPES environment variable is used, otherwise all modules ("all").',
     )
+    add_exclude_modules_arg(parse_parser)
 
     # HEAT: High-fidelity Extraction of Artifacts from Traffic
     add_list_module_args(heat_parser)  # Hack to add "--list-*" commands
@@ -908,11 +953,13 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         required=False,
         metavar="TYPE",
         nargs="+",
-        default=["all"],
+        default=None,
         dest="device_types",
         help="The type of the device(s) to pull from. This can be the name "
         'of a PEAT module, device vendor, device type (e.g. "plc"), '
-        "or other aliases. This can be a single string or a space-separated list of strings.",
+        "or other aliases. This can be a single string or a space-separated list of strings. "
+        "If not specified, the device_types option from the config file or the "
+        'PEAT_DEVICE_TYPES environment variable is used, otherwise all modules ("all").',
     )
     pull_parser.add_argument(
         "--skip-scan",
@@ -921,7 +968,8 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         dest="pull_skip_scan",
         help="Skip scanning and verification of hosts before pulling, "
         "and assume all hosts are online and valid devices. NOTE: "
-        "this requires a single device type to be specified.",
+        "this requires a single device type to be specified, or "
+        "'peat_module' to be set for the hosts in the config file.",
     )
 
     # !! NOTE !!
@@ -950,17 +998,20 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         required=False,
         metavar="TYPES",
         nargs="+",
-        default=["all"],
+        default=None,
         dest="device_types",
         help="Limit scan to a specific device type. This can "
         "be the name of a PEAT module, device vendor, "
         'device type (e.g. "plc"), or other aliases. '
-        "This can be a single string or a space-separated list of strings.",
+        "This can be a single string or a space-separated list of strings. "
+        "If not specified, the device_types option from the config file or the "
+        'PEAT_DEVICE_TYPES environment variable is used, otherwise all modules ("all").',
     )
     scan_parser.add_argument(
         "--sweep",
         "--enumerate",
         action="store_true",
+        default=None,
         dest="scan_sweep",
         help="Check what hosts are online using the standard methods (TCP "
         "SYN, ARP, or ICMP) and exit. If serial ports are targeted, "
@@ -1008,8 +1059,11 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
             "and other information sources, such as imported scan "
             "results.",
         )
-        # pull can omit host args when a YAML config with hosts is provided
-        host_group = subp.add_mutually_exclusive_group(required=subp is not pull_parser)
+        add_exclude_modules_arg(subp)
+
+        # scan and pull can omit host args when targets are configured in the config
+        # file ("targets" or "hosts"). push always requires host args.
+        host_group = subp.add_mutually_exclusive_group(required=subp is push_parser)
         host_group.add_argument(
             "-i",
             "--ip",
@@ -1078,7 +1132,9 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         metavar="DEVICE",
         nargs="+",
         dest="device_types",
-        help="The type of device to push to",
+        help="The type of device to push to. If not specified, the device_types "
+        "option from the config file or the PEAT_DEVICE_TYPES environment variable "
+        "is used. A device type is required for push.",
     )
     push_parser.add_argument(
         "-t",
@@ -1236,6 +1292,34 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
     add_list_module_args(decrypt_results_parser)  # Hack to add "--list-*" commands
 
     return parser
+
+
+def add_exclude_modules_arg(parser: argparse.ArgumentParser) -> None:
+    """
+    Add the ``-x/--exclude-modules`` argument (scan, pull, push, and parse).
+
+    NOTE: this uses ``action="append"`` instead of ``nargs="+"``, so it can't
+    accidentally consume positional arguments (e.g. the input paths for parse).
+    """
+    parser.add_argument(
+        "-x",
+        "--exclude-modules",
+        type=str,
+        action="append",
+        default=None,
+        dest="excluded_modules",
+        metavar="MODULE[=TARGETS]",
+        help="Exclude PEAT module(s) from this run, by module name or alias. "
+        'Use NAME (or "NAME1,NAME2") to exclude a module for all targets, or '
+        "NAME=TARGET[,TARGET...] to exclude it only for specific targets (IPs, "
+        "subnets, IP ranges, hostnames, labels of hosts in the config file, MAC "
+        "addresses, or serial ports). Use the argument multiple times to exclude "
+        'multiple modules (e.g. "-x ControlLogix -x sel=192.0.2.5"). This is combined '
+        "with the excluded_modules option from the config file and the "
+        "PEAT_EXCLUDED_MODULES environment variable: exclusions can only be added, "
+        "never removed. PEAT refuses to run if a name does not match any module or "
+        "a target cannot be used.",
+    )
 
 
 def parse_peat_arguments(version: str = "ERROR") -> argparse.Namespace:

@@ -1,0 +1,6 @@
+Fixed several configuration bugs:
+
+- List and mapping values from environment variables (e.g. ``PEAT_HASH_ALGORITHMS="md5,sha1"``) and single values for lists in the config file (e.g. ``hash_algorithms: md5``) were split into characters. They're now parsed as comma-separated lists or JSON.
+- ``scan_sweep`` from the config file or environment was overridden when ``--sweep`` wasn't given.
+- ``peat push`` without ``-d`` crashed with a ``TypeError``, ``--push-skip-scan`` with no matching module raised an ``IndexError``, and a failed push raised a ``NameError``.
+- Encrypted config files given with ``-c`` failed to load, and errors loading config values were never shown because they were logged before logging was set up.

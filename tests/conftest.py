@@ -527,3 +527,49 @@ def mock_encrypted_peat_results(mock_peat_results, tmp_path) -> Path:
     encrypted_zip_path = tmp_path / "encrypted_mock_peat_results.zip"
     results_crypto.zip_encrypt_results(mock_peat_results, tmp_path, "testpass")
     return encrypted_zip_path
+
+
+@pytest.fixture
+def isolated_config(mocker):
+    """
+    Isolate the global configuration from other tests.
+
+    Every layer of the global ``config`` is emptied for the duration of the
+    test (and restored afterwards), and the cache of compiled module
+    exclusions is cleared.
+    """
+    from peat import module_selection
+
+    # NOTE: "env_prefix" is stored in the runtime layer by SettingsManager
+    env_prefix = config["runtime_configs"].get("env_prefix", "PEAT_")
+
+    for layer in (
+        "runtime_configs",
+        "env_configs",
+        "section_configs",
+        "file_configs",
+        "load_errors",
+    ):
+        mocker.patch.dict(config[layer], {}, clear=True)
+    old_section_command = config.get("section_command")
+    config["section_command"] = ""
+
+    config["runtime_configs"].update(
+        {
+            "env_prefix": env_prefix,
+            "RESOLVE_MAC": False,
+            "RESOLVE_IP": False,
+            "RESOLVE_HOSTNAME": False,
+            "NO_LOGO": True,
+            "NO_COLOR": True,
+        }
+    )
+
+    module_selection._CACHE.clear()
+    yield config
+    module_selection._CACHE.clear()
+
+    if old_section_command is None:
+        config.pop("section_command", None)
+    else:
+        config["section_command"] = old_section_command

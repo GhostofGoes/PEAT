@@ -1,7 +1,8 @@
-import sys
 from copy import deepcopy
 from pathlib import Path
 from pprint import pformat
+
+import yaml
 
 from peat import (
     DeviceData,
@@ -19,8 +20,104 @@ from peat import (
     utils,
 )
 from peat.data.default_options import DEFAULT_OPTIONS
+from peat.settings import merged_excluded_modules
+from peat.settings_manager import LAYER_DESCRIPTIONS
 
 from .log_utils import print_logo, setup_logging
+
+
+def _load_config_file(config_path: Path) -> list[str]:
+    """
+    Load a configuration file (YAML, JSON, or a file encrypted by PEAT).
+
+    Returns:
+        Error messages, if any. These are returned instead of being logged,
+        since this happens before logging is configured.
+    """
+    if config_crypto.is_encrypted_file(config_path):
+        # NOTE: the user is prompted for the password
+        decrypted = config_crypto.decrypt_config(config_path, user_password=None)
+        if not decrypted:
+            return [
+                f"Failed to decrypt the encrypted configuration file "
+                f"'{config_path.name}' (is the password correct?)"
+            ]
+
+        try:
+            data = yaml.safe_load(decrypted)
+        except yaml.YAMLError as ex:
+            return [f"Failed to parse the encrypted configuration file '{config_path.name}': {ex}"]
+
+        if not config.load_from_mapping(data, source=config_path.name):
+            return [
+                f"The encrypted configuration file '{config_path.name}' must contain "
+                f"a mapping of option names to values"
+            ]
+
+        return []
+
+    try:
+        if not config.load_from_file(config_path):
+            return [
+                f"Failed to load the configuration file '{config_path.name}'. Check that "
+                f"the path is correct and the file is a YAML or JSON file containing a "
+                f"mapping of option names to values."
+            ]
+    except Exception as ex:
+        return [f"Failed to load the configuration file '{config_path.name}': {ex}"]
+
+    return []
+
+
+def _log_config_problems(
+    early_errors: list[str],
+    applied_section: dict,
+    section_warnings: list[str],
+    command: str | None,
+) -> None:
+    """
+    Log problems with the configuration that occurred before logging was configured.
+
+    Raises:
+        PeatError: If the configuration file couldn't be loaded, or if
+            ``excluded_modules`` couldn't be loaded from any source
+    """
+    for msg in early_errors:
+        log.critical(msg)
+
+    for (layer, key), err in config["load_errors"].items():
+        source = LAYER_DESCRIPTIONS.get(layer, layer)
+        if layer == "env_configs":
+            source = f"{source} {config.env_prefix}{key}"
+        log.error(f"Failed to load configuration option '{key.lower()}' ({source}): {err}")
+
+    for msg in section_warnings:
+        log.warning(msg)
+
+    if applied_section:
+        log.info(
+            f"Applied the '{command}' section of the config: "
+            f"{', '.join(k.lower() for k in sorted(applied_section))}"
+        )
+
+    overridden = sorted(k for k in config["section_configs"] if k not in applied_section)
+    if overridden:
+        log.info(
+            f"Options in the '{command}' section of the config that are overridden by "
+            f"environment variables or command line arguments: "
+            f"{', '.join(k.lower() for k in overridden)}"
+        )
+
+    # Fail closed: a broken exclusion must never quietly turn into no exclusion
+    excluded_errors = [k for k in config["load_errors"] if k[1] == "EXCLUDED_MODULES"]
+    if excluded_errors:
+        raise PeatError(
+            "Invalid value for 'excluded_modules', refusing to run without "
+            "the requested exclusions (see the errors above)"
+        )
+
+    if early_errors:
+        raise PeatError("Failed to load the configuration file (see the errors above)")
 
 
 def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -> None:
@@ -55,32 +152,24 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
     ):
         conf["out_dir"] = None
 
+    # Errors that occur before logging is configured. These are logged once
+    # logging is configured, and then initialization fails.
+    early_errors: list[str] = []
+
     # If config file is specified, load those values
     # NOTE: non-None values in 'conf' will override any file values!
-    try:
-        if conf.get("config_file"):
-            config_path = Path(conf["config_file"]).resolve()
-            config.load_from_file(config_path)
-    except AttributeError:
-        # This is likely an encrypted config, check to see if it is and unencrypt
-        # need to decrypt file then load yaml (safe_load) or json (load)
-        decrypted_str = config_crypto.decrypt_config(config_path)
-        if decrypted_str:
-            decrypted_dict = config_crypto.convert_to_dict(decrypted_str)
-            if decrypted_dict:
-                config._load_values(decrypted_dict, load_to="file_configs")
-        else:
-            # If above failed, there is likely a problem with the config file
-            log.error(
-                "PEAT encountered an error while attempting to read config file, "
-                "check to ensure your config file is formatted correctly "
-                "and the filepath is valid"
-            )
-            sys.exit(1)
+    if conf.get("config_file"):
+        config_path = Path(conf["config_file"]).resolve()
+        early_errors.extend(_load_config_file(config_path))
 
     # Load runtime configurations (CLI arguments, program-specified, etc.)
     # This magically populates Configuration options from same-named CLI arguments
     config.load_from_dict(conf)
+
+    # Apply the section of the config file for the command being run, e.g. "pull:".
+    # This is done before modules are imported and directories are configured,
+    # since the section may change those options.
+    applied_section, section_warnings = config.apply_command_section(conf.get("func"))
 
     # Import third-party device modules
     # The module API handles lists of file paths already
@@ -167,6 +256,19 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         json_file=json_file,
         debug_info_file=debug_info_file,
     )
+
+    # Log problems with the configuration that occurred before logging was configured
+    _log_config_problems(early_errors, applied_section, section_warnings, conf.get("func"))
+
+    # Exclusions from all sources are combined. Record the combined value so the
+    # configuration saved at the end of the run (peat_configuration.yaml) has
+    # the exclusions that were actually used.
+    try:
+        merged_exclusions = merged_excluded_modules(config)
+    except ValueError as ex:  # Invalid value set at runtime, e.g. by an API user
+        raise PeatError(f"Invalid value for 'excluded_modules': {ex}") from None
+    if merged_exclusions:
+        config.EXCLUDED_MODULES = merged_exclusions
 
     # Copy original config file
     if conf.get("config_file") and config.META_DIR:
