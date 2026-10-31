@@ -115,7 +115,7 @@ from peat import (
 from peat.file_signature import FileSignature
 from peat.protocols import FTP, check_tcp_port
 
-from . import sel_scl
+from . import sel_partno, sel_scl
 from .relay_parse import (
     SER_DEVICE_TIME_KEY,
     SETTINGS_FILENAME_RE,
@@ -360,6 +360,15 @@ class SELRelay(DeviceModule):
 
     # 57600 used by ymodem and by 351 by default
     sel_fallback_baudrates = [9600, 57600, 19200]
+
+    @classmethod
+    def update_dev(cls, dev: DeviceData) -> None:
+        super().update_dev(dev)
+
+        # Decode the part number into dev.extra["part_number_info"]. The web
+        # interface sets dev.part_number directly, and the FID may have been
+        # found after the part number, so this is done again at the end.
+        sel_partno.process_part_number(dev)
 
     @classmethod
     def _verify_serial(cls, dev: DeviceData) -> bool:
