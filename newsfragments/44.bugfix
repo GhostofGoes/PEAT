@@ -1,0 +1,1 @@
+List configuration options set with environment variables are now split on commas (e.g. ``PEAT_CAPTURE_INTERFACES=eth0,eth1``), instead of being split into individual characters. Setting an output directory option such as ``capture_dir`` or ``device_dir`` to an empty string no longer crashes PEAT at startup; the directory stays disabled.

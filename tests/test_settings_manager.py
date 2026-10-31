@@ -153,6 +153,40 @@ def test_typecast(tmp_path):
     assert inst.typecast("OPTS", None) is None
     assert inst.typecast("OPTS", "{'one': 1}") == "{'one': 1}"
 
+    # Comma-separated strings, e.g. from environment variables
+    assert inst.typecast("PATHS", "eth0") == ["eth0"]
+    assert inst.typecast("PATHS", "eth0, eth1,,") == ["eth0", "eth1"]
+    assert inst.typecast("PATHS", "") == []
+
+
+def test_list_from_environment(mocker):
+    from peat.settings import Configuration
+
+    mocker.patch.dict(os.environ, {"TEST_CAPTURE_INTERFACES": "eth0,eth1"})
+    conf = Configuration(label="configuration", env_prefix="TEST_", init_env=True)
+    assert conf.CAPTURE_INTERFACES == ["eth0", "eth1"]
+
+
+def test_fixup_dirs_moves_capture_dir(tmp_path):
+    from peat.settings import Configuration
+
+    conf = Configuration(label="configuration", env_prefix="TEST_", init_env=False)
+    conf.RUN_DIR = tmp_path / "new-run"
+    assert conf.CAPTURE_DIR == Path(os.path.realpath(tmp_path / "new-run" / "pcaps"))
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_fixup_dirs_keeps_disabled_dirs(tmp_path, value):
+    from peat.settings import Configuration
+
+    conf = Configuration(label="configuration", env_prefix="TEST_", init_env=False)
+    conf.CAPTURE_DIR = value
+    conf.DEVICE_DIR = value
+    conf.fixup_dirs(tmp_path / "other-run", "RUN_DIR", override_all=True)
+    assert not conf.CAPTURE_DIR
+    assert not conf.DEVICE_DIR
+    assert conf.LOG_DIR == Path(os.path.realpath(tmp_path / "other-run" / "logs"))
+
 
 def test_non_default(settings_instance):
     assert not settings_instance.non_default("TEST_OPTION")

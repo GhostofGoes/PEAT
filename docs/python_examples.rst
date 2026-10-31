@@ -35,6 +35,32 @@ This uploads ("pushes") a new firmware image to a Allen-Bradley ControlLogix PLC
    push_succeeded = ControlLogix.push(dev, fw_path, "firmware")
    print(push_succeeded)  # bool, true if push was successful
 
+Capture traffic to a PCAP file during a pull
+--------------------------------------------
+Captures the traffic sent to and received from the targets during the pull.
+This requires root (Linux and macOS) or Npcap (Windows). If the capture
+can't be started, a warning is logged and the pull still runs.
+Refer to :ref:`traffic-capture` for details.
+
+.. code-block:: python
+
+   from pathlib import Path
+   from peat import exit_handler, initialize_peat, pull
+   from peat.protocols.pcap import TrafficCapture
+
+   initialize_peat({"VERBOSE": True})
+
+   targets = ["192.0.2.0/24"]
+   capture = TrafficCapture.for_targets(targets, "unicast_ip", out_dir=Path("pcaps"))
+   with capture:
+       pull(targets, "unicast_ip", ["m340"])
+       # Close sessions that modules would otherwise close at exit,
+       # so their teardowns are in the capture
+       exit_handler.run_and_unregister("CONNECTION")
+
+   # Tool used, files written, and the number of packets captured
+   print(capture.summary())
+
 
 Parsing
 =======

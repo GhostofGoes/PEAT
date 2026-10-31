@@ -62,6 +62,7 @@ from .umas_packets import (
     send_umas_packet,
     start_pull_packet,
     stop_pull_packet,
+    umas_tracker_to_pcapng,
 )
 
 # TODO
@@ -94,7 +95,11 @@ class M340(DeviceModule):
     ]
     default_options = {
         "ftp": {"creds": [["loader", "fwdownload"]]},
-        "m340": {"use_network_for_config": True, "generate_openplc_project": None},
+        "m340": {
+            "use_network_for_config": True,
+            "generate_openplc_project": None,
+            "save_umas_pcap": True,
+        },
     }
     annotate_fields = {
         "os.name": "VxWorks",
@@ -304,6 +309,30 @@ class M340(DeviceModule):
         return device_info
 
     @classmethod
+    def _save_umas_packets(cls, dev: DeviceData, packet_tracker: list[dict]) -> None:
+        """
+        Save the UMAS packets sent and received while downloading the project
+        file to ``umas-metadata.json`` and, if the ``m340.save_umas_pcap``
+        option is enabled, to ``umas-packets.pcapng``.
+
+        This never raises, so a failure to save the packets can't fail a pull.
+        """
+        if not packet_tracker:
+            return
+
+        try:
+            dev.write_file(packet_tracker, "umas-metadata.json")
+
+            if not dev.options["m340"].get("save_umas_pcap", True):
+                return
+
+            pcap_bytes = umas_tracker_to_pcapng(packet_tracker, remote_mac=dev.mac or None)
+            path = dev.write_file(pcap_bytes, "umas-packets.pcapng")
+            cls.log.debug(f"Saved {len(packet_tracker)} UMAS packets to {path.name}")
+        except Exception as ex:
+            cls.log.warning(f"Failed to save UMAS packets from {dev.ip}: {ex}")
+
+    @classmethod
     def pull_apx_file(cls, ip: str) -> bytes:
         """
         Pull the project file blob from a device.
@@ -325,74 +354,79 @@ class M340(DeviceModule):
 
         log.debug(f"Downloading project file from {ip}:{port} (timeout: {timeout})")
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
+        # NOTE: packets are saved even if the download fails partway,
+        # since that's when they're most useful for troubleshooting.
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
 
-            try:
-                sock.connect((ip, port))
-            except OSError:
-                raise DeviceError(
-                    f"failed to download project file: could not connect to {ip}:{port}"
-                ) from None
+                try:
+                    sock.connect((ip, port))
+                except OSError:
+                    raise DeviceError(
+                        f"failed to download project file: could not connect to {ip}:{port}"
+                    ) from None
 
-            # Establish a UMAS connection with the device
-            try:
-                # NOTE(cegoes): M340 will return a 0xFE on any subsequent concurrent
-                #   connections to any modules on the same device rack, even if
-                #   they're different modules.
-                # NOTE(cegoes): connection ID 0 for everything seems to be best
-                #   Multiple connection IDs at the same time will make it unhappy,
-                #   but if we use the same ID, no problem ;)
-                send_umas_packet(sock, poll_packet(0), UMASResponse, packet_tracker)
-                connect_data = send_umas_packet(
-                    sock, connect_packet(), UMASConnectionResponse, packet_tracker
-                )
-                cid = connect_data.newConnectionCode
-                send_umas_packet(sock, poll_packet(cid), UMASResponse, packet_tracker)
-                start_pull_data = send_umas_packet(
-                    sock, start_pull_packet(cid), UMASResponse, packet_tracker
-                )
-                total_len = start_pull_data.dataLen
-            except OSError as err:
-                raise DeviceError(f"failed to pull project file from {ip}") from err
+                # Establish a UMAS connection with the device
+                try:
+                    # NOTE(cegoes): M340 will return a 0xFE on any subsequent concurrent
+                    #   connections to any modules on the same device rack, even if
+                    #   they're different modules.
+                    # NOTE(cegoes): connection ID 0 for everything seems to be best
+                    #   Multiple connection IDs at the same time will make it unhappy,
+                    #   but if we use the same ID, no problem ;)
+                    send_umas_packet(sock, poll_packet(0), UMASResponse, packet_tracker)
+                    connect_data = send_umas_packet(
+                        sock, connect_packet(), UMASConnectionResponse, packet_tracker
+                    )
+                    cid = connect_data.newConnectionCode
+                    send_umas_packet(sock, poll_packet(cid), UMASResponse, packet_tracker)
+                    start_pull_data = send_umas_packet(
+                        sock, start_pull_packet(cid), UMASResponse, packet_tracker
+                    )
+                    total_len = start_pull_data.dataLen
+                except OSError as err:
+                    raise DeviceError(f"failed to pull project file from {ip}") from err
 
-            recv_len = 0
-            count = 1
-            finished = False
-            debug_data = []
-            download_blob = bytearray(b"")
+                recv_len = 0
+                count = 1
+                finished = False
+                debug_data = []
+                download_blob = bytearray(b"")
 
-            # Pull the data
-            while not finished:
-                data = send_umas_packet(
-                    sock, pull_packet(cid, count), UMASResponse, packet_tracker
-                )
+                # Pull the data
+                while not finished:
+                    data = send_umas_packet(
+                        sock, pull_packet(cid, count), UMASResponse, packet_tracker
+                    )
 
-                if data.dataLen > 0:
-                    if recv_len == total_len:
-                        log.warning(
-                            f"Abnormal response while pulling "
-                            f"the project file: recv_len of "
-                            f"{recv_len} == total_len"
-                        )
+                    if data.dataLen > 0:
+                        if recv_len == total_len:
+                            log.warning(
+                                f"Abnormal response while pulling "
+                                f"the project file: recv_len of "
+                                f"{recv_len} == total_len"
+                            )
 
-                    if data.num == 0x01:
-                        # If we've gotten this back, we're done
-                        log.debug("Received EOF from device, finishing queries")
+                        if data.num == 0x01:
+                            # If we've gotten this back, we're done
+                            log.debug("Received EOF from device, finishing queries")
+                            finished = True
+
+                        recv_len += data.dataLen
+                        download_blob.extend(bytearray(data.load))
+
+                        if config.DEBUG:
+                            debug_data.append(data.load)
+                    else:
                         finished = True
 
-                    recv_len += data.dataLen
-                    download_blob.extend(bytearray(data.load))
+                    count += 1
 
-                    if config.DEBUG:
-                        debug_data.append(data.load)
-                else:
-                    finished = True
-
-                count += 1
-
-            count -= 1  # Don't include the final "close stream" packet in the count
-            send_umas_packet(sock, stop_pull_packet(cid, count), UMASResponse, packet_tracker)
+                count -= 1  # Don't include the final "close stream" packet in the count
+                send_umas_packet(sock, stop_pull_packet(cid, count), UMASResponse, packet_tracker)
+        finally:
+            cls._save_umas_packets(dev, packet_tracker)
 
         # Dump of the raw UMAS bytes from the blob for debugging purposes
         if debug_data:
@@ -403,21 +437,6 @@ class M340(DeviceModule):
                 debug_output.append(binascii.hexlify(bytes(item)).decode())
 
             dev.write_file("".join(debug_output), "blob-packets.txt")
-
-        # Dump of all packets sent
-        if packet_tracker:
-            # TODO: PCAP file generation
-            # NOTE: we don't have the TCP header, so not sure if this will work
-            # from scapy.utils import PcapWriter
-            # pcap_path = (dev.get_out_dir() / "umas-packets.pcap").as_posix()
-            #
-            # log.debug(f"Writing packets to PCAP: {pcap_path}")
-            # with PcapWriter(pcap_path) as writer:
-            #     for pkt_dict in packet_tracker:
-            #         writer.write_packet(pkt_dict[""])
-            #         # writer.write(pkt_dict["packet_object"])
-            # TODO: filter out the packet objects from dumped data
-            dev.write_file(packet_tracker, "umas-metadata.json")
 
         byte_blob = bytes(download_blob)  # Convert "bytearray" to "bytes"
         dev.firmware.file.extension = "apx"

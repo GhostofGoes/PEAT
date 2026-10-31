@@ -317,6 +317,69 @@ class Configuration(SettingsManager):
     Directory where Zeek logs will be saved. Also contains Zeek artifacts.
     """
 
+    CAPTURE_TRAFFIC: bool = False
+    """
+    Capture the network traffic PEAT sends and receives during a ``scan``,
+    ``pull`` or ``push`` to a PCAP file in
+    :attr:`CAPTURE_DIR <peat.settings.Configuration.CAPTURE_DIR>`.
+
+    Capturing requires root or ``CAP_NET_RAW`` (Linux), ``sudo`` or
+    Wireshark's ChmodBPF (macOS), or Npcap (Windows). If capture can't be
+    started, a warning is logged and the run continues without it.
+    Serial traffic is not captured.
+
+    This is used by the command line interface. When using PEAT as a
+    library, use :class:`~peat.protocols.pcap.TrafficCapture` instead.
+    """
+
+    CAPTURE_DIR: Path = RUN_DIR / "pcaps"
+    """
+    Directory where traffic captures are saved (``peat-traffic.pcap`` when
+    captured with tcpdump, or ``peat-traffic.pcapng`` when captured with Scapy).
+
+    Setting this to an empty string or :obj:`None` disables traffic capture.
+
+    :meta hide-value:
+    """
+
+    CAPTURE_TOOL: str = "auto"
+    """
+    Tool used to capture traffic: ``auto``, ``tcpdump`` or ``scapy``.
+
+    ``auto`` uses tcpdump if it's installed (Linux and macOS), and Scapy otherwise.
+    tcpdump is faster and reports packets dropped by the kernel. Scapy works on
+    all platforms (including Windows with Npcap) and doesn't need tcpdump.
+    """
+
+    CAPTURE_INTERFACES: list[str] = []
+    """
+    Network interfaces to capture traffic on, e.g. ``["eth0"]``.
+
+    If empty, the interfaces used to reach the targets are determined
+    from the system's routing table. Use ``["all"]`` to capture on all
+    interfaces. When set using an environment variable, separate the names
+    with commas, e.g. ``PEAT_CAPTURE_INTERFACES=eth0,eth1``.
+
+    tcpdump can only capture on one interface, or on all interfaces (Linux),
+    so Scapy is used if there are multiple interfaces and
+    :attr:`CAPTURE_TOOL <peat.settings.Configuration.CAPTURE_TOOL>` is ``auto``.
+    """
+
+    CAPTURE_FILTER: str = "auto"
+    """
+    BPF filter for traffic capture (the same syntax as tcpdump and Wireshark
+    capture filters).
+
+    - ``auto``: only capture traffic to or from the targets (including ARP),
+      as well as ICMP errors. Traffic to and from the Elasticsearch server
+      is excluded, unless the server is itself a target.
+    - ``""`` (empty string): no filter, capture all traffic on the interfaces.
+    - Any other value is used as the filter as-is. If Scapy is used and
+      can't compile it (e.g. libpcap isn't installed, or the filter is
+      invalid), a warning is logged and only traffic to or from the
+      targets is captured.
+    """
+
     ELASTIC_SERVER: str | None = None
     """
     URL of the Elasticsearch server.
@@ -725,6 +788,18 @@ class State(SettingsManager):
     error: bool = False
     """
     If any critical errors occurred during the run of PEAT.
+
+    :meta hide-value:
+    """
+
+    traffic_capture: dict = {}
+    """
+    Summary of the traffic capture for the run, if
+    :attr:`CAPTURE_TRAFFIC <peat.settings.Configuration.CAPTURE_TRAFFIC>`
+    is enabled. Keys: ``tool``, ``interfaces``, ``filter`` (the BPF filter
+    that was applied), ``python_filter`` (if packets were filtered in Python
+    instead), ``files``, ``packets_written``, ``packets_dropped``,
+    ``packets_skipped``, ``started``, ``stopped`` and ``error``.
 
     :meta hide-value:
     """

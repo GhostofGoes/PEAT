@@ -129,6 +129,7 @@ The location and names of directories are configurable, refer to the :doc:`confi
 - ``heat_artifacts/`` : Output from :term:`HEAT` (``peat heat <args>``)
 - ``logs/`` : Records of PEAT's command output, protocol logs, and other information that's useful for debugging or knowing what PEAT did. These include protocol- and module-specific log files (e.g. Telnet logs, ENIP logs).
 - ``peat_metadata/`` : files related to PEAT itself, including :term:`JSON` and :term:`YAML` formatted dumps of PEAT's configuration and internal state.
+- ``pcaps/`` : Captures of the network traffic PEAT sent and received, if traffic capture is enabled (``--capture-traffic``). Refer to :ref:`traffic-capture` for details.
 - ``summaries/`` : Summary results of a command as :term:`JSON` files, e.g. :ref:`scan-summary`, :ref:`pull-summary`, or :ref:`parse-summary`. These include metadata about the operation (e.g., how many files were parsed), as well as a combined set of device summaries (most of the data, but some fields are excluded, like events, memory, blobs, etc.). To view the complete results for devices, look in the ``devices/`` directory.
 - ``temp/`` : Temporary files, used by PEAT during a run to put files temporarily before being moved elsewhere.
 
@@ -171,6 +172,8 @@ The output directory structure generally looks like this:
                peat_configuration.yaml
                peat_state.json
                peat_state.yaml
+         pcaps/
+               peat-traffic.pcap
          summaries/
                scan-summary.json
                pull-summary.json
@@ -263,7 +266,10 @@ Schneider Modicon M340
    logic, st, "Structured Text extracted from project file. Only written if logic is successfully extracted."
    "text-dump", txt, "Debugging dump created if logic extraction fails"
    "blob-packets", txt, "Raw dump of the bytes transferred when downloading a project file"
-   "umas-packets", json, "Metadata and contents of UMAS packets transferred when downloading a project file"
+   "umas-metadata", json, "Metadata and contents of UMAS packets transferred when downloading a project file"
+   "umas-packets", pcapng, "UMAS packets transferred when downloading a project file, as a reconstructed TCP session that can be opened with Wireshark. Each packet has a comment with the name of the UMAS function. Disable with the ``m340.save_umas_pcap`` device option."
+
+The ``umas-packets.pcapng`` file is written even if the download fails partway through, which makes it useful for troubleshooting. PEAT doesn't have the original TCP/IP headers for these packets, so the Ethernet, IP and TCP headers are reconstructed from the payloads. The MAC addresses are the real ones if they're known, otherwise they're placeholders (``02:00:00:00:00:01`` and ``02:00:00:00:00:02``). The first packet has a comment that states this. Wireshark dissects the packets as Modbus/TCP function 90 ("Unity (Schneider)"), but it doesn't decode the UMAS fields. Third-party Wireshark dissectors for UMAS are available, such as `this Lua plugin <https://github.com/biero-el-corridor/Wireshark-UMAS-Modicon-M340-protocol>`__ (not tested or endorsed by the PEAT team).
 
 Allen-Bradley ControlLogix
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -387,6 +393,61 @@ Push
    :start-after: push_examples = """
    :end-before: """  # End push examples
 
+
+.. _traffic-capture:
+
+Capturing network traffic (PCAP)
+================================
+PEAT can capture the network traffic it sends and receives during a ``scan``, ``pull`` or ``push`` to a PCAP file. This is useful for troubleshooting, for verifying exactly what PEAT did on the network, and for analyzing the traffic with other tools, such as Wireshark, Zeek, Malcolm, or :ref:`HEAT <heat-usage>` (``peat heat --pcaps``).
+
+Capture is disabled by default. Enable it with the ``--capture-traffic`` argument (or ``--pcap`` for short), ``capture_traffic: true`` in a :doc:`YAML config file <configure>`, or the ``PEAT_CAPTURE_TRAFFIC=true`` environment variable.
+
+.. code-block:: bash
+
+   # Capture traffic during a pull
+   sudo peat pull -i 192.0.2.0/24 --capture-traffic
+
+   # Only capture on eth0, using a custom filter
+   sudo peat pull -i 192.0.2.0/24 --capture-traffic --capture-interfaces eth0 --capture-filter "tcp port 502"
+
+   # Capture all traffic on all interfaces, using Scapy instead of tcpdump
+   sudo peat scan -i 192.0.2.0/24 --capture-traffic --capture-interfaces all --capture-filter "" --capture-tool scapy
+
+Capture is best-effort. If it can't be started, for example because of missing privileges or missing software, a warning is logged and the run continues without it. A capture problem never fails a run. The capture is stopped and the file is closed when the command finishes, including when it fails or is interrupted with :kbd:`Ctrl+C`. Before the capture is stopped, PEAT closes its remaining sessions with devices (so the logouts and TCP teardowns are captured), and waits briefly (up to 2 seconds) for packets that are still in flight.
+
+When using PEAT as a Python library, use :class:`~peat.protocols.pcap.TrafficCapture` (see :doc:`python_examples`). The ``CAPTURE_TRAFFIC`` option only applies to the command line interface.
+
+Requirements
+------------
+- **Linux**: ``root`` (``sudo``) or the ``CAP_NET_RAW`` capability. If tcpdump is installed and has permission to capture (e.g. it was granted ``CAP_NET_RAW`` using ``setcap``), PEAT itself doesn't need privileges to capture.
+- **macOS**: ``sudo``, or access to the BPF devices (``/dev/bpf*``), e.g. by installing Wireshark's "ChmodBPF" launch daemon.
+- **Windows**: `Npcap <https://npcap.com>`__ must be installed. If Npcap was installed in "Administrator-only" mode, PEAT must be run from an Administrator command prompt.
+
+Capture tools
+-------------
+The :attr:`CAPTURE_TOOL <peat.settings.Configuration.CAPTURE_TOOL>` option (``--capture-tool``) selects the tool used to capture traffic.
+
+- ``tcpdump`` (used by default if it's installed on Linux and macOS): fast, uses the kernel to filter packets, and reports how many packets were dropped. Writes ``pcaps/peat-traffic.pcap``. tcpdump's output is saved to ``logs/tcpdump.log``. tcpdump can only capture on one interface, or on all interfaces (Linux only), so Scapy is used if traffic needs to be captured on multiple interfaces. If ``--capture-tool tcpdump`` is used with multiple interfaces, all interfaces are captured on Linux, and only the first interface on macOS (with a warning).
+- ``scapy`` (used on Windows, or if tcpdump isn't installed): uses Scapy's ``AsyncSniffer``, and writes ``pcaps/peat-traffic.pcapng`` (with the interface each packet was captured on). Scapy processes every packet in Python, so it may drop packets on busy networks and can't report how many were dropped. If libpcap isn't installed on Linux, filtering is also done in Python, which uses more CPU.
+
+If ``auto`` is used and tcpdump fails to start, Scapy is tried instead.
+
+What is captured
+----------------
+By default (:attr:`CAPTURE_FILTER <peat.settings.Configuration.CAPTURE_FILTER>` is ``auto``), only traffic to or from the targets is captured, including :term:`ARP`, as well as :term:`ICMP` errors (e.g. "port unreachable"). For broadcast scans (``-b``), traffic on the targeted local networks and to the broadcast address ``255.255.255.255`` is captured. If there are many targets, they're summarized into larger networks (e.g. ``/24``). Traffic to and from the Elasticsearch server (``-e``) is excluded, so the capture doesn't contain the server's credentials, unless the server is itself one of the targets. A custom filter can be specified using the same syntax as tcpdump and Wireshark capture filters (`pcap-filter <https://www.tcpdump.org/manpages/pcap-filter.7.html>`__), or ``""`` to capture all traffic on the interfaces. Custom filters are used as-is (the Elasticsearch server isn't excluded). If Scapy can't compile a custom filter (e.g. it's invalid, or libpcap isn't installed on Linux), a warning is logged and only traffic to or from the targets is captured.
+
+By default (:attr:`CAPTURE_INTERFACES <peat.settings.Configuration.CAPTURE_INTERFACES>` is empty), traffic is captured on the interfaces that are used to reach the targets, based on the system's routing table. Specific interfaces can be set with ``--capture-interfaces eth0 eth1``, or ``all`` to capture on all interfaces. Interfaces are never put in promiscuous mode.
+
+A summary of the capture (tool, interfaces, the filter that was applied, files and packet counts) is saved in ``peat_metadata/peat_state.yaml`` under ``traffic_capture``.
+
+.. warning::
+   Some of the protocols PEAT uses to communicate with devices, such as Telnet, FTP and HTTP, send credentials in cleartext. These credentials will be in the capture file. Protect the files accordingly, for example with ``peat encrypt-results``.
+
+.. note::
+   Serial communication isn't captured.
+
+.. note::
+   M340 project downloads are also saved as a separate, annotated ``umas-packets.pcapng`` file in the device's results directory (see "Schneider Modicon M340" under "Device-specific results"). If traffic capture is enabled, these packets appear in both files. The file in ``pcaps/`` is what was actually on the wire, and the ``umas-packets.pcapng`` file is reconstructed and annotated with the UMAS function names.
 
 Summaries
 =========

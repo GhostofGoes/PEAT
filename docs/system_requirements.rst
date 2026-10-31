@@ -67,6 +67,7 @@ System configuration
    - Permissions are required to use of lightweight :term:`ARP` and :term:`ICMP` requests for host status checking. These methods have less impact on the devices being scanned and are significantly faster than using TCP SYNs.
    - Lack of permissions potentially affects PEAT's ability to do broadcast scanning
    - Lack of permissions potentially affects PEAT's ability to use serial devices
+   - Permissions are required to capture network traffic to a PCAP file (``--capture-traffic``): root or ``CAP_NET_RAW`` (Linux), ``sudo`` or Wireshark's ChmodBPF (macOS), or Npcap (Windows). Refer to :ref:`traffic-capture` for details.
 - Ability to write output directory is required unless file output is disabled using the appropriate configuration options. Refer to :doc:`configure` for details on configuration options.
 - Ability to run executables is required for all distributions other than the container.
 - Ability to write and execute temporary files is required if using the executable distribution of PEAT (``peat`` or ``peat.exe``). This is necessary for the executable to unpack and run.
@@ -79,6 +80,7 @@ Optional software
    - Firefox: version 60 or newer
    - Edge
 - Containerization: :term:`Docker` or :term:`Podman` are required to run the containerized distribution of PEAT. See :ref:`platforms-section` above for details on specific versions required.
+- Traffic capture (``--capture-traffic``): `tcpdump <https://www.tcpdump.org/>`__ (Linux and macOS) is used if it's installed, since it's faster and reports dropped packets. Otherwise, Scapy is used, which filters packets more efficiently if libpcap is installed (Linux). On Windows, `Npcap <https://npcap.com>`__ is required to capture traffic.
 
 .. _macos-limitations:
 
@@ -89,6 +91,7 @@ PEAT's features work the same on macOS as on Linux, with the following exception
 - **Root is required for ARP and ICMP host checks.** Scapy sends and receives raw packets on macOS using Berkeley Packet Filter devices (``/dev/bpf*``), which only root can open by default. Run PEAT with ``sudo`` for the fastest and lightest host discovery. Without it, PEAT falls back to TCP SYN online checks (the same as an unprivileged Linux user) and logs a warning. Installing the "ChmodBPF" launch daemon that ships with `Wireshark <https://www.wireshark.org/>`__ gives members of the ``access_bpf`` group access to the BPF devices without ``sudo``, and PEAT will detect and use that access.
 - **Pillage disk image mounting is not supported.** ``peat pillage`` on raw disk images requires Linux-specific tools (``qemu-nbd`` and kernel modules). Pillaging a directory of files works on macOS.
 - **Serial port names are different.** macOS names serial devices after the adapter (e.g. ``/dev/cu.usbserial-1410``) instead of numbering them. Pass ``--serial-ports`` (``-s``) the device path (``/dev/cu.usbserial-1410``) or the device name (``usbserial-1410``) to select a specific device. Port numbers and ranges (e.g. ``0`` or ``0-4``) also work, and on macOS they're an index into the sorted list of ``/dev/cu.*`` devices (``0`` is the first device, excluding the built-in Bluetooth and debug console ports). Use the ``/dev/cu.*`` "callout" devices, not ``/dev/tty.*``, since opening a ``tty`` device waits for a carrier detect signal that most devices never send.
+- **tcpdump can only capture traffic on one interface.** If traffic capture (``--capture-traffic``) needs to capture on multiple interfaces, Scapy is used instead of tcpdump.
 - **YMODEM transfers to SEL relays need lrzsz.** Install it with `Homebrew <https://brew.sh/>`__: ``brew install lrzsz``.
 - **ARP cache lookups use the** ``arp`` **command.** macOS doesn't have ``/proc/net/arp``, so MAC address resolution runs ``arp -an``. This is slightly slower than on Linux, but otherwise works the same.
 - **The default macOS filesystem (APFS) is case-insensitive.** Files that differ only by case (e.g. ``CONFIG.TXT`` and ``config.txt`` pulled from a device) will overwrite each other in PEAT's output. If this matters for your use case, set the output directory (``-o``) to a case-sensitive APFS volume.

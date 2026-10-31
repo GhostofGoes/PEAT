@@ -94,6 +94,11 @@ SNMP
 .. automodule:: peat.protocols.snmp
    :members:
 
+PCAP (traffic capture)
+^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.protocols.pcap
+   :members:
+
 Serial
 ^^^^^^
 .. automodule:: peat.protocols.serial
