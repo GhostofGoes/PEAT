@@ -131,8 +131,18 @@ from .relay_parse import (
     parse_set_all,
     process_cid_file,
     process_info_into_dev,
+    read_rdb_streams,
 )
 from .sel_comms import populate_file_listing, pull_files
+from .sel_files import (
+    SOURCE_COMMAND_OUTPUT,
+    SOURCE_DERIVED,
+    SOURCE_PARSE_INPUT,
+    SOURCE_RDB_STREAM,
+    annotate_settings_classes,
+    record_downloaded_file,
+    write_and_record_file,
+)
 from .sel_http import SELHTTP
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
@@ -595,6 +605,9 @@ class SELRelay(DeviceModule):
         if not all_files:
             return False
 
+        # All of the files, including ones with the same name in different directories
+        all_files_by_path = dev._cache.get("all_files_by_path") or all_files
+
         successful = True
 
         # Parse Sequential Event Recorder (SER) events
@@ -613,29 +626,34 @@ class SELRelay(DeviceModule):
             and all_files["CFG.TXT"]["data"].strip() != "=>"
         ):
             try:
-                parse_cfg_txt(all_files["CFG.TXT"]["data"], dev)
+                cfg_configs = parse_cfg_txt(all_files["CFG.TXT"]["data"], dev)
             except Exception as ex:
                 cls.log.warning(f"Failed to parse CFG.TXT pulled from {dev.address}: {ex}")
                 successful = False
+            else:
+                # Add the settings class checksums to the settings files
+                annotate_settings_classes(
+                    cfg_configs.get("CLASSES"),
+                    [info["file"] for info in all_files_by_path.values() if info.get("file")],
+                )
 
         # Some relays don't have SET_ALL.TXT (or it failed to download),
         # reconstruct it from the individual settings files (SET_*.TXT).
         if not (all_files.get("SET_ALL.TXT") and all_files["SET_ALL.TXT"]["data"].strip()):
-            combined = combine_settings_files(
-                {
-                    name: info["data"]
-                    for name, info in all_files.items()
-                    if info.get("data")
-                    and (name.upper() == "CFG.TXT" or SETTINGS_FILENAME_RE.match(name))
-                }
-            )
+            settings_files = {
+                name: info["data"]
+                for name, info in all_files.items()
+                if info.get("data")
+                and (name.upper() == "CFG.TXT" or SETTINGS_FILENAME_RE.match(name))
+            }
+            combined = combine_settings_files(settings_files)
 
             if has_settings_sections(combined):
                 cls.log.info(
                     f"SET_ALL.TXT wasn't pulled from {dev.address}, using settings "
                     f"combined from the individual settings files (SET_*.TXT)"
                 )
-                dev.write_file(combined, "combined_SET_ALL.txt")
+                cls._write_combined_set_all(dev, combined, list(settings_files))
                 all_files["SET_ALL.TXT"] = {
                     "name": "SET_ALL.TXT",
                     "data": combined,
@@ -676,6 +694,43 @@ class SELRelay(DeviceModule):
                 )
 
         return successful
+
+    @classmethod
+    def _write_combined_set_all(cls, dev: DeviceData, combined: str, names: list[str]) -> None:
+        """
+        Save and record the ``SET_ALL.TXT`` that PEAT reconstructed
+        from ``CFG.TXT`` and the individual settings files.
+        """
+        write_and_record_file(
+            dev=dev,
+            data=combined,
+            filename="combined_SET_ALL.txt",
+            source=SOURCE_DERIVED,
+            peat_module=cls.__name__,
+            description=(
+                "SET_ALL.TXT reconstructed by PEAT from CFG.TXT and the "
+                "individual settings files (not a file on the relay)"
+            ),
+            extra={"derived_from": sorted(n for n in names if n.upper() != "SET_ALL.TXT")},
+        )
+
+    @classmethod
+    def _record_parse_input(cls, dev: DeviceData, path: Path, data: bytes | None = None) -> None:
+        """
+        Hash and record a file that's being parsed (e.g. by ``peat parse``).
+        """
+        try:
+            record_downloaded_file(
+                dev=dev,
+                data=path.read_bytes() if data is None else data,
+                name=path.name,
+                local_path=path,
+                source=SOURCE_PARSE_INPUT,
+                peat_module=cls.__name__,
+                description="File parsed by PEAT",
+            )
+        except Exception as ex:
+            cls.log.warning(f"Failed to record parsed file {path}: {ex}")
 
     @classmethod
     def pull_more_commands(cls, dev: DeviceData, comms: SELTelnet | SELSerial) -> bool:
@@ -754,7 +809,15 @@ class SELRelay(DeviceModule):
             )
 
         # Dump all of the commands to disk for debugging or investigation
-        dev.write_file(results, "additional-command-outputs.json")
+        write_and_record_file(
+            dev=dev,
+            data=results,
+            filename="additional-command-outputs.json",
+            transport="telnet" if isinstance(comms, SELTelnet) else "serial",
+            source=SOURCE_COMMAND_OUTPUT,
+            peat_module=cls.__name__,
+            description="Output of the SEL ASCII commands run by PEAT",
+        )
 
         # Parse the results
         try:
@@ -1519,12 +1582,15 @@ class SELRelay(DeviceModule):
             else:
                 if not event_data_present(raw_data):
                     cls.log.warning(f"No event data in {file.name}")
+                    cls._record_parse_input(dev, file, raw_data)
                     return dev
 
                 events, info = parse_and_process_events(raw_data, file.name, dev)
 
                 if not events and not info:
                     return None
+
+            cls._record_parse_input(dev, file, raw_data)
 
             cls.update_dev(dev)  # Populate any fields that are unset
 
@@ -1541,6 +1607,7 @@ class SELRelay(DeviceModule):
         if not dev:
             return None
 
+        cls._record_parse_input(dev, file, raw_data)
         dev.logic.file.local_path = file
 
         cls.update_dev(dev)  # Populate any fields that are unset
@@ -1576,6 +1643,13 @@ class SELRelay(DeviceModule):
         if len(relays) > 1:
             cls.log.info(f"{len(relays)} relays in {file.name}: {', '.join(relays)}")
 
+        # The streams for each relay, to hash them
+        try:
+            rdb_streams = read_rdb_streams(raw_data)
+        except Exception as ex:
+            cls.log.warning(f"Failed to read the streams in {file.name} to hash them: {ex}")
+            rdb_streams = {}
+
         parsed_devs = []  # type: list[DeviceData]
 
         for relay_name, set_all in relays.items():
@@ -1609,7 +1683,7 @@ class SELRelay(DeviceModule):
             if relay_name:
                 relay_dev.extra["rdb_relay_name"] = relay_name
 
-            relay_dev.write_file(set_all, "extracted_SET_ALL.txt")
+            cls._record_rdb_files(relay_dev, file, raw_data, relay_name, set_all, rdb_streams)
             relay_dev.write_file(raw_data, "raw-rdb-config.rdb")
             relay_dev.logic.file.local_path = file
 
@@ -1621,6 +1695,56 @@ class SELRelay(DeviceModule):
             parsed_devs.append(relay_dev)
 
         return parsed_devs[0] if parsed_devs else None
+
+    @classmethod
+    def _record_rdb_files(
+        cls,
+        dev: DeviceData,
+        file: Path,
+        raw_data: bytes,
+        relay_name: str,
+        set_all: str,
+        rdb_streams: dict[str, dict[str, bytes]],
+    ) -> None:
+        """
+        Hash and record the RDB file, the streams for the relay in it,
+        and the ``SET_ALL`` extracted from the streams.
+        """
+        cls._record_parse_input(dev, file, raw_data)
+
+        rdb_extra = {"derived_from": [file.name]}
+        if relay_name:
+            rdb_extra["rdb_relay_name"] = relay_name
+
+        # Streams that aren't in a relay's storage are keyed by an empty relay name,
+        # which is also the "relay name" used for RDBs without the usual layout.
+        for stream_path, stream_data in rdb_streams.get(relay_name, {}).items():
+            # Path of the stream in the RDB, e.g. "Relays/<relay name>/Misc/Cfg.txt"
+            rdb_path = f"Relays/{relay_name}/{stream_path}" if relay_name else stream_path
+
+            record_downloaded_file(
+                dev=dev,
+                data=stream_data,
+                name=rdb_path.rsplit("/", maxsplit=1)[-1],
+                device_path=rdb_path,
+                source=SOURCE_RDB_STREAM,
+                peat_module=cls.__name__,
+                description=f"Stream in {file.name}",
+                extra={"rdb_stream": stream_path, **rdb_extra},
+            )
+
+        write_and_record_file(
+            dev=dev,
+            data=set_all,
+            filename="extracted_SET_ALL.txt",
+            source=SOURCE_DERIVED,
+            peat_module=cls.__name__,
+            description=(
+                f"SET_ALL.TXT reconstructed by PEAT from the settings in {file.name} "
+                f"(not a file on the relay)"
+            ),
+            extra=rdb_extra,
+        )
 
     @classmethod
     def _parse_dir(cls, directory: Path, dev: DeviceData | None = None) -> DeviceData | None:
@@ -1730,9 +1854,10 @@ class SELRelay(DeviceModule):
         # Parse CFG.TXT separately, like during a pull, since
         # it's not always included in SET_ALL.TXT
         parsed_cfg = False
+        cfg_configs = {}
         if "CFG.TXT" in files:
             try:
-                parse_cfg_txt(files["CFG.TXT"].read_bytes(), dev)
+                cfg_configs = parse_cfg_txt(files["CFG.TXT"].read_bytes(), dev)
                 parsed_cfg = True
             except Exception as ex:
                 cls.log.warning(f"Failed to parse {files['CFG.TXT']}: {ex}")
@@ -1762,6 +1887,26 @@ class SELRelay(DeviceModule):
         if not any([has_settings, parsed_cfg, events, history, cid_extracted]):
             cls.log.warning(f"No data parsed from the SEL relay files in {root}")
             return None
+
+        # Hash and record the files that were parsed
+        for path in files.values():
+            cls._record_parse_input(dev, path)
+
+        if has_settings and not set_all_path:
+            cls._write_combined_set_all(
+                dev,
+                set_all,
+                [
+                    path.name
+                    for name, path in files.items()
+                    if name == "CFG.TXT" or SETTINGS_FILENAME_RE.match(name)
+                ],
+            )
+
+        local_paths = {path.resolve() for path in files.values()}
+        annotate_settings_classes(
+            cfg_configs.get("CLASSES"), [f for f in dev.files if f.local_path in local_paths]
+        )
 
         cls.update_dev(dev)  # Populate any fields that are unset
 

@@ -13,9 +13,10 @@ Authors
 """
 
 import re
+from pathlib import PurePosixPath
 from time import sleep
 from typing import Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import humanfriendly
 from bs4 import BeautifulSoup
@@ -34,6 +35,13 @@ from .relay_parse import (
     process_info_into_dev,
     process_port_settings,
     split_lines,
+)
+from .sel_files import (
+    SOURCE_COMMAND_OUTPUT,
+    SOURCE_WEB_DOWNLOAD,
+    SOURCE_WEB_PAGE,
+    record_downloaded_file,
+    write_and_record_file,
 )
 
 
@@ -215,12 +223,17 @@ class SELHTTP(HTTP):
                 )
             raise PeatError(f"session was broken to {self.ip}:{self.port}")
 
-        # Save the raw file to disk as an artifact
+        # Save the raw file to disk as an artifact, and hash it
         try:
-            if response.text:
+            if response.content:
                 dev = datastore.get(self.ip)
 
-                f_name = "/".join(url.split("/")[3:]).replace("?", "_").replace(":", "_")
+                # Replace the web session ID in the path with a placeholder,
+                # so it isn't in recorded file paths (e.g. device-data-files.jsonl)
+                f_name = "/".join(url.split("/")[3:])
+                if self._session_url and url.startswith(self._session_url):
+                    f_name = f"protected/session/{self._page_name(url)}"
+                f_name = f_name.replace("?", "_").replace(":", "_")
 
                 # Ensure the written file ends with ".html"
                 # e.g. turn "...static_command.html_cmd=ver"
@@ -229,10 +242,15 @@ class SELHTTP(HTTP):
                     f_name = f_name.replace(".html", "")
                     f_name = f"{f_name}.html"
 
-                dev.write_file(
-                    data=response.text,
-                    filename=f_name,
-                    out_dir=dev.get_sub_dir("http_files"),
+                write_and_record_file(
+                    dev=dev,
+                    data=response.content,
+                    filename=f"http_files/{f_name}",
+                    transport=self.protocol or "http",
+                    source=SOURCE_WEB_PAGE,
+                    peat_module="SELRelay",
+                    description="Page from the relay's web interface",
+                    extra={"page": self._page_name(url)},
                 )
         except Exception:
             self.log.exception(f"Failed to write page '{url}' to file")
@@ -242,6 +260,17 @@ class SELHTTP(HTTP):
             self.log.trace4(f"Data for '{url}': {repr(data)}")
 
         return data
+
+    def _page_name(self, url: str) -> str:
+        """
+        The page and parameters in a relay URL, without the session ID
+        that's part of the path (e.g. ``static_command.html?cmd=ver``).
+        """
+        if self._session_url and url.startswith(self._session_url):
+            return url[len(self._session_url) :]
+
+        parts = urlparse(url)
+        return f"{parts.path}?{parts.query}" if parts.query else parts.path
 
     def _gen_url(self, cmd: str, parts: tuple[str, str], param: str | None) -> str:
         url = f"{self._session_url}{parts[0]}{cmd}{parts[1]}"
@@ -763,10 +792,15 @@ class SELHTTP(HTTP):
         if not response or not response.text:
             self.log.error("No response or data for Sequence of Events (SOE) log (soe.csv)")
 
-        dev.write_file(
-            data=response.text,
-            filename="soe.csv",
-            out_dir=dev.get_sub_dir("http_files"),
+        write_and_record_file(
+            dev=dev,
+            data=response.content,
+            filename="http_files/soe.csv",
+            device_path="/soe.csv",
+            transport=self.protocol or "http",
+            source=SOURCE_WEB_DOWNLOAD,
+            peat_module="SELRTAC",
+            description="RTAC Sequence of Events (SOE) log",
         )
 
         # Ensure csv has contents
@@ -1728,10 +1762,14 @@ class SELHTTP(HTTP):
             raw_group_str = f"raw_logic_group_{index}"
             group_str = f"group_{index}"
 
-            dev.write_file(
+            write_and_record_file(
+                dev=dev,
                 data=page,
-                filename=f"{raw_group_str}.txt",
-                out_dir=dev.get_out_dir() / "http_commands",
+                filename=f"http_commands/{raw_group_str}.txt",
+                transport=self.protocol or "http",
+                source=SOURCE_COMMAND_OUTPUT,
+                peat_module="SELRelay",
+                description=f"Logic group {index} settings from the relay's web interface",
             )
 
             if "invalid command" in page.lower():
@@ -2399,6 +2437,25 @@ class SELHTTP(HTTP):
             if not response or response.status_code != 200:
                 self.log.warning(f"Failed to download certificate from {cert_url}")
                 continue
+
+            # Hash the exported file. HTTP.post() saved it to "http_files/".
+            file_path = getattr(response, "file_path", None)
+            try:
+                record_downloaded_file(
+                    dev=dev,
+                    data=response.content,
+                    name=file_path.name
+                    if file_path
+                    else PurePosixPath(urlparse(cert_url).path).name,
+                    local_path=file_path,
+                    transport=self.protocol or "https",
+                    source=SOURCE_WEB_DOWNLOAD,
+                    peat_module="SEL3620",
+                    description="X.509 certificate exported from the web interface",
+                    extra={"page": href},
+                )
+            except Exception as ex:
+                self.log.warning(f"Failed to record hashes for {cert_url}: {ex}")
 
             decoded, raw = self.decode_ssl_certificate(response.text)
             x509_obj = self.parse_decoded_ssl_certificate(decoded, raw)
