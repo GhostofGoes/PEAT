@@ -8,8 +8,10 @@ import sys
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 
 import pytest
+from markupsafe import escape
 
 import peat
 from peat import cli_main, config, state, utils
@@ -19,9 +21,10 @@ from peat.report import consts as report_consts
 from peat.report import context as report_context
 from peat.report.context import build_report_context
 from peat.report.render import TEMPLATE_DIR, ReportError, render_report
-from peat.run_results import RunResults
+from peat.report.sanitize import neutralize
+from peat.run_results import DeviceResults, RunResults
 
-from .conftest import ARTIFACT_TEXT, FAILED_IP, ONLINE_IP, PULLED_IP, SECRET
+from .conftest import ARTIFACT_TEXT, FAILED_IP, ONLINE_IP, PULLED_IP, RUN_NAME, SECRET
 
 XSS_PAYLOADS = [
     "<script>alert(1)</script>",
@@ -32,6 +35,18 @@ XSS_PAYLOADS = [
     "{{7*7}}{% raw %}",
     "\u202eexe.txt",
     "nul\x00byte",
+]
+
+#: Hostile names for the run directory and a file in it (a run directory may
+#: come from another system) that the tests can create. Names with " : < > | * ?
+#: or CR/LF are never created: Windows doesn't allow most of them, and CI uploads
+#: the tests' temporary files as an artifact, which doesn't allow any of them.
+NAME_PAYLOADS = [
+    "' onmouseover='alert(1)",
+    "&lt;script&gt;&amp;",  # Escaped, never decoded
+    "{{7+7}}{% raw %}",
+    "\u202eexe.txt",
+    "#top;x=1&y=%2e%2e",
 ]
 
 
@@ -178,6 +193,34 @@ def test_context(full_run_dir):
     assert [op.title for op in ctx.operations] == ["Scan", "Pull", "Parse"]
     parse_op = ctx.operations[2]
     assert [t.caption for t in parse_op.tables] == ["Parsed files", "Files that failed to parse"]
+
+
+@pytest.mark.parametrize(
+    ("saved_run_dir", "inside", "outside"),
+    [
+        (
+            "/old/peat_results/run",
+            "/old/peat_results/run/logs/peat.log",
+            ["/old/peat_results/README.md", "/tmp/x.txt"],
+        ),
+        (
+            "C:\\peat_results\\run",
+            "C:/peat_results/run/logs/peat.log",
+            ["C:/peat_results/README.md", "//server/share/x.txt"],
+        ),
+    ],
+)
+def test_context_outside_files(make_run_dir, saved_run_dir, inside, outside):
+    """Written files of a run that was moved, or was on another OS, are shown as recorded."""
+    run_dir = make_run_dir()
+    written = [inside, *outside, "relative/x.txt", (run_dir / "logs" / "peat.log").as_posix()]
+    results = RunResults.open(
+        run_dir,
+        config_data={"run_dir": saved_run_dir},
+        state_data={"written_files": written},
+    )
+    ctx = build_report_context(results)
+    assert [r[0].text for r in ctx.outside_files_table.rows] == sorted(outside)
 
 
 def test_context_generic_summary_and_duplicates(make_run_dir):
@@ -383,8 +426,8 @@ def test_render_structure(full_run_dir):
 
 @pytest.mark.parametrize("payload", XSS_PAYLOADS)
 def test_render_xss(make_run_dir, payload):
-    run_dir = make_run_dir(parse=True, payload=payload.replace("/", "_").replace("\x00", "0"))
-    # Payloads in every device string, log messages, config and file names
+    run_dir = make_run_dir(parse=True, payload=payload)
+    # Payloads in every device string, log messages and the config (names: see below)
     html_text = render_report(build_report_context(RunResults.open(run_dir)))
     check_html_structure(html_text)
     assert "<script>alert" not in html_text
@@ -393,6 +436,60 @@ def test_render_xss(make_run_dir, payload):
     assert "\x00" not in html_text
     if "{{" in payload:  # Template syntax in data is never evaluated
         assert "relay1{{7*7}}{% raw %}" in html_text
+
+
+def _check_rendered_names(html_text: str, run_name: str, *rel_paths: str) -> None:
+    """The run directory's name and file paths are escaped text, and safe relative links."""
+    parser = check_html_structure(html_text)
+    assert "<script>alert" not in html_text
+    assert "<img" not in html_text
+    assert "\u202e" not in html_text
+    assert f"<h1>{escape(neutralize(run_name))}</h1>" in html_text
+    hrefs = [a["href"] for t, a in parser.tags if t == "a"]
+    for rel in rel_paths:
+        assert str(escape(neutralize(rel))) in html_text
+        href = "./" + "/".join(quote(part, safe="") for part in rel.split("/"))
+        # Device files are listed in the device's section and the run's files
+        assert hrefs.count(href) == (2 if rel.startswith("devices/") else 1)
+
+
+@pytest.mark.parametrize("name", NAME_PAYLOADS)
+def test_render_xss_file_names(make_run_dir, name):
+    run_dir = make_run_dir(parse=True, name_payload=name)
+    html_text = render_report(build_report_context(RunResults.open(run_dir)))
+    _check_rendered_names(html_text, RUN_NAME + name, f"devices/{PULLED_IP}/ftp/config{name}.txt")
+
+
+@pytest.mark.parametrize("payload", XSS_PAYLOADS)
+def test_render_xss_file_names_not_on_disk(make_run_dir, mocker, payload):
+    """
+    Names the tests can't create (see NAME_PAYLOADS), which can still be in
+    a run directory from a POSIX system, are added to the listed files.
+    """
+    name = payload.replace("/", "_").replace("\x00", "_")  # Never valid in a name
+    file_name = f"config{name}.txt"
+    run_dir = make_run_dir(parse=True)
+    list_files = RunResults.iter_files
+    list_artifacts = DeviceResults.artifact_files
+    mocker.patch.object(
+        RunResults, "name", new_callable=mocker.PropertyMock, return_value=RUN_NAME + name
+    )
+    mocker.patch.object(
+        RunResults,
+        "iter_files",
+        lambda self: [
+            *list_files(self),
+            self.path / name,
+            self.path / "devices" / PULLED_IP / "ftp" / file_name,
+        ],
+    )
+    mocker.patch.object(
+        DeviceResults,
+        "artifact_files",
+        lambda self: [*list_artifacts(self), self.path / "ftp" / file_name],
+    )
+    html_text = render_report(build_report_context(RunResults.open(run_dir)))
+    _check_rendered_names(html_text, RUN_NAME + name, name, f"devices/{PULLED_IP}/ftp/{file_name}")
 
 
 def test_render_xss_in_raw_payload_values(make_run_dir):

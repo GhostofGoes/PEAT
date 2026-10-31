@@ -25,7 +25,7 @@ from typing import Any
 from humanfriendly import format_size
 
 from peat import __version__, config, consts, log, state, utils
-from peat.run_results import DeviceResults, RunResults, check_data, load_json_file
+from peat.run_results import DeviceResults, RunResults, check_data, is_anchored, load_json_file
 
 from . import consts as rc
 from .sanitize import (
@@ -1343,18 +1343,20 @@ class _ReportBuilder:
         )
         files.caption += f" ({totals['count']:,} files, {utils.fmt_size(totals['size'])})"
 
+        # Paths are shown as recorded. The run directory may have been moved, or the
+        # run may have been on another OS: on Windows, "/x" isn't absolute (see is_anchored)
         written = self.state.get("WRITTEN_FILES")
-        outside = []
+        outside = set()
         for item in written if isinstance(written, list) else []:
-            p = Path(str(item))
-            if p.is_absolute() and not p.is_relative_to(self.results.path):
-                outside.append(p)
+            text = str(item)
+            if is_anchored(text) and self.results.map_saved_path(text) is None:
+                outside.add(text)
 
         outside_table = _make_table(
             "outside-files-table",
             "Files written outside the run directory",
             [Column("File")],
-            ([Cell(p, mono=True)] for p in sorted(set(outside))),
+            ([Cell(p, mono=True)] for p in sorted(outside)),
             empty_text="None",
         )
 

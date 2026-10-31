@@ -49,8 +49,11 @@ def make_run_dir(tmp_path: Path) -> Callable[..., Path]:
     """
     Create a synthetic run directory.
 
-    ``payload`` is put into every device string field, a file name, a log
-    message, the run directory name and the configuration name.
+    ``payload`` is put into every device string field, a log message and the
+    configuration name. ``name_payload`` is put into the run directory name and
+    a file name, so it must be a valid file name on every OS, without
+    " : < > | * ? or CR/LF (CI uploads the tests' temporary files as an
+    artifact, which doesn't allow them).
     """
 
     def _make(
@@ -61,10 +64,11 @@ def make_run_dir(tmp_path: Path) -> Callable[..., Path]:
         logs: bool = True,
         meta: bool = True,
         payload: str | None = None,
+        name_payload: str | None = None,
         name: str = RUN_NAME,
         parent: Path | None = None,
     ) -> Path:
-        run_name = f"{name}{payload}" if payload else name
+        run_name = f"{name}{name_payload}" if name_payload else name
         run_dir = (parent or tmp_path) / run_name
         run_dir.mkdir(parents=True)
         text = payload or ""
@@ -169,7 +173,7 @@ def make_run_dir(tmp_path: Path) -> Callable[..., Path]:
         _write_json(dev_dir / "device-data-summary.json", device)
         _write_json(dev_dir / "device-data-full.json", device)
         (dev_dir / "ftp").mkdir(parents=True)
-        artifact = dev_dir / "ftp" / f"config{text.replace('/', '_')}.txt"
+        artifact = dev_dir / "ftp" / f"config{name_payload or ''}.txt"
         artifact.write_text(ARTIFACT_TEXT, encoding="utf-8")
         (dev_dir / "device-data-event.jsonl").write_text(
             "\n".join(
