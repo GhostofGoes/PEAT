@@ -2,7 +2,6 @@ import io
 import os
 import socket
 import threading
-import time
 from ipaddress import IPv4Network
 from pathlib import Path
 
@@ -718,25 +717,41 @@ def test_stop_drains_before_stopping(fake_tcpdump, tmp_path, mocker):
 
 
 def test_drain(tmp_path, mocker):
-    mocker.patch.multiple(pcap, _DRAIN_MIN=0.05, _DRAIN_QUIET=0.05, _DRAIN_MAX=0.3)
+    mocker.patch.multiple(pcap, **DRAIN)  # The real values, not the _isolate ones
     capture = pcap.TrafficCapture(tmp_path, ["eth0"])
 
+    # A fake clock that only advances in _sleep(), so the drain logic is tested
+    # without depending on how fast a (loaded) CI machine sleeps and wakes up
+    clock = {"now": 1000.0}
+    arrivals = {"until": None}  # Packets arrive until this (fake) time
+
+    def _fake_sleep(seconds):
+        clock["now"] += seconds
+        if arrivals["until"] is not None and clock["now"] <= arrivals["until"]:
+            capture._last_activity = clock["now"]
+
+    mocker.patch.object(pcap, "time", mocker.Mock(monotonic=lambda: clock["now"]))
+    mocker.patch.object(pcap, "_sleep", side_effect=_fake_sleep)
+    step = 0.02 + 1e-9  # _drain() sleeps 0.02 s at a time
+
     # Nothing captured recently: only the minimum wait
-    start = time.monotonic()
+    capture._last_activity = 0.0
+    start = clock["now"]
     capture._drain()
-    assert 0.05 <= time.monotonic() - start < 0.3
+    assert pcap._DRAIN_MIN <= clock["now"] - start <= pcap._DRAIN_MIN + step
 
-    # Packets keep arriving: stops waiting at the maximum. The activity is
-    # recorded after the sleep, so a sleep that overruns on a loaded machine
-    # (Windows CI) doesn't look like a quiet period.
-    def _busy(seconds):
-        time.sleep(seconds)
-        capture._last_activity = time.monotonic()
-
-    mocker.patch.object(pcap, "_sleep", side_effect=_busy)
-    start = time.monotonic()
+    # Packets until 0.5 s in, then quiet: waits until quiet for _DRAIN_QUIET
+    start = clock["now"]
+    arrivals["until"] = start + 0.5
     capture._drain()
-    assert time.monotonic() - start >= 0.3
+    elapsed = clock["now"] - start
+    assert 0.5 + pcap._DRAIN_QUIET - step <= elapsed <= 0.5 + pcap._DRAIN_QUIET + step
+
+    # Packets keep arriving: stops waiting at the maximum
+    start = clock["now"]
+    arrivals["until"] = float("inf")
+    capture._drain()
+    assert pcap._DRAIN_MAX <= clock["now"] - start <= pcap._DRAIN_MAX + step
 
 
 def test_tcpdump_ctrl_c_while_starting(fake_tcpdump, tmp_path, mocker):
