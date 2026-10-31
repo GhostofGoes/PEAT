@@ -146,6 +146,9 @@ def test_typecast(tmp_path):
     assert inst.typecast("PTH", tmp_path.as_posix()) == tmp_path
     assert inst.typecast("TEST_OPTION", 1) == "1"
     assert inst.typecast("PATHS", []) == []
+    # Comma-separated strings, e.g. from environment variables
+    assert inst.typecast("PATHS", "one, two,,three") == ["one", "two", "three"]
+    assert inst.typecast("PATHS", "") == []
     assert inst.typecast("PATHS", ["/some/path/", "somefile.txt"]) == [
         "/some/path/",
         "somefile.txt",

@@ -42,6 +42,23 @@ Pillage API
    :members:
    :undoc-members:
 
+Import API
+^^^^^^^^^^
+See :ref:`importing-results` for details on ``peat import``.
+
+.. automodule:: peat.api.import_api
+   :members:
+
+Thorium
+-------
+.. automodule:: peat.thorium
+   :members: Thorium, MultipartFileBody, parse_groups
+
+Run results
+-----------
+.. automodule:: peat.run_results
+   :members: RunResults, DeviceResults, find_run_dirs, is_run_dir
+
 Network Discovery
 -----------------
 .. automodule:: peat.protocols.discovery

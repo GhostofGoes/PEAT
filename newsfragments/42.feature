@@ -1,0 +1,3 @@
+Added the ``peat import`` command, which imports existing run directories (or a ``peat_results`` directory with many runs) into Elasticsearch, OpenSearch or Malcolm (``-e``), and uploads the files collected from devices to Thorium (``--thorium-url``, ``--thorium-groups`` and the ``PEAT_THORIUM_TOKEN`` environment variable).
+Imported documents are attributed to the original run and have deterministic IDs, so importing a run again updates the existing documents instead of duplicating them, and run directories are treated as untrusted (nothing outside of them is read or uploaded).
+Use ``--dry-run`` to see what would be imported. The new ``THORIUM_URL``, ``THORIUM_GROUPS`` and ``THORIUM_VERIFY_TLS`` configuration options configure Thorium.

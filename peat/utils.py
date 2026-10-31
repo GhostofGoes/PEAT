@@ -912,6 +912,41 @@ def deep_get(dictionary: dict, keys: str, default=None) -> Any:
     )
 
 
+# "scheme://" followed by the userinfo (up to the last "@" before the host)
+_URL_CREDENTIALS_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^\s/\\'\"<>]+@")
+
+
+def redact_url_credentials(obj: Any) -> Any:
+    """
+    Remove usernames and passwords from URLs in strings, e.g. in
+    configuration and state dumps (``ELASTIC_SERVER``, ``THORIUM_URL``, etc.).
+
+    Lists, tuples and the values of dicts are processed recursively,
+    and new objects are returned (``obj`` isn't modified).
+
+    .. code-block:: python
+
+       >>> from peat.utils import redact_url_credentials
+       >>> redact_url_credentials("https://elastic:secret@192.0.2.20:9200/")
+       'https://REDACTED@192.0.2.20:9200/'
+       >>> redact_url_credentials({"X": ['Elastic("http://u:p@w@host/")', 1]})
+       {'X': ['Elastic("http://REDACTED@host/")', 1]}
+
+    Args:
+        obj: The value to redact
+
+    Returns:
+        The value with credentials in URLs replaced by ``REDACTED``
+    """
+    if isinstance(obj, str):
+        return _URL_CREDENTIALS_RE.sub(r"\1REDACTED@", obj) if "@" in obj else obj
+    if isinstance(obj, dict):
+        return {key: redact_url_credentials(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(redact_url_credentials(value) for value in obj)
+    return obj
+
+
 def is_ip(to_check: str) -> bool:
     """
     Check if a string is a IPv4 or IPv6 address.

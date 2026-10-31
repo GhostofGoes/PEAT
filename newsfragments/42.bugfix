@@ -1,0 +1,2 @@
+List configuration options set from a string (e.g. ``PEAT_HASH_ALGORITHMS="md5,sha256"`` or a YAML string) are now split on commas, instead of becoming a list of characters.
+Usernames and passwords in URLs (e.g. ``ELASTIC_SERVER``) are now removed from the configuration and state pushed to Elasticsearch.

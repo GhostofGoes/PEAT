@@ -143,6 +143,10 @@ Configuration options can be set via system environment variables that are prefi
    peat parse examples/
    peat scan -i localhost
 
+Options that are lists are set with a comma-separated string, for example ``export PEAT_THORIUM_GROUPS="ot-team,ics"`` or ``export PEAT_HASH_ALGORITHMS="md5,sha256"``. This also applies to list options in a configuration file that are set to a string instead of a list.
+
+The ``PEAT_THORIUM_TOKEN`` environment variable, the API token for :ref:`uploading files to Thorium <importing-results>`, isn't a configuration option. It's only read from the environment, so it isn't saved in PEAT's configuration dumps (``peat_metadata/``) or pushed to Elasticsearch.
+
 
 Additional topics
 =================

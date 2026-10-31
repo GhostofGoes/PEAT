@@ -803,6 +803,87 @@ Examples
    :end-before: """  # End HEAT examples
 
 
+.. _importing-results:
+
+Import
+======
+``peat import`` imports the results of previous PEAT runs (the run directories in ``peat_results``) into Elasticsearch or OpenSearch, including `Malcolm <https://github.com/cisagov/Malcolm>`__, and uploads the files collected from devices to `Thorium <https://github.com/cisagov/thorium>`__. Use it when PEAT ran without a server, for example on an isolated network in the field, or to load the same results into another server.
+
+The paths to import are run directories (e.g. ``./peat_results/pull_default-config_2026-10-31_13-08-59_179343190989/``), or directories containing run directories (e.g. ``./peat_results/``). The run directories aren't modified. The import itself is a PEAT run, with its own run directory (``import_<config>_<timestamp>_<run-id>``) containing its logs and a summary (``summaries/import-summary.json``). Run directories of previous imports (directories with an ``import-summary.json``) are skipped.
+
+Run directories are treated as untrusted input, since they may come from another system: nothing outside of the run directory is read or uploaded (sub-directories that are symlinks to, or configured as, paths outside of it are ignored, and file symlinks are skipped), and malformed, deeply nested or exponentially expanding ("billion laughs") JSON and YAML files are rejected.
+
+The targets are selected with command line arguments or :doc:`configuration options <configure>`. At least one is required:
+
+- ``-e``/``--elastic-server`` (:attr:`ELASTIC_SERVER <peat.settings.Configuration.ELASTIC_SERVER>`): an Elasticsearch, OpenSearch or Malcolm server.
+- ``--thorium-url`` (:attr:`THORIUM_URL <peat.settings.Configuration.THORIUM_URL>`): a Thorium server.
+
+.. note::
+   ``-e`` takes an optional URL, so put it *after* the paths if you don't specify the URL (``peat import ./peat_results/ -e``). Otherwise, the first path is used as the server URL.
+
+Use ``--dry-run`` to list what would be imported from each run, without connecting to Thorium or importing anything. As with the other commands, the logs, configuration and state of the ``peat import`` run itself are still pushed to Elasticsearch if a server is configured, so leave out ``-e`` for a dry run that doesn't connect to any server. Add ``-E`` to print the import summary as JSON. PEAT exits with an error code if anything failed to import. The errors are logged and listed in the summary, and the rest of the data is still imported.
+
+Elasticsearch and OpenSearch
+----------------------------
+The data is rebuilt from the files in the run directory, using the same code as a live run, so imported data is the same as data pushed during a run:
+
+- Devices (``devices/<device>/device-data-full.json``) are pushed to the host index and the events, files, registers, tags, I/O and memory indices. If ``device-data-full.json`` is missing, the device is rebuilt from ``device-data-summary.json`` and the ``device-data-*.jsonl`` files.
+- Scan, pull and parse summaries (``summaries/``)
+- PEAT's configuration and state (``peat_metadata/``), unless :attr:`ELASTIC_SAVE_CONFIG <peat.settings.Configuration.ELASTIC_SAVE_CONFIG>` or :attr:`ELASTIC_SAVE_STATE <peat.settings.Configuration.ELASTIC_SAVE_STATE>` are disabled. Usernames and passwords in URLs (e.g. :attr:`ELASTIC_SERVER <peat.settings.Configuration.ELASTIC_SERVER>`) are replaced with ``REDACTED``, since the server being imported to may not be the server they're for. This is also done for the configuration and state pushed at the end of every run.
+- PEAT's logs (``logs/json-log.jsonl``), unless :attr:`ELASTIC_SAVE_LOGS <peat.settings.Configuration.ELASTIC_SAVE_LOGS>` is disabled.
+
+Notes:
+
+- Documents are attributed to the original run: ``agent.id`` is the original run ID, dated index names use the date of the original run (e.g. ``ot-device-hosts-timeseries-2026.10.31``), and ``@timestamp`` values that PEAT generates (e.g. for hosts, registers and tags) are the time the original run started. ``event.ingested`` is the time of the import, and the ``observer`` fields describe the system running ``peat import``.
+- Imported documents have deterministic IDs, so importing a run again updates the existing documents instead of creating duplicates. Runs that were already pushed to the server during the run will be duplicated, since the IDs of documents pushed during a run are random.
+- Device data from other versions of PEAT is supported. Fields that fail validation (e.g. fields that don't exist in this version) are removed with a warning.
+- Hostnames, IP and MAC addresses aren't looked up on the current network (:attr:`RESOLVE_IP <peat.settings.Configuration.RESOLVE_IP>`, etc. are disabled unless explicitly configured).
+- JSON files larger than 1 GiB aren't imported.
+- Large binary blobs (e.g. firmware images) aren't saved, unless ``--elastic-save-blobs`` is used, same as a live run.
+
+Malcolm
+-------
+`Malcolm <https://cisagov.github.io/Malcolm/>`__ stores its data in OpenSearch, so it's imported to like any other OpenSearch server. Malcolm's web server forwards the OpenSearch API at ``https://<malcolm>/mapi/opensearch/``, using the same accounts as the Malcolm web interface (`Malcolm API documentation <https://cisagov.github.io/Malcolm/docs/api.html>`__). If Malcolm is configured to expose OpenSearch on port 9200, that can be used instead. That endpoint always uses HTTP basic authentication, even if Malcolm uses Keycloak (`Malcolm authentication documentation <https://cisagov.github.io/Malcolm/docs/authsetup.html>`__).
+
+.. code-block:: bash
+
+   peat import -e https://user:pass@malcolm.example.com/mapi/opensearch/ ./peat_results/
+
+The PEAT indices (``peat-*`` and ``ot-device-*``) are separate from Malcolm's network traffic indices (``arkime_sessions3-*`` and ``malcolm_beats_*``), so they don't appear in Malcolm's prebuilt dashboards. To view them, create index patterns for them in Malcolm's OpenSearch Dashboards (``https://<malcolm>/dashboards/``). Malcolm's web server limits requests to 50 MB, which may be a problem with ``--elastic-save-blobs``.
+
+Thorium
+-------
+`Thorium <https://cisagov.github.io/thorium/>`__ is a file analysis and data generation platform. ``peat import`` uploads the files PEAT collected from each device (every file in ``devices/<device>/`` except PEAT's ``device-data-*`` files, e.g. configuration files, logic or project files and firmware images), so they can be analyzed with Thorium's tools. Each file is tagged with:
+
+- ``source``: ``PEAT``
+- ``peat_run_id`` and ``peat_run_name``: the run ID and run directory name
+- ``peat_device_id``, ``peat_device_ip``, ``peat_device_mac``, ``peat_device_hostname``, ``peat_device_name``, ``peat_device_type``, ``peat_device_vendor``, ``peat_device_brand``, ``peat_device_model`` and ``peat_device_product`` (if known, from ``device-data-summary.json``)
+- ``peat_file_path``: path of the file in the device's directory
+
+Configuration:
+
+- :attr:`THORIUM_URL <peat.settings.Configuration.THORIUM_URL>` (``--thorium-url``): URL of the Thorium server, e.g. ``https://thorium.example.com/``
+- :attr:`THORIUM_GROUPS <peat.settings.Configuration.THORIUM_GROUPS>` (``--thorium-groups``): the Thorium groups to upload the files to (required). Separate multiple groups with commas (``--thorium-groups ot-team,ics``), or use the argument multiple times.
+- :attr:`THORIUM_VERIFY_TLS <peat.settings.Configuration.THORIUM_VERIFY_TLS>` (``--no-thorium-verify-tls``): disable TLS certificate verification, e.g. for self-signed certificates. Custom certificate authorities can be configured with the ``REQUESTS_CA_BUNDLE`` environment variable.
+- The API token is read from the ``PEAT_THORIUM_TOKEN`` environment variable. For example, use the token in the Thorctl configuration file (``~/.thorium/config.yml``) created by ``thorctl login``. It's intentionally not a configuration option, so it isn't saved in PEAT's configuration dumps. Alternatively, a username and password can be included in the URL (``https://user:pass@thorium.example.com/``). These are exchanged for a token, but are saved in the configuration dumps (``peat_metadata/``), like :attr:`ELASTIC_SERVER <peat.settings.Configuration.ELASTIC_SERVER>`.
+
+Files are only uploaded from device directories that have PEAT's ``device-data-*`` files, so unrelated files aren't uploaded if a path isn't really a PEAT run directory. Empty files are skipped. Files are streamed from disk, so large firmware images aren't loaded into memory.
+
+Every file is uploaded, even if Thorium already has a file with the same contents: Thorium stores the contents only once, and each upload adds a submission with its own name, description (which names the device and run) and groups, and adds the tags. This way, a file that's on multiple devices is tagged with every device, and files already uploaded by someone else are still added to the configured groups. Files that were already uploaded by the same user with the same name, description and groups (e.g. when importing a run again) are counted as skipped (Thorium responds with ``409 Conflict``, after adding the tags). Importing a run again re-sends the files, since Thorium's existence check (``/api/files/exists``) doesn't consider the description and tags.
+
+.. code-block:: bash
+
+   export PEAT_THORIUM_TOKEN="<token>"
+   peat import ./peat_results/ --thorium-url https://thorium.example.com/ --thorium-groups ot-team
+
+Examples
+--------
+.. literalinclude:: ../peat/cli_args.py
+   :name: import examples
+   :language: python
+   :start-after: import_examples = """
+   :end-before: """  # End import examples
+
 .. _peat-elastic-operate:
 
 Elasticsearch
@@ -831,7 +912,7 @@ Configuration and notes
 
 JSON file copies of Elasticsearch exports
 -----------------------------------------
-Most data sent to Elasticsearch by PEAT is saved locally as :term:`JSON` files. These files can be used to rebuild the indices in case of a issue with the server, or if you want to import the data to another server and have lost access to the server the data was originally exported to. By default, these files are saved to ``peat_results/the_run_name/elastic_data/``. This location can be configured via the :attr:`ELASTIC_DIR <peat.settings.Configuration.ELASTIC_DIR>` :doc:`configuration option <configure>` in a config file or the ``PEAT_ELASTIC_DIR`` environment variable.
+Most data sent to Elasticsearch by PEAT is saved locally as :term:`JSON` files. These files can be used to rebuild the indices in case of a issue with the server, or if you want to import the data to another server and have lost access to the server the data was originally exported to. To push the results in a run directory to a server after the run, including runs that didn't use Elasticsearch, use :ref:`peat import <importing-results>`. By default, these files are saved to ``peat_results/the_run_name/elastic_data/``. This location can be configured via the :attr:`ELASTIC_DIR <peat.settings.Configuration.ELASTIC_DIR>` :doc:`configuration option <configure>` in a config file or the ``PEAT_ELASTIC_DIR`` environment variable.
 
 .. _peat-device-modules:
 

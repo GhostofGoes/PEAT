@@ -436,6 +436,35 @@ decrypt_config_examples = """
 peat decrypt-config -f '<my_path>/encrypted_config.yaml' -p secret -w '<my_path>/example_config.yaml'
 """  # End decrypt-config examples
 
+import_examples = """
+# Import a run directory into a local Elasticsearch server
+# NOTE: put "-e" (without a URL) after the paths, otherwise the
+# first path is used as the URL of the server.
+peat import ./peat_results/pull_default-config_2026-10-31_13-08-59_179343190989/ -e
+
+# Import every run in a results directory into a remote OpenSearch server
+peat import -e https://user:pass@192.0.2.20:9200/ ./peat_results/
+
+# Import into Malcolm, through the OpenSearch API proxied by Malcolm's web server
+peat import -e https://user:pass@malcolm.example.com/mapi/opensearch/ ./peat_results/
+
+# Upload the files collected from devices (e.g. configs, logic, firmware) to Thorium
+# The Thorium API token is read from the PEAT_THORIUM_TOKEN environment variable
+export PEAT_THORIUM_TOKEN="<token>"
+peat import ./peat_results/ --thorium-url https://thorium.example.com/ --thorium-groups ot-team
+
+# Import into Malcolm and upload files to Thorium at the same time
+peat import ./peat_results/ -e https://user:pass@malcolm.example.com/mapi/opensearch/ --thorium-url https://thorium.example.com/ --thorium-groups ot-team
+
+# Upload files to multiple Thorium groups
+peat import --thorium-url https://thorium.example.com/ --thorium-groups ot-team,ics ./peat_results/
+
+# Show what would be imported, without importing anything
+# NOTE: as with other commands, PEAT's own logs, configuration and state for
+# this run are still pushed to Elasticsearch, if a server is configured
+peat import ./peat_results/ --dry-run
+"""  # End import examples
+
 ALL_EXAMPLES: dict[str, str] = {
     "scan": scan_examples,
     "pull": pull_examples,
@@ -447,6 +476,7 @@ ALL_EXAMPLES: dict[str, str] = {
     "decrypt_results": decrypt_results_examples,
     "encrypt_config": encrypt_config_examples,
     "decrypt_config": decrypt_config_examples,
+    "import": import_examples,
 }
 
 
@@ -608,6 +638,23 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         description=decrypt_results_description,
     )
     decrypt_results_parser.set_defaults(func="decrypt_results")
+
+    # Import command
+    import_description = (
+        "Import the results of previous PEAT runs (the run directories in "
+        "peat_results) into Elasticsearch or OpenSearch (including Malcolm), "
+        "and/or upload the files collected from devices to Thorium. "
+        "Use -e/--elastic-server for Elasticsearch, OpenSearch or Malcolm, "
+        "and --thorium-url for Thorium."
+    )
+    import_parser = subparsers.add_parser(
+        name="import",
+        # help: displayed next to the sub-command when running "peat --help"
+        help=import_description,
+        # description: displayed before the arguments when running "peat <command> --help"
+        description=import_description,
+    )
+    import_parser.set_defaults(func="import")
 
     # Add arguments that we want specified after a command to all subparsers.
     # This is where any "general" peat arguments go (e.g "verbose").
@@ -1234,6 +1281,46 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         help="Specify password to use to encrypt/decrypt zip",
     )
     add_list_module_args(decrypt_results_parser)  # Hack to add "--list-*" commands
+
+    # Import results of previous runs
+    import_parser.add_argument(
+        "import_paths",
+        type=str,
+        # NOTE: not "+", so "peat import --examples" works without a path
+        nargs="*",
+        metavar="PATH",
+        help="PEAT run directories, or directories containing run directories "
+        '(e.g. "./peat_results/"), to import.',
+    )
+    import_group = import_parser.add_argument_group("Thorium arguments")
+    import_group.add_argument(
+        "--thorium-url",
+        type=str,
+        metavar="URL",
+        default=None,
+        help="Upload the files collected from devices to this Thorium server, e.g. "
+        '"https://thorium.example.com/". The API token is read from the '
+        "PEAT_THORIUM_TOKEN environment variable.",
+    )
+    import_group.add_argument(
+        "--thorium-groups",
+        type=str,
+        # NOTE: not nargs="+", which would also consume the paths after it
+        action="append",
+        metavar="GROUPS",
+        default=None,
+        help="Thorium group(s) to upload files to (at least one is required). "
+        'Separate multiple groups with commas (e.g. "ot-team,ics"), '
+        "or use this argument multiple times.",
+    )
+    import_group.add_argument(
+        "--thorium-verify-tls",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Verify (or with --no-thorium-verify-tls, don't verify) the "
+        "TLS certificate of the Thorium server. Verified by default.",
+    )
+    add_list_module_args(import_parser)  # Hack to add "--list-*" commands
 
     return parser
 

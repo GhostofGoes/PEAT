@@ -320,6 +320,28 @@ elastic_uefi_hashes_index: "uefi-hashes"
 
 # -----------------------------------------------------------------------------
 
+# --- Thorium ---
+# Thorium (https://github.com/cisagov/thorium) is a file analysis platform.
+# "peat import" can upload files collected from devices (configuration files,
+# logic, firmware, etc.) to Thorium, tagged with the device and PEAT run.
+# Refer to the "Import" section in the PEAT documentation for details.
+
+# URL of the Thorium server. Uploading to Thorium is disabled if this is null.
+# The API token is read from the PEAT_THORIUM_TOKEN environment variable.
+# Alternatively, include a username and password in the URL, e.g.
+# "https://user:pass@thorium.example.com/"
+thorium_url: null
+
+# Thorium groups to upload files to (at least one is required),
+# e.g. ["ot-team", "ics"] or "ot-team,ics"
+thorium_groups: []
+
+# Verify the Thorium server's TLS certificate.
+# Set to false if the server uses a self-signed certificate.
+thorium_verify_tls: true
+
+# -----------------------------------------------------------------------------
+
 # --- HEAT (High-fidelity Extraction of Artifacts from Traffic) ---
 # Refer to the HEAT section in the PEAT documentation for details.
 # https://sandialabs.github.io/PEAT/operate.html

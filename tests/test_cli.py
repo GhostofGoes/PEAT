@@ -38,6 +38,7 @@ active_base = ("--host-file FILE", "-i HOSTS", "-s PORTS")
         ("push", [*all_base, *active_base, "input_source", "--peat-modules DEVICE "]),
         ("pillage", [*all_base, "-P SOURCE"]),
         ("heat", [*all_base, "--heat-file-only"]),
+        ("import", [*all_base, "--thorium-url URL", "--thorium-groups GROUP", "PATH"]),
         (
             "decrypt",
             [
@@ -94,7 +95,7 @@ def test_cli_list_modules(run_peat, subcmd):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("subcmd", ["scan", "parse", "pull", "push", "pillage", "heat"])
+@pytest.mark.parametrize("subcmd", ["scan", "parse", "pull", "push", "pillage", "heat", "import"])
 def test_cli_examples(run_peat, subcmd):
     examples = run_peat([subcmd, "--examples"])[0].replace("\r\n", "\n")
     all_examples = run_peat([subcmd, "--all-examples"])[0].replace("\r\n", "\n")
@@ -459,3 +460,40 @@ def test_cli_config_file_json(run_peat, tmp_path, datapath):
     written_files = sorted(state_data["written_files"])
     actual_files = sorted([x.as_posix() for x in tmp_path.rglob("*.*")])
     assert written_files == actual_files
+
+
+@pytest.mark.slow
+def test_cli_import_dry_run(run_peat, tmp_path, examples_dir):
+    out_dir = tmp_path / "peat_results"
+    stdout = run_peat(
+        [
+            "import",
+            str(examples_dir / "encryption" / "example_peat_results"),
+            "--dry-run",
+            "-E",
+            "-q",
+            "-o",
+            str(out_dir),
+            "-R",
+            "import_dry_run",
+        ]
+    )[0]
+    summary = json.loads(stdout)
+    assert summary["import_dry_run"] is True
+    assert summary["num_runs"] == 1
+    assert summary["runs"][0]["devices_found"] == 1
+    assert (out_dir / "import_dry_run" / "summaries" / "import-summary.json").is_file()
+
+
+@pytest.mark.slow
+def test_cli_import_no_targets(exec_peat, tmp_path, examples_dir):
+    result = exec_peat(
+        [
+            "import",
+            str(examples_dir / "encryption" / "example_peat_results"),
+            "-o",
+            str(tmp_path / "peat_results"),
+        ]
+    )
+    assert result.returncode == 1
+    assert b"No import targets configured" in result.stderr
