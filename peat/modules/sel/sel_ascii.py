@@ -177,10 +177,10 @@ class SELAscii(ABC):
         if self.PRE_WRITE_SLEEP:
             sleep(self.PRE_WRITE_SLEEP)
 
-        # NOTE: calling telnetlib object directly is a bit of a hack,
-        #   the peat.protocols.Telnet wrapper mostly duplicates what we do.
+        # NOTE: writing raw bytes, since the peat.protocols.Telnet
+        #   wrapper's write() mostly duplicates what we do.
         if isinstance(self.comm, Telnet):
-            self.comm.comm.write(command)
+            self.comm.write_raw(command)
         else:
             self.comm.write(command)
 

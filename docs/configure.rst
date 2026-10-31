@@ -135,6 +135,10 @@ Configuration options can be set via system environment variables that are prefi
    # Modify only for this command execution
    PEAT_DEBUG=2 peat parse examples/
 
+   # Don't reuse data already collected from the device (refer to the
+   # "Reusing collected data (caching)" section of the Operate docs)
+   PEAT_CACHE_ENABLED=false peat pull -i 192.0.2.1
+
 .. code-block:: batch
    :caption: Windows environment variable configuration example
 

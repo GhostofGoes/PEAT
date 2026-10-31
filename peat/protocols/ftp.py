@@ -1,12 +1,83 @@
 import ftplib
+import posixpath
 import re
 import traceback
+from collections.abc import Callable
 from io import BufferedReader, BytesIO, TextIOWrapper
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Literal, Optional
 
 import peat  # Avoid circular imports
 from peat import CommError, config, log, utils
+
+from .cache import NS_FTP_FILE, NS_FTP_WELCOME, CacheKey, data_cache
+
+# Placeholder for the (unknown) home directory of the logged-in user.
+# NUL can't appear in FTP paths, so this can't collide with a real path.
+_HOME = "/\x00home"
+
+# FTP commands that change the user or working directory of a session (RFC 959)
+_STATE_VERBS = frozenset({"CWD", "XCWD", "CDUP", "XCUP", "USER", "PASS", "ACCT", "REIN", "SMNT"})
+
+# FTP commands that may change files on the server
+_MODIFY_VERBS = frozenset(
+    {"STOR", "STOU", "APPE", "DELE", "RNFR", "RNTO", "MKD", "XMKD", "RMD", "XRMD", "SITE"}
+)
+
+
+class _TrackingFTP(ftplib.FTP):
+    """
+    :class:`ftplib.FTP` that notices commands which change the user or
+    working directory of the session, or which may change files.
+
+    All commands sent by :mod:`ftplib` go through ``sendcmd()`` or
+    ``voidcmd()``, including the ones sent by ``login()``, ``cwd()``,
+    ``storbinary()``, ``delete()`` and ``rename()``.
+    """
+
+    peat_state_changed: bool = False
+    """If the user or directory changed in a way :class:`FTP` didn't track."""
+
+    peat_tracking_paused: bool = False
+
+    def _peat_note(self, cmd: str) -> None:
+        verb = cmd.split(" ", 1)[0].strip().upper()
+        if verb in _STATE_VERBS and not self.peat_tracking_paused:
+            self.peat_state_changed = True
+        if verb in _MODIFY_VERBS:
+            # Cached files from this server may be out of date now
+            data_cache.invalidate(namespace=NS_FTP_FILE, host=self.host, port=self.port)
+
+    def sendcmd(self, cmd: str) -> str:
+        self._peat_note(cmd)
+        try:
+            return super().sendcmd(cmd)
+        finally:
+            self._peat_note(cmd)
+
+    def voidcmd(self, cmd: str) -> str:
+        self._peat_note(cmd)
+        try:
+            return super().voidcmd(cmd)
+        finally:
+            self._peat_note(cmd)
+
+
+def _join_remote(cwd: str | None, path: str) -> str | None:
+    """
+    Resolve a path on the FTP server relative to the working directory.
+
+    Returns:
+        The absolute path, or :obj:`None` if it can't be resolved
+    """
+    if path.startswith("/"):
+        return posixpath.normpath(path)
+    if cwd is None:
+        return None
+    joined = posixpath.normpath(posixpath.join(cwd, path or "."))
+    if cwd.startswith(_HOME) and not (joined == _HOME or joined.startswith(_HOME + "/")):
+        return None  # went above the home directory, which is unknown
+    return joined
 
 
 class FTP:
@@ -26,6 +97,10 @@ class FTP:
         self.all_output: list[tuple | str] = []
         self._ftp: ftplib.FTP | None = None
 
+        # Login and working directory tracked for caching of downloaded files
+        self._login_fp: str | None = None
+        self._cwd: str | None = None
+
         self.log.trace2(f"Initialized {repr(self)}")
 
     @property
@@ -40,11 +115,17 @@ class FTP:
                 self.log.debug(
                     f"Attempting connection to {self.ip}:{self.port} (timeout: {self.timeout})"
                 )
-                self._ftp = ftplib.FTP()
+                self._login_fp = None
+                self._cwd = None
+                self._ftp = _TrackingFTP()
                 self._ftp.connect(self.ip, self.port, self.timeout)
             except Exception as ex:
                 self._ftp = None
                 raise CommError(f"({self.ip}:{self.port}) {ex}") from ex
+
+            welcome = getattr(self._ftp, "welcome", None)
+            if welcome:
+                data_cache.put(self.welcome_key(self.ip, self.port), welcome)
 
             # TODO: figure out a way to log FTP protocol debugging messages
             #  to a file (like we're doing for peat.protocols.Telnet)
@@ -82,6 +163,75 @@ class FTP:
     @ftp.setter
     def ftp(self, obj: ftplib.FTP) -> None:
         self._ftp = obj
+        self._login_fp = None
+        self._cwd = None
+
+    @staticmethod
+    def welcome_key(ip: str, port: int = 21) -> CacheKey:
+        """Cache key of the welcome message of a FTP server."""
+        return CacheKey(NS_FTP_WELCOME, ip, port, "welcome")
+
+    @classmethod
+    def cached_welcome(cls, ip: str, port: int = 21) -> str | None:
+        """
+        Get the welcome message of a FTP server, if it was received recently
+        by any :class:`FTP` instance, without connecting to the server.
+
+        Returns:
+            The welcome message, or :obj:`None` if there is no
+            fresh welcome message in the cache
+        """
+        return data_cache.get(cls.welcome_key(ip, port))
+
+    def _file_key(self, filename: str, mode: Literal["binary", "text"]) -> CacheKey | None:
+        """
+        Cache key for a file download.
+
+        The key includes the user that's logged in and the absolute path
+        of the file. If either isn't known reliably (e.g. the directory was
+        changed without using :meth:`cd`), the file is not cached.
+        """
+        ftp = self._ftp
+        if (
+            not isinstance(ftp, _TrackingFTP)
+            or ftp.peat_state_changed
+            or self._login_fp is None
+            or not filename
+        ):
+            return None
+
+        path = _join_remote(self._cwd, filename)
+        if path is None:
+            return None
+
+        resource = f"{mode}:{path.replace(_HOME, '~', 1)}"
+        return CacheKey(NS_FTP_FILE, self.ip, self.port, resource, self._login_fp)
+
+    def _cached_download(
+        self,
+        filename: str,
+        mode: Literal["binary", "text"],
+        fetch: Callable[[], bytes | str],
+        use_cache: bool,
+    ) -> bytes | str:
+        """Download a file using ``fetch``, or get it from the cache."""
+        key = self._file_key(filename, mode) if use_cache else None
+        if key is None:
+            return fetch()
+
+        result = data_cache.get_or_fetch(
+            key,
+            fetch,
+            store_if=bool,  # don't cache empty files
+            size_of=len,
+            wait_timeout=max(30.0, 3 * float(self.timeout or 0)),
+        )
+        if result.from_cache:
+            self.log.debug(
+                f"Using cached copy of '{filename}' ({len(result.value)} bytes, "
+                f"fetched {result.age:.1f}s ago)"
+            )
+        return result.value
 
     @property
     def address(self) -> str:
@@ -134,23 +284,42 @@ class FTP:
         """
         self.log.debug(f"Attempting login as user '{user}'")
 
+        ftp = self.ftp
+        tracking = isinstance(ftp, _TrackingFTP)
+        self._login_fp = None
         try:
-            self.ftp.login(user, passwd)
+            if tracking:
+                ftp.peat_tracking_paused = True
+            ftp.login(user, passwd)
         except ftplib.all_errors as ex:
             err_str = str(ex)
             if "530" in err_str:
                 err_str = "access was denied or server does not allow anonymous login"
             self.log.debug(f"Login failed as user '{user}': {err_str}")
             return False
+        finally:
+            if tracking:
+                ftp.peat_tracking_paused = False
 
+        self._login_fp = data_cache.fingerprint(user or "anonymous", passwd)
+        self._cwd = _HOME
         self.log.info(f"Successfully logged in as user '{user}'")
         return True
 
     def download_binary(
-        self, filename: str, save_path: Path | None = None, save_to_file: bool = True
+        self,
+        filename: str,
+        save_path: Path | None = None,
+        save_to_file: bool = True,
+        use_cache: bool = True,
     ) -> bytes:
         """
         Download a binary file from the FTP server.
+
+        If the same file was downloaded recently by the same user (by this
+        or another :class:`FTP` instance), the cached data is used instead of
+        downloading it again (:mod:`peat.protocols.cache`). The file is still
+        saved, if ``save_to_file`` is :obj:`True`.
 
         Args:
             filename: Name or path of the file to download.
@@ -161,11 +330,11 @@ class FTP:
                 output directory and filename.
             save_to_file: If the data should be automatically written to a file
                 as defined by ``save_path``
+            use_cache: If cached data should be used, and the file cached
 
         Returns:
             The binary file data as :class:`bytes`
         """
-        file_obj = BytesIO()
         cmd = f"RETR {filename}"
         self.log.trace2(f"download_binary command string: '{cmd}'")
 
@@ -189,9 +358,12 @@ class FTP:
         # self.ftp.retrbinary(self.ftp, cmd, file_obj.write)
         # self.ftp.retrbinary = _old_retr
 
-        self.ftp.retrbinary(cmd, file_obj.write)
+        def _fetch() -> bytes:
+            file_obj = BytesIO()
+            self.ftp.retrbinary(cmd, file_obj.write)
+            return file_obj.getvalue()
 
-        data = file_obj.getvalue()
+        data = self._cached_download(filename, "binary", _fetch, use_cache)
 
         if not data:
             self.log.warning(f"No data for binary file '{filename}' on {self.ip} (command: {cmd})")
@@ -215,10 +387,19 @@ class FTP:
         return data
 
     def download_text(
-        self, filename: str, save_path: Path | None = None, save_to_file: bool = True
+        self,
+        filename: str,
+        save_path: Path | None = None,
+        save_to_file: bool = True,
+        use_cache: bool = True,
     ) -> str:
         """
         Download a text file from the FTP server.
+
+        If the same file was downloaded recently by the same user (by this
+        or another :class:`FTP` instance), the cached data is used instead of
+        downloading it again (:mod:`peat.protocols.cache`). The file is still
+        saved, if ``save_to_file`` is :obj:`True`.
 
         Args:
             filename: Name or path of the file to download.
@@ -229,19 +410,22 @@ class FTP:
                 output directory and filename.
             save_to_file: If the data should be automatically written to a file
                 as defined by ``save_path``
+            use_cache: If cached data should be used, and the file cached
 
         Returns:
             Text file data as a :class:`str`
         """
-        text = ""
-        lines = []
         cmd = f"RETR {filename}"
         self.log.trace2(f"download_text command string: '{cmd}'")
 
-        self.ftp.retrlines(cmd, lines.append)
+        def _fetch() -> str:
+            lines = []
+            self.ftp.retrlines(cmd, lines.append)
+            return "\n".join(lines)
 
-        if lines:
-            text = "\n".join(lines)
+        text = self._cached_download(filename, "text", _fetch, use_cache)
+
+        if text:
             if save_to_file:
                 # Save the raw file to disk as an artifact
                 if save_path:
@@ -309,7 +493,21 @@ class FTP:
     def cd(self, directory: str) -> bool:
         """Change directory on the server (``cwd``)."""
         self.log.debug(f"Changing directory to '{directory}'")
-        return True if self._do("cwd", directory) is not None else False
+
+        ftp = self.ftp
+        tracking = isinstance(ftp, _TrackingFTP)
+        try:
+            if tracking:
+                ftp.peat_tracking_paused = True
+            success = self._do("cwd", directory) is not None
+        finally:
+            if tracking:
+                ftp.peat_tracking_paused = False
+
+        # A rejected CWD leaves the working directory unchanged
+        if success:
+            self._cwd = _join_remote(self._cwd, directory)
+        return success
 
     def cwd(self, directory: str) -> bool:
         return self.cd(directory)

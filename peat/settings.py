@@ -111,6 +111,37 @@ class Configuration(SettingsManager):
     Default timeout for sockets and potentially other things.
     """
 
+    CACHE_ENABLED: bool = True
+    """
+    Reuse data PEAT already collected from a device during this run (HTTP pages,
+    TLS certificates and FTP files, and Telnet banners and FTP welcome messages
+    for modules that use them) instead of requesting it from the device again.
+    Data is kept in memory only and is never written to disk.
+    Data is never reused during a push.
+    Refer to :mod:`peat.protocols.cache` for details.
+    """
+
+    CACHE_TTL: float = 300.0
+    """
+    Seconds data collected from a device stays fresh and can be reused,
+    before it's requested from the device again. ``0`` disables reuse.
+    Negative, infinite and invalid values also disable reuse.
+    """
+
+    CACHE_MAX_ENTRIES: int = 4096
+    """
+    Maximum number of items in the in-memory data cache. When this is exceeded,
+    the least-recently-used items are removed. ``0`` disables reuse.
+    """
+
+    CACHE_MAX_BYTES: int = 134217728
+    """
+    Approximate maximum total size in bytes of the in-memory data cache
+    (default: 128 MiB). When this is exceeded, the least-recently-used items
+    are removed. Items larger than 1/8 of this value are never cached.
+    ``0`` disables reuse.
+    """
+
     RESOLVE_IP: bool = True
     """
     If PEAT should attempt to resolve device :term:`IP`
@@ -725,6 +756,15 @@ class State(SettingsManager):
     error: bool = False
     """
     If any critical errors occurred during the run of PEAT.
+
+    :meta hide-value:
+    """
+
+    cache_stats: dict = {}
+    """
+    Statistics of PEAT's in-memory data cache (:mod:`peat.protocols.cache`)
+    for this run, e.g. hits, misses, entries and bytes, overall and per
+    type of data (``http``, ``tls-cert``, etc.).
 
     :meta hide-value:
     """

@@ -83,6 +83,11 @@ HTTP
    :members:
    :private-members:
 
+Data cache
+^^^^^^^^^^
+.. automodule:: peat.protocols.cache
+   :members:
+
 MySQL
 ^^^^^
 .. automodule:: peat.protocols.mysql

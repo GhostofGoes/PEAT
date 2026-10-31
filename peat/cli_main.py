@@ -34,6 +34,7 @@ from peat import (
 )
 from peat.config_builder import launch_builder
 from peat.heat import HEAT_EXTRACTORS
+from peat.protocols.cache import data_cache
 
 TargetsType = tuple[list[str], consts.AllowedCommTypes, list[str]]
 
@@ -125,6 +126,10 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
     # monitoring and/or the standard "one-shot" CLI commands.
     if not oneshot_main(args):
         state.error = True
+
+    # Log statistics of the data cache and save them to state
+    # before the state is exported to Elasticsearch and to file.
+    data_cache.log_stats()
 
     # Dump config to Elasticsearch
     if state.elastic and config.ELASTIC_SAVE_CONFIG:

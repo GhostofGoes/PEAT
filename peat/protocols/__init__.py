@@ -8,6 +8,7 @@ serial communication, and parsing utilities.
 from peat import state
 
 from .addresses import *
+from .cache import CacheKey, CacheResult, DataCache, data_cache
 from .common import *
 from .discovery import *
 from .ftp import FTP

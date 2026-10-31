@@ -25,6 +25,11 @@ max_threads: 260
 override_max_file_discovery_threads: 0
 default_timeout: 5.0
 
+cache_enabled: true
+cache_ttl: 300.0
+cache_max_entries: 4096
+cache_max_bytes: 134217728
+
 resolve_ip: true
 resolve_mac: true
 resolve_hostname: true
