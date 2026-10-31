@@ -173,3 +173,9 @@ Command Parsers
 
 .. automodule:: peat.parsing.command_parsers
    :members:
+
+IEEE C37.2 device function numbers
+----------------------------------
+
+.. automodule:: peat.parsing.ieee_c37_2
+   :members:

@@ -28,8 +28,10 @@ from peat import config as peat_config
 from peat.data.data_utils import merge_models
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
-from .sel_consts import ANSI_CODES, LOGIC_KEYS
+from .sel_consts import LOGIC_KEYS
+from .sel_elements import ELEMENT_ENABLE_RE, ansi_name
 from .sel_logic import (
+    SELOGIC_NAME_RE,
     RelayFamily,
     classify_setting,
     format_equations,
@@ -39,6 +41,12 @@ from .sel_logic import (
     logic_variable,
     parse_freeform_line,
     relay_family,
+)
+from .sel_setting_info import (
+    annotate_logic,
+    annotate_records,
+    load_setting_descriptions,
+    security_summary,
 )
 
 ConfigSectionType = list[str] | dict[str, str]
@@ -1129,6 +1137,43 @@ def split_logic(records: list[dict[str, Any]]) -> tuple[dict[str, dict], dict[st
     return equations, settings
 
 
+def _setting_descriptions_file(dev: DeviceData) -> str:
+    # The "sel.setting_descriptions_file" option, if it's set
+    try:
+        return str(dev.options["sel"].get("setting_descriptions_file") or "").strip()
+    except Exception:
+        return ""
+
+
+def _annotate_settings(
+    records: list[dict[str, Any]],
+    logic: dict[str, dict[str, dict]],
+    dev: DeviceData,
+    family: RelayFamily | None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, dict]]]:
+    """
+    Annotate the settings records and SELOGIC equations, and save the
+    summary of the security-relevant settings to ``dev.extra``.
+    If this fails, the records and equations are returned as they are.
+    """
+    try:
+        path = _setting_descriptions_file(dev)
+        overrides = load_setting_descriptions(path) if path else {}
+        model = dev.description.model
+
+        annotated = annotate_records(records, family, model, overrides)
+        annotated_logic = annotate_logic(copy.deepcopy(logic), annotated, family, model, overrides)
+
+        summary = security_summary(annotated)
+        if summary:
+            dev.extra["sel_security_settings"] = summary
+    except Exception:
+        log.exception(f"Failed to annotate the settings records for {dev.get_id()}")
+        return records, logic
+
+    return annotated, annotated_logic
+
+
 def export_settings_records(
     text: bytes | str, dev: DeviceData, configs: ConfigsType | None = None
 ) -> list[dict[str, Any]]:
@@ -1141,6 +1186,12 @@ def export_settings_records(
       about the settings, from :func:`settings_metadata` (if there is any)
     - ``logic-equations.json``: the SELOGIC control equations by section and
       variable, from :func:`~peat.modules.sel.sel_logic.group_logic`
+
+    The records and equations are annotated with full names, descriptions,
+    allowed values and units (:mod:`~peat.modules.sel.sel_setting_info`),
+    including the user's descriptions from the ``sel.setting_descriptions_file``
+    option. A small summary of the security-relevant settings (enabled services
+    and access limits) is saved to ``dev.extra["sel_security_settings"]``.
 
     A text listing of the equations is saved to ``dev.logic.formats["selogic-equations"]``.
     The records aren't added to the device data (e.g. ``dev.extra``), since
@@ -1163,6 +1214,8 @@ def export_settings_records(
 
         model = dev.description.model
         records = settings_to_records(text, configs, model)
+        logic = group_logic(records)
+        records, logic = _annotate_settings(records, logic, dev, settings_family(configs, model))
 
         dev.write_file(records, "settings.json")
 
@@ -1170,7 +1223,7 @@ def export_settings_records(
         if meta:
             dev.write_file(meta, "settings-meta.json")
 
-        dev.write_file(group_logic(records), "logic-equations.json")
+        dev.write_file(logic, "logic-equations.json")
 
         equations_text = format_equations(records)
         if equations_text:
@@ -1271,6 +1324,9 @@ def parse_set_all(
 
     device_info = {
         "protection_schemes": parse_protection_schemes(configs, dev.description.model),
+        "protection_schemes_by_group": parse_protection_schemes_by_group(
+            configs, dev.description.model
+        ),
         **parsed_ids,
     }
 
@@ -2106,46 +2162,115 @@ def parse_and_process_dnp3(configs: dict[str, dict], dev: DeviceData) -> None:
             dev.store("registers", reg)
 
 
+#: Values of an element enable setting that mean it's disabled. Other values
+#: enable the element: ``Y``, a number of levels (``E50P := 3``), a number of
+#: shots or a mode (``E79 := C2``, ``E32 := AUTO``, ``E49RTD := INT``, ``E87 := GEN``).
+DISABLED_VALUES: Final = frozenset({"N", "NO", "OFF", "NONE", "0", ""})
+
+# Voltage element settings, which are enabled by EVOLT on some relays (e.g. 351S)
+_VOLTAGE_ELEMENTS_RE: Final = re.compile(
+    r"^(27TN/59N|27TN|27AUX|27X|27/50|27P|27S|36|59NU|59N|59B|59P|59X|59Q|87V|91)"
+)
+
+#: Settings groups, e.g. ``1`` or ``S1``
+_GROUP_SECTION_RE: Final = re.compile(r"^S?\d$")
+
+
+def element_enabled(value: Any) -> bool:
+    """
+    If the value of an element enable setting (e.g. ``E50P``) enables the element.
+    """
+    return str(_getv(value)).strip().upper() not in DISABLED_VALUES
+
+
+def _pickup_enabled(value: Any) -> bool:
+    # A pickup setting that's OFF, N or zero (e.g. 27P1P := 0.00) is disabled
+    value = str(_getv(value)).strip()
+    if not element_enabled(value):
+        return False
+    try:
+        return float(value) != 0.0
+    except ValueError:
+        return True
+
+
+def parse_protection_schemes_by_group(
+    configs: dict[str, dict], device_type: str = ""
+) -> dict[str, dict[str, str]]:
+    """
+    Get the protection elements that are enabled in each settings group.
+
+    An element is enabled if its enable setting (``E`` and the device function
+    code, e.g. ``E50P`` or ``E49MOTOR``) isn't disabled (see :data:`DISABLED_VALUES`).
+    Enable settings that are SELOGIC equations (``E32IV``) aren't elements.
+    If a group has ``EVOLT := Y`` (e.g. on the SEL-351S), voltage elements
+    with a pickup setting that isn't ``OFF`` or zero are also included.
+
+    Args:
+        configs: Parsed settings, from :func:`parse_config_data`
+        device_type: Relay model (e.g. ``"700G"``), for element names that
+            are different on some models
+
+    Returns:
+        Element names keyed by settings group (e.g. ``"1"``), then by device
+        function code (e.g. ``"50P"``, from ``E50P``)
+    """
+    by_group = {}  # type: dict[str, dict[str, str]]
+
+    for section, settings in configs.items():
+        if not isinstance(settings, dict) or not _GROUP_SECTION_RE.match(section):
+            continue
+
+        schemes = {}  # type: dict[str, str]
+        voltage_enabled = str(_getv(settings.get("EVOLT", ""))).strip().upper() == "Y"
+
+        for setting, fields in settings.items():
+            name = setting.strip().upper()
+            enable = ELEMENT_ENABLE_RE.match(name)
+
+            if enable:
+                if element_enabled(fields) and not SELOGIC_NAME_RE.match(name):
+                    code = enable.group(1)
+                    schemes[code] = ansi_name(code, device_type) or "UNKNOWN"
+            elif voltage_enabled and name[:1].isdigit():
+                voltage = _VOLTAGE_ELEMENTS_RE.match(name)
+                if voltage and _pickup_enabled(fields):
+                    code = voltage.group(1)
+                    schemes[code] = ansi_name(code, device_type) or "UNKNOWN"
+
+        if schemes:
+            by_group[section] = schemes
+
+    return by_group
+
+
 def parse_protection_schemes(
     configs: dict[str, dict], device_type: str = ""
 ) -> dict[str, str | list]:
-    protection_schemes = {}  # type: dict[str, Union[str, list]]
+    """
+    Get the protection elements that are enabled in any settings group,
+    keyed by device function code (e.g. ``{"50P": "Phase instantaneous
+    overcurrent"}``), from :func:`parse_protection_schemes_by_group`.
 
-    for section, settings in configs.items():
-        if "487e" in device_type.lower() and isinstance(settings, dict):
-            proto = []
-            for setting, fields in settings.items():
-                if "PROTSEL" in setting.upper() and fields["value"]:
-                    proto.append(fields["value"])
+    On the SEL-487E, the free-form protection logic lines (``PROTSELn``)
+    of each section are also included, keyed by the section.
+    """
+    protection_schemes = {}  # type: dict[str, str | list]
+
+    if "487e" in device_type.lower():
+        for section, settings in configs.items():
+            if not isinstance(settings, dict):
+                continue
+            proto = [
+                _getv(fields)
+                for setting, fields in settings.items()
+                if "PROTSEL" in setting.upper() and _getv(fields)
+            ]
             if proto:
                 protection_schemes[section] = proto
-        elif re.match(r"^S?\d$", section):
-            for setting, fields in settings.items():
-                # TODO: set flag if scheme is enabled based on global
-                #       flag configuring if setting is enabled.
-                if re.match(r"^E\d", setting) and re.match(r"Y|YES|ON|[1-9]", fields["value"]):
-                    if setting[1:] in ANSI_CODES:
-                        code = setting[1:]
-                        protection_schemes[code] = ANSI_CODES[code]
-                elif re.match(r"^\d", setting):
-                    voltage_elements = (
-                        r"^(27TN.59N|27TN|27AUX|27X|27.50|27P|27S|"
-                        r"36|59NU|59N|59B|59P|59X|59Q|87V|91)"
-                    )
-                    try:
-                        if (
-                            re.match(voltage_elements, setting)
-                            and fields["value"] not in ("N", "0.00", "OFF")
-                            and settings["EVOLT"]["value"] == "Y"
-                        ):
-                            code = re.match(voltage_elements, setting).group(1)
-                            if code in ANSI_CODES:
-                                scheme = ANSI_CODES[code]
-                            else:
-                                scheme = "UNKNOWN"
-                            protection_schemes[code] = scheme
-                    except Exception:
-                        pass
+
+    for schemes in parse_protection_schemes_by_group(configs, device_type).values():
+        protection_schemes.update(schemes)
 
     return protection_schemes
 

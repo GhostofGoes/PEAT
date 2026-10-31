@@ -514,6 +514,14 @@ device_options:
     # Set this to false if debugging issues with downloads.
     handle_download_errors: true
 
+    # Path to a JSON file with your own descriptions of SEL relay settings,
+    # used to annotate settings.json and logic-equations.json. The file has
+    # the same format as SETTING_INFO in peat/modules/sel/sel_setting_info.py,
+    # e.g. {"NETMODE": {"name": "Ethernet operating mode", "values": "FIXED, FAILOVER"}}.
+    # Your descriptions take precedence over PEAT's, but not over descriptions
+    # in the relay's own settings files. Empty string means no file.
+    setting_descriptions_file: ""
+
     # Credentials for standard SEL accounts, e.g. "acc" and "2ac".
     # This applies to Telnet, Serial, and HTTP communication methods,
     # and also applies to FTP in many cases (but not all).

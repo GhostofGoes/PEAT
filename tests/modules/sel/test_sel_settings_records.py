@@ -531,7 +531,9 @@ def test_parse_writes_settings_records(input_name, parse_env, caplog):
     logic = _read_json(devices, "logic-equations.json")
     assert logic["1"]["TR"]["value"].startswith("49T OR LOSSTRIP OR JAMTRIP")
     assert logic["L1"]["SV01"]["parts"] == {"SV01PU": "0.00", "SV01DO": "0.00"}
-    assert logic["L1"]["OUT103"] == {"value": "TRIP OR PB04", "parts": {"OUT103FS": "Y"}}
+    # The equations also have descriptions (test_sel_setting_info.py)
+    out103 = {k: logic["L1"]["OUT103"][k] for k in ("value", "parts")}
+    assert out103 == {"value": "TRIP OR PB04", "parts": {"OUT103FS": "Y"}}
     assert "LT01" not in logic["L1"]  # The latches aren't used
     assert set(logic) == {"1", "2", "3", "L1", "L2", "L3", "G", "F", "R"}
 
@@ -555,7 +557,11 @@ def test_parse_writes_settings_records(input_name, parse_env, caplog):
     assert "logic_equations" not in formatted
 
     # The records aren't in the device data or Elasticsearch data
-    assert not any("settings" in key.lower() for key in dev.extra)
+    # (dev.extra only has the small summary of the security-relevant settings)
+    assert not any(
+        "settings" in key.lower() for key in dev.extra if key != "sel_security_settings"
+    )
+    assert len(dev.extra["sel_security_settings"]) < 50
     assert '"description_raw"' not in json.dumps(dev.export(), default=str)
     elastic_logic = dev.elastic().get("logic", {})
     assert set(elastic_logic.get("formats", {})) == {"selogic-equations"}

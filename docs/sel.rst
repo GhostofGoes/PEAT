@@ -289,6 +289,81 @@ The equations are also in these places:
 - ``parsed-config.json`` has ``logic_equations`` (every equation that's set, by section and name) and ``logic_settings`` (the settings used by the logic that aren't equations, such as ``TDURD``, ``SV01PU`` and the 400-series ``PCN01PV := 500``). The existing ``close_logic``, ``output_logic`` and ``trip_logic`` don't change: they only include some of the equations, and they include some timers (e.g. ``TDURD`` and ``CFD``).
 - ``logic.formats["selogic-equations"]`` in the device data is a text listing of the equations that are set, e.g. ``TR := 50P1T OR 51P1T``. This is included in the Elasticsearch data. The settings records aren't, since there are thousands of them.
 
+.. _sel-setting-annotations:
+
+Setting annotations
+^^^^^^^^^^^^^^^^^^^
+Many settings files only have the name and value of each setting (``NETMODE,"FAILOVER"``), and the names are short mnemonics. PEAT adds these fields to each record in ``settings.json`` (refer to :ref:`sel-settings-records`):
+
+- ``full_name``: a short name, e.g. ``Ethernet operating mode``
+- ``description``: what the setting does. This is the sixth column of the settings file if it has one, otherwise PEAT's description.
+- ``description_source``: where the description is from: ``device`` (the settings file), ``user`` (your descriptions file, see below), ``peat`` (PEAT's table of settings), ``pattern`` (PEAT's patterns for numbered and protection element settings), or ``null`` if there isn't one
+- ``allowed_values``: the values or ranges the setting can have, e.g. ``["FIXED", "FAILOVER", "SWITCHED"]`` or ``["23", "1025-65534"]``, and ``allowed_values_source`` (the same sources as the description)
+- ``units``: e.g. ``min``, ``s``, ``cycles``, ``ms``
+- ``security``: ``true`` if the setting enables a network service or limits access, e.g. ``ETELNET``, ``EFTPSERV``, ``FTPANMS``, ``MAXACC``, ``FASTOP``, ``T_OUT`` and ``DSABLSET``
+
+``class_name`` is filled in from PEAT's names for the settings classes if the settings don't have a ``[CLASSES]`` section. The meaning of some class letters depends on the relay family: ``M`` is the Modbus map on 300- and 700-series relays and the breaker monitor on 400-series relays, and ``T`` is text labels on 300-series relays and aliases on 400-series relays.
+
+.. code-block:: json
+
+   {
+       "section": "P1",
+       "name": "NETMODE",
+       "value": "FAILOVER",
+       "full_name": "Ethernet operating mode",
+       "description": "How the two Ethernet ports are used. FIXED only uses the port in NETPORT, ...",
+       "description_source": "peat",
+       "allowed_values": ["FIXED", "FAILOVER", "SWITCHED"],
+       "allowed_values_source": "peat",
+       "units": null,
+       "security": false
+   }
+
+Each field is taken from the first of these that has it:
+
+#. The device: the description and range columns of the settings file. Most 400-series files have these (``"TPORT",23,"23,1025-65534",I,"","Telnet Port (23,1025-65534)"``). A description from the device is never replaced. The full name is the description without the values in parentheses at the end, unless it's indented (an item under a heading). The allowed values are from the range column, or the values in parentheses at the end of the description (``Transport Protocol (UDP,TCP)``). The 400-series range ``2~10`` is ``2-10``.
+#. Your descriptions file, from the ``sel.setting_descriptions_file`` option (see below).
+#. PEAT's table of about 200 common and security-relevant settings (``SETTING_INFO`` in :mod:`peat.modules.sel.sel_setting_info`). Values for a model (e.g. the SEL-351S) take precedence over values for a family (``3xx``, ``4xx``, ``7xx``), since the same setting can have different values: ``NETMODE`` is ``FIXED, FAILOVER, SWITCHED`` on 700-series relays and the SEL-351S adds ``PRP``, and ``MAXACC`` is ``0, 1, B, 2, C`` on the SEL-351S and ``1, B, P, A, O, 2, C`` on 400-series relays. Some settings have different names by family (``T_OUT`` and ``TIMEOUT``, ``BITS`` and ``DATABIT``, ``EFTPSERV`` and ``FTPSERV``), and port settings are only matched in the port classes.
+#. Patterns for numbered settings (``SV05``, ``SET01``, ``OUT403``, ``IN101D``, ``DNPIP2``, ``T01_LED``, ``PB3B_LED``, ``SER1``, ``MOD_001``, and the 400-series ``PSV``, ``PMV``, ``PLT``, ``PCT``, ``PST``, ``PCN``, ``ASV``, ``AMV``, ``ALT``, ``AST`` and ``ACN01`` (counter) variables), the X-side and Y-side settings of the SEL-700G (``TRX``, ``CFDX``), protection element settings, element enables, and torque control equations. Element settings are named from the element and what the setting is: ``50P1P`` is "Phase instantaneous overcurrent level 1 pickup", ``51AC`` is the curve of the phase A time-overcurrent element, and ``87M2TC`` is the torque control equation of motor differential level 2. ``P`` is the pickup, ``D`` a time delay, ``TP`` the trip pickup, ``TC`` the torque control, and for inverse-time (51) elements ``C`` is the curve, ``TD`` the time dial, ``RS`` electromechanical reset, ``CT`` the constant time adder and ``MR`` the minimum response time. Elements that PEAT doesn't know aren't described, rather than guessed.
+
+For 400-series free-form logic, the line (``PROTSEL1``) is described by the variable it assigns (``PSV01``).
+
+The SELOGIC control equations in ``logic-equations.json`` also have a ``full_name`` and ``description`` (if they're known), and ``part_names`` with the full names of their parts (e.g. ``SV01PU`` is "SV01 timer pickup time"). ``formatted-logic.txt`` has the same logic as before, followed by a listing of the equations with their full name and description as a comment under each. This listing is only in the file: ``logic.parsed`` in the device data doesn't change.
+
+A small, flat summary of the security-relevant settings is saved to ``extra.sel_security_settings`` in the device data. It has the value of each setting flagged as ``security``, keyed by ``<section>.<name>`` (e.g. ``"P1.ETELNET": "Y"``), and:
+
+- ``enabled_services``: network services enabled on ports that aren't turned off, from ``telnet``, ``ftp``, ``http``, ``iec61850``, ``goose``, ``mms_file_services``, ``dnp3`` and ``modbus``
+- ``anonymous_ftp``: if anonymous FTP logins are allowed (only if the relay has the ``FTPANMS`` setting)
+- ``fast_operate_ports``: ports that accept SEL Fast Operate messages
+- ``disabled_ports``: ports that are turned off (``EPORT := N``)
+
+The services in the summary are from the settings. They don't say if a port is connected, or if the relay has the hardware option for a protocol.
+
+**Your own descriptions.** Set ``sel.setting_descriptions_file`` (in the YAML config file) to the path of a JSON file with the same format as ``SETTING_INFO``: an object keyed by setting name, where each entry can have ``name``, ``desc``, ``values`` (a string such as ``"Y, N"`` or a list), ``units``, ``security``, ``sections`` (a regular expression for the classes the entry applies to), ``only`` (a list of families), ``by_family`` and ``by_model`` (objects with the same keys, for a family or model). Your entries take precedence over PEAT's, but not over the device's own descriptions. Unknown keys and values of the wrong type (e.g. ``"security": "no"`` instead of ``false``, or a number for ``values``) are ignored with a warning, so a mistake only affects that key. You can, for example, write descriptions for the settings of your relays from their instruction manuals. Since SEL's manuals are copyrighted, don't share or commit a file with text copied from them.
+
+.. code-block:: json
+
+   {
+       "NETMODE": {
+           "name": "Ethernet operating mode",
+           "desc": "How the Ethernet ports are used",
+           "values": "FIXED, FAILOVER, SWITCHED, PRP",
+           "by_model": {"710": {"values": "FIXED, FAILOVER, SWITCHED"}}
+       }
+   }
+
+**Sources.** PEAT's descriptions are written by PEAT's authors. Setting names, allowed values, ranges and units are facts from the settings sheets and settings tables of the public SEL-351S (date code 20171023), SEL-421 (20130627), SEL-487B (20090519), SEL-700G (20150521), SEL-710 (20090327), SEL-751A (20130329) and SEL-787 (20150130) instruction manuals. Values change between firmware versions, which is why the values from the device's own range column are used first. No openly licensed dictionary of SEL settings exists, and PEAT doesn't include text from SEL's manuals.
+
+.. _sel-protection-schemes:
+
+Protection schemes and device function numbers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``parsed-config.json`` has ``protection_schemes``, the protection elements that are enabled in any settings group, keyed by device function code (e.g. ``{"50P": "Phase instantaneous overcurrent"}``), and ``protection_schemes_by_group``, the same for each settings group (``{"1": {"50P": "..."}}``). An element is enabled by a setting named ``E`` and the code, e.g. ``E50P``, ``E87M`` or ``E49MOTOR``. The code has two digits, so ``E61850`` (IEC 61850) and ``E2SPEED`` (two-speed motor) aren't elements, and ``E32IV`` is a SELOGIC equation. An enable is off if it's ``N``, ``NO``, ``OFF``, ``NONE``, ``0`` or empty. Anything else enables it, since many enables are a number of levels (``E50P := 3``), shots (``E79 := C2``) or a mode (``E32 := AUTO``, ``E49RTD := INT``, ``E87 := GEN``). On relays with ``EVOLT := Y`` (e.g. the SEL-351S), voltage elements with a pickup that isn't ``OFF`` or zero are also included. On the SEL-487E, the free-form protection logic lines of each section are also in ``protection_schemes``, keyed by the section.
+
+The names are from :func:`~peat.modules.sel.sel_elements.ansi_name`, which uses PEAT's names for SEL elements first, since SEL uses some letters in its own way: ``P`` is phase, ``G`` is residual ground (3I0), ``N`` is neutral (the IN channel), ``Q`` is negative sequence, ``27S`` and ``59S`` are on the synchronism-check voltage channel (VS), ``68`` is out-of-step blocking, ``78`` is out-of-step tripping, ``87N`` is restricted earth fault, ``25BK1`` and ``25BK2`` (SEL-421) are the synchronism checks for breakers 1 and 2, ``81ACC`` (SEL-700G) is the off-frequency time accumulators, and ``X`` and ``Y`` at the end (SEL-700G) are the X-side and Y-side terminals. Codes that aren't known use the names in ``ANSI_CODES`` (in ``sel_consts.py``), then the IEEE C37.2-2008 name of the number, with SEL's meanings of the suffix letters (``BK`` is a breaker, so ``25BK3`` is "Synchronism check (breaker) #3").
+
+The vendor-neutral table of IEEE C37.2-2008 device function numbers (1-99), with the device 16 (data communications device) suffix scheme, common suffix letters and the acronyms, is in :mod:`peat.parsing.ieee_c37_2`. :func:`~peat.parsing.ieee_c37_2.describe_device_function` describes codes such as ``51G``, ``87T2``, ``16ESM`` and ``50/51``. The names are from IEEE Std C37.2-2008, as printed in U.S. Bureau of Reclamation FIST Volume 3-8, "Operation, Maintenance, and Field Test Procedures for Protective Relays and Associated Circuits" (2011), Appendix B, a public domain U.S. government work.
+
 SEL software: RDB Project Files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 SEL configuration software (ACSELERATOR QuickSet) stores device configurations in project files with a ``.rdb`` file extension. The ``.rdb`` SEL project files use a file structure called Compound File Binary Format, or Microsoft OLE2 File. PEAT uses the ``olefile`` method ``isOleFile()`` to check the file for the magic number at the start of the header to determine if it is the correct format.
