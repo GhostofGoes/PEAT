@@ -94,7 +94,7 @@ Usage
    # Piped input works too, the file type is detected from its contents
    cat ./genset-1.wset | peat parse -d easygen -
 
-The parsed data is saved as ``parsed-wset.json``, ``parsed-sid.json``, ``parsed-wtool.json``, or ``parsed-tc.json`` in the device's output directory, next to the device data files. A summary of the file is added to the device data under ``extra.wset``, ``extra.sid``, ``extra.wtool``, or ``extra.tc``, the parameter values under ``extra.parameters``, and the application identity to the device description (brand, model, product) and firmware identifier.
+The parsed data is saved as ``parsed-wset.json``, ``parsed-sid.json``, ``parsed-wtool.json``, or ``parsed-tc.json`` in the device's output directory, next to the device data files. A summary of the file is added to the device data under ``extra.wset``, ``extra.sid``, ``extra.wtool``, or ``extra.tc``, the parameter values under ``extra.parameters``, and the application identity to the device description (brand, model, product) and firmware identifier. Settings files also populate the rest of the data model and the device logic (see below), and the LogicsManager logic is saved as ``logic.st`` (Structured Text) and ``logic-tc6.xml`` (PLCopen TC6 XML).
 
 Python API:
 
@@ -133,6 +133,45 @@ Settings file (``.wset``) output
    "``read_security_level``, ``write_security_level``, ``access_type``", "The easYgen code (password) levels required to read and change the parameter, and the SID access type."
    "``servlink_handle``, ``canopen_multiplexor``", "The ServLink handle and CANopen multiplexor of the parameter, useful for correlating with live reads from the device."
    "``source``, ``multiplier``, ``offset`` / ``base_parameter``, ``bit_position`` / ``arrays``", "Details of computed, bit field, and lookup table parameters."
+
+Data model
+----------
+Beyond the parameter list, the contents of a settings file are mapped onto the PEAT :doc:`data model <data_model>` (:mod:`~peat.modules.woodward.easygen_data`):
+
+.. csv-table::
+   :header: "Device data", "Source", "Notes"
+   :widths: 20, 35, 45
+   :align: left
+
+   "``registers``", "Every parameter with a ServLink handle or CANopen object address", "One :class:`~peat.data.models.Register` per protocol: ``servlink`` (address is the ServLink handle) and ``canopen`` (address is the SDO object ``index:subindex``, e.g. ``0x26A6:01`` for parameter 1702, which matches the object in Woodward's CANopen EDS files). The configured value, default, units, kind, and security levels are in ``extra``. SIDs produce the same registers without values."
+   "``tag``", "LogicsManager command variable list and AnalogManager data source list", "``binary`` tags for the ~680 command variables (``03.05 Horn``) and ``analog`` tags for the ~240 data sources (``01.01 Gen.volt.L-N [%]``), with the variable number as address."
+   "``io``", "``Config_IO`` discrete and analog inputs and outputs, including external I/O", "One :class:`~peat.data.models.IO` per point (``DI 01``, ``DO 03``, ``AI 02``, ``AO 01``, ``External DO 21``) with all of its settings in ``extra``. Relay outputs are named after their LogicsManager parameter (``Relay 3``) and carry the equation as description."
+   "``interface``", "``Config_Serial1``/``2`` (baudrate, parity, stop bits), ``Config_CAN1``..``3`` (baudrate), Ethernet IP/subnet/gateway parameters (easYgen-3000XT)", "Serial 1 is reported as RS-232 and Serial 2 (which has a duplex setting) as RS-485, as on the easYgen-3000 series."
+   "``service``", "Modbus on the serial interfaces (enable flag, slave ID, protocol number), CANopen (node ID) and J1939 on the CAN interfaces", "Services are attached to their interface."
+   "``users``", "``Password ...`` parameters (easYgen-3000XT: basic, commissioning, super commissioning, serial and CAN interface passwords)", "The configured password is in the user's ``extra``. First generation easYgen-3000 settings files don't hold passwords. Code level settings are in ``extra.code_levels``."
+   "``name``, ``geo.timezone``, ``extra``", "``Device name``, ``Time zone``, ``Device number``, ``Language`` parameters", ""
+   "``logic``", "LogicsManager equations", "See the next section."
+
+The counts of the objects added are in ``extra.wset.data_model`` (``extra.sid.data_model`` for SIDs).
+
+LogicsManager logic
+-------------------
+The LogicsManager is the programmable logic of the easYgen: every relay output, start/stop command, alarm inhibit, flag, and so on is an equation of three command variables (boolean values of the control), per-input signs (pass-through, ``NOT``, fixed ``TRUE``/``FALSE``), two operators (``AND``, ``NAND``, ``OR``, ``NOR``, ``XOR``, ``NXOR``), and on/off delays. The easYgen manuals document the encoding (manual 37528, tables 102, 103, and 117), and PEAT converts the equations in a settings file to IEC 61131-3 Structured Text and PLCopen TC6 XML (:mod:`~peat.modules.woodward.easygen_logic`), using the same :class:`~peat.parsing.tc6.TC6` class and Structured Text generator as the Schneider M340 and Rockwell PLC logic. The results are stored like PLC logic:
+
+- ``logic.original``: a readable listing of the equations, one per line.
+- ``logic.parsed`` and ``logic.formats["structured_text"]``: the Structured Text program.
+- ``logic.formats["tc6"]``: the TC6 XML.
+
+Each equation becomes a ``BOOL`` output (``LM_12310`` for parameter 12310) computed from command variables (``CV_03_02`` for command variable 03.02), with ``TON``/``TOF`` function blocks for the delays. For example, relay 3 of the example settings file, which closes 50 seconds after command variable 03.02 (the starter) becomes true:
+
+.. code-block:: text
+
+   (* 12310 Relay 3 [Config_IO.Discrete_Out.03] *)
+   LM_12310_IN := ((CV_03_02 AND TRUE) AND TRUE);
+   LM_12310_TON(IN := LM_12310_IN, PT := T#50000ms);
+   LM_12310 := LM_12310_TON.Q;
+
+The command variable names are listed as comments at the top of the program. Equations are chained left to right ``((sign1(cv1) op1 sign2(cv2)) op2 sign3(cv3))``, matching the order of the LogicsManager command chain in the Modbus documentation. The AnalogManager (data source selections and analog setpoints) isn't converted to logic; its data sources are available as tags and the selections as parameters.
 
 SID (``.sid``) output
 ---------------------

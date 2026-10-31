@@ -69,6 +69,7 @@ from typing import Any, BinaryIO
 
 from peat import DeviceData, User, log
 
+from .easygen_data import populate_data_model_from_sid
 from .toolkit import (
     CONTAINER_HEADER_LEN,
     container_type,
@@ -696,8 +697,10 @@ def populate_device_from_sid(dev: DeviceData, parsed: dict[str, Any]) -> None:
     Add the results of :func:`parse_sid` to a device.
 
     The application identity is used for the device description and firmware
-    version, ServLink accounts (if any) are added as users, and a summary of
-    the file is stored in ``dev.extra["sid"]``.
+    version, ServLink accounts (if any) are added as users, the data items
+    are added as ServLink/CANopen registers and the command variable lists
+    as tags (see :mod:`~peat.modules.woodward.easygen_data`), and a summary
+    of the file is stored in ``dev.extra["sid"]``.
 
     Args:
         dev: The device to populate
@@ -722,6 +725,8 @@ def populate_device_from_sid(dev: DeviceData, parsed: dict[str, Any]) -> None:
         dev.description.model = "unknown"
     if app.get("product") and not dev.description.product:
         dev.description.product = app["product"]
+
+    dev.extra["sid"]["data_model"] = populate_data_model_from_sid(dev, parsed)
 
     for protocol, details in parsed.get("security", {}).items():
         for account in details.get("accounts", []):

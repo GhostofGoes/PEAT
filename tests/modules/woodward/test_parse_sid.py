@@ -319,7 +319,9 @@ def test_summarize_and_populate(parsed):
     assert dev.description.product == "easYgen-3200XT-P1"
     assert dev.firmware.id == IDENTIFIER
     assert dev.firmware.version == "2.12-0"
-    assert dev.extra["sid"] == summary
+    assert {k: v for k, v in dev.extra["sid"].items() if k in summary} == summary
+    assert dev.extra["sid"]["data_model"] == {"registers": 8, "tags": 2}
+    assert len(dev.registers) == 8
     assert [user.name for user in dev.users] == ["service"]
     assert dev.users[0].description == "servlink account"
     assert dev.users[0].extra["Level"] == "3"

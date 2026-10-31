@@ -148,6 +148,23 @@ def test_parse_real_wset(fixtures, assert_glob_path):
     assert_glob_path(out_dir, "4_MVA_Diesel_20161116.wset")
     assert_glob_path(out_dir, "device-data-summary.json")
     assert dev in datastore.objects
+    # Data model and logic
+    assert len(dev.registers) == 4548
+    assert len(dev.tag) == 919
+    assert len(dev.io) == 112
+    assert sorted(i.name for i in dev.interface) == [
+        "CAN 1",
+        "CAN 2",
+        "CAN 3",
+        "Serial 1",
+        "Serial 2",
+    ]
+    assert dev.logic.file.local_path == fixtures["wset"]
+    assert dev.logic.name == "easYgen-3500 LogicsManager"
+    logic_file = assert_glob_path(out_dir, "logic.st")
+    assert logic_file.read_text(encoding="utf-8").startswith("PROGRAM main")
+    tc6_file = assert_glob_path(out_dir, "logic-tc6.xml")
+    assert "plcopen.org" in tc6_file.read_text(encoding="utf-8")
 
 
 @pytest.mark.usefixtures("run_dirs")
@@ -157,6 +174,11 @@ def test_parse_synthetic_wset(fixtures):
     assert dev.description.product == "easYgen-3200XT-P1"
     assert dev.firmware.id == "EG3200XTP1 2.12-0_50976"
     assert len(dev.extra["parameters"]) == 4
+    assert len(dev.registers) == 4  # ServLink handles only, no CANopen multiplexors
+    assert dev.name == "Genset 7"
+    assert dev.extra["device_number"] == 7
+    assert dev.logic.parsed == ""  # no LogicsManager equations in the synthetic file
+    assert not list(dev.get_out_dir().rglob("logic.st"))
 
 
 @pytest.mark.parametrize("key", ["sid", "xml.sid"])
@@ -211,7 +233,9 @@ def test_parse_raw_bytes_uses_signatures(fixtures):
     # Raw data has no filename, so the file signature names it
     dev = Easygen3500XT.parse(fixtures["synthetic.wset"].read_bytes())
     assert dev is not None
-    assert dev.get_id() == "settings"
+    assert dev.id == "settings"
+    # The configured device name takes precedence over the id, as for other parsed devices
+    assert dev.get_id() == "Genset 7"
     assert dev.description.model == "3200XT-P1"
 
     dev = Easygen3500XT.parse(fixtures["tc"].read_bytes())

@@ -330,3 +330,13 @@ Control Assistant tunable file (.tc) parsing
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. automodule:: peat.modules.woodward.wdw_tc
    :members:
+
+easYgen data model mapping
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.woodward.easygen_data
+   :members:
+
+easYgen LogicsManager logic conversion
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.woodward.easygen_logic
+   :members:

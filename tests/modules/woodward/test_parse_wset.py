@@ -145,6 +145,8 @@ def test_real_file_counts(real_parsed):
     assert groups["Modbus"] == 4
     assert groups[INTERNAL_GROUP] == 418
     assert len(real_parsed["logics_manager_inputs"]) == 677
+    assert len(real_parsed["analog_manager_inputs"]) == 242
+    assert real_parsed["analog_manager_inputs"]["2"] == "00.03 Speed bias"
     assert real_parsed["logics_manager_inputs"]["0"] == "00.01 LM: Flag 1"
     assert real_parsed["logics_manager_inputs"]["1274"].startswith("28.06 Command 6 to LS5")
     # Every parameter has a value and a unique name
@@ -321,6 +323,7 @@ def test_synthetic_woodward_layout(synthetic_parsed):
     assert synthetic_parsed["parameter_types"] == {"integer": 2, "enumerated": 1, "string": 1}
     assert synthetic_parsed["groups"] == {INTERNAL_GROUP: 1, "PARAMETER": 3}
     assert synthetic_parsed["logics_manager_inputs"] == {}
+    assert synthetic_parsed["analog_manager_inputs"] == {}
 
     records = {record["name"]: record for record in synthetic_parsed["parameters"]}
     number = records["PARAMETER.Configure system management.1702 Device number"]
@@ -533,6 +536,7 @@ def test_summarize_and_populate(real_parsed):
     assert "parameters" not in summary
     assert summary["num_parameters"] == 2756
     assert summary["num_logics_manager_inputs"] == 677
+    assert summary["num_analog_manager_inputs"] == 242
     assert summary["application"]["model"] == "3500"
 
     dev = DeviceData()
@@ -541,7 +545,17 @@ def test_summarize_and_populate(real_parsed):
     assert dev.description.model == "3500"
     assert dev.description.product == "easYgen-3500"
     assert dev.firmware.id == "5418-6722-NEW"
-    assert dev.extra["wset"] == summary
+    assert {k: v for k, v in dev.extra["wset"].items() if k in summary} == summary
+    assert dev.extra["wset"]["data_model"]["registers"] == 4548
+    assert dev.extra["wset"]["logic"] == {
+        "num_equations": 130,
+        "num_command_variables": 43,
+        "unknown_operators": 0,
+    }
+    assert len(dev.registers) == 4548
+    assert len(dev.io) == 112
+    assert "PROGRAM main" in dev.logic.parsed
+    assert "tc6" in dev.logic.formats
     parameters = dev.extra["parameters"]
     assert len(parameters) == 2756
     assert parameters["Config_Admin.1702 Device number"] == 1

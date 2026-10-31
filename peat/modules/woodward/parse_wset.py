@@ -66,6 +66,8 @@ from peat import DeviceData, log
 
 from . import easygen_enums
 from .csharp_reader import serialization
+from .easygen_data import populate_data_model_from_wset
+from .easygen_logic import add_logics_manager_logic
 from .easygen_svl import svl_dat_prms
 from .toolkit import (
     CONTAINER_HEADER_LEN,
@@ -728,6 +730,24 @@ def _logics_manager_record(parameter: Any, descriptor: Any) -> dict[str, Any]:
     }
 
 
+def _analog_manager_inputs(records: list[dict[str, Any]]) -> dict[str, str]:
+    """
+    The AnalogManager data source list: the enumeration used by the
+    ``Data source`` parameters (analog outputs, external power measurement, ...).
+    """
+    best: dict[str, str] = {}
+    for record in records:
+        if (
+            record.get("type") != "enumerated"
+            or "data source" not in str(record.get("label", "")).lower()
+        ):
+            continue
+        options = record.get("options") or {}
+        if len(options) > len(best):
+            best = options
+    return best
+
+
 def _logics_manager_inputs(descriptor: Any) -> dict[str, str]:
     """The LogicsManager command variable list from a ``LogicManagerDescriptor``."""
     for enumeration in _get(descriptor, "inputEnumerations", None) or []:
@@ -989,6 +1009,7 @@ def parse_wset(source: Path | bytes | BinaryIO, include_raw: bool = False) -> di
         - ``parameters``: flat list of parameter records, see :func:`parameter_record`
         - ``num_parameters``, ``parameter_kinds``, ``parameter_types``, ``groups``
         - ``logics_manager_inputs``: the LogicsManager command variable list
+        - ``analog_manager_inputs``: the AnalogManager data source list
         - ``raw_streams``: only if ``include_raw`` is set
     """
     try:
@@ -1060,6 +1081,7 @@ def parse_wset(source: Path | bytes | BinaryIO, include_raw: bool = False) -> di
         )
     )
     parsed["logics_manager_inputs"] = logic_inputs
+    parsed["analog_manager_inputs"] = _analog_manager_inputs(parameters)
     if include_raw:
         parsed["raw_streams"] = [to_plain(obj) for obj in objects]
 
@@ -1080,6 +1102,7 @@ def summarize_wset(parsed: dict[str, Any]) -> dict[str, Any]:
         "parameter_types": parsed.get("parameter_types", {}),
         "groups": parsed.get("groups", {}),
         "num_logics_manager_inputs": len(parsed.get("logics_manager_inputs", {})),
+        "num_analog_manager_inputs": len(parsed.get("analog_manager_inputs", {})),
     }
 
 
@@ -1090,6 +1113,11 @@ def populate_device_from_wset(dev: DeviceData, parsed: dict[str, Any]) -> None:
     The application identity is used for the device description and firmware
     identifier, the parameter values are stored in ``dev.extra["parameters"]``
     (``{name: value}``), and a summary of the file in ``dev.extra["wset"]``.
+    The parameters are also mapped onto the data model (registers, tags,
+    I/O, interfaces, services, users, see
+    :mod:`~peat.modules.woodward.easygen_data`) and the LogicsManager
+    equations converted to Structured Text and TC6 XML in ``dev.logic``
+    (see :mod:`~peat.modules.woodward.easygen_logic`).
 
     Args:
         dev: The device to populate
@@ -1122,6 +1150,15 @@ def populate_device_from_wset(dev: DeviceData, parsed: dict[str, Any]) -> None:
             f"Device model couldn't be determined from the .wset application identifier "
             f"'{app.get('id', '')}'. Known applications: {sorted(TOOLKIT_APPLICATIONS)}"
         )
+
+    dev.extra["wset"]["data_model"] = populate_data_model_from_wset(dev, parsed)
+    program = add_logics_manager_logic(dev, parsed)
+    if program:
+        dev.extra["wset"]["logic"] = {
+            "num_equations": program["num_equations"],
+            "num_command_variables": len(program["command_variables"]),
+            "unknown_operators": program["unknown_operators"],
+        }
 
 
 __all__ = [

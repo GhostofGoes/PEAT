@@ -505,7 +505,10 @@ class Easygen3500XT(DeviceModule):
 
         The parsed data is saved as ``parsed-<type>.json`` in the device's
         output directory, and a summary of the file and the parameter values
-        are added to the device's ``extra`` data.
+        are added to the device's ``extra`` data. Settings files also populate
+        the data model (registers, tags, I/O, interfaces, services, users) and
+        the device logic (the LogicsManager equations as Structured Text, saved
+        as ``logic.st``, and as PLCopen TC6 XML, saved as ``logic-tc6.xml``).
         """
         if file.is_dir():
             raise DeviceError(
@@ -532,6 +535,12 @@ class Easygen3500XT(DeviceModule):
 
         populate(dev, parsed)
         dev.write_file(parsed, f"parsed-{kind}.json")
+        if kind == "wset":
+            dev.logic.file.local_path = file
+            if dev.logic.formats.get("structured_text"):
+                dev.write_file(dev.logic.formats["structured_text"], "logic.st")
+            if dev.logic.formats.get("tc6"):
+                dev.write_file(dev.logic.formats["tc6"], "logic-tc6.xml")
         cls.update_dev(dev)
         return dev
 
