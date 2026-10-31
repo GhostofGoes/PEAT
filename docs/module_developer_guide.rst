@@ -171,6 +171,47 @@ Contributing a new module to be included in PEAT's codebase.
 #. (Optional) Create a dedicated documentation page with details on the device in the documentation. A few examples of this are ``sel.rst`` and ``siemens.rst``.
 
 
+.. _vendor-snmp-mibs:
+
+Using vendor SNMP MIBs
+======================
+Vendor :term:`SNMP` :term:`MIB` files can be used to resolve the responses from a device's SNMP agent: the object names, proper data types, enumeration labels (e.g. ``operationnal`` instead of ``2``) and table indices (e.g. ``IpAddress`` indices). PEAT includes MIBs as Python modules compiled with ``pysmi``, which PEAT already depends on through ``pysnmp``. The ``.mib`` source file is never committed to PEAT, and the compiled module must not include the MIB's DESCRIPTION texts. The Schneider Electric M340 module (:mod:`~peat.modules.schneider.m340.m340_snmp`) is an example of this.
+
+#. Get the MIB file from the vendor and record where it came from (URL, archive name, document number, version and the SHA-256 checksum of the file).
+#. Compile it with ``mibdump``, without ``--generate-mib-texts``. The base SMIv2 MIBs (``SNMPv2-SMI``, ``SNMPv2-TC`` and ``SNMPv2-CONF``) are needed only for the symbol table, since ``pysnmp`` already includes them.
+
+   .. code-block:: bash
+
+      mkdir -p /tmp/mibsrc
+      # The file name must be the MIB module name (the name before "DEFINITIONS ::= BEGIN")
+      cp SchneiderTFE_V03.01.mib /tmp/mibsrc/TFPRIVATE-MIB
+      for m in SNMPv2-SMI SNMPv2-TC SNMPv2-CONF; do
+        curl -sSLo /tmp/mibsrc/$m https://mibs.pysnmp.com/asn1/$m
+      done
+      pdm run mibdump --mib-source=file:///tmp/mibsrc --destination-format=pysnmp \
+        --destination-directory=peat/modules/schneider/mibs --no-python-compile \
+        --mib-stub=SNMPv2-SMI --mib-stub=SNMPv2-TC --mib-stub=SNMPv2-CONF TFPRIVATE-MIB
+
+#. In the generated file, replace the ``ASN.1 source``, ``Produced by``, ``On host`` and ``Using Python version`` header lines with a provenance block (source file, version, checksums, ``pysmi`` version and a note that it was generated without MIB texts). Don't edit anything else, regenerate the file instead.
+#. Put the file in ``peat/modules/<vendor>/mibs/``. Don't add a ``__init__.py`` file: MIB modules are loaded by ``pysnmp``, not imported. ``ruff``, ``codespell`` and ``vulture`` already ignore directories named ``mibs``, and add the directory to the ``omit`` list in ``[tool.coverage.run]`` in ``pyproject.toml``.
+#. Add the file to the data files in ``distribution/peat.spec`` and ``distribution/sneakypeat.spec``, at the same path relative to the package (e.g. ``peat/modules/schneider/mibs``), so it's found in the PyInstaller executables.
+#. Use the MIB with :class:`~peat.protocols.snmp.SNMP`: pass the directory in ``mib_paths``, call :meth:`~peat.protocols.snmp.SNMP.load_mibs` before making queries, then use :meth:`~peat.protocols.snmp.SNMP.walk` and :meth:`~peat.protocols.snmp.SNMP.get_table`. The ``value`` key of each response is converted with :func:`~peat.protocols.snmp.value_to_python`, and :func:`~peat.protocols.snmp.group_table_rows` groups table columns into rows.
+
+   .. code-block:: python
+
+      from pathlib import Path
+      from peat.protocols.snmp import SNMP
+
+      snmp = SNMP(ip="192.0.2.10", mib_paths=[Path("peat/modules/schneider/mibs")])
+      snmp.load_mibs("IF-MIB", "TFPRIVATE-MIB")
+      leds = snmp.get_table("1.3.6.1.4.1.3833.1.7.9")  # profileLedDisplayTable
+      # [{"_index": "1", "_index_parts": [1], "ledName": "RUN", "ledState": "on", ...}, ...]
+
+   Responses are untrusted: values that can't be resolved using the MIBs (e.g. a table index with the wrong number of sub-identifiers) are returned as raw OIDs with an empty ``object_name`` instead of aborting the walk. Walks return the values retrieved before an error or timeout, so check :attr:`~peat.protocols.snmp.SNMP.timed_out` after a walk and don't walk more subtrees once the agent has stopped responding.
+
+#. Write tests that load the compiled module, and test the module's SNMP code offline with the ``fake_snmp_cls`` fixture in ``tests/conftest.py``, whose raw responses are resolved by :class:`~peat.protocols.snmp.SNMP` using the loaded MIBs.
+
+
 Development tips and tricks
 ===========================
 

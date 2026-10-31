@@ -763,6 +763,7 @@ addopts = "--ignore-glob='*forked_telnetlib.py'"
 omit = [
     'peat/parsing/plc_open/*',
     'peat/modules/siemens/mibs/*',
+    'peat/modules/schneider/mibs/*',
     'peat/modules/sel/relay_serial.py',
     'peat/protocols/mibs/*',
     'peat/protocols/forked_telnetlib.py',

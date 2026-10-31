@@ -574,6 +574,19 @@ device_options:
     # output directory.
     generate_openplc_project: null
 
+    # Use SNMP to identify M340 devices and to pull data, using Schneider's
+    # Transparent Factory Ethernet private MIB (TFPRIVATE-MIB), SNMPv2-MIB,
+    # IF-MIB and RFC1213-MIB. The "snmp" options (port, timeout, communities)
+    # are used for the SNMP queries. Set to false to not send any SNMP requests
+    # to M340 devices (neither the SNMP identification method nor the SNMP pull),
+    # e.g. for M340 CPUs with firmware older than V3.40 and BMX NOE modules
+    # affected by CVE-2022-0222 (SNMP denial of service).
+    use_snmp: true
+
+    # Maximum number of SNMP GetNext requests per walked MIB subtree,
+    # to limit the traffic sent to devices with large tables.
+    snmp_max_varbinds: 1000
+
   # Configuration specific to the GE modules (GERTU and GERelay)
   ge:
     # GERTU: How long to sleep between selecting menu options over

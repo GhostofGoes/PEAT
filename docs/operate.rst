@@ -259,6 +259,8 @@ Schneider Modicon M340
 
    project, apx, "Raw project file pulled from the device ('peat parse' can be run on this)"
    "parsed-config", txt, "Configuration and metadata extracted from device and/or project file"
+   "raw-pulled-config", json, "Configuration and metadata pulled via SNMP, FTP and Modbus, including the structured ``snmp`` section (Schneider TFE private MIB groups and tables)"
+   "raw-snmp-output", json, "Every SNMP response (OID, MIB object name, table, index and typed value)"
    tc6, xml, "TC6 format usable by PLCOpen editor and compilable to Structured Text or executable C-code emulating the logic. Only written if logic and/or variables are successfully extracted."
    logic, st, "Structured Text extracted from project file. Only written if logic is successfully extracted."
    "text-dump", txt, "Debugging dump created if logic extraction fails"
