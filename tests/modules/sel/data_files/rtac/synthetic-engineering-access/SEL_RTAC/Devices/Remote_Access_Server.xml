@@ -1,0 +1,202 @@
+<RTACModule>
+  <Device>
+    <ExportSource>
+      <Schema>33</Schema>
+      <DeviceMOT>3530-4</DeviceMOT>
+    </ExportSource>
+    <Name>Remote_Access_Server</Name>
+    <Manufacturer>SEL</Manufacturer>
+    <Model>3530</Model>
+    <Connection>
+      <Protocol>SELServer</Protocol>
+      <ConnectionType>Ethernet Tunneled Serial</ConnectionType>
+      <SettingPages>
+        <SettingPage>
+          <Name>Settings</Name>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Serial Tunneling Mode</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>SSL/TLS</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Server IP Port</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>3254</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Disable Remote Access</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>False</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Verify SSL Certificate</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>False</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Enable File Transfer Monitor</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>True</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Perform Authentication</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>True</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Allow Anonymous SEL IP Clients</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>False</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Client IP Address</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>192.0.2.100,192.0.2.101</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Virtual Port Number</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>254</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Pre-Termination Timeout</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>1</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Post-Termination Timeout</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>0</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Termination String</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>&lt;CTRL-D&gt;</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Enable Port Command</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>True</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+        </SettingPage>
+      </SettingPages>
+    </Connection>
+  </Device>
+</RTACModule>

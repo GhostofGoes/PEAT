@@ -79,9 +79,10 @@ from peat import (
 )
 from peat.consts import DeviceError
 from peat.data.data_utils import merge_models
-from peat.data.models import X509, File, Hash, Register, Service, User
+from peat.data.models import X509, File, Hash, Register, Service, SSHKey, User
 from peat.data.validators import validate_hash
 from peat.file_signature import FileSignature
+from peat.protocols.ssh import fetch_ssh_host_key
 from peat.protocols.tls import (
     ParsedCertificate,
     PeerCertificate,
@@ -90,6 +91,15 @@ from peat.protocols.tls import (
     validity_status,
 )
 
+from .rtac_engineering_access import (
+    PG_TABLES,
+    Discovery,
+    Listener,
+    discover_from_export,
+    discover_from_postgres,
+    merge_entries,
+    unique_paths,
+)
 from .rtac_parse import (
     build_structured_text,
     parse_accesspointrouters,
@@ -206,6 +216,10 @@ class SELRTAC(DeviceModule):
             # One TLS handshake with the web server, which doesn't log in or
             # send any requests. Skipped if the scan already got the certificate.
             "pull_ssl_cert": True,
+            # Connect to the engineering access ports found in the RTAC
+            # configuration that use TLS or SSH, to get their certificates and
+            # host keys. Off by default, since it makes extra connections.
+            "rtac_probe_tunnel_ports": False,
             "rtac_monitor_enable": False,
             "rtac_monitor_count": 3,
             "rtac_monitor_pause_for": 4.0,
@@ -825,6 +839,15 @@ class SELRTAC(DeviceModule):
         else:
             cls.log.warning(f"Skipping postgres pull from {dev.ip} (sel.pull_postgres=False)")
 
+        # Opt-in: TLS certificates and SSH host keys of the engineering access
+        # ports that were found in the configuration (by pull_postgres)
+        if dev.options["sel"]["rtac_probe_tunnel_ports"]:
+            try:
+                cls.probe_tunnel_ports(dev)
+            except Exception:
+                cls.log.exception(f"failed to probe the engineering access ports of {dev.ip}")
+                state.error = True
+
         # NOTE: exceptions are handled by pull_api, it doesn't check method
         # return status at the moment, so we re-raise web exception here.
         if web_exception:
@@ -972,6 +995,10 @@ class SELRTAC(DeviceModule):
         cursor = dev._cache["pg_cursor"]
 
         config = {}
+        # Every row of the tables with engineering access settings. In "config",
+        # rows are keyed by their first column, so rows with the same value in
+        # the first column overwrite each other.
+        engineering_tables: dict[str, list[dict]] = {}
 
         for table in RTAC_DB_TABLES:
             config[table] = {}
@@ -986,6 +1013,8 @@ class SELRTAC(DeviceModule):
             cols = [desc[0] for desc in cursor.description]
             for datum in data:
                 config[table][datum[0]] = {}
+                if table in PG_TABLES:
+                    engineering_tables.setdefault(table, []).append(config[table][datum[0]])
                 for col_idx in range(len(cols)):
                     # do conversions based on column label
                     if cols[col_idx] == "data" or cols[col_idx] == "project_image":
@@ -1100,9 +1129,11 @@ class SELRTAC(DeviceModule):
         # },
         remote_devices = config.get("remote_devices", {})
         for rem_dev in remote_devices.values():
-            # Skip tunnels, e.g "Eng_Access_40"
-            if "Eng_Access_" not in rem_dev["name"]:
-                dev.related.hosts.add(rem_dev["name"])
+            # Engineering access objects (tunnels), e.g "Eng_Access_40", aren't
+            # hosts. Their names are recorded by _process_engineering_access().
+            name = rem_dev.get("name")
+            if name and "Eng_Access_" not in str(name):
+                dev.related.hosts.add(name)
 
         # "role_master" and "system_roles" have almost the same format
         for role_key in ["role_master", "system_roles"]:
@@ -1245,6 +1276,12 @@ class SELRTAC(DeviceModule):
                 if eth_settings.get("ssh_username"):
                     dev.related.user.add(eth_settings["ssh_username"])
 
+        # Access points, access point routers and SEL servers (engineering access)
+        try:
+            cls._process_engineering_access(dev, discover_from_postgres(engineering_tables))
+        except Exception:
+            cls.log.exception(f"Failed to process the engineering access settings of {dev.ip}")
+
         # config is large and leads to excessive-sized device-data-summary.json
 
         # Can't save as JSON, too large and has some data types that are not human-reader friendly
@@ -1287,6 +1324,365 @@ class SELRTAC(DeviceModule):
                 sleep(0.1)
             # break out when successful
             break
+
+    # --------- Engineering access ---------
+    # Protocol of the service for each tunnel transport. Raw TCP and UDP ports
+    # don't have a protocol of their own (only the "transport").
+    _tunnel_service_protocols = {"telnet": "telnet", "ssh": "ssh", "tls": "tls"}
+
+    @classmethod
+    def _process_engineering_access(cls, dev: DeviceData, discovery: Discovery) -> list[dict]:
+        """
+        Add the engineering access paths found in the RTAC's configuration (by
+        :func:`~peat.modules.sel.rtac_engineering_access.discover_from_export`
+        or :func:`~peat.modules.sel.rtac_engineering_access.discover_from_postgres`)
+        to the device data. Refer to :ref:`sel-rtac-engineering-access`.
+
+        - ``extra.engineering_access``: one entry for each device that's
+          reachable through an access point or SEL server of the RTAC (refer to
+          :meth:`Listener.entries()
+          <peat.modules.sel.rtac_engineering_access.Listener.entries>`).
+          Entries that are already there (e.g. from the other source) are kept.
+        - ``extra.engineering_access_devices``: names of the RTAC's
+          engineering access objects, e.g. ``Eng_Access_40``.
+        - A :class:`~peat.data.models.Service` for each port of an access
+          point or SEL server, which also adds the port to ``related.ports``.
+
+        Returns:
+            The new ``extra.engineering_access`` entries
+        """
+        for warning in discovery.warnings:
+            cls.log.warning(warning)
+        for note in discovery.notes:
+            cls.log.debug(note)
+
+        entries = discovery.entries(dev.ip if dev.ip else None)
+        existing = dev.extra.get("engineering_access")
+        if not isinstance(existing, list):
+            existing = []
+        if entries or existing:
+            dev.extra["engineering_access"] = merge_entries(existing, entries)
+
+        if discovery.engineering_access_devices:
+            names = dev.extra.get("engineering_access_devices")
+            if not isinstance(names, list):
+                names = []
+            dev.extra["engineering_access_devices"] = sorted(
+                set(names) | set(discovery.engineering_access_devices)
+            )
+            cls.log.debug(
+                f"Engineering access objects in the configuration of {dev.ip}: "
+                f"{', '.join(discovery.engineering_access_devices)}"
+            )
+
+        for listener in discovery.listeners:
+            cls._store_engineering_access_service(dev, listener)
+
+        if entries:
+            direct = sum(entry["route"] == "direct" for entry in entries)
+            cls.log.info(
+                f"Found {len(entries)} engineering access paths to devices behind the RTAC "
+                f"{dev.ip} in its configuration ({len(discovery.listeners)} access points "
+                f"and SEL servers, {direct} paths are direct transparent connections, which "
+                f"stop the RTAC's polling of the device while they're open)"
+            )
+
+        return entries
+
+    @classmethod
+    def _store_engineering_access_service(cls, dev: DeviceData, listener: Listener) -> None:
+        """
+        Add a :class:`~peat.data.models.Service` for the port of an access point
+        or SEL server. The ``role`` is ``engineering_access`` if it reaches any
+        devices, otherwise the kind of listener (``access_point`` or ``sel_server``).
+        """
+        if not listener.port:
+            return
+
+        if listener.transport == "udp":
+            transport = "udp"
+        elif listener.transport:
+            transport = "tcp"
+        else:
+            transport = ""
+
+        extra = {
+            "name": listener.name,
+            "kind": listener.kind,
+            "connection_type": listener.connection_type,
+            "tunnel_transport": listener.transport,
+            "needs_rtac_login": listener.needs_rtac_login,
+            "termination_string": listener.termination_string,
+            "source": listener.source,
+            **listener.settings,
+        }
+        # The devices of a SEL server are all of the SEL devices, so they're
+        # only listed if the SEL server reaches them
+        if listener.destinations and (listener.kind != "sel_server" or listener.gives_access):
+            extra["destinations"] = [dest.summary() for dest in listener.destinations]
+
+        service = Service(
+            port=listener.port,
+            configured_port=listener.port,
+            protocol=cls._tunnel_service_protocols.get(listener.transport or "", ""),
+            transport=transport,
+            role="engineering_access" if listener.gives_access else listener.kind,
+            enabled=True,
+            extra={k: v for k, v in extra.items() if v is not None and v != ""},
+        )
+        dev.store(
+            "service",
+            service,
+            lookup={"port": listener.port, "transport": transport},
+            interface_lookup={"ip": dev.ip} if dev.ip else None,
+        )
+
+    @classmethod
+    def downstream_targets(cls, dev: DeviceData) -> list[dict]:
+        """
+        The devices that are reachable through this RTAC (the RTAC is a
+        "gateway" to them): copies of the ``extra.engineering_access``
+        entries that have an RTAC IP address and a TCP port, with one entry
+        for each path (refer to
+        :func:`~peat.modules.sel.rtac_engineering_access.unique_paths`), so a
+        path that's in both a project export and the database is only once
+        in the results.
+
+        Modules that front other devices can implement this method, so code
+        that pulls devices through a gateway can find them with
+        ``getattr(module, "downstream_targets", None)``.
+
+        .. warning::
+           This includes ``direct`` routes, and routes that are not known
+           (``None``), which may be direct. Opening a direct route stops the
+           RTAC's polling of the device (and so the SCADA data from it) while
+           the connection is open. Don't use them unless the user allows it.
+
+        Returns:
+            Dicts with the keys in
+            :data:`~peat.modules.sel.rtac_engineering_access.ENGINEERING_ACCESS_KEYS`
+        """
+        entries = dev.extra.get("engineering_access")
+        if not isinstance(entries, list):
+            return []
+        return unique_paths(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("rtac_ip") and entry.get("tcp_port")
+        )
+
+    @classmethod
+    def probe_tunnel_ports(cls, dev: DeviceData) -> dict[str, dict]:
+        """
+        Get the TLS certificates and SSH host keys of the engineering access
+        ports of the RTAC that use TLS or SSH (the ``sel.rtac_probe_tunnel_ports``
+        option, off by default).
+
+        Each port gets one TLS handshake (and one retry with a legacy TLS
+        context if it fails), or one SSH key exchange. PEAT doesn't log in or
+        send any data, so no tunnel to a device is opened, but the RTAC may
+        log the connections. A port is only probed if all of its paths are
+        SEL servers (which need the ``PORT`` command to reach a device) or
+        ``interleaved`` (``_TAP``) routes. Ports with a direct route (``_AP``)
+        or a route that isn't known are never probed, since an access point
+        router may connect to the device as soon as a client connects, and on
+        a direct route that stops the RTAC's polling of the device. Ports
+        whose paths have different transports aren't probed either.
+
+        The results are in ``extra.engineering_access_probes``, keyed by
+        ``tcp/<port>``. TLS certificates are saved to
+        ``engineering-access-tcp-<port>-certificate.pem`` and SSH host keys are
+        added to ``ssh_keys``. The fingerprints are added to ``related.hash``
+        and to the service of the port, which is marked as verified.
+
+        Returns:
+            The results of the ports that were probed, keyed by ``tcp/<port>``
+        """
+        paths: dict[int, list[dict]] = {}
+        for entry in cls.downstream_targets(dev):
+            if entry["rtac_ip"] == dev.ip:
+                paths.setdefault(entry["tcp_port"], []).append(entry)
+        # Only the ports that use TLS or SSH
+        ports = {
+            port: entries
+            for port, entries in paths.items()
+            if any(e.get("transport") in ("tls", "ssh") for e in entries)
+        }
+
+        if not ports:
+            cls.log.debug(f"No TLS or SSH engineering access ports to probe on {dev.ip}")
+            return {}
+
+        results = dev.extra.get("engineering_access_probes")
+        if not isinstance(results, dict):
+            results = {}
+
+        cls.log.info(
+            f"Probing the TLS and SSH engineering access ports of {dev.ip} for their "
+            f"certificates and host keys (the RTAC may log these connections)"
+        )
+        probed = {}
+        for port, entries in sorted(ports.items()):
+            transports = {e.get("transport") for e in entries}
+            if len(transports) > 1:
+                cls.log.info(
+                    f"Not probing {dev.ip}:{port}, the RTAC configuration has different "
+                    f"transports for it ({', '.join(sorted(map(str, transports)))})"
+                )
+                continue
+            # Allow-list: SEL servers, and interleaved (_TAP) routes
+            unsafe = {
+                e.get("route")
+                for e in entries
+                if e.get("kind") != "sel_server" and e.get("route") != "interleaved"
+            }
+            if unsafe:
+                reason = (
+                    "it has a direct route to a device"
+                    if "direct" in unsafe
+                    else "the route of one of its paths isn't known (it may be direct)"
+                )
+                cls.log.info(
+                    f"Not probing {dev.ip}:{port}, {reason} (connecting could stop "
+                    f"the RTAC's polling of the device)"
+                )
+                continue
+
+            if transports == {"tls"}:
+                result = cls._probe_tls_port(dev, port)
+            else:
+                result = cls._probe_ssh_port(dev, port)
+            if result:
+                probed[f"tcp/{port}"] = result
+
+        if probed:
+            results.update(probed)
+            dev.extra["engineering_access_probes"] = results
+        return probed
+
+    @classmethod
+    def _probe_tls_port(cls, dev: DeviceData, port: int) -> dict | None:
+        """Get and record the TLS certificate of an engineering access port."""
+        peer = fetch_peer_certificate(dev.ip, port, dev.options["https"]["timeout"])
+        if not peer:
+            return None
+        try:
+            parsed = parse_der_certificate(peer.der)
+        except ValueError as ex:
+            cls.log.warning(f"Failed to parse the TLS certificate from {dev.ip}:{port}: {ex}")
+            return None
+
+        cert = parsed.x509
+        web_cert = dev.extra.get("ssl_certificate")
+        web_sha256 = None
+        if isinstance(web_cert, dict) and isinstance(web_cert.get("fingerprints"), dict):
+            web_sha256 = web_cert["fingerprints"].get("sha256")
+
+        result = {
+            "transport": "tls",
+            "tls_version": peer.tls_version,
+            "cipher": peer.cipher,
+            "legacy_tls": peer.legacy,
+            "subject": cert.subject.distinguished_name,
+            "issuer": cert.issuer.distinguished_name,
+            "not_after": cert.not_after.isoformat() if cert.not_after else None,
+            "fingerprints": dict(parsed.fingerprints),
+            "self_signed": parsed.self_signed,
+            "default_sel_certificate": cls._is_default_certificate(parsed),
+            # The TLS servers of the RTAC normally use the same certificate as the web server
+            "same_as_web_certificate": (
+                web_sha256 == parsed.fingerprints["sha256"] if web_sha256 else None
+            ),
+            **validity_status(cert),
+        }
+
+        for fingerprint in parsed.fingerprints.values():
+            dev.related.hash.add(fingerprint)
+
+        cls._write_and_record_file(
+            dev,
+            cert.original,
+            f"engineering-access-tcp-{port}-certificate.pem",
+            source="tls_certificate",
+            transport="tls",
+            description=f"TLS certificate of the engineering access port {port}",
+        )
+
+        service_extra = {
+            "tls_version": peer.tls_version,
+            "tls_cipher": peer.cipher,
+            "tls_legacy": peer.legacy,
+            "certificate_sha256": parsed.fingerprints["sha256"],
+        }
+        if parsed.fingerprints.get("spki_sha256"):
+            service_extra["certificate_spki_sha256"] = parsed.fingerprints["spki_sha256"]
+        dev.store(
+            "service",
+            Service(
+                port=port, protocol="tls", transport="tcp", status="verified", extra=service_extra
+            ),
+            lookup={"port": port, "transport": "tcp"},
+            interface_lookup={"ip": dev.ip} if dev.ip else None,
+        )
+
+        cls.log.info(
+            f"Got the TLS certificate of the engineering access port {dev.ip}:{port} "
+            f"('{cert.subject.common_name}', SHA-256 {parsed.fingerprints['sha256']})"
+        )
+        return result
+
+    @classmethod
+    def _probe_ssh_port(cls, dev: DeviceData, port: int) -> dict | None:
+        """Get and record the SSH host key of an engineering access port."""
+        host_key = fetch_ssh_host_key(dev.ip, port, dev.options["ssh"]["timeout"])
+        if not host_key:
+            return None
+
+        dev.store(
+            "ssh_keys",
+            SSHKey(
+                type="public",
+                host=dev.ip,
+                id=host_key.fingerprint,
+                original=host_key.public_key,
+                description=(
+                    f"SSH host key ({host_key.key_type}, {host_key.bits} bits) "
+                    f"of the engineering access port {port}"
+                ),
+            ),
+            lookup="original",
+        )
+        dev.related.hash.add(host_key.md5)
+        dev.related.hash.add(host_key.sha256)
+
+        service_extra = {
+            "host_key_type": host_key.key_type,
+            "host_key_fingerprint": host_key.fingerprint,
+        }
+        if host_key.banner:
+            service_extra["ssh_banner"] = host_key.banner
+        dev.store(
+            "service",
+            Service(
+                port=port, protocol="ssh", transport="tcp", status="verified", extra=service_extra
+            ),
+            lookup={"port": port, "transport": "tcp"},
+            interface_lookup={"ip": dev.ip} if dev.ip else None,
+        )
+
+        cls.log.info(
+            f"Got the SSH host key of the engineering access port {dev.ip}:{port} "
+            f"({host_key.key_type}, {host_key.fingerprint})"
+        )
+        return {
+            "transport": "ssh",
+            "key_type": host_key.key_type,
+            "bits": host_key.bits,
+            "fingerprint": host_key.fingerprint,
+            "md5": host_key.md5,
+            "sha256": host_key.sha256,
+            "banner": host_key.banner,
+        }
 
     # --------- File hashing ---------
     # Page that sends the files in the RTAC's file repository (hashed by pull_web())
@@ -1688,6 +2084,12 @@ class SELRTAC(DeviceModule):
                     dev.related.ports.add(port)
 
             cls._process_device_registers(dev, dev_name, rem_dev, protocol)
+
+        # --- Engineering access (access points, access point routers, SEL servers) ---
+        try:
+            cls._process_engineering_access(dev, discover_from_export(device_info))
+        except Exception:
+            cls.log.exception("Failed to process the engineering access settings of the export")
 
         for goose in device_info.get("GooseDevices", {}).values():
             dev.related.protocols.add(cls._normalize_protocol(goose.get("Protocol", "goose")))

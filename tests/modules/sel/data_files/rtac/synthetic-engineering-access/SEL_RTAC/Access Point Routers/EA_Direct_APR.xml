@@ -1,0 +1,34 @@
+<RTACModule>
+  <AccessPointRouter>
+    <ExportSource>
+      <Schema>33</Schema>
+      <DeviceMOT>3530-4</DeviceMOT>
+    </ExportSource>
+    <Name>EA_Direct_APR</Name>
+    <Source>
+      <DeviceName>EA_Direct_AP</DeviceName>
+    </Source>
+    <Destination>
+      <DeviceName>Feeder_1_SEL_AP</DeviceName>
+    </Destination>
+    <SettingPages>
+      <SettingPage>
+        <Name>Settings</Name>
+        <Row>
+          <Setting enabled="false">
+            <Column>Setting</Column>
+            <Value>Enable_Legacy_Port_Command</Value>
+          </Setting>
+          <Setting>
+            <Column>Value</Column>
+            <Value>False</Value>
+          </Setting>
+          <Setting>
+            <Column>Comment</Column>
+            <Value />
+          </Setting>
+        </Row>
+      </SettingPage>
+    </SettingPages>
+  </AccessPointRouter>
+</RTACModule>

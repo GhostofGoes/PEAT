@@ -55,3 +55,9 @@ were used only to check the parser locally.
 - [Fluxara-co/loadshed](https://github.com/Fluxara-co/loadshed) `docs/RTAC GW Export`
   (3530 part number `DeviceMOT`, schema 18, DNP3 server, Network GVLs, POUs with
   `ArchivedContent`)
+
+## Synthetic data
+
+`synthetic-engineering-access/` is a hand-written export with access points, access
+point routers, SEL devices and a SEL server, for the tests of the engineering access
+discovery. It's not from a real project. Its `README.md` has the details.

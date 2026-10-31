@@ -554,6 +554,15 @@ device_options:
     # (two if the RTAC only supports TLS 1.0 or 1.1), which doesn't log in.
     pull_ssl_cert: true
 
+    # SELRTAC: If the pull should connect to the engineering access ports (access
+    # points and SEL servers) found in the RTAC configuration that use TLS or SSH,
+    # to collect their TLS certificates and SSH host keys. This is one TLS handshake
+    # or SSH key exchange per port (no login, no tunnel is opened), which the RTAC
+    # may log. Only SEL server ports and ports whose routes are all interleaved
+    # ("_TAP") are probed: ports with a direct ("_AP") or unknown route to a
+    # device are never probed.
+    rtac_probe_tunnel_ports: false
+
     # SELRTAC: enable "monitoring"
     # This regularly pulls device data and compares the pulls over time
     # NOTE: this feature was a initial proof of concept and may not work anymore

@@ -1,0 +1,11 @@
+<RTACModule>
+  <RTACBackupableObject>
+    <ObjectName>Ethernet Settings</ObjectName>
+    <ObjectText>
+      <schema version="schema_33">
+        <ipv4_network_interfaces ipv4_address="192.0.2.10/24" network_interface_id="0" interface_enabled="true" ping="false" dhcp="false" web_access="true" odbc_access="true" name="Eth_01" device="eth0" mac="00:00:5e:00:53:10" ethercat="false" ppp="false" primary_gw="false" dhcp_server="false" />
+        <ipv4_network_interfaces ipv4_address="198.51.100.10/24" network_interface_id="1" interface_enabled="true" ping="false" dhcp="false" web_access="false" odbc_access="false" name="Eth_02" device="eth1" mac="00:00:5e:00:53:11" ethercat="false" ppp="false" primary_gw="false" dhcp_server="false" />
+      </schema>
+    </ObjectText>
+  </RTACBackupableObject>
+</RTACModule>

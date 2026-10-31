@@ -9,8 +9,12 @@ Authors
 - Kevin Cox
 """
 
+import base64
+import hashlib
+import socket
 import traceback
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from time import sleep
 from typing import Any
@@ -465,4 +469,88 @@ class SSH:
         return f"{self.__class__.__name__}({self.ip}, {self.port}, {self.timeout})"
 
 
-__all__ = ["SSH"]
+@dataclass
+class SSHHostKey:
+    """
+    Public host key of a SSH server, from :func:`fetch_ssh_host_key`.
+    """
+
+    key_type: str
+    """Type of the key, e.g. ``ssh-rsa``, ``ecdsa-sha2-nistp256`` or ``ssh-ed25519``."""
+
+    bits: int
+    """Size of the key, in bits."""
+
+    public_key: str
+    """The key in OpenSSH format (``<type> <base64>``), e.g. for ``known_hosts``."""
+
+    md5: str
+    """MD5 hash of the key, uppercase hex (the old OpenSSH fingerprint)."""
+
+    sha256: str
+    """SHA-256 hash of the key, uppercase hex."""
+
+    banner: str = ""
+    """Version string of the server, e.g. ``SSH-2.0-OpenSSH_8.4``."""
+
+    @property
+    def fingerprint(self) -> str:
+        """SHA-256 fingerprint in the format of ``ssh-keygen -l``, e.g. ``SHA256:47DEQ...``."""
+        digest = base64.b64encode(bytes.fromhex(self.sha256)).decode("ascii").rstrip("=")
+        return f"SHA256:{digest}"
+
+
+def fetch_ssh_host_key(host: str, port: int = 22, timeout: float = 5.0) -> SSHHostKey | None:
+    """
+    Get the host key of a SSH server, without logging in.
+
+    This makes one TCP connection and does the SSH key exchange (which is
+    where the server proves it has the host key), then closes the connection.
+    It doesn't authenticate or open a channel, so nothing runs on the server.
+    The server may still log the connection.
+
+    Args:
+        host: IP address or host name of the server
+        port: TCP port of the server
+        timeout: Timeout for the connection, the server's banner,
+            and the key exchange, in seconds
+
+    Returns:
+        The host key, or :obj:`None` if it couldn't be retrieved
+    """
+    _log = log.bind(classname="SSH", target=f"{host}:{port}")
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+    except OSError as ex:
+        _log.warning(f"Failed to get the SSH host key: {ex}")
+        return None
+
+    transport = None
+    try:
+        transport = paramiko.Transport(sock)
+        transport.banner_timeout = timeout
+        transport.handshake_timeout = timeout
+        transport.start_client(timeout=timeout)
+        key = transport.get_remote_server_key()
+        blob = key.asbytes()
+        host_key = SSHHostKey(
+            key_type=key.get_name(),
+            bits=key.get_bits(),
+            public_key=f"{key.get_name()} {key.get_base64()}",
+            md5=hashlib.md5(blob).hexdigest().upper(),
+            sha256=hashlib.sha256(blob).hexdigest().upper(),
+            banner=str(transport.remote_version or ""),
+        )
+    except (paramiko.SSHException, OSError, EOFError) as ex:
+        _log.warning(f"Failed to get the SSH host key: {ex}")
+        return None
+    finally:
+        if transport is not None:
+            transport.close()
+        sock.close()
+
+    _log.debug(f"Got SSH host key ({host_key.key_type}, {host_key.fingerprint})")
+    return host_key
+
+
+__all__ = ["SSH", "SSHHostKey", "fetch_ssh_host_key"]

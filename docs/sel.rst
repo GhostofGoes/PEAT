@@ -145,7 +145,7 @@ To manually extract them without using PEAT:
 RTACs
 -----
 
-PEAT can pull data from a live RTAC (over HTTP/HTTPS and PostgreSQL), and parse an RTAC project that was exported from ACSELERATOR RTAC (SEL-5033). The first sections are about parsing project exports, and the last sections are about the TLS certificate of the web interface and the hashes of the files PEAT collects.
+PEAT can pull data from a live RTAC (over HTTP/HTTPS and PostgreSQL), and parse an RTAC project that was exported from ACSELERATOR RTAC (SEL-5033). The first sections are about parsing project exports, and the last sections are about the TLS certificate of the web interface, the hashes of the files PEAT collects, and the engineering access paths in the configuration of the RTAC.
 
 The web pull logs in with the credentials that worked during the scan (one of the ``web.users`` and ``web.passwords`` options), or with the ``web.user`` and ``web.pass`` options. RTACs don't have default credentials, so a pull with ``--skip-scan`` needs the ``web.user`` and ``web.pass`` options, otherwise the web pull is skipped.
 
@@ -247,7 +247,7 @@ Item types that PEAT parses, and where the results are in the device data (``ext
      - Names only
    * - ``AccessPointRouter``
      - ``AccessPointRouters``
-     -
+     - Routes from access points of the RTAC to devices (engineering access). Refer to :ref:`sel-rtac-engineering-access`.
 
 The models and schema versions of all of the files are in ``extra.ExportSource``. If a file can't be parsed, PEAT logs an error, adds the file name to ``extra.parse_errors``, and continues with the other files.
 
@@ -325,6 +325,75 @@ The files that the RTAC pull downloads or writes, and the files in a parsed proj
 Repository files also have ``extra.listed_size``, the size in the file listing of the web interface, and their modification time from the listing. Files in a tarball have ``extra.archive`` (the name of the tarball), their path in the tarball as the ``path``, and their modification time from the tarball (if it is set and valid).
 
 The hashes of repository files are of the bytes the RTAC sent. The web pages and the Sequence of Events log (``soe.csv``) that are saved to ``http_files/`` are not hashed by the RTAC module.
+
+.. _sel-rtac-engineering-access:
+
+RTAC engineering access discovery
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+An RTAC can be a gateway for engineering access to the IEDs it communicates with: an engineer connects to a port on the RTAC, and the RTAC connects them to a relay on one of its serial or Ethernet connections. PEAT finds these paths in the configuration of the RTAC, in a project export (``peat parse``) and in the PostgreSQL database (``peat pull``). This only reads the configuration. PEAT doesn't connect through the paths it finds.
+
+ACSELERATOR RTAC has two ways to configure engineering access (the names of the settings are from SEL's documentation, HD2014-34 "SEL-3530 RTAC Hands-On Session" and LWP0018-01 "Leveraging Security - Using the SEL RTAC's Built-In Security Features"):
+
+- **Access points and access point routers.** An access point is a port that the RTAC listens on, with a ``Network Connection Type`` (e.g. Telnet, Raw TCP or SSH) and a ``Local Port Number``. An access point router connects an access point to the access point of a device. Each SEL device has two of these: ``<Device>_<Protocol>_TAP`` is a transparent connection, which the RTAC interleaves with its own polling of the device, and ``<Device>_<Protocol>_AP`` is a direct transparent connection. A direct connection stops the RTAC's polling of the device while it's open, so the SCADA data from that device stops.
+- **SEL server.** A SEL protocol server with the connection type ``Server - Ethernet Tunneled Serial`` (firmware R134 and newer) listens on one TCP port, the ``Server IP Port``, with a ``Serial Tunneling Mode`` (Telnet, Raw TCP, SSL/TLS or SSH). The client logs in to the RTAC if ``Perform Authentication`` is set (always with SSH). At the RTAC's ``*`` prompt, ``ACC`` goes to access level 1 (the ``*>`` prompt), ``WHO`` lists the SEL devices and their port numbers, and ``PORT <n>`` opens a transparent connection to one of them, if ``Enable Port Command`` is set. The number is the serial port number of a serial device, or the ``Virtual Port Number`` of an Ethernet device. The ``Termination String`` (``<CTRL-D>`` by default) ends the connection.
+
+Where PEAT finds them:
+
+- In a project export, access points are ``Device`` items with the protocol ``AccessPointServer``, and access point routers are ``AccessPointRouter`` items. SEL servers are ``Device`` items with a SEL protocol and ``server`` in the protocol or connection type. A SEL server without a ``Serial Tunneling Mode`` (e.g. for an HMI) only gets a service, since it isn't for engineering access. Other ``Device`` items with a SEL protocol are SEL devices, which a SEL server can reach. The access point of a router is the endpoint that is an access point, whether it's the ``Source`` or the ``Destination``. A destination is matched to a device by its name with or without the ``_TAP`` or ``_AP`` suffix and the protocol (``Feeder_1_SEL_TAP`` is the device ``Feeder_1``), also if the export has the access points of the devices as ``Device`` items. Its route is ``interleaved`` for ``_TAP`` (or the type ``TAP``) and ``direct`` for ``_AP`` (or the type ``AP``). The route to an access point of the RTAC (e.g. on a serial port) isn't known.
+- In the database, PEAT uses the tables in :data:`~peat.modules.sel.rtac_engineering_access.PG_TABLES` (``access_points``, ``access_point_ethernet_settings``, ``access_point_routers``, the ``sel_server_*`` and ``sel_client_*`` tables, ``sel_virtual_ports``, ``serial_ports``, ``local_tcp_network_ports``, ``connections``, ``remote_devices`` and others), which the pull already reads. The column names of these tables are not public. PEAT matches the columns to the setting names without regard to case and punctuation (``local_port_number`` matches ``Local Port Number``), and joins the rows of related tables by their ID columns (e.g. ``connection_id`` or ``access_point_id``): two rows are joined if they have the same value in one of these columns, and no different values in the others. Each access point, SEL server and SEL device has a row in one of the tables of its kind. The serial port tables only add the serial port of a SEL device, and the ``local_tcp_network_port*`` tables only add the TCP port of an access point or SEL server, since these tables also have rows for other devices and servers. If a column has a number where PEAT expects a name (e.g. the ID of a tunneling mode), PEAT logs a warning with the column names of the row. PEAT uses every row of these tables, including rows that have the same value in the first column (``pulled-postgres-config.json`` keys the rows by their first column, so only the last of these rows is in that file).
+
+Where the results are:
+
+- ``extra.engineering_access``: one entry for each path to a device. The values can be ``null``.
+
+  .. list-table::
+     :header-rows: 1
+
+     * - Key
+       - Value
+     * - ``name``
+       - The destination as configured in the access point router (e.g. ``Feeder_1_SEL_TAP``), or the name of the SEL server
+     * - ``rtac_ip``
+       - IP address of the RTAC (for a project export, the address of the first Ethernet interface)
+     * - ``tcp_port``
+       - TCP port on the RTAC
+     * - ``transport``
+       - ``telnet``, ``raw`` (raw TCP), ``ssh`` or ``tls``
+     * - ``kind``
+       - ``access_point`` (the port connects to the device) or ``sel_server`` (``PORT <sel_port>`` connects to the device)
+     * - ``sel_port``
+       - The number for the ``PORT`` command of a SEL server
+     * - ``device_name``
+       - Name of the device in the RTAC configuration
+     * - ``route``
+       - ``interleaved`` (``_TAP``, and SEL servers), ``direct`` (``_AP``), or ``null`` if unknown
+     * - ``needs_rtac_login``
+       - If the configuration requires a login to the RTAC first (SSH, or ``Perform Authentication``). The RTAC may still ask for a login on other access points.
+     * - ``termination_string``
+       - The characters that end a SEL server session (``"\u0004"`` for ``<CTRL-D>``)
+     * - ``source``
+       - ``export`` or ``postgres``
+
+  A SEL server has one entry for each SEL device in the configuration, or one entry without a ``sel_port`` if there are none (``WHO`` lists them). A SEL server without the ``PORT`` command, an access point without a router, and UDP access points have no entries.
+
+- ``service``: a service for the port of each access point and SEL server, with the ``configured_port``, the protocol (``telnet``, ``ssh`` or ``tls``, and none for raw TCP, UDP and unknown types), and the role ``engineering_access`` if it reaches any devices (``access_point`` or ``sel_server`` if it doesn't). The ``extra`` of the service has the name, the configured connection type or tunneling mode, the ``destinations`` (with the router, route and SEL port of each), and the security settings of a SEL server: ``perform_authentication``, ``allow_anonymous_clients``, ``allowed_client_ips``, ``disable_remote_access``, ``verify_ssl_certificate``, ``enable_file_transfer_monitor``, the termination string and the timeouts. The ports are also added to ``related.ports``.
+- ``extra.engineering_access_devices``: names of the RTAC's own engineering access objects, e.g. ``Eng_Access_40`` in the ``remote_devices`` table. These are not hosts, so they are not added to ``related.hosts``.
+
+:meth:`SELRTAC.downstream_targets() <peat.modules.sel.sel_rtac.SELRTAC.downstream_targets>` returns the entries that have an RTAC IP address and a port, for code that pulls the devices behind a gateway. A path that's in both a project export and the database (the same port, transport, kind, SEL port, device and route) is only once in the results. Other modules that front other devices can have a method with the same name and results. The results include direct routes and routes that aren't known, so code that connects to them must check the ``route``.
+
+For defenders, these are the ways to reach the relays through the RTAC. Paths that don't need the RTAC login, direct routes, Telnet and raw TCP transports, and SEL servers that allow anonymous clients are worth a review.
+
+**TLS certificates and SSH host keys of the ports (opt-in)**
+
+Set the ``sel.rtac_probe_tunnel_ports`` option to ``true`` (it's ``false`` by default) for the pull to connect to each engineering access port that uses TLS or SSH, and get its TLS certificate or SSH host key. The TLS servers of an RTAC normally use the same (activated) certificate as the web interface, and ``same_as_web_certificate`` shows if a port does. PEAT does one TLS handshake (two if it needs the legacy TLS context, refer to :ref:`sel-rtac-tls-certificate`) or one SSH key exchange for each port, then closes the connection. It doesn't log in, send any data, or open a connection to a device, but the RTAC may log the connections. Only the ports of SEL servers (which need the ``PORT`` command to connect to a device) and ports whose routes are all ``interleaved`` are probed. Ports with a direct route, or with a route that isn't known (which may be direct), are never probed, because an access point router may connect to the device as soon as a client connects, and on a direct route that stops the RTAC's polling of the device.
+
+- ``extra.engineering_access_probes``, keyed by ``tcp/<port>``. For TLS: ``tls_version``, ``cipher``, ``legacy_tls``, ``subject``, ``issuer``, ``not_after``, ``fingerprints`` (DER and SPKI, as in ``extra.ssl_certificate``), ``self_signed``, ``default_sel_certificate``, ``same_as_web_certificate`` (``null`` if the web certificate wasn't collected), ``expired``, ``not_yet_valid`` and ``days_remaining``. For SSH: ``key_type``, ``bits``, ``fingerprint`` (``SHA256:...``, as shown by ``ssh-keygen -l``), ``md5``, ``sha256`` (hex) and ``banner``.
+- TLS certificates are saved to ``engineering-access-tcp-<port>-certificate.pem`` (and added to ``files``). SSH host keys are added to ``ssh_keys``. The fingerprints are added to ``related.hash``, and to the ``extra`` of the service of the port, which gets the status ``verified``.
+
+Limitations:
+
+- No public export or database dump with engineering access was available, so the test data (``tests/modules/sel/data_files/rtac/synthetic-engineering-access/``) is synthetic, based on SEL's documentation and the format of the public exports. The protocol names of SEL devices and SEL servers in exports, the layout of access point routers, where a serial SEL device has its serial port number, and the column names of the database tables need to be checked with a real RTAC.
+- ``Enable_Legacy_Port_Command`` and ``Legacy_Port_Command_ID`` of an access point router are recorded in the ``destinations`` of the service, but PEAT doesn't know what they change.
 
 Developer notes on SEL communications
 -------------------------------------

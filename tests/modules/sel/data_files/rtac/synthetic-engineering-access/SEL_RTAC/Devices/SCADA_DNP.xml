@@ -1,0 +1,48 @@
+<RTACModule>
+  <Device>
+    <ExportSource>
+      <Schema>33</Schema>
+      <DeviceMOT>3530-4</DeviceMOT>
+    </ExportSource>
+    <Name>SCADA_DNP</Name>
+    <Manufacturer>SEL</Manufacturer>
+    <Model>3530</Model>
+    <Connection>
+      <Protocol>DNPServer</Protocol>
+      <ConnectionType>Ethernet</ConnectionType>
+      <SettingPages>
+        <SettingPage>
+          <Name>Settings</Name>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Server IP Port</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>20000</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+          <Row>
+            <Setting enabled="false">
+              <Column>Setting</Column>
+              <Value>Serial Tunneling Mode</Value>
+            </Setting>
+            <Setting>
+              <Column>Value</Column>
+              <Value>SSL/TLS</Value>
+            </Setting>
+            <Setting>
+              <Column>Comment</Column>
+              <Value />
+            </Setting>
+          </Row>
+        </SettingPage>
+      </SettingPages>
+    </Connection>
+  </Device>
+</RTACModule>

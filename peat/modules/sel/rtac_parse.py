@@ -267,19 +267,34 @@ def parse_settings(start_element: ET.Element | None) -> dict:
     return parse_setting_pages(start_element).get("Settings", {})
 
 
+def _router_endpoint(endpoint: ET.Element | None) -> dict[str, ElasticType]:
+    return {
+        "device_name": convert_to_elastic(get_text(endpoint, "DeviceName")),
+        "device_protocol": convert_to_elastic(get_text(endpoint, "DeviceProtocol")),
+        "type": convert_to_elastic(get_text(endpoint, "type")),
+    }
+
+
 def parse_accesspointrouters(router: ET.Element, device_info: dict) -> None:
+    """
+    Parse an ``AccessPointRouter``: a route from an access point of the
+    RTAC to the access point of a device (engineering access).
+
+    If the router has more than one destination (``Destination`` elements,
+    directly or under ``Destinations``), all of them are under
+    ``"Destinations"``, and the first one is also under ``"Destination"``.
+    """
     item = get_item(router)
     name = get_text(item, "Name", "unknown")
     source = item.find("Source")
-    dest = item.find("Destination")
+    destinations = item.findall("Destination") + item.findall("Destinations/Destination")
+    dest = destinations[0] if destinations else None
 
     results = {}
     for label, endpoint in [("Source", source), ("Destination", dest)]:
-        results[label] = {
-            "device_name": convert_to_elastic(get_text(endpoint, "DeviceName")),
-            "device_protocol": convert_to_elastic(get_text(endpoint, "DeviceProtocol")),
-            "type": convert_to_elastic(get_text(endpoint, "type")),
-        }
+        results[label] = _router_endpoint(endpoint)
+    if len(destinations) > 1:
+        results["Destinations"] = [_router_endpoint(endpoint) for endpoint in destinations]
 
     results["Settings"] = parse_settings(item)
 
