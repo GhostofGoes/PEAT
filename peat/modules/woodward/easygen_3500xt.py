@@ -1,9 +1,23 @@
 """
-easYgen 3500XT pulling and parsing functionality,
+Woodward easYgen genset controllers: pulling and parsing functionality.
 
 Pull is done using FTP and ServLink/TCP.
 Most of config pulled from Servlink, a variant of Modbus-TCP, over port 666.
 Pulling mimics the Woodward Toolkit storage which saves config into wset file.
+
+Parsing supports the files of Woodward's ToolKit service tool, which is used
+to configure the easYgen-3000XT, easYgen-3000, and easYgen-2000 series (and
+other ToolKit-based Woodward controls):
+
+- ``*.wset`` settings files (the complete configuration of a control), see
+  :mod:`~peat.modules.woodward.parse_wset`
+- ``*.sid`` Service Interface Definitions (every parameter of a firmware
+  release, with defaults, ranges, and security levels), see
+  :mod:`~peat.modules.woodward.parse_sid`
+- ``*.wtool`` tool files (ToolKit screens), see
+  :mod:`~peat.modules.woodward.parse_wtool`
+- ``*.tc`` Control Assistant tunable files, see
+  :mod:`~peat.modules.woodward.wdw_tc`
 
 Authors
 
@@ -12,7 +26,9 @@ Authors
 """
 
 import functools
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from peat import (
     DeviceData,
@@ -23,6 +39,7 @@ from peat import (
     SerialMethod,
     datastore,
 )
+from peat.file_signature import FileSignature
 from peat.protocols import FTP, check_tcp_port, open_serial_port, pretty_hex_bytes
 
 from .easygen_svl import (
@@ -33,9 +50,15 @@ from .easygen_svl import (
     SVLTCP_INIT_MSG,
     svl_dat_prms,
 )
-from .parse_wset import parse_wset
-
-# from . import parse_micronet
+from .parse_sid import is_sid_data, parse_sid, populate_device_from_sid, sid_signature_check
+from .parse_wset import is_wset_data, parse_wset, populate_device_from_wset, wset_signature_check
+from .parse_wtool import (
+    is_wtool_data,
+    parse_wtool,
+    populate_device_from_wtool,
+    wtool_signature_check,
+)
+from .toolkit import container_type
 from .wdw_svl import (
     _svl_parse_data,
     _svlser_dat_txn,
@@ -47,6 +70,7 @@ from .wdw_svl import (
     svl_socket_initialized,
     svl_sys_cmds,
 )
+from .wdw_tc import is_tc_data, parse_tc, populate_device_from_tc, tc_signature_check
 
 easygen_data_types: dict[str, dict] = {
     "prm_am": {"mask": b"\x0a", "len": 16},
@@ -55,20 +79,90 @@ easygen_data_types: dict[str, dict] = {
     "ezg_00": {"mask": b"\x00", "len": 0},
 }
 
+#: Parsers for the supported file types: ``{type: (parse function, device populate function)}``
+WOODWARD_FILE_PARSERS: dict[str, tuple[Callable[[bytes], dict[str, Any]], Callable]] = {
+    "wset": (parse_wset, populate_device_from_wset),
+    "sid": (parse_sid, populate_device_from_sid),
+    "wtool": (parse_wtool, populate_device_from_wtool),
+    "tc": (parse_tc, populate_device_from_tc),
+}
 
-# TODO for woodward
-# - Integrate *.tc parsing
-# - Add data to PEAT data model
+
+def identify_woodward_file(data: bytes, suffix: str = "") -> str | None:
+    """
+    Identify the type of a Woodward ToolKit or Control Assistant file.
+
+    The file contents are checked first (the ToolKit container header, a
+    .NET serialization stream, the SID XML root element, or the tunable file
+    header), and the file extension is used as a fallback.
+
+    Args:
+        data: The file data
+        suffix: The file extension, including the dot (e.g. ``.wset``)
+
+    Returns:
+        ``"wset"``, ``"sid"``, ``"wtool"``, ``"tc"``, or :obj:`None` if unknown
+    """
+    kind = container_type(data)
+    if kind == "wset" and is_wset_data(data):
+        return "wset"
+    if kind == "wtool" and is_wtool_data(data):
+        return "wtool"
+    if kind == "sid" or is_sid_data(data[:65536]):
+        return "sid"
+    if is_wset_data(data):
+        return "wset"
+    if is_tc_data(data[:4096]):
+        return "tc"
+    suffix = suffix.lower().lstrip(".")
+    if suffix in WOODWARD_FILE_PARSERS:
+        return suffix
+    return None
 
 
 class Easygen3500XT(DeviceModule):
+    """
+    Woodward easYgen genset controllers.
+
+    Scanning and pulling target the easYgen-3500XT (and other easYgen-3000XT
+    series controls sharing its firmware). Parsing supports the ToolKit files
+    of any easYgen (3000XT, 3000, and 2000 series) and, since the file formats
+    are shared, of other ToolKit-based Woodward controls such as the LS-5/LS-6
+    breaker controls and the E3 gas engine controls. Refer to the module
+    documentation for the supported file types.
+    """
+
     device_type = "Genset Controller"  # Engine/Generator control and protector
     vendor_id = "Woodward"
     vendor_name = "Woodward, Inc"
     brand = "easYgen"
     model = "3500XT"
-    # TODO: should wset and tc parsing belong here or 3500XT?
-    filename_patterns = ["*.wset", "*.tc"]
+    supported_models = [
+        # Scan, pull, and parse
+        "easYgen-3500XT-P1",
+        "easYgen-3500XT-P2",
+        # Parse (ToolKit files). Other XT models share the firmware of the 3500XT,
+        # so scan and pull are expected to work as well, but haven't been tested.
+        "easYgen-3100XT-P1",
+        "easYgen-3200XT-P1",
+        "easYgen-3400XT-P1",
+        "easYgen-3400XT-P2",
+        "easYgen-3100",
+        "easYgen-3200",
+        "easYgen-3400",
+        "easYgen-3500",
+        "easYgen-2200",
+        "easYgen-2300",
+        "easYgen-2500",
+    ]
+    module_aliases = ["easygen", "woodward_easygen", "toolkit"]
+    filename_patterns = ["*.wset", "*.sid", "*.wtool", "*.tc"]
+    file_signatures = [
+        FileSignature(default_filename="settings.wset", custom_check=wset_signature_check),
+        FileSignature(default_filename="application.sid", custom_check=sid_signature_check),
+        FileSignature(default_filename="tool.wtool", custom_check=wtool_signature_check),
+        FileSignature(default_filename="tunables.tc", custom_check=tc_signature_check),
+    ]
     # TODO: combine some common functions of 3500XT and 2301E?
     easygen_fallback_baudrates = [9600]
     default_options = {
@@ -404,16 +498,41 @@ class Easygen3500XT(DeviceModule):
 
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData | None:
-        if file.suffix.lower() == ".tc":
-            raise DeviceError(f"*.tc files are not currently supported (filename: '{file.name}')")
+        """
+        Parse a ToolKit settings (``.wset``), Service Interface Definition
+        (``.sid``), or tool (``.wtool``) file, or a Control Assistant tunable
+        (``.tc``) file.
 
-        parsed_config = parse_wset(file)
+        The parsed data is saved as ``parsed-<type>.json`` in the device's
+        output directory, and a summary of the file and the parameter values
+        are added to the device's ``extra`` data.
+        """
+        if file.is_dir():
+            raise DeviceError(
+                f"Directories aren't supported, parse the files individually: {file}"
+            )
+
+        data = file.read_bytes()
+        kind = identify_woodward_file(data, file.suffix)
+        if kind is None:
+            raise DeviceError(
+                f"Unknown Woodward file type (filename: '{file.name}'). Supported files: "
+                f"ToolKit .wset, .sid, and .wtool files and Control Assistant .tc files"
+            )
+        cls.log.info(f"Parsing '{file.name}' as a Woodward {kind} file")
+
+        parse, populate = WOODWARD_FILE_PARSERS[kind]
+        parsed = parse(data)
+        if not parsed:
+            cls.log.error(f"Failed to parse '{file.name}' as a Woodward {kind} file")
+            return None
 
         if not dev:
             dev = datastore.get(file.stem, "id")
 
-        dev.write_file(parsed_config, "parsed-config.json")
-
+        populate(dev, parsed)
+        dev.write_file(parsed, f"parsed-{kind}.json")
+        cls.update_dev(dev)
         return dev
 
 
@@ -546,4 +665,4 @@ def _easygen_parse_data(data_bytes: bytes, rfmt: type) -> str:
         return pretty_hex_bytes(data_bytes)
 
 
-__all__ = ["Easygen3500XT"]
+__all__ = ["WOODWARD_FILE_PARSERS", "Easygen3500XT", "identify_woodward_file"]

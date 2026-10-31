@@ -15,13 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from peat import DeviceData, DeviceModule, Interface, SerialMethod, datastore, log
+from peat.file_signature import FileSignature
 from peat.protocols import open_serial_port, pretty_hex_bytes, serial_txn
 
 from .wdw_2301e_svl import *
 
 # TODO: remove '*' imports
 from .wdw_svl import *
-from .wdw_tc import *
+from .wdw_tc import parse_tc, populate_device_from_tc, tc_signature_check
 
 # Track the Servlink sequence
 svl_seq_odd = True
@@ -48,7 +49,10 @@ class WDW2301E(DeviceModule):
     vendor_name = "Woodward, Inc"
     brand = "WDW"
     model = "2301E"
-    filename_patterns = ["*.wset"]  # TODO: should wset and tc parsing belong here or 3500XT?
+    filename_patterns = ["*.tc"]
+    file_signatures = [
+        FileSignature(default_filename="tunables.tc", custom_check=tc_signature_check),
+    ]
     # TODO: combine some common functions of 3500XT and 2301E?
     woodward_fallback_baudrates = [9600]
 
@@ -131,26 +135,22 @@ class WDW2301E(DeviceModule):
 
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData | None:
-        to_parse = file.read_bytes()
-        # TODO: detect 2301E wset file
-        try:
-            tc_file_text = to_parse.decode()  # NOTE(cegoes): this may be iso8859-1
-            parsed_config = _parse_tc_file(tc_file_text)
-        except Exception as ex:
-            cls.log.exception(f"Critical parsing error: {ex}")
-            return None
-        # TODO: this is a temporary hack since we currently don't have examples of 2301E files
+        """
+        Parse a Control Assistant tunable (``.tc``) file saved from a 2301E.
 
-        if parsed_config:
-            if not dev:
-                dev = datastore.get(file.stem, "id")
-            dev.extra.update(parsed_config)
-            cls.update_dev(dev)
-            dev.write_file(parsed_config, "parsed-config.json")
-            return dev
-        else:
-            cls.log.warning("No project parsed")
+        Refer to :mod:`~peat.modules.woodward.wdw_tc` for the file format.
+        """
+        parsed_config = parse_tc(file.read_bytes())
+        if not parsed_config:
+            cls.log.warning(f"No tunables parsed from '{file.name}'")
             return None
+
+        if not dev:
+            dev = datastore.get(file.stem, "id")
+        populate_device_from_tc(dev, parsed_config)
+        dev.write_file(parsed_config, "parsed-tc.json")
+        cls.update_dev(dev)
+        return dev
 
 
 WDW2301E.serial_methods = [
@@ -162,72 +162,6 @@ WDW2301E.serial_methods = [
         reliability=3,
     )
 ]
-
-
-# TODO: this is in separate file now?
-# This is likely not 2301E-specific
-def _parse_tc_file(project: str) -> dict:
-    """Parse a *.tc device logic file.
-
-    Args:
-        project: The .tc file prepared by parse_project
-
-    Returns:
-        A dictionary containing the device logic
-    """
-    if not isinstance(project, str):
-        log.error(f"Project type error: {type(project)!s}")
-        return {}
-
-    bad_lines = 0
-    parsed_logic = {}
-    lines = project.strip().split("\r\n")
-
-    file_ver_line = lines.pop(0)
-    fw_prefix_line = lines.pop(0)
-    fw_date_line = lines.pop(0)
-    header_line = lines.pop(0)
-    if (
-        "File Version" in file_ver_line
-        and "-" in fw_prefix_line
-        and "UTC" in fw_date_line
-        and len(header_line.split("\t")) == 9
-        and header_line.startswith("Mode")
-    ):
-        parsed_logic["file_version"] = file_ver_line
-        parsed_logic["firmware_prefix"] = fw_prefix_line
-        parsed_logic["firmware_date"] = fw_date_line
-    else:
-        log.warning("Unknown tc logic format")
-        return {}
-
-    parsed_logic["logic"] = {}
-    for line in lines:
-        fields = line.split("\t")
-        if not len(fields) == 9:
-            log.debug(f"Malformed line: '{line}'")
-            bad_lines += 1
-            continue
-
-        # Build Mode, Category, Block Name, and Field Name organization,
-        # then populate with Type, Current, Initial, Low, and High
-        ref = parsed_logic["logic"]
-        # Walk through each layer of the organization
-        for n in range(4):
-            if fields[n] not in ref:
-                ref[fields[n]] = {}  # create a new layer if necessary
-            ref = ref[fields[n]]  # walk to the next layer
-        # Now populate the top layer
-        ref["Type"] = fields[4]
-        ref["Current"] = fields[5]
-        ref["Initial"] = fields[6]
-        ref["Low"] = fields[7]
-        ref["High"] = fields[8]
-
-    if bad_lines > 0:
-        log.warning(f"Skipped {bad_lines} malformed lines")
-
-    return parsed_logic
 
 
 # Not sure if this is 2301E-specific

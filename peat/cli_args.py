@@ -262,6 +262,11 @@ peat parse -d selrelay ./SET_ALL.TXT
 peat parse -d sel breaker-1.rdb
 peat parse -d sel ./*.rdb
 
+# Parse a Woodward ToolKit settings file (*.wset) saved from an easYgen genset
+# controller. ToolKit *.sid and *.wtool files and Control Assistant *.tc
+# tunable files are supported as well.
+peat parse -d easygen ./genset-1.wset
+
 # Multiple file paths arguments. PEAT will automatically select the
 # appropriate module to use based on the file names, in this case SELRelay.
 peat parse ./set_all.txt ./751_001.rdb
