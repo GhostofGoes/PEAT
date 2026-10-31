@@ -105,3 +105,21 @@ Utilize the module API to print the vendor name and ID (short name) for every de
    # read on the command line, as well as usable by other tools
    print(json.dumps(identifiers, indent=4))
 
+
+Comparing two pulls of a device
+-------------------------------
+Detect changes to a device's configuration ("drift") by comparing the results of two pulls. Refer to :ref:`comparing-device-data` for details.
+
+.. code-block:: python
+
+   import json
+   from pathlib import Path
+
+   from peat.data.compare import compare_device_data
+
+   old = json.loads(Path("pull-1/device-data-full.json").read_text(encoding="utf-8"))
+   new = json.loads(Path("pull-2/device-data-full.json").read_text(encoding="utf-8"))
+
+   diff = compare_device_data(old, new)
+   print(f"Similarity: {diff.similarity:.0%}")
+   print(diff.format(max_changes=50))
