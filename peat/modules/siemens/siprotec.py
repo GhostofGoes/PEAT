@@ -26,7 +26,7 @@ from datetime import datetime
 from pprint import pformat
 from typing import Literal
 
-from peat import DeviceData, DeviceModule, IPMethod
+from peat import DeviceData, DeviceModule, IPMethod, ModuleProtocol
 from peat.protocols import HTTP, SNMP, snmp_walk
 
 from .mlfb import decode_mlfb
@@ -52,6 +52,30 @@ class Siprotec(DeviceModule):
     vendor_name = "Siemens AG"
     brand = "Siprotec"
     model = "7SJ6x"
+    supported_models = ["7SJ6x"]
+    protocols = [
+        ModuleProtocol(
+            name="http",
+            transport="tcp",
+            ports=[80],
+            operations=["pull"],
+            description="WebMonitor files (mlfb.txt, ver.txt)",
+        ),
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[443],
+            operations=["pull"],
+            description="WebMonitor files (mlfb.txt, ver.txt)",
+        ),
+        ModuleProtocol(
+            name="snmp",
+            transport="udp",
+            ports=[161],
+            operations=["pull"],
+            description="System and module information (including Siemens MIBs)",
+        ),
+    ]
 
     @classmethod
     def _verify_snmp(cls, dev: DeviceData) -> bool:

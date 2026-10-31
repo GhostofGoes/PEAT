@@ -127,3 +127,52 @@ def test_devices_marked_active_and_verified(mocker):
     dev = datastore.get("192.168.0.1")
     assert dev._is_active is True
     assert dev._is_verified is True
+
+
+@pytest.mark.usefixtures("_skip_scan_base")
+def test_skips_host_with_excluded_per_host_module(mocker, caplog):
+    """A peat_module from the YAML config that isn't in device_types (e.g. it
+    was excluded by -p) isn't used for the host."""
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "HOSTS": [
+                {"identifiers": {"ip": "192.168.0.1"}, "peat_module": "Excluded"},
+                {"identifiers": {"ip": "192.168.0.2"}, "peat_module": "Allowed"},
+            ],
+        },
+    )
+    allowed = _mock_module("Allowed")
+    excluded = _mock_module("Excluded")
+    mocker.patch(
+        "peat.api.pull_api.module_api.lookup_types",
+        side_effect=lambda names, **_: [allowed if n == "Allowed" else excluded for n in names],
+    )
+
+    result = pull(["192.168.0.1", "192.168.0.2"], "unicast_ip", ["Allowed"], skip_scan=True)
+
+    assert result is not None
+    excluded.pull.assert_not_called()
+    allowed.pull.assert_called_once()
+    assert "Skipping 192.168.0.1" in caplog.text
+
+
+@pytest.mark.usefixtures("_skip_scan_base")
+def test_fails_when_all_per_host_modules_excluded(mocker):
+    mocker.patch.dict(
+        config["CONFIG"],
+        {"HOSTS": [{"identifiers": {"ip": "192.168.0.1"}, "peat_module": "Excluded"}]},
+    )
+    allowed = _mock_module("Allowed")
+    other = _mock_module("Other")
+    excluded = _mock_module("Excluded")
+    mods = {"Allowed": allowed, "Other": other, "Excluded": excluded}
+    mocker.patch(
+        "peat.api.pull_api.module_api.lookup_types",
+        side_effect=lambda names, **_: [mods[n] for n in names],
+    )
+
+    # Multiple selected modules doesn't raise, since the host has a peat_module
+    assert pull(["192.168.0.1"], "unicast_ip", ["Allowed", "Other"], skip_scan=True) is None
+    excluded.pull.assert_not_called()
+    assert state.error

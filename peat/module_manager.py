@@ -6,8 +6,15 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from peat import log, utils
+from peat import consts, log, utils
+from peat.consts import PeatError
 from peat.device import DeviceData, DeviceModule, IPMethod, SerialMethod
+from peat.module_protocol import (
+    MODULE_OPERATIONS,
+    PROTOCOL_OPERATIONS,
+    ModuleProtocol,
+    parse_protocol_filter,
+)
 
 
 class ModuleManager:
@@ -357,6 +364,204 @@ class ModuleManager:
         types = self.lookup_types(dev_types, filter_attr, subclass_method, filter_values)
         return self._mods_to_names(types)
 
+    def select_modules(
+        self,
+        dev_types: Any | None | list[str | type[DeviceModule] | DeviceModule] = None,
+        operation: consts.OperationType | None = None,
+        protocols: str | int | Iterable[str | int] | None = None,
+        comm_type: consts.AllowedCommTypes | None = None,
+    ) -> list[type[DeviceModule]]:
+        """
+        Resolve modules (like :meth:`lookup_types`), then keep only the modules
+        that support an operation and match a protocol filter.
+
+        This is how the PEAT CLI selects the modules a command uses.
+
+        Args:
+            dev_types: DeviceModule names, aliases, classes, or instances
+                to resolve into module classes. If :obj:`None`, all
+                currently imported modules are used.
+            operation: Only include modules that support this operation
+                (``scan``, ``pull``, ``push``, or ``parse``),
+                as determined by :meth:`~peat.device.DeviceModule.get_operations`
+            protocols: Only include modules that use at least one of these
+                protocols or ports for the operation (refer to
+                :meth:`filter_by_protocols` for details)
+            comm_type: Communication type the modules will be used with
+                (``unicast_ip``, ``broadcast_ip``, or ``serial``). If set, only
+                protocols used with it are considered by the protocol filter.
+
+        Returns:
+            Sorted list of module classes. This is empty if ``dev_types``
+            didn't resolve to any modules.
+
+        Raises:
+            PeatError: If the protocol filter is invalid, or if the filters
+                excluded all of the modules
+            ValueError: If ``operation`` is invalid
+        """
+        if operation is not None and operation not in MODULE_OPERATIONS:
+            raise ValueError(
+                f"invalid operation '{operation}' (expected one of {MODULE_OPERATIONS})"
+            )
+
+        candidates = self.lookup_types(dev_types)
+        if not candidates:
+            return []
+
+        mods = candidates
+        if operation:
+            mods = [m for m in candidates if m.supports(operation)]
+
+            if not mods:
+                raise PeatError(
+                    f"None of the selected modules support '{operation}' (selected "
+                    f"modules: {', '.join(self._mods_to_names(candidates))}). Run "
+                    f"'peat {operation} --list-modules' to list modules that do."
+                )
+
+            if len(mods) != len(candidates):
+                dropped = [m for m in candidates if m not in mods]
+                log.debug(
+                    f"Excluding {len(dropped)} modules that don't support "
+                    f"'{operation}': {', '.join(self._mods_to_names(dropped))}"
+                )
+
+        if protocols and parse_protocol_filter(protocols):
+            before = mods
+            mods = self.filter_by_protocols(mods, protocols, operation, comm_type)
+            for_op = f" for '{operation}'" if operation else ""
+            if comm_type:
+                for_op += f" ({comm_type})"
+
+            if not mods:
+                proto_op = operation if operation in PROTOCOL_OPERATIONS else None
+                raise PeatError(
+                    f"None of the selected modules use the protocol(s) or port(s) "
+                    f"{self._fmt_filter(protocols)}{for_op}. Protocols used{for_op} "
+                    f"by the selected modules: "
+                    f"{', '.join(self.all_protocols(proto_op, before, comm_type)) or 'none'}"
+                )
+
+            log.debug(
+                f"Protocol filter {self._fmt_filter(protocols)} selected {len(mods)} of "
+                f"{len(before)} modules{for_op}: {', '.join(self._mods_to_names(mods))}"
+            )
+
+        return self._sort(mods)
+
+    @staticmethod
+    def filter_by_protocols(
+        mods: Iterable[type[DeviceModule]],
+        protocols: str | int | Iterable[str | int] | None,
+        operation: consts.OperationType | None = None,
+        comm_type: consts.AllowedCommTypes | None = None,
+    ) -> list[type[DeviceModule]]:
+        """
+        Filter modules to those that use at least one of the protocols or ports.
+
+        Protocol filter values are protocol names (``ftp``, or ``modbus`` to match
+        ``modbus_tcp``), ports (``502``), port ranges (``20-25``), or ports
+        with a transport (``161/udp``). Refer to
+        :func:`~peat.module_protocol.parse_protocol_filter` for details.
+
+        Only the protocols the module uses for ``operation`` are considered.
+        For example, SELRelay pulls files via FTP but doesn't use FTP to
+        identify devices, so it matches ``ftp`` for ``pull``, but not for ``scan``.
+
+        Args:
+            mods: Modules to filter
+            protocols: Protocol filter value(s)
+            operation: Operation the modules will be used for. If :obj:`None` or
+                ``parse``, protocols used for any operation are considered.
+            comm_type: Communication type the modules will be used with
+                (``unicast_ip``, ``broadcast_ip``, or ``serial``). If set, only
+                the protocols used with it are considered, e.g. only the
+                ``broadcast_ip`` identify methods for a broadcast scan. Refer to
+                :meth:`~peat.device.DeviceModule.get_protocol_details` for details.
+
+        Returns:
+            Sorted list of the modules that matched. If the filter is empty,
+            all of the modules are returned.
+
+        Raises:
+            PeatError: If the protocol filter is invalid
+        """
+        terms = parse_protocol_filter(protocols)
+        if not terms:
+            return ModuleManager._sort(list(mods))
+
+        proto_op = operation if operation in PROTOCOL_OPERATIONS else None
+
+        return ModuleManager._sort(
+            [
+                m
+                for m in mods
+                if any(
+                    p.matches(t)
+                    for p in m.get_protocol_details(proto_op, comm_type)
+                    for t in terms
+                )
+            ]
+        )
+
+    def all_protocols(
+        self,
+        operation: consts.ProtocolOperationType | None = None,
+        mods: Iterable[type[DeviceModule]] | None = None,
+        comm_type: consts.AllowedCommTypes | None = None,
+    ) -> list[str]:
+        """
+        Names of the protocols used by modules.
+
+        Args:
+            operation: Only include protocols used for this operation
+                (``scan``, ``pull``, or ``push``)
+            mods: Modules to get the protocols of. If :obj:`None`,
+                all currently imported modules are used.
+            comm_type: Only include protocols used with this communication type
+                (``unicast_ip``, ``broadcast_ip``, or ``serial``)
+
+        Returns:
+            Sorted unique protocol names
+        """
+        if mods is None:
+            mods = self.modules.values()
+        return sorted({p for m in mods for p in m.get_protocols(operation, comm_type)})
+
+    def get_capabilities(
+        self, mods: Iterable[type[DeviceModule]] | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Capabilities of modules (refer to :meth:`~peat.device.DeviceModule.get_capabilities`).
+
+        Args:
+            mods: Modules to get the capabilities of. If :obj:`None`,
+                all currently imported modules are used.
+
+        Returns:
+            JSON-serializable capabilities of each module, sorted by module name.
+            The key ``imported_at_runtime`` is added, which is :obj:`True` if the
+            module was imported at runtime (e.g. with ``-I``).
+        """
+        if mods is None:
+            mods = self.modules.values()
+
+        results = []
+        for mod in self._sort(list(mods)):
+            caps = mod.get_capabilities()
+            caps["imported_at_runtime"] = mod.__name__.lower() in self.runtime_imports
+            results.append(caps)
+
+        return results
+
+    @staticmethod
+    def _fmt_filter(protocols: str | int | Iterable[str | int]) -> str:
+        """
+        Format protocol filter values for messages.
+        """
+        return ", ".join(f"'{t.raw}'" for t in parse_protocol_filter(protocols))
+
     def alias_to_names(self, alias: str) -> list[str]:
         """
         Resolve an alias into names of modules it corresponds to.
@@ -454,7 +659,7 @@ class ModuleManager:
         """
         Checks if a Python object is a PEAT device module.
         """
-        if module in [DeviceModule, DeviceData, IPMethod, SerialMethod]:
+        if module in [DeviceModule, DeviceData, IPMethod, SerialMethod, ModuleProtocol]:
             # This hack is used to filter the PEAT core classes
             # out of a few areas, so don't log when it fails.
             return False
@@ -463,6 +668,11 @@ class ModuleManager:
         elif not issubclass(module, DeviceModule):
             reason = "module is not a subclass of peat.DeviceModule"
         else:
+            try:
+                module.get_protocol_details()  # Check the protocols metadata
+            except PeatError as ex:
+                log.warning(f"Module validation failed for '{module.__name__}': {ex}")
+                return False
             return True
 
         log.debug(f"Module validation failed for '{module}': {reason}")

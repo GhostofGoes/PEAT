@@ -3,6 +3,7 @@ import json
 import pdb  # noqa: T100
 import sys
 import timeit
+from collections.abc import Iterable
 from pathlib import Path
 from pprint import pformat
 from typing import Any, get_args
@@ -12,6 +13,7 @@ from humanfriendly.text import pluralize
 from peat import (
     PeatError,
     cli_args,
+    cli_listing,
     config,
     consts,
     datastore,
@@ -51,32 +53,11 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
 
     log.trace4(f"** Raw CLI arguments **\n{pformat(args, indent=4)}\n")
 
-    # Print imported modules and aliases, then exit
-    if args.get("list_modules"):
-        print(json.dumps(module_api.names), flush=True)  # noqa: T201
-        sys.exit(0)
-
-    if args.get("list_aliases"):
-        print(  # noqa: T201
-            json.dumps(list(module_api.module_aliases.keys())), flush=True
-        )
-        sys.exit(0)
-
-    if args.get("list_alias_mappings"):
-        print(json.dumps(module_api.alias_mappings), flush=True)  # noqa: T201
-        sys.exit(0)
-
-    if args.get("list_all"):
-        print(  # noqa: T201
-            f"** Modules **\n"
-            f"{pformat(module_api.names, compact=True)}"
-            f"\n\n** Aliases **\n"
-            f"{pformat(list(module_api.module_aliases.keys()), compact=True)}"
-            f"\n\n** Alias Mappings **\n"
-            f"{pformat(module_api.alias_mappings, compact=True)}",
-            flush=True,
-        )
-        sys.exit(0)
+    # Print imported modules, their capabilities, and aliases, then exit
+    # (--list-modules, --list-aliases, --list-alias-mappings, --list-all, --module-info)
+    list_exit_code = cli_listing.handle_list_args(args)
+    if list_exit_code is not None:
+        sys.exit(list_exit_code)
 
     # Print examples for the current sub-command, e.g. "scan"
     if args.get("examples"):
@@ -259,6 +240,13 @@ def oneshot_main(args: dict[str, Any]) -> bool:
 
         device_types.update(module_names)
 
+        # Exclude modules that don't support the command or the protocol filter
+        try:
+            device_types = set(resolve_command_modules(args, device_types, comm_type))
+        except PeatError as err:
+            log.critical(err)
+            return False
+
         log.info(
             f"Running {args['func']} of {pluralize(len(targets), 'target')} using "
             f"{pluralize(len(device_types), 'module')} (comm_type: {comm_type})"
@@ -347,6 +335,66 @@ def oneshot_main(args: dict[str, Any]) -> bool:
         log.exception(f"{args['func']} failed due to unhandled exception")
 
     return False
+
+
+def resolve_command_modules(
+    args: dict[str, Any],
+    device_types: Iterable[str],
+    comm_type: consts.AllowedCommTypes | None = None,
+) -> list[str]:
+    """
+    Select the device modules to use for a scan, pull, or push.
+
+    Modules that don't support the command (e.g. modules that can't push)
+    are excluded, as are modules that don't use any of the protocols in the
+    protocol filter (``-p``/``--protocols`` or ``PROTOCOL_FILTER``), if set.
+    A warning is logged for modules named with ``-d`` that won't be used.
+
+    Args:
+        args: Raw CLI arguments
+        device_types: Names or aliases of the modules requested for the command
+        comm_type: Communication type of the targets. If set, only protocols
+            used with it are considered by the protocol filter (e.g. only
+            broadcast identify methods for a broadcast scan).
+
+    Returns:
+        Sorted names of the modules to use
+
+    Raises:
+        PeatError: If the protocol filter is invalid or failed to load,
+            or if the filters excluded all of the requested modules
+    """
+    func = args["func"]
+    operation = cli_listing.COMMAND_OPERATIONS.get(func)
+    protocols = cli_listing.get_protocol_filter()
+    mods = module_api.select_modules(
+        sorted(device_types),
+        operation=operation,
+        protocols=protocols or None,
+        comm_type=comm_type,
+    )
+
+    if protocols and mods:
+        log.info(
+            f"Protocol filter {protocols} selected "
+            f"{pluralize(len(mods), 'module')} for {func}: "
+            f"{', '.join(m.__name__ for m in mods)}"
+        )
+
+    # Warn if a module the user explicitly named won't be used
+    for name in args.get("device_types") or []:
+        mod = module_api.get_module(name) if isinstance(name, str) else None
+        if mod is None or mod in mods:
+            continue
+        if operation and not mod.supports(operation):
+            reason = f"it doesn't support {operation}"
+        else:
+            reason = "it doesn't use any of the protocols in the protocol filter"
+            if comm_type:
+                reason += f" with {comm_type}"
+        log.warning(f"Not using module '{mod.__name__}' for {func}: {reason}")
+
+    return [m.__name__ for m in mods]
 
 
 def export_device_data(args: dict[str, Any]) -> bool:

@@ -101,6 +101,7 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         "list_modules",
         "list_aliases",
         "list_alias_mappings",
+        "module_info",
         "examples",
         "all_examples",
         "list_heat_protocols",

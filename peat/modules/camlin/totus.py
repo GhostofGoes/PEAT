@@ -1,4 +1,4 @@
-from peat import DeviceData, DeviceModule, IPMethod
+from peat import DeviceData, DeviceModule, IPMethod, ModuleProtocol
 
 from .totus_http import TotusHTTP
 
@@ -56,6 +56,16 @@ class Totus(DeviceModule):
     vendor_name = "Camlin Ltd"
     brand = "Totus"
     model = "G9"
+    supported_models = ["G9"]
+    protocols = [
+        ModuleProtocol(
+            name="http",
+            transport="tcp",
+            ports=[80],
+            operations=["pull"],
+            description="REST API (totus/api/1.0): status, network, DNP3 and Modbus registers",
+        ),
+    ]
     default_options = {"http": {"user": "", "pass": ""}}
 
     @classmethod

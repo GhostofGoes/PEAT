@@ -132,6 +132,10 @@ IANA_IP_PROTOS: Final[dict[int, str]] = {
 AllowedCommTypes = Literal["unicast_ip", "broadcast_ip", "serial"]
 PushType = Literal["config", "firmware"]
 EntrypointType = Literal["CLI", "Server", "Package"]
+# Operations a device module can support (see DeviceModule.get_operations())
+OperationType = Literal["scan", "pull", "push", "parse"]
+# Operations that communicate with devices using protocols (parse doesn't)
+ProtocolOperationType = Literal["scan", "pull", "push"]
 
 
 class PeatError(Exception):

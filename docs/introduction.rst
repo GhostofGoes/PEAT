@@ -55,6 +55,9 @@ Devices that have code and some amount of work done for, but are not included wi
 
 TCP/IP protocols currently used by PEAT
 ---------------------------------------
+.. tip::
+   Run ``peat <command> --list-modules`` and ``peat <command> --module-info <module>`` to list the operations, protocols, ports, and supported models of the modules in your copy of PEAT, including modules imported with ``-I`` (refer to :ref:`listing-modules`).
+
 .. csv-table::
    :escape: \
    :file: tcp_ip_protocols_used_by_peat.csv

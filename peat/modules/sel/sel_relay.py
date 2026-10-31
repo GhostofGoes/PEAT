@@ -103,6 +103,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     SerialMethod,
     Service,
     consts,
@@ -251,6 +252,52 @@ class SELRelay(DeviceModule):
 
     # Add aliases for specific models, e.g. "sel-300g"
     module_aliases = [f"sel-{x}" for x in supported_models]
+
+    # Protocols used to pull and push. Refer to the 'sel' options in
+    # examples/peat-config.yaml for how to configure these.
+    protocols = [
+        ModuleProtocol(
+            name="ftp",
+            transport="tcp",
+            ports=[21],
+            operations=["pull", "push"],
+            description="Download config and event files (pull), upload SET_*.TXT (push)",
+        ),
+        ModuleProtocol(
+            name="telnet",
+            transport="tcp",
+            ports=[23],
+            operations=["pull", "push"],
+            description="Commands and file downloads (pull), sel.restart_after_push (push)",
+        ),
+        ModuleProtocol(
+            name="http",
+            transport="tcp",
+            ports=[80],
+            operations=["pull"],
+            description="Web interface",
+        ),
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[443],
+            operations=["pull"],
+            description="Web interface",
+        ),
+        ModuleProtocol(
+            name="serial",
+            transport="serial",
+            operations=["pull"],
+            description="Run commands and download files over a serial connection",
+        ),
+        ModuleProtocol(
+            name="ymodem",
+            transport="serial",
+            operations=["pull"],
+            options_key="serial",
+            description="YMODEM file transfers over serial (requires the rz/sz commands)",
+        ),
+    ]
 
     # For descriptions of options, refer to examples/peat-config.yaml
     default_options = {

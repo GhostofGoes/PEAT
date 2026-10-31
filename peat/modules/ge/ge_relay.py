@@ -11,6 +11,7 @@ from peat import (
     Event,
     Interface,
     IPMethod,
+    ModuleProtocol,
     consts,
     log,
     state,
@@ -69,6 +70,15 @@ class GERelay(DeviceModule):
 
     # NOTE: F35 has not been tested with PEAT after integration changes
     supported_models = ["D30", "F35", "N60", "T60", "L90"]
+    protocols = [
+        ModuleProtocol(
+            name="http",
+            transport="tcp",
+            ports=[80],
+            operations=["pull"],
+            description="Download and parse web interface pages",
+        ),
+    ]
 
     URLS = {
         "default_settings_diagnostics": "/DefaultSettingsDiagnostics.htm",

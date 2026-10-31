@@ -14,7 +14,7 @@ To get help for a command, run "peat <command> --help" (example: "peat scan --he
 
 To get examples of how to use a command, run "peat <command> --examples" (example: "peat parse --examples"). Alternatively, to list examples for all commands, run "peat scan --all-examples".
 
-To list modules currently imported by PEAT: "peat scan --list-modules" (or other --list-* arguments, as detailed above in the "optional arguments" section).
+To list the device modules that can be used with a command, including the operations and protocols they support: "peat scan --list-modules" (or other --list-* arguments, as detailed above in the "optional arguments" section). To get details about a module, such as the protocols and ports it uses and the device models it supports: "peat pull --module-info selrelay".
 
 Data collected by PEAT is written to files in "./peat_results/" in the current directory (by default). Data can also be saved to Elasticsearch. See the help for specific sub-commands for details.
 
@@ -44,6 +44,15 @@ peat scan -d m340 controllogix -i 192.0.2.0/24
 
 # Search for PLCs
 peat scan -d plc -i 192.0.2.0/24
+
+# Only use modules that identify devices using Modbus/TCP ('modbus' matches 'modbus_tcp')
+peat scan -p modbus -i 192.0.2.0/24
+
+# Only use modules that identify devices using TCP port 502 or UDP port 161
+peat scan -p 502 161/udp -i 192.0.2.0/24
+
+# Preview the modules that would be used with a protocol filter, then exit
+peat scan -p ftp --list-modules
 
 # Discover devices on multiple networks, with verbose output
 peat scan -v -i 192.168.200.0/24 192.0.2.0/24
@@ -142,8 +151,14 @@ peat scan --run-name scan_example -d clx -i 192.0.2.0/24
 # Use PEAT configuration settings from a YAML file (preferred method)
 peat scan -d clx -i 192.0.2.0/24 -c peat-config.yaml
 
-# List available modules
+# List the modules that can be used for scanning, with their operations and protocols
 peat scan --list-modules
+
+# Same as above, as JSON
+peat scan --list-modules --json
+
+# Show details about the SEL modules, including protocols, ports, and supported models
+peat scan --module-info sel
 
 # List aliases
 peat scan --list-aliases
@@ -186,6 +201,13 @@ peat pull -d m340 controllogix -i 192.0.2.1-5
 
 # Pull from multiple subnets and a specific IP
 peat pull -i 192.0.2.0/24 192.0.0.0/24 192.168.0.10
+
+# Only use modules that pull using FTP or Telnet
+# NOTE: this selects modules, the modules can still use their other protocols
+peat pull -p ftp telnet -i 192.0.2.20
+
+# List the modules that can pull using HTTPS
+peat pull -p https --list-modules
 
 # Only output the results from the pull, no logs (-q is equivalent to --quiet)
 peat pull -q --print-results -d m340 -i 192.0.2.1
@@ -320,6 +342,12 @@ peat push -d selrelay -i 192.0.2.1 -- SET_1.TXT
 
 # Push a directory containing configuration files to a SEL 451 Relay
 peat push -d selrelay -i 192.0.2.1 -- ./SETTINGS/
+
+# Only use modules that push using FTP
+peat push -d selrelay -p ftp -i 192.0.2.1 -- SET_1.TXT
+
+# List the modules that support pushing
+peat push --list-modules
 
 # NOTE: currently, only a single file or directory can be specified for a push,
 # multiple files cannot be specified. A workaround is to create a new directory,
@@ -1008,6 +1036,23 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
             "and other information sources, such as imported scan "
             "results.",
         )
+        subp.add_argument(
+            "-p",
+            "--protocols",
+            type=str,
+            nargs="+",
+            metavar="PROTOCOL",
+            default=None,
+            dest="protocol_filter",
+            help="Only use device modules that use at least one of these protocols "
+            "or ports for this command, e.g. 'ftp', '502', '20-25', or '161/udp'. "
+            "Values can be space- or comma-separated. Names also match protocols "
+            "they prefix ('modbus' matches 'modbus_tcp'). Only protocols used with "
+            "the type of targets (-i, -b, or -s) are considered. If used with -d, "
+            "modules must match both. NOTE: this selects modules, it does not prevent the "
+            "selected modules from using their other protocols. Use with "
+            "--list-modules to preview the modules that will be used.",
+        )
         # pull can omit host args when a YAML config with hosts is provided
         host_group = subp.add_mutually_exclusive_group(required=subp is not pull_parser)
         host_group.add_argument(
@@ -1269,17 +1314,30 @@ def add_list_module_args(
         "--list-all",
         action="store_true",
         default=None,
-        help="List the currently imported device modules, their aliases, "
-        "and alias mappings, then exit. This includes modules "
-        'imported with "-I". WARNING: this has a LOT of output, do not run '
-        "if you are using a screen reader.",
+        help="List all currently imported device modules with the operations "
+        "and protocols they support, their aliases, and alias mappings, then exit. "
+        'This includes modules imported with "-I". Use --json for JSON output. '
+        "WARNING: this has a LOT of output, do not run if you are using a screen reader.",
     )
     parser_or_group.add_argument(
         "--list-modules",
         action="store_true",
         default=None,
-        help="Print the currently imported device modules, then exit. "
-        'This includes modules imported with "-I".',
+        help="List the device modules that can be used with this command, with "
+        "the operations (scan, pull, push, parse) and protocols they support, then "
+        'exit. This includes modules imported with "-I", and honors -d and -p '
+        "(if the command has them). Use --json for JSON output.",
+    )
+    parser_or_group.add_argument(
+        "--module-info",
+        type=str,
+        nargs="+",
+        metavar="MODULE",
+        default=None,
+        help="Print details about device module(s), then exit. Modules are names "
+        "or aliases (e.g. 'sel'). Details include the supported operations, "
+        "protocols and ports used, identification methods, supported models, "
+        "and files the module can parse. Use --json for JSON output.",
     )
     parser_or_group.add_argument(
         "--list-aliases",

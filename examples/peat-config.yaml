@@ -143,6 +143,17 @@ scan_sweep: false
 # Force identification checks of all ports during scanning
 intensive_scan: false
 
+# Only use device modules that use at least one of these protocols or ports
+# for the command being run (scan, pull, or push). Same as "-p" on the CLI.
+# Only applies to the CLI commands, not to the PEAT Python API.
+# Values can be protocol names ("ftp", or "modbus" to match "modbus_tcp"),
+# ports (502), port ranges ("20-25"), or ports with a transport ("161/udp").
+# Empty list = don't filter modules by protocol. Example: [ftp, 502, 161/udp]
+# NOTE: this selects which modules are used. It doesn't prevent the selected
+# modules from using their other protocols. To see the protocols a module uses,
+# run "peat pull --list-modules" or "peat pull --module-info <module>".
+protocol_filter: []
+
 # -----------------------------------------------------------------------------
 
 # --- Options for configuring where PEAT saves files ---

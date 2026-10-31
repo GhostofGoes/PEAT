@@ -14,7 +14,16 @@ from typing import Literal
 
 from paramiko.ssh_exception import AuthenticationException
 
-from peat import DeviceData, DeviceModule, IPMethod, exit_handler, log, state, utils
+from peat import (
+    DeviceData,
+    DeviceModule,
+    IPMethod,
+    ModuleProtocol,
+    exit_handler,
+    log,
+    state,
+    utils,
+)
 from peat.data.data_utils import merge_models
 from peat.parsing.command_parsers import (
     ArpParser,
@@ -74,6 +83,23 @@ class Idirect(DeviceModule):
     #     "idirect-release",
     # ]
     module_aliases = ["idirect-x3", "idirect-x5", "idirect-x7"]
+    supported_models = ["X3", "X5", "X7"]
+    protocols = [
+        ModuleProtocol(
+            name="ssh",
+            transport="tcp",
+            ports=[22],
+            operations=["pull"],
+            description="Run shell commands and read files",
+        ),
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[443],
+            operations=["pull"],
+            description="Retrieve the TLS certificate ('ssl' pull method)",
+        ),
+    ]
     default_options = {
         "idirect": {
             "pull_methods": [

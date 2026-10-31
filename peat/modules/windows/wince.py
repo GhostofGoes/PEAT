@@ -38,6 +38,7 @@ class WindowsCE(DeviceModule):
     ]
 
     module_aliases = ["wince", "TP700", "SiemensComfort"]
+    supported_models = ["SIMATIC TP700 Comfort", "PanelView Plus 7"]
 
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData | None:

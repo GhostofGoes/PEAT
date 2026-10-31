@@ -324,7 +324,7 @@ def check_host_unicast_ip(ip: str, modules: list[type[DeviceModule]]) -> bool:
             f"The PEAT module '{dev._module.__name__}' that was configured by the user "
             f"for {dev.ip} is not available in the modules that are currently allowed to "
             f"be used by PEAT for scanning. Ensure the module isn't being filtered by "
-            f"the '-d' argument. You can also remove the restriction by changing or "
+            f"the '-d' or '-p' arguments. You can also remove the restriction by changing or "
             f"removing the 'peat_module' option for the host in the YAML config. "
             f"Available modules: {', '.join(x.__name__ for x in modules)}"
         )

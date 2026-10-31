@@ -1,12 +1,16 @@
+import inspect
 import io
 import shutil
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, Literal, get_args
+
+import pydantic
 
 from peat import (
     DeviceData,
     DeviceError,
     IPMethod,
+    PeatError,
     SerialMethod,
     config,
     consts,
@@ -15,6 +19,11 @@ from peat import (
     utils,
 )
 from peat.file_signature import FileSignature
+from peat.module_protocol import (
+    PROTOCOL_OPERATIONS,
+    ModuleProtocol,
+    normalize_protocol_name,
+)
 
 
 class DeviceModule:
@@ -41,6 +50,24 @@ class DeviceModule:
     serial_methods: list[SerialMethod] = []
     """
     Methods for identifying devices via a serial connection.
+    """
+
+    protocols: list[ModuleProtocol] = []
+    """
+    Protocols the module uses to pull from or push to devices.
+
+    Protocols used to identify devices (scan) are derived automatically from
+    ``ip_methods`` and ``serial_methods``, and don't need to be listed here.
+    List every protocol used by ``_pull()`` and ``_push()``, including
+    ones also used for scanning. For example, SELRelay pulls files via FTP,
+    but doesn't use FTP to identify relays.
+
+    If a module implements ``_pull()`` or ``_push()`` but doesn't declare any
+    protocols for that operation, PEAT assumes the operation uses the module's
+    scanning protocols.
+
+    Query these with :meth:`get_protocols`, :meth:`get_ports`,
+    and :meth:`get_protocol_details`.
     """
 
     device_type: str = ""
@@ -76,6 +103,7 @@ class DeviceModule:
     supported_models: list[str] = []
     """
     Device models this module supports or is known to work with.
+    These are shown by ``--module-info`` and :meth:`get_capabilities`.
     """
 
     filename_patterns: list[str] = []
@@ -443,6 +471,309 @@ class DeviceModule:
 
         # Fill in fields (inferences) and add common fields, like description.product
         dev.populate_fields()
+
+    @classmethod
+    def get_operations(cls) -> list[consts.OperationType]:
+        """
+        Operations PEAT can perform with this module.
+
+        This uses the same checks as the scan, pull, push, and parse APIs:
+
+        - ``scan``: the module has ``ip_methods`` or ``serial_methods``
+        - ``pull``: it can scan, and ``_pull()`` is implemented
+        - ``push``: it can scan, and ``_push()`` is implemented
+        - ``parse``: ``_parse()`` is implemented, and the module has
+          ``filename_patterns``, ``file_signatures``, or ``can_parse_dir``
+
+        Returns:
+            Supported operations, in the order scan, pull, push, parse
+        """
+        can_identify = bool(cls.ip_methods or cls.serial_methods)
+        ops: list[consts.OperationType] = []
+
+        if can_identify:
+            ops.append("scan")
+        if can_identify and cls.method_implemented("_pull"):
+            ops.append("pull")
+        if can_identify and cls.method_implemented("_push"):
+            ops.append("push")
+        if cls.method_implemented("_parse") and (
+            cls.filename_patterns or cls.file_signatures or cls.can_parse_dir
+        ):
+            ops.append("parse")
+
+        return ops
+
+    @classmethod
+    def supports(cls, operation: consts.OperationType) -> bool:
+        """
+        If the module supports an operation (``scan``, ``pull``, ``push``, or ``parse``).
+        """
+        return operation in cls.get_operations()
+
+    @classmethod
+    def get_comm_types(cls) -> list[consts.AllowedCommTypes]:
+        """
+        Communication types the module can use to identify devices.
+
+        Returns:
+            ``unicast_ip``, ``broadcast_ip``, and/or ``serial``, in that order
+        """
+        types = {m.type for m in cls.ip_methods}
+        if cls.serial_methods:
+            types.add("serial")
+        return [t for t in get_args(consts.AllowedCommTypes) if t in types]
+
+    @classmethod
+    def get_method_names(cls, comm_type: consts.AllowedCommTypes | None = None) -> list[str]:
+        """
+        Names of the module's identification methods (``ip_methods`` and ``serial_methods``).
+
+        Args:
+            comm_type: Only include methods for this communication type
+                (``unicast_ip``, ``broadcast_ip``, or ``serial``)
+
+        Returns:
+            Method names, in the order they're defined
+        """
+        names = [m.name for m in cls.ip_methods if comm_type in (None, m.type)]
+        if comm_type in (None, "serial"):
+            names.extend(m.name for m in cls.serial_methods)
+        return names
+
+    @classmethod
+    def get_protocol_details(
+        cls,
+        operation: consts.ProtocolOperationType | None = None,
+        comm_type: consts.AllowedCommTypes | None = None,
+    ) -> list[ModuleProtocol]:
+        """
+        All protocols used by the module.
+
+        Protocols from ``ip_methods`` and ``serial_methods`` (used for scanning)
+        are merged with the declared :attr:`protocols`, resulting in one entry per
+        protocol name and transport. If the module implements pull or push but
+        doesn't declare protocols for it, the scanning protocols are assumed
+        to be used for that operation. Names of protocols from ``ip_methods``
+        and ``serial_methods`` are normalized with
+        :func:`~peat.module_protocol.normalize_protocol_name`.
+
+        Args:
+            operation: Only include protocols used for this operation
+                (``scan``, ``pull``, or ``push``)
+            comm_type: Only include protocols used with this communication type
+                (``unicast_ip``, ``broadcast_ip``, or ``serial``). For scanning,
+                only the ``ip_methods`` of that type (or the ``serial_methods``)
+                are used, e.g. a broadcast scan only uses ``broadcast_ip`` methods.
+                For pull and push, ``serial`` only includes serial protocols,
+                and ``unicast_ip`` and ``broadcast_ip`` only include
+                network (non-serial) protocols.
+
+        Returns:
+            New :class:`~peat.module_protocol.ModuleProtocol` objects,
+            sorted by name, then transport
+
+        Raises:
+            ValueError: If ``operation`` or ``comm_type`` is invalid
+            PeatError: If the module's :attr:`protocols` are invalid
+        """
+        if operation is not None and operation not in PROTOCOL_OPERATIONS:
+            raise ValueError(
+                f"invalid operation '{operation}' (expected one of {PROTOCOL_OPERATIONS})"
+            )
+        if comm_type is not None and comm_type not in get_args(consts.AllowedCommTypes):
+            raise ValueError(f"invalid comm_type '{comm_type}'")
+
+        merged: dict[tuple[str, str], ModuleProtocol] = {}
+
+        def _merge(proto: ModuleProtocol) -> None:
+            key = (proto.name, proto.transport)
+            if key not in merged:
+                merged[key] = proto.copy(deep=True)  # Don't modify class attributes
+                return
+            existing = merged[key]
+            # NOTE: validators sort and deduplicate ports and operations on assignment
+            existing.ports = [*existing.ports, *proto.ports]
+            existing.operations = [*existing.operations, *proto.operations]
+            existing.description = existing.description or proto.description
+            existing.options_key = existing.options_key or proto.options_key
+
+        declared = cls._declared_protocols()
+
+        # Modules (e.g. third-party modules) that implement pull or push
+        # without declaring protocols for it are assumed to use the scan protocols.
+        declared_ops = {op for p in declared for op in p.operations}
+        inferred = [op for op in ("pull", "push") if op not in declared_ops and cls.supports(op)]
+
+        if comm_type != "serial":
+            for ip_meth in cls.ip_methods:
+                # Methods of another IP comm type aren't used for this kind of
+                # scan, but pull and push may still be assumed to use them.
+                ops = ["scan"] if comm_type in (None, ip_meth.type) else []
+                if ops or inferred:
+                    _merge(
+                        ModuleProtocol(
+                            name=normalize_protocol_name(ip_meth.protocol),
+                            transport=ip_meth.transport,
+                            ports=[ip_meth.default_port],
+                            operations=[*ops, *inferred],
+                        )
+                    )
+
+        if comm_type in (None, "serial"):
+            for serial_meth in cls.serial_methods:
+                _merge(
+                    ModuleProtocol(
+                        name=normalize_protocol_name(serial_meth.protocol),
+                        transport="serial",
+                        operations=["scan", *inferred],
+                    )
+                )
+
+        for proto in declared:
+            if comm_type is not None and (proto.transport == "serial") != (comm_type == "serial"):
+                continue
+            if inferred and "scan" in proto.operations:
+                proto = ModuleProtocol(
+                    **{**proto.dict(), "operations": [*proto.operations, *inferred]}
+                )
+            _merge(proto)
+
+        results = sorted(merged.values(), key=lambda p: (p.name, p.transport))
+        if operation is not None:
+            results = [p for p in results if operation in p.operations]
+
+        return results
+
+    @classmethod
+    def _declared_protocols(cls) -> list[ModuleProtocol]:
+        """
+        The module's :attr:`protocols`, validated.
+
+        Third-party modules may set :attr:`protocols` to dicts instead of
+        :class:`~peat.module_protocol.ModuleProtocol` objects.
+
+        Raises:
+            PeatError: If a protocol is invalid
+        """
+        results = []
+        for proto in cls.protocols:
+            if isinstance(proto, ModuleProtocol):
+                results.append(proto)
+                continue
+            try:
+                results.append(ModuleProtocol.parse_obj(proto))
+            except (pydantic.ValidationError, TypeError) as ex:
+                raise PeatError(f"Invalid protocol in {cls.__name__}.protocols: {ex}") from None
+        return results
+
+    @classmethod
+    def get_protocols(
+        cls,
+        operation: consts.ProtocolOperationType | None = None,
+        comm_type: consts.AllowedCommTypes | None = None,
+    ) -> list[str]:
+        """
+        Names of the protocols used by the module, e.g. ``["ftp", "http", "telnet"]``.
+
+        Args:
+            operation: Only include protocols used for this operation
+                (``scan``, ``pull``, or ``push``)
+            comm_type: Only include protocols used with this communication type
+                (refer to :meth:`get_protocol_details`)
+
+        Returns:
+            Sorted unique protocol names
+        """
+        return sorted({p.name for p in cls.get_protocol_details(operation, comm_type)})
+
+    @classmethod
+    def get_ports(
+        cls,
+        operation: consts.ProtocolOperationType | None = None,
+        transport: Literal["tcp", "udp"] | None = None,
+    ) -> list[int]:
+        """
+        Default network ports used by the module.
+
+        Args:
+            operation: Only include ports used for this operation
+                (``scan``, ``pull``, or ``push``)
+            transport: Only include ports for this transport (``tcp`` or ``udp``).
+                Protocols with a transport of ``both`` are included for either.
+
+        Returns:
+            Sorted unique port numbers
+        """
+        return sorted(
+            {
+                port
+                for proto in cls.get_protocol_details(operation)
+                if transport is None or transport in proto.transports
+                for port in proto.ports
+            }
+        )
+
+    @classmethod
+    def get_capabilities(cls) -> dict[str, Any]:
+        """
+        Summary of the module's metadata and capabilities.
+
+        This is used by ``--list-modules --json`` and ``--module-info``.
+        Keys will only be added in the future, not changed or removed.
+
+        Returns:
+            JSON-serializable :class:`dict` with the module's capabilities
+        """
+        # NOTE: inspect.getdoc() would return the DeviceModule docstring
+        # if the module doesn't have a docstring.
+        doc = inspect.cleandoc(cls.__doc__) if cls.__doc__ else ""
+
+        return {
+            "name": cls.__name__,
+            "description": doc.splitlines()[0] if doc else "",
+            "python_module": cls.__module__,
+            "device_type": cls.device_type,
+            "vendor_id": cls.vendor_id,
+            "vendor_name": cls.vendor_name,
+            "brand": cls.brand,
+            "model": cls.model,
+            "supported_models": list(cls.supported_models),
+            "module_aliases": list(cls.module_aliases),
+            "operations": cls.get_operations(),
+            "comm_types": cls.get_comm_types(),
+            "protocols": [p.dict() for p in cls.get_protocol_details()],
+            "ports": cls.get_ports(),
+            "identify_methods": [
+                *(
+                    {
+                        "name": m.name,
+                        "type": m.type,
+                        "protocol": m.protocol,
+                        "transport": m.transport,
+                        "default_port": m.default_port,
+                        "reliability": m.reliability,
+                    }
+                    for m in cls.ip_methods
+                ),
+                *(
+                    {
+                        "name": m.name,
+                        "type": "serial",
+                        "protocol": m.protocol,
+                        "transport": "serial",
+                        "default_port": None,
+                        "reliability": m.reliability,
+                    }
+                    for m in cls.serial_methods
+                ),
+            ],
+            "parse": {
+                "filename_patterns": list(cls.filename_patterns),
+                "file_signatures": [s.default_filename for s in cls.file_signatures],
+                "can_parse_dir": cls.can_parse_dir,
+            },
+        }
 
     @classmethod
     def method_implemented(cls, method_name: str) -> bool:

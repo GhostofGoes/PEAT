@@ -20,6 +20,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     Service,
     datastore,
     utils,
@@ -75,6 +76,33 @@ class AwesomeTool(DeviceModule):
     #
     # Example: peat parse -d middleware -I awesome_module.py -- awesome_output.json
     module_aliases = ["awesome", "middleware"]
+
+    # Device models (or products) the module supports or is known to work with.
+    # These are shown by "--module-info" (e.g. "peat parse -I awesome_module.py
+    # --module-info AwesomeTool"). The "AwesomePLC 9000" is fictional, of course.
+    supported_models = ["AwesomePLC 9000"]
+
+    # Protocols the module uses to pull from (or push to) devices. Protocols
+    # used to identify devices (scanning) don't need to be listed, since PEAT
+    # gets them from "ip_methods" and "serial_methods" (defined further below).
+    # List every protocol used by _pull() and _push(), even if it's also used
+    # for scanning. This is how "peat pull -p http" knows to use this module,
+    # and how "--list-modules" and "--module-info" know what the module uses.
+    #
+    # By convention, "name" is the key of the protocol's options in the device
+    # options ("http" here), which is where its port and timeout are configured.
+    protocols = [
+        ModuleProtocol(
+            name="http",
+            # 'tcp', 'udp', 'both' (tcp and udp), 'serial', or 'other'
+            transport="tcp",
+            # Default port(s) used. Required for 'tcp', 'udp', and 'both'.
+            ports=[8090],
+            # 'pull' and/or 'push' (and 'scan', if it's also used for scanning)
+            operations=["pull"],
+            description="Download awesome_output.json",
+        ),
+    ]
 
     # Configuration options for the module. These can be set in the PEAT
     # config YAML file, either globally (all devices) or on a per-host

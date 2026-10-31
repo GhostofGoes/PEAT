@@ -61,6 +61,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     Register,
     Service,
     Tag,
@@ -81,6 +82,15 @@ class SCEPTRE(DeviceModule):
     vendor_name = "Sandia National Laboratories"
     model = "SCEPTRE"
     brand = "SCEPTRE"
+    protocols = [
+        ModuleProtocol(
+            name="ftp",
+            transport="tcp",
+            ports=[21],
+            operations=["pull"],
+            description="Download config.xml and the bennu firmware",
+        ),
+    ]
     file_signatures = [
         FileSignature(
             default_filename="config.xml",

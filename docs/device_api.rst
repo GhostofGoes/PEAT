@@ -91,6 +91,21 @@ SerialMethod
    :model-summary-list-order: alphabetical
    :inherited-members: BaseModel
 
+.. _module-protocols:
+
+Module protocols
+----------------
+Protocols used by a module to pull from or push to devices, declared in :attr:`DeviceModule.protocols <peat.device.DeviceModule.protocols>`. Refer to :ref:`module-capabilities` for details.
+
+.. autopydantic_model:: peat.module_protocol.ModuleProtocol
+   :model-summary-list-order: alphabetical
+   :inherited-members: BaseModel
+
+.. autoclass:: peat.module_protocol.ProtocolFilterTerm
+   :members:
+
+.. autofunction:: peat.module_protocol.parse_protocol_filter
+
 Module manager
 --------------
 .. automodule:: peat.module_manager

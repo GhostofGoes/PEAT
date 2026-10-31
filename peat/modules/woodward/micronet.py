@@ -18,7 +18,7 @@ from pathlib import Path
 
 from dateutil import parser
 
-from peat import CommError, DeviceData, DeviceModule, IPMethod
+from peat import CommError, DeviceData, DeviceModule, IPMethod, ModuleProtocol
 from peat.protocols import FTP
 
 from . import parse_micronet
@@ -32,6 +32,16 @@ class MicroNet(DeviceModule):
     vendor_name = vendor_id
     brand = "MicroNet"
     model = "Plus"
+    supported_models = ["MicroNet Plus"]
+    protocols = [
+        ModuleProtocol(
+            name="ftp",
+            transport="tcp",
+            ports=[21],
+            operations=["pull"],
+            description="Download configuration, logic, and log files",
+        ),
+    ]
 
     default_options = {"ftp": {"timeout": 10, "user": "ServiceUser", "pass": "ServiceUser"}}
 

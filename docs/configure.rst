@@ -123,6 +123,8 @@ Environment variables
 =====================
 Configuration options can be set via system environment variables that are prefixed with ``PEAT_``. For example, to change the debugging level to ``1``, set the environment variable ``PEAT_DEBUG`` to ``1``, such as with ``export PEAT_DEBUG=1`` on Linux. Environment variables will override default settings and settings loaded from a configuration file, and are overridden by command line arguments. For example, if the environment variable ``PEAT_DEBUG`` is set to ``1``, and peat is run with ``peat scan -VV``, then the value of :attr:`DEBUG <peat.settings.Configuration.DEBUG>` for that run of PEAT will be ``2``.
 
+Options that are lists, such as :attr:`PROTOCOL_FILTER <peat.settings.Configuration.PROTOCOL_FILTER>` or :attr:`HASH_ALGORITHMS <peat.settings.Configuration.HASH_ALGORITHMS>`, can be set to comma-separated values (``PEAT_PROTOCOL_FILTER=ftp,502``) or a :term:`JSON` list (``PEAT_PROTOCOL_FILTER='["ftp", "502"]'``). Use the JSON form if a value contains a comma.
+
 .. code-block:: bash
    :caption: Linux environment variable configuration example
 
@@ -134,6 +136,10 @@ Configuration options can be set via system environment variables that are prefi
 
    # Modify only for this command execution
    PEAT_DEBUG=2 peat parse examples/
+
+   # Options that are lists can be comma-separated, or a JSON (or YAML) list
+   export PEAT_PROTOCOL_FILTER="ftp,502"
+   export PEAT_HASH_ALGORITHMS='["md5", "sha256"]'
 
 .. code-block:: batch
    :caption: Windows environment variable configuration example

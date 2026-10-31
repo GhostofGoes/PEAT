@@ -32,6 +32,7 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    ModuleProtocol,
     consts,
     datastore,
     exit_handler,
@@ -70,6 +71,51 @@ class ControlLogix(DeviceModule):
         "os.vendor.id": "WindRiver",
     }
     module_aliases = ["clx", "allen-bradley"]
+    supported_models = [
+        "1756-L7x",
+        "1756-L8x",
+        "1756-EN2T",
+        "1756-EN2TR",
+        "1756-EN4TR",
+        "1756-EWEB",
+    ]
+    protocols = [
+        ModuleProtocol(
+            name="cip",
+            transport="tcp",
+            ports=[44818],
+            operations=["pull", "push"],
+            description="CIP explicit messaging: enumerate modules, pull logic, push firmware",
+        ),
+        ModuleProtocol(
+            name="cip",
+            transport="udp",
+            ports=[44818],
+            operations=["pull"],
+            description="ListIdentity, if the device wasn't identified by a scan",
+        ),
+        ModuleProtocol(
+            name="ftp",
+            transport="tcp",
+            ports=[21],
+            operations=["pull"],
+            description="Download files (EWEB modules)",
+        ),
+        ModuleProtocol(
+            name="http",
+            transport="tcp",
+            ports=[80],
+            operations=["pull"],
+            description="Scrape communication module web pages",
+        ),
+        ModuleProtocol(
+            name="snmp",
+            transport="udp",
+            ports=[161],
+            operations=["pull"],
+            description="System and interface information (SNMPv2-MIB, IF-MIB)",
+        ),
+    ]
 
     @classmethod
     def _verify_ftp(cls, dev: DeviceData) -> bool:

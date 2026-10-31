@@ -27,6 +27,7 @@ from peat import (
     File,
     Interface,
     IPMethod,
+    ModuleProtocol,
     Service,
     User,
     utils,
@@ -150,6 +151,16 @@ class OpenPLCv4(DeviceModule):
     vendor_id = "Autonomy"
     vendor_name = "Autonomy Logic, Inc."
     module_aliases = ["open", "openplc"]
+    supported_models = ["OpenPLC Runtime v4"]
+    protocols = [
+        ModuleProtocol(
+            name="https",
+            transport="tcp",
+            ports=[8443],
+            operations=["pull", "push"],
+            description="REST API: runtime and program info (pull), upload programs (push)",
+        ),
+    ]
     default_options = {
         "openplcv4": {
             "username": "",
