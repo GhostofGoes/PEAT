@@ -32,7 +32,8 @@ MODULE_OPERATIONS: tuple[str, ...] = get_args(consts.OperationType)
 #: Values allowed for :attr:`ModuleProtocol.transport`
 TransportType = Literal["tcp", "udp", "both", "serial", "other"]
 
-_NAME_PATTERN = r"^[a-z][a-z0-9_\-]*$"
+# "_0" rather than "0_", so the docs don't render "a-z0-9_" as a reST link target
+_NAME_PATTERN = r"^[a-z][a-z_0-9-]*$"
 
 ProtocolName = constr(strip_whitespace=True, to_lower=True, regex=_NAME_PATTERN)
 PortNumber = conint(ge=1, le=65535)
