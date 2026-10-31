@@ -171,6 +171,35 @@ Contributing a new module to be included in PEAT's codebase.
 #. (Optional) Create a dedicated documentation page with details on the device in the documentation. A few examples of this are ``sel.rst`` and ``siemens.rst``.
 
 
+Saving protocol exchanges as PCAP
+=================================
+If a module talks to a device using its own TCP socket, it can save the exchanged payloads as a PCAPNG file that can be opened with Wireshark, without needing privileges to capture traffic. Record each payload sent and received as a :class:`~peat.protocols.pcap.PayloadRecord`, then use :func:`~peat.protocols.pcap.synthesize_tcp_sessions` to reconstruct the Ethernet, IP and TCP headers (handshake, sequence numbers and teardown), and :func:`~peat.protocols.pcap.packets_to_pcapng_bytes` to serialize the packets (for large captures, :func:`~peat.protocols.pcap.iter_tcp_sessions` yields the frames one at a time instead of building a list). Comments added to records are shown for each packet in Wireshark. The M340 module does this when downloading a project file (``umas_tracker_to_pcapng()`` in ``peat/modules/schneider/m340/umas_packets.py``).
+
+.. code-block:: python
+
+   import time
+   from peat.protocols import pcap
+
+   records = []
+   request = b"\x00\x01\x00\x00\x00\x02\x00\x5a"
+   records.append(
+       pcap.PayloadRecord(
+           direction="send",  # "receive" for data received from the device
+           payload=request,
+           time=time.time(),
+           local=sock.getsockname(),
+           remote=sock.getpeername(),
+           comment="UMAS request",
+       )
+   )
+   # ...
+
+   packets = pcap.synthesize_tcp_sessions(records, remote_mac=dev.mac or None)
+   dev.write_file(pcap.packets_to_pcapng_bytes(packets), "my-protocol.pcapng")
+
+Make saving the file optional with a module option (e.g. ``m340.save_umas_pcap``), and make sure a failure to save it can't fail the pull. Traffic for the whole run can also be captured using :ref:`traffic capture <traffic-capture>`.
+
+
 Development tips and tricks
 ===========================
 

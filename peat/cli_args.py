@@ -136,6 +136,10 @@ peat scan -d selrelay -s COM4 COM6 --baudrates 9600
 # you aren't worried about potential performance impacts to field devices!
 peat scan -d controllogix -i 192.0.2.0/24 --intensive-scan
 
+# Capture the traffic PEAT sends and receives to a PCAP file in the run directory
+# ("pcaps/"). Requires root/sudo (Linux and macOS) or Npcap (Windows).
+peat scan -i 192.0.2.0/24 --capture-traffic
+
 # Name the run "scan_example". This will put results in ./peat_results/scan_example/
 peat scan --run-name scan_example -d clx -i 192.0.2.0/24
 
@@ -225,6 +229,11 @@ peat pull -d 2301e -s 0
 # Colorize and format the results of a pull using 'jq'
 # Note that '-E' is shorthand for '--print-results'
 peat pull -q -E -d clx -i 192.0.2.0/24 | jq .
+
+# Capture the traffic PEAT sends and receives to a PCAP file in the run directory
+# ("pcaps/"), only capturing on interface eth0. "--pcap" is shorthand.
+peat pull -i 192.0.2.0/24 --capture-traffic --capture-interfaces eth0
+peat pull -d m340 -i 192.0.2.41 --pcap
 
 # Name the run "pull_example". This will put results in ./peat_results/pull_example/
 peat pull --run-name pull_example -d clx -i 192.0.2.0/24
@@ -1066,6 +1075,50 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
             'network interfaces ("eth0").',
         )
         add_list_module_args(host_group)  # Hack to add "--list-*" commands
+
+        capture_group = subp.add_argument_group("traffic capture arguments")
+        capture_group.add_argument(
+            "--capture-traffic",
+            "--pcap",
+            action="store_true",
+            default=None,
+            dest="capture_traffic",
+            help="Capture the network traffic PEAT sends and receives to a PCAP "
+            "file in the run directory ('pcaps/'). Requires root or CAP_NET_RAW "
+            "(Linux), sudo or ChmodBPF (macOS), or Npcap (Windows). If capture "
+            "can't be started, a warning is logged and the run continues. "
+            "Serial traffic is not captured.",
+        )
+        capture_group.add_argument(
+            "--capture-interfaces",
+            type=str,
+            metavar="IFACE",
+            default=None,
+            nargs="+",
+            dest="capture_interfaces",
+            help="Network interfaces to capture traffic on (default: the "
+            'interfaces used to reach the targets). Use "all" to capture '
+            "on all interfaces.",
+        )
+        capture_group.add_argument(
+            "--capture-filter",
+            type=str,
+            metavar="BPF",
+            default=None,
+            dest="capture_filter",
+            help='BPF filter for traffic capture (default: "auto", only traffic '
+            'to or from the targets). Use "" to capture all traffic on the '
+            "capture interfaces.",
+        )
+        capture_group.add_argument(
+            "--capture-tool",
+            type=str,
+            choices=["auto", "tcpdump", "scapy"],
+            default=None,
+            dest="capture_tool",
+            help='Tool to use for traffic capture (default: "auto", tcpdump '
+            "if it's installed, otherwise Scapy).",
+        )
 
     # Push command
     push_parser.add_argument(

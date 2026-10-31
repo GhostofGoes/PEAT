@@ -438,6 +438,9 @@ class SettingsManager(dict):
         elif typecast is bool and isinstance(value, str):
             # Accepts: yes, no, true, false, 0, 1 (case-insensitive)
             casted = str_to_bool(value)
+        # Handle comma-separated list strings (e.g environment variable "eth0,eth1")
+        elif typecast is list and isinstance(value, str):
+            casted = [v.strip() for v in value.split(",") if v.strip()]
         else:
             casted = typecast(value)  # type: ignore
 
@@ -489,6 +492,7 @@ class SettingsManager(dict):
                 "TEMP_DIR",
                 "ZEEK_LOGDIR",
                 "HEAT_ARTIFACTS_DIR",
+                "CAPTURE_DIR",
             ]
         else:
             raise ValueError(f"invalid dir_name {dir_name}")
@@ -506,7 +510,9 @@ class SettingsManager(dict):
                 new_path = None
             else:
                 old = getattr(self, d)  # type: Path
-                new_path = Path(os.path.realpath(Path(new_parent, old.name)))
+                if not old:  # Disabled (e.g. set to an empty string), leave it disabled
+                    continue
+                new_path = Path(os.path.realpath(Path(new_parent, Path(old).name)))
 
             setattr(self, d, new_path)
 

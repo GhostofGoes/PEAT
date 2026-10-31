@@ -45,4 +45,23 @@ def run_handlers() -> None:
                 pass
 
 
+def run_and_unregister(func_type: Literal["CONNECTION", "FILE"]) -> None:
+    """
+    Run the handlers of a type now, instead of at exit, and unregister them.
+
+    For example, the CLI closes connections with devices before stopping the
+    traffic capture, so the connection teardowns are in the capture.
+    """
+    if func_type not in REGISTRY:
+        raise ValueError(f"invalid handler type '{func_type}'")
+
+    handlers = list(REGISTRY[func_type])
+    for func, args in handlers:
+        unregister(func, func_type)
+        try:
+            func(*args)
+        except Exception:
+            pass
+
+
 atexit.register(run_handlers)

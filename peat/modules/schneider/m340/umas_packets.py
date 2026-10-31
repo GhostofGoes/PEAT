@@ -11,6 +11,8 @@ Authors
 
 import binascii
 import socket
+from datetime import datetime
+from typing import Literal
 
 from scapy.all import (
     ByteField,
@@ -25,6 +27,9 @@ from scapy.all import (
 
 from peat import CommError, config, utils
 from peat import log as peat_logger
+from peat.protocols import pcap
+
+from .umas_codes import UMAS_CODES
 
 # TODO: refactor the UMAS packets to properly implement the UMAS protocol
 #   based on what we know now about it. hopefully improve reliability.
@@ -227,3 +232,117 @@ def update_tracker(
             "timestamp": utils.utc_now(),
         }
         tracker.append(dataset)
+
+
+def _umas_name(code: int | None) -> str:
+    if code is None:
+        return "?"
+    return UMAS_CODES.get(code, {}).get("name", f"UNKNOWN_{code:#04x}")
+
+
+def describe_modbus_payload(
+    payload: bytes, direction: str, request_code: int | None = None
+) -> str:
+    """
+    Short human-readable description of a Modbus/TCP UMAS payload.
+
+    Used as the comment on packets in UMAS PCAP files.
+
+    Args:
+        payload: Raw Modbus/TCP payload (MBAP header and PDU)
+        direction: ``send`` (request) or ``receive`` (response)
+        request_code: UMAS function code of the request a response is for
+
+    Returns:
+        The description, e.g. ``UMAS request READ_PLC_INFO (0x04), session key 0x00, 10 bytes``
+    """
+    kind = "request" if direction == "send" else "response"
+    if len(payload) < 8:
+        return f"Modbus/TCP {kind} (truncated, {len(payload)} bytes)"
+
+    function_code = payload[7]
+    if function_code != 0x5A:
+        return f"Modbus/TCP function {function_code:#04x} {kind}, {len(payload)} bytes"
+    if len(payload) < 10:
+        return f"UMAS {kind} (truncated, {len(payload)} bytes)"
+
+    key, code = payload[8], payload[9]
+    if direction == "send":
+        return (
+            f"UMAS request {_umas_name(code)} ({code:#04x}), "
+            f"session key {key:#04x}, {len(payload)} bytes"
+        )
+    return (
+        f"UMAS response {_umas_name(code)} ({code:#04x}) to "
+        f"{_umas_name(request_code)}, {len(payload)} bytes"
+    )
+
+
+def tracker_to_records(tracker: list[dict]) -> list[pcap.PayloadRecord]:
+    """
+    Convert a UMAS packet tracker (see :func:`update_tracker`)
+    into payload records for :func:`~peat.protocols.pcap.synthesize_tcp_sessions`.
+
+    Entries that are malformed or have an empty payload are skipped.
+    """
+    records = []  # type: list[pcap.PayloadRecord]
+    last_request = {}  # type: dict[tuple, int]
+
+    for entry in tracker:
+        try:
+            payload = binascii.unhexlify(entry["payload"])
+            timestamp = entry["timestamp"]
+            if isinstance(timestamp, str):
+                timestamp = datetime.fromisoformat(timestamp)
+            direction: Literal["send", "receive"] = (
+                "send" if entry["direction"] == "send" else "receive"
+            )
+            local = (str(entry["local_ip"]), int(entry["local_port"]))
+            remote = (str(entry["remote_ip"]), int(entry["remote_port"]))
+        except (KeyError, TypeError, ValueError, binascii.Error) as ex:
+            peat_logger.debug(f"Skipping malformed UMAS tracker entry: {ex}")
+            continue
+
+        if not payload:
+            continue
+
+        key = (local, remote)
+        if direction == "send" and len(payload) >= 10 and payload[7] == 0x5A:
+            last_request[key] = payload[9]
+        comment = describe_modbus_payload(payload, direction, last_request.get(key))
+
+        records.append(
+            pcap.PayloadRecord(
+                direction=direction,
+                payload=payload,
+                time=timestamp.timestamp(),
+                local=local,
+                remote=remote,
+                comment=comment,
+            )
+        )
+
+    return records
+
+
+def umas_tracker_to_pcapng(tracker: list[dict], remote_mac: str | None = None) -> bytes:
+    """
+    Convert a UMAS packet tracker into the bytes of a PCAPNG file.
+
+    The TCP session is reconstructed from the payloads (PEAT doesn't have the
+    actual TCP/IP headers), and each packet is annotated with a comment naming
+    the UMAS function. Wireshark dissects the packets as Modbus/TCP function
+    90 ("Unity (Schneider)").
+
+    Args:
+        tracker: Packet tracker populated by :func:`send_umas_packet`
+        remote_mac: MAC address of the device, if known
+
+    Returns:
+        The PCAPNG file contents
+    """
+    records = tracker_to_records(tracker)
+    local_mac = pcap.local_mac_for_ip(records[0].local[0]) if records else None
+    # Frames are streamed to the writer instead of all being kept in memory
+    packets = pcap.iter_tcp_sessions(records, local_mac=local_mac, remote_mac=remote_mac)
+    return pcap.packets_to_pcapng_bytes(packets)

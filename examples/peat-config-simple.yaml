@@ -48,6 +48,12 @@ log_dir: !JOIN [*RUNDIR, "logs/"]
 temp_dir: !JOIN [*RUNDIR, "temp/"]
 zeek_logdir: !JOIN [*RUNDIR, "zeek_logs/"]
 
+capture_traffic: false
+capture_dir: !JOIN [*RUNDIR, "pcaps/"]
+capture_tool: "auto"
+capture_interfaces: []
+capture_filter: "auto"
+
 elastic_server: null
 elastic_save_logs: true
 elastic_save_config: true

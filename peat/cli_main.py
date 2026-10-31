@@ -37,6 +37,9 @@ from peat.heat import HEAT_EXTRACTORS
 
 TargetsType = tuple[list[str], consts.AllowedCommTypes, list[str]]
 
+# CLI arguments for traffic capture, other than --capture-traffic itself
+CAPTURE_ARGS = ["capture_interfaces", "capture_filter", "capture_tool"]
+
 
 def run_peat(args: dict[str, Any], start_time: float) -> None:
     """
@@ -242,6 +245,7 @@ def oneshot_main(args: dict[str, Any]) -> bool:
             sys.exit(1)
 
     targets = []  # type: list[str]
+    comm_type = "unicast_ip"  # type: consts.AllowedCommTypes
     device_types = set()  # type: set[str]
 
     # Include any imported third-party modules
@@ -278,6 +282,9 @@ def oneshot_main(args: dict[str, Any]) -> bool:
     if config.DRY_RUN:
         log.warning("Dry run enabled, skipping calling command functions")
         return True
+
+    # Capture traffic sent and received during the command (never raises)
+    capturing = _start_traffic_capture(args, targets, comm_type)
 
     # Call the appropriate PEAT function for the command specified
     try:
@@ -345,8 +352,42 @@ def oneshot_main(args: dict[str, Any]) -> bool:
         log.error(f"{args['func']} failed: {ex}")
     except Exception:
         log.exception(f"{args['func']} failed due to unhandled exception")
+    finally:
+        # Runs on errors and Ctrl-C (KeyboardInterrupt), so the capture is always flushed
+        if capturing:
+            from peat.protocols import pcap
+
+            # Close connections with devices now instead of at exit,
+            # so the logouts and TCP teardowns are in the capture.
+            exit_handler.run_and_unregister("CONNECTION")
+            pcap.stop_traffic_capture()
 
     return False
+
+
+def _start_traffic_capture(args: dict[str, Any], targets: list[str], comm_type: str) -> bool:
+    """
+    Start capturing traffic for ``scan``, ``pull`` and ``push``, if enabled.
+
+    Returns:
+        If capture was enabled for the command (in which case
+        :func:`~peat.protocols.pcap.stop_traffic_capture` must be called)
+    """
+    if args.get("func") not in ["scan", "pull", "push"]:
+        return False
+
+    if not config.CAPTURE_TRAFFIC:
+        if any(args.get(k) is not None for k in CAPTURE_ARGS):
+            log.warning(
+                "Traffic capture options were given, but traffic capture "
+                "is disabled (use --capture-traffic to enable it)"
+            )
+        return False
+
+    from peat.protocols import pcap
+
+    pcap.start_traffic_capture(targets, comm_type)
+    return True
 
 
 def export_device_data(args: dict[str, Any]) -> bool:
@@ -643,6 +684,7 @@ directory in the same directory you were in when running PEAT.
 - `heat_artifacts/` : Output from HEAT ("peat heat <args>")
 - `logs/` : PEAT's log files, including the main log file, JSON-formatted log files, and protocol- and module-specific log files (e.g. Telnet logs, ENIP logs).
 - `peat_metadata/` : JSON and YAML-formatted dumps of PEAT's configuration and internal state.
+- `pcaps/` : Captures of the network traffic PEAT sent and received, if traffic capture was enabled ("--capture-traffic"). These can be opened with Wireshark.
 - `summaries/` : Summary results of a command, e.g. scan-summary, pull-summary, or parse-summary. These include metadata about the operation (e.g., how many files were parsed), as well as a combined set of device summaries (most of the data, but some fields are excluded, like events, memory, blobs, etc.). To view the complete results for devices, look in the "devices/" directory.
 - `temp/` : Temporary files, used by PEAT during a run to put files temporarily before being moved elsewhere.
 
@@ -701,6 +743,8 @@ variables were configured, e.g. `OUT_DIR`, `ELASTIC_DIR` or `LOG_DIR`.
             peat_configuration.yaml
             peat_configuration.json
             peat_state.json
+        pcaps/
+            peat-traffic.pcap
         summaries/
             scan-summary.json
             pull-summary.json

@@ -1,0 +1,1 @@
+Documented traffic capture (requirements per OS, capture tools, filters and output files), fixed the name of the M340 ``umas-metadata.json`` file in the M340 results table, and added a developer guide section on saving protocol exchanges as PCAPNG.

@@ -135,6 +135,9 @@ Configuration options can be set via system environment variables that are prefi
    # Modify only for this command execution
    PEAT_DEBUG=2 peat parse examples/
 
+   # Options that are lists are comma-separated
+   PEAT_CAPTURE_TRAFFIC=true PEAT_CAPTURE_INTERFACES=eth0,eth1 peat pull -i 192.0.2.0/24
+
 .. code-block:: batch
    :caption: Windows environment variable configuration example
 
@@ -142,6 +145,8 @@ Configuration options can be set via system environment variables that are prefi
    setx PEAT_VERBOSE true
    peat parse examples/
    peat scan -i localhost
+
+Options that are lists, such as :attr:`CAPTURE_INTERFACES <peat.settings.Configuration.CAPTURE_INTERFACES>`, are set using a comma-separated string, e.g. ``PEAT_CAPTURE_INTERFACES=eth0,eth1``.
 
 
 Additional topics

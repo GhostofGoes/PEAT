@@ -206,6 +206,33 @@ temp_dir: !JOIN [*RUNDIR, "temp/"]
 # Also contains Zeek artifacts
 zeek_logdir: !JOIN [*RUNDIR, "zeek_logs/"]
 
+# -----------------------------------------------------------------------------
+# Traffic capture
+# Capture the network traffic PEAT sends and receives during a scan, pull or push
+# to a PCAP file. Requires root/CAP_NET_RAW (Linux), sudo or ChmodBPF (macOS),
+# or Npcap (Windows). If capture can't be started, a warning is logged and the
+# run continues. Serial traffic is not captured.
+# CLI: --capture-traffic (or --pcap). Environment variable: PEAT_CAPTURE_TRAFFIC
+capture_traffic: false
+
+# Directory where traffic captures are saved. Empty string disables capture.
+capture_dir: !JOIN [*RUNDIR, "pcaps/"]
+
+# Capture tool: "auto", "tcpdump", or "scapy".
+# "auto" uses tcpdump if it's installed (Linux/macOS), otherwise Scapy.
+capture_tool: "auto"
+
+# Interfaces to capture on, e.g. ["eth0"]. If empty, the interfaces used
+# to reach the targets are used. Use ["all"] to capture on all interfaces.
+# tcpdump can only capture on one interface (or all), so with multiple
+# interfaces, "auto" uses Scapy.
+capture_interfaces: []
+
+# BPF capture filter. "auto" only captures traffic to/from the targets
+# (excluding the Elasticsearch server, unless it's a target), "" captures
+# everything on the interfaces, and anything else is used as-is.
+capture_filter: "auto"
+
 # If JSON data should be formatted with 4 space indentation.
 # Defaults to false for minified version.
 formatted_output: true
@@ -573,6 +600,12 @@ device_options:
     # files will be created in a project-named directory in the device's
     # output directory.
     generate_openplc_project: null
+
+    # Save the UMAS packets exchanged while downloading the project file
+    # as a PCAPNG file ("umas-packets.pcapng") in the device's output
+    # directory. The TCP/IP headers are reconstructed, and each packet is
+    # annotated with the name of the UMAS function. Open it with Wireshark.
+    save_umas_pcap: true
 
   # Configuration specific to the GE modules (GERTU and GERelay)
   ge:
