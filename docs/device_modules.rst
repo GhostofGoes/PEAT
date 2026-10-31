@@ -247,6 +247,11 @@ Relay Parsing
 .. automodule:: peat.modules.sel.relay_parse
    :members:
 
+SELOGIC classification
+^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_logic
+   :members:
+
 RTAC Parsing
 ^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.rtac_parse
