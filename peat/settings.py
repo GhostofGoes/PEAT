@@ -1,18 +1,303 @@
 from __future__ import annotations
 
+import re
 import typing
-from collections import defaultdict
+from collections import ChainMap, defaultdict
+from copy import deepcopy
 from ipaddress import IPv4Interface, IPv4Network
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from .consts import RUN_ID, START_TIME, AllowedCommTypes, EntrypointType
-from .settings_manager import SettingsManager
+from .settings_manager import _LAYERS, SettingsManager, yaml_error_summary
 
 if typing.TYPE_CHECKING:
     try:
         import peat
     except Exception:
         pass
+
+
+# NOTE: these are module-level constants instead of class attributes on
+# Configuration, since any annotated class attribute becomes a config option.
+
+#: PEAT commands that have a section in the configuration file,
+#: mapped to the name of the option holding that section.
+COMMAND_SECTIONS: dict[str, str] = {
+    "scan": "SCAN",
+    "pull": "PULL",
+    "push": "PUSH",
+    "parse": "PARSE",
+}
+
+#: Short names that can be used in a command section, mapped to the full option
+#: name. These match the names of the command line arguments, e.g. ``--skip-scan``.
+SECTION_KEY_ALIASES: dict[str, dict[str, str]] = {
+    "scan": {"SWEEP": "SCAN_SWEEP"},
+    "pull": {"SKIP_SCAN": "PULL_SKIP_SCAN"},
+    "push": {"SKIP_SCAN": "PUSH_SKIP_SCAN"},
+}
+
+#: Options that are not allowed in a command section
+SECTION_DISALLOWED_KEYS: frozenset[str] = frozenset({"METADATA", *COMMAND_SECTIONS.values()})
+
+#: Type of the normalized ``excluded_modules`` value. Values are :obj:`True` (exclude
+#: for all targets), :obj:`False` (no-op), or a list of target strings.
+ExcludedModulesType = dict[str, bool | list[str]]
+
+#: Whitespace around commas and equals signs in the string form of ``excluded_modules``,
+#: e.g. ``"SEL=192.0.2.5, 192.0.2.6"`` or ``"SEL = 192.0.2.5"``
+_TOKEN_SEPARATOR_RE = re.compile(r"\s*([,=])\s*")
+
+_TRUE_STRINGS = ("true", "yes", "on")
+_FALSE_STRINGS = ("false", "no", "off")
+
+
+def normalize_excluded_modules(value: Any) -> ExcludedModulesType:
+    """
+    Normalize any of the accepted forms of ``excluded_modules`` into a mapping.
+
+    Accepted forms:
+
+    - Mapping of module name or alias to :obj:`True`, :obj:`None` (same as
+      :obj:`True`), :obj:`False` (no-op), a list of targets, or a
+      comma-separated string of targets, e.g.
+      ``{"ControlLogix": True, "SEL": ["192.0.2.5", "192.0.2.6"]}``
+    - List of tokens, e.g. ``["ControlLogix", "SEL=192.0.2.5,192.0.2.6"]``.
+      Each token is either ``NAME`` (or ``NAME1,NAME2``), meaning exclude for
+      all targets, or ``NAME=TARGET[,TARGET...]``, meaning exclude for those
+      targets. This is the form used by the ``-x`` command line argument.
+    - A string with whitespace-separated tokens (environment variables), e.g.
+      ``"ControlLogix SEL=192.0.2.5,192.0.2.6"``. Whitespace around commas and
+      equals signs is ignored, so ``"SEL=192.0.2.5, 192.0.2.6"`` is the same
+      as ``"SEL=192.0.2.5,192.0.2.6"``.
+    - A string with a JSON or YAML mapping or list, e.g.
+      ``'{"ControlLogix": true, "SEL": ["192.0.2.5"]}'``
+
+    Module names are not validated here, since modules may be imported later.
+
+    .. code-block:: python
+
+       >>> from peat.settings import normalize_excluded_modules
+       >>> normalize_excluded_modules("ControlLogix SEL=192.0.2.5,192.0.2.6")
+       {'ControlLogix': True, 'SEL': ['192.0.2.5', '192.0.2.6']}
+       >>> normalize_excluded_modules("SEL = 192.0.2.5, 192.0.2.6")
+       {'SEL': ['192.0.2.5', '192.0.2.6']}
+       >>> normalize_excluded_modules({"m340": None, "sel": "192.0.2.5"})
+       {'m340': True, 'sel': ['192.0.2.5']}
+
+    Args:
+        value: The value to normalize
+
+    Returns:
+        Mapping of module names or aliases to :obj:`True`, :obj:`False`,
+        or a list of target strings
+
+    Raises:
+        ValueError: If the value isn't in one of the accepted forms
+    """
+    if value is None:
+        return {}
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+
+        if text[0] in "[{":
+            try:
+                parsed = yaml.safe_load(text)
+            except yaml.YAMLError as ex:
+                raise ValueError(
+                    f"invalid JSON or YAML for excluded_modules: {yaml_error_summary(ex)}"
+                ) from None
+            if not isinstance(parsed, (dict, list)):
+                raise ValueError("excluded_modules must be a mapping or a list")
+            return normalize_excluded_modules(parsed)
+
+        # Whitespace-separated tokens. Whitespace next to "," and "=" doesn't
+        # separate tokens, otherwise "SEL=192.0.2.5, 192.0.2.6" would result in
+        # a module named "192.0.2.6" instead of a second target for SEL.
+        value = _TOKEN_SEPARATOR_RE.sub(r"\1", text).split()
+
+    out: ExcludedModulesType = {}
+
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError(f"invalid excluded_modules entry {item!r}, expected a string")
+
+            if "=" in item:
+                name, _, raw_targets = item.partition("=")
+                targets = _split_targets(raw_targets)
+                if not name.strip() or not targets:
+                    raise ValueError(
+                        f"invalid excluded_modules entry {item!r}, "
+                        f"expected NAME=TARGET[,TARGET...]"
+                    )
+                _add_rule(out, name.strip(), targets)
+            else:
+                for name in item.split(","):
+                    if name.strip():
+                        _add_rule(out, name.strip(), True)
+
+        return out
+
+    if isinstance(value, dict):
+        for key, rule in value.items():
+            name = str(key).strip()
+            if not name:
+                raise ValueError("excluded_modules has an empty module name")
+
+            if rule is None or rule is True:
+                _add_rule(out, name, True)
+            elif rule is False:
+                _add_rule(out, name, False)
+            elif isinstance(rule, str):
+                if rule.strip().lower() in _TRUE_STRINGS:
+                    _add_rule(out, name, True)
+                elif rule.strip().lower() in _FALSE_STRINGS:
+                    _add_rule(out, name, False)
+                else:
+                    _add_rule(out, name, _split_targets(rule))
+            elif isinstance(rule, (list, tuple, set)):
+                targets = []
+                for target in rule:
+                    if not isinstance(target, (str, int, float)) or isinstance(target, bool):
+                        raise ValueError(
+                            f"invalid target {target!r} for excluded module '{name}', "
+                            f"expected a string"
+                        )
+                    if str(target).strip():
+                        targets.append(str(target).strip())
+                _add_rule(out, name, targets)
+            else:
+                raise ValueError(
+                    f"invalid value {rule!r} for excluded module '{name}', "
+                    f"expected true, false, or a list of targets"
+                )
+
+        return out
+
+    raise ValueError(
+        f"excluded_modules must be a mapping, list, or string, not a {type(value).__name__}"
+    )
+
+
+def _split_targets(raw: str) -> list[str]:
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def _add_rule(out: ExcludedModulesType, name: str, rule: bool | list[str]) -> None:
+    """
+    Add an exclusion rule to a normalized mapping, combining it with any existing rule.
+
+    Names are matched without regard to case (the first spelling seen is kept).
+    :obj:`True` always wins, lists of targets are combined, and :obj:`False`
+    never removes anything.
+    """
+    key = next((k for k in out if k.casefold() == name.casefold()), name)
+    current = out.get(key, False)
+
+    if current is True or rule is True:
+        out[key] = True
+    elif isinstance(rule, list):
+        base = list(current) if isinstance(current, list) else []
+        out[key] = base + [t for t in rule if t not in base]
+    else:  # rule is False
+        out.setdefault(key, False)
+
+
+def merge_excluded_modules(*rule_sets: ExcludedModulesType | None) -> ExcludedModulesType:
+    """
+    Combine normalized ``excluded_modules`` mappings (the union of all of them).
+
+    Args:
+        rule_sets: Normalized mappings, as returned by
+            :func:`~peat.settings.normalize_excluded_modules`
+
+    Returns:
+        A new mapping with all of the rules
+    """
+    out: ExcludedModulesType = {}
+
+    for rules in rule_sets:
+        for name, rule in (rules or {}).items():
+            _add_rule(out, name, list(rule) if isinstance(rule, list) else rule)
+
+    return out
+
+
+def merged_excluded_modules(cfg: SettingsManager) -> ExcludedModulesType:
+    """
+    Combine ``EXCLUDED_MODULES`` from every configuration layer.
+
+    Exclusions from all sources (defaults, config file, command section,
+    environment variables, and command line arguments or runtime changes)
+    are combined. A source with a higher precedence can add exclusions,
+    but never remove them.
+
+    Args:
+        cfg: Configuration to get the values from (usually :data:`~peat.settings.config`)
+
+    Returns:
+        The combined exclusion rules
+
+    Raises:
+        ValueError: If a value is invalid. Values loaded from files, environment
+            variables, or command line arguments are already validated, but values
+            set at runtime (e.g. ``config.EXCLUDED_MODULES = ...``) aren't.
+    """
+    return merge_excluded_modules(
+        *(
+            normalize_excluded_modules(cfg[layer].get("EXCLUDED_MODULES"))
+            for layer in reversed(_LAYERS)
+        )
+    )
+
+
+def exclusions_to_tokens(rules: ExcludedModulesType) -> list[str]:
+    """
+    Convert normalized ``excluded_modules`` rules to a list of strings.
+
+    The strings use the same format as the ``-x`` command line argument,
+    e.g. ``["ControlLogix", "SEL=192.0.2.5,192.0.2.6"]``. :obj:`False`
+    (no-op) rules are omitted.
+
+    .. code-block:: python
+
+       >>> from peat.settings import exclusions_to_tokens
+       >>> exclusions_to_tokens({"ControlLogix": True, "SEL": ["192.0.2.5"], "M340": False})
+       ['ControlLogix', 'SEL=192.0.2.5']
+    """
+    tokens = []
+
+    for name, rule in rules.items():
+        if rule is True:
+            tokens.append(name)
+        elif isinstance(rule, list) and rule:
+            tokens.append(f"{name}={','.join(rule)}")
+
+    return tokens
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """
+    Merge ``override`` onto a copy of ``base`` (values in ``override`` win).
+
+    Mappings are merged recursively, all other values replace the value in ``base``.
+    """
+    out = deepcopy(base)
+
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = deepcopy(value)
+
+    return out
 
 
 class Configuration(SettingsManager):
@@ -188,6 +473,64 @@ class Configuration(SettingsManager):
     INTENSIVE_SCAN: bool = False
     """
     Force identification checks of all ports during scanning.
+    """
+
+    DEVICE_TYPES: list[str] = []
+    """
+    PEAT modules to use, as module names or aliases (the same values as the
+    ``-d`` command line argument), e.g. ``["sel", "ControlLogix"]``.
+
+    If empty, ``scan``, ``pull``, and ``parse`` use all modules (``"all"``),
+    and ``push`` requires a device type to be set (with ``-d``, this option,
+    or the ``PEAT_DEVICE_TYPES`` environment variable). The ``-d`` argument
+    overrides this option. This option is ignored when a host file
+    (``-f``) is used, since the modules come from the host file.
+
+    The Python API functions (e.g. :func:`peat.api.scan_api.scan`) also use
+    this option when they're called without device types (``None``).
+
+    Environment variable example: ``PEAT_DEVICE_TYPES="sel,controllogix"``
+    (or a JSON list, e.g. ``'["sel", "controllogix"]'``).
+
+    See :ref:`config-device-types`.
+    """
+
+    EXCLUDED_MODULES: dict[str, bool | list[str]] = {}
+    """
+    PEAT modules to never use, either for all targets or only for specific targets.
+
+    Keys are module names or aliases (case-insensitive). Values are ``true``
+    (exclude the module for all targets) or a list of targets to exclude the
+    module for (IP addresses, subnets, IP ranges, hostnames, labels of
+    hosts in ``hosts``, MAC addresses, serial ports, or host files). Example:
+    ``{"ControlLogix": true, "SEL": ["192.0.2.5", "192.0.2.6"]}``.
+
+    Exclusions from all sources (config file, command section, environment
+    variable, and the ``-x`` command line argument) are combined. A source
+    with a higher precedence can add exclusions, but can't remove them.
+    PEAT refuses to run if a name doesn't match any module or alias, or if
+    a target can't be used, so that a broken exclusion is never ignored.
+
+    Environment variable examples: ``PEAT_EXCLUDED_MODULES="ControlLogix SEL=192.0.2.5"``
+    or ``PEAT_EXCLUDED_MODULES='{"ControlLogix": true, "SEL": ["192.0.2.5"]}'``.
+
+    See :ref:`config-excluded-modules`.
+    """
+
+    TARGETS: list[str] = []
+    """
+    Network (IP) targets for ``scan`` and ``pull``, used when no targets are given on
+    the command line (``-i``, ``-s``, ``-f``, or ``-b``). These use the same format as
+    ``-i``: IP addresses, subnets, IP ranges, hostnames, labels of hosts in ``hosts``,
+    ``all`` (every host in ``hosts``), and host files.
+
+    ``push`` always requires targets on the command line. This option is only
+    used by the command line interface, the Python API functions always take
+    the targets as an argument.
+
+    Environment variable example: ``PEAT_TARGETS="192.0.2.0/24,192.0.2.50"``.
+
+    See :ref:`config-targets`.
     """
 
     HASH_ALGORITHMS: list[str] = ["md5", "sha1", "sha256", "sha512"]
@@ -530,6 +873,41 @@ class Configuration(SettingsManager):
     Specify or override options for specific hosts.
     """
 
+    SCAN: dict = {}
+    """
+    Settings that only apply to ``peat scan``. Any other option can be set here,
+    as well as ``sweep`` (short for ``scan_sweep``).
+
+    Command sections are applied by the command line interface. When using PEAT
+    as a Python package, use ``initialize_peat({"func": "scan", ...})`` or
+    :meth:`~peat.settings.Configuration.apply_command_section`.
+
+    See :ref:`config-command-sections`.
+    """
+
+    PULL: dict = {}
+    """
+    Settings that only apply to ``peat pull``. Any other option can be set here,
+    as well as ``skip_scan`` (short for ``pull_skip_scan``).
+
+    See :ref:`config-command-sections`.
+    """
+
+    PUSH: dict = {}
+    """
+    Settings that only apply to ``peat push``. Any other option can be set here,
+    as well as ``skip_scan`` (short for ``push_skip_scan``).
+
+    See :ref:`config-command-sections`.
+    """
+
+    PARSE: dict = {}
+    """
+    Settings that only apply to ``peat parse``. Any other option can be set here.
+
+    See :ref:`config-command-sections`.
+    """
+
     PCAPS: Path | None = None
     """
     Specify folder that contains PCAPS for processing by HEAT.
@@ -565,6 +943,118 @@ class Configuration(SettingsManager):
     """
     If JSON data should be formatted with 4 space indentation.
     """
+
+    def typecast(self, key: str, value: Any) -> Any:
+        """
+        Same as :meth:`~peat.settings_manager.SettingsManager.typecast`, with
+        special handling of ``EXCLUDED_MODULES``
+        (see :func:`~peat.settings.normalize_excluded_modules`).
+        """
+        if key == "EXCLUDED_MODULES":
+            return normalize_excluded_modules(value)
+
+        return super().typecast(key, value)
+
+    def apply_command_section(self, command: str | None) -> tuple[dict[str, Any], list[str]]:
+        """
+        Apply the configuration section for a command (e.g. ``pull:``).
+
+        The values from the section are put in the ``section_configs`` layer,
+        which has a higher precedence than values at the top level of the config
+        file, and a lower precedence than environment variables and command line
+        arguments. Only the section for ``command`` is applied, and any values
+        from a section applied previously are removed.
+
+        Mappings (e.g. ``device_options``) are merged with the value from the
+        config file (or the default value), and the value in the section wins if
+        both have the same key. All other values (including lists) replace the
+        value from the config file.
+
+        .. note::
+           Nothing is logged here, since this is called before logging is
+           configured. The caller should log the warnings that are returned.
+
+        Args:
+            command: Name of the command, e.g. ``"scan"`` or ``"pull"``.
+                If :obj:`None` or a command without a section, then
+                no values are applied.
+
+        Returns:
+            Tuple with the values that were applied, keyed by option name,
+            and a list of warning messages about values in the section that
+            were ignored. Values in the section that are overridden by
+            environment variables or runtime changes (e.g. command line
+            arguments) aren't in the applied values, but they remain in
+            ``self["section_configs"]``.
+        """
+        self["section_configs"].clear()
+        self["section_command"] = command or ""
+        for err_key in [k for k in self["load_errors"] if k[0] == "section_configs"]:
+            del self["load_errors"][err_key]
+
+        section_key = COMMAND_SECTIONS.get(command or "")
+        if not section_key:
+            return {}, []
+
+        section = self["CONFIG"].get(section_key)
+        if not section:
+            return {}, []
+
+        name = section_key.lower()
+        if not isinstance(section, dict):
+            return {}, [f"The '{name}' section of the config must be a mapping, ignoring it"]
+
+        aliases = SECTION_KEY_ALIASES.get(command, {})
+        below = ChainMap(self["file_configs"], self["default_configs"])
+        resolved: dict[str, Any] = {}
+        warnings: list[str] = []
+
+        for raw_key, value in section.items():
+            key = str(raw_key).strip().upper()
+            key = aliases.get(key, key)
+
+            if key in SECTION_DISALLOWED_KEYS:
+                warnings.append(
+                    f"'{raw_key}' isn't allowed in the '{name}' section of the config, ignoring it"
+                )
+                continue
+
+            if key not in self["default_configs"]:
+                warnings.append(
+                    f"Unknown option '{raw_key}' in the '{name}' section of the config, "
+                    f"ignoring it"
+                )
+                continue
+
+            if key in resolved:
+                warnings.append(
+                    f"Option '{key.lower()}' is set more than once in the '{name}' "
+                    f"section of the config, using the last value ('{raw_key}')"
+                )
+
+            if value is None:
+                continue
+
+            if (
+                isinstance(value, dict)
+                and isinstance(below.get(key), dict)
+                and key != "EXCLUDED_MODULES"  # Exclusions are always combined
+            ):
+                value = _deep_merge(below[key], value)
+
+            resolved[key] = value
+
+        self._load_values(resolved, load_to="section_configs")
+
+        # Values overridden by environment variables or command line arguments aren't
+        # applied. Exclusions from every source are combined, so they always apply.
+        applied = {
+            key: value
+            for key, value in self["section_configs"].items()
+            if key == "EXCLUDED_MODULES" or self.source_of(key) == "section_configs"
+        }
+
+        return applied, warnings
 
 
 class State(SettingsManager):
@@ -734,4 +1224,14 @@ config = Configuration(label="configuration", env_prefix="PEAT_", init_env=True)
 state = State(label="state", env_prefix="PEAT_STATE_", init_env=True)
 
 
-__all__ = ["Configuration", "State", "config", "state"]
+__all__ = [
+    "COMMAND_SECTIONS",
+    "Configuration",
+    "State",
+    "config",
+    "exclusions_to_tokens",
+    "merge_excluded_modules",
+    "merged_excluded_modules",
+    "normalize_excluded_modules",
+    "state",
+]

@@ -124,6 +124,28 @@ def check_header(file_data: str) -> bool:
     return header.encode("utf-8") == _encrypted_header.encode("utf-8")
 
 
+def is_encrypted_file(filepath: Path) -> bool:
+    """
+    Check if a file is a config file that was encrypted by PEAT.
+
+    Only the first few bytes of the file are read (the PEAT encryption header).
+
+    Args:
+        filepath: Path to the file to check
+
+    Returns:
+        If the file starts with the PEAT encryption header. If the file
+        doesn't exist or can't be read, :obj:`False` is returned.
+    """
+    header = _encrypted_header.encode("utf-8")
+
+    try:
+        with Path(filepath).open("rb") as infile:
+            return infile.read(len(header)) == header
+    except OSError:
+        return False
+
+
 def convert_to_dict(decrypted_data: str) -> dict:
     try:
         return yaml.safe_load(decrypted_data)

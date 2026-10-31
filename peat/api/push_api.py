@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from peat import PeatError, consts, datastore, log, module_api, utils
+from peat.module_selection import get_exclusions, select_modules
 from peat.protocols import hosts_to_ips, sort_ips
 
 from .scan_api import scan
@@ -45,7 +46,8 @@ def push(
 
     Raises:
         PeatError: If the push failed due to an issue with configuration
-          or arguments, such as invalid device types or push type.
+          or arguments, such as invalid device types or push type, or
+          if a target in ``excluded_modules`` is invalid.
     """
     source = utils.check_file(input_source)
     if source is None:
@@ -54,15 +56,48 @@ def push(
     if push_type not in get_args(consts.PushType):
         raise PeatError(f"Invalid '{push_type}' (supported types: {get_args(consts.PushType)})")
 
+    # Module exclusions (excluded_modules)
+    exclusions = get_exclusions()
+    exclusions.log_summary()
+
     # TODO: make input a list of
     #   (device_id, device_comm_type, device_peat_module)
 
     # Skip scan on push (assume all devices online)
     if skip_scan:
         log.warning(f"Skipping verification scan and pushing to {len(targets)} targets")
-        if len(device_types) > 1:
-            raise PeatError("more than 1 device type specified when PUSH_SKIP_SCAN is enabled")
-        modules = module_api.lookup_types(device_types, filter_attr="ip_methods")
+        # Device types that only match modules excluded for every target don't count,
+        # so e.g. "-d sel -x SELRTAC,SEL3620" (expanded to the 3 SEL modules) works.
+        remaining_types = [
+            dt
+            for dt in device_types
+            if not (
+                (dt_mods := module_api.lookup_types([dt]))
+                and all(m in exclusions.global_mods for m in dt_mods)
+            )
+        ]
+        if len(remaining_types) > 1:
+            raise PeatError(
+                f"more than 1 device type specified when PUSH_SKIP_SCAN is enabled "
+                f"({', '.join(str(dt) for dt in remaining_types)}). Specify a single "
+                f"module using '-d' or 'device_types', or exclude the other modules "
+                f"using '-x' or 'excluded_modules'."
+            )
+
+        modules = select_modules(device_types, filter_attr="ip_methods", exclusions=exclusions)
+        if not modules:
+            raise PeatError(
+                f"No PEAT module is available to push with for device type(s) "
+                f"{device_types} (no module matched, or every module is excluded)"
+            )
+        if len(modules) > 1:
+            raise PeatError(
+                f"The device type {device_types} matches more than 1 module when "
+                f"PUSH_SKIP_SCAN is enabled ({', '.join(m.__name__ for m in modules)}). "
+                f"Specify a single module using '-d' or 'device_types', or exclude the "
+                f"other modules using '-x' or 'excluded_modules'."
+            )
+        module = modules[0]
 
         ips = sort_ips(hosts_to_ips(targets))
         if not ips:
@@ -71,11 +106,22 @@ def push(
 
         devices = []  # type: list[DeviceData]
         for ip in ips:
+            if exclusions.is_excluded(module, dev=datastore.search(ip, "ip"), target=ip):
+                log.warning(
+                    f"Skipping push to {ip}: the module {module.__name__} "
+                    f"is excluded for this target by excluded_modules"
+                )
+                continue
+
             dev = datastore.get(ip)
             dev._is_active = True
             dev._is_verified = True
-            dev._module = modules[0]
+            dev._module = module
             devices.append(dev)
+
+        if not devices:
+            log.error("Push failed: every target is excluded")
+            return False
     else:
         scan_summary = scan(targets, comm_type, device_types)  # type: ignore
         if not scan_summary or not scan_summary["hosts_verified"]:
@@ -86,6 +132,14 @@ def push(
 
     log.info(f"Beginning push to {len(devices)} devices")
     for device in devices:
+        # Final check of exclusions, e.g. for devices that were already in the datastore
+        if exclusions.is_excluded(device._module, dev=device):
+            log.warning(
+                f"Skipping push to {device.get_id()}: the module "
+                f"{device._module.__name__} is excluded for this device by excluded_modules"
+            )
+            continue
+
         try:
             push_result = device._module.push(
                 dev=device,
@@ -93,7 +147,7 @@ def push(
                 push_type=push_type,
             )
         except Exception:
-            log.exception(f"Failed to push to {dev.get_id()}")
+            log.exception(f"Failed to push to {device.get_id()}")
             return False
 
         if not push_result:

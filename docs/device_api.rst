@@ -96,6 +96,11 @@ Module manager
 .. automodule:: peat.module_manager
    :members:
 
+Module selection
+----------------
+.. automodule:: peat.module_selection
+   :members:
+
 FileSignature class
 -------------------
 .. automodule:: peat.file_signature

@@ -38,6 +38,15 @@ pull_skip_scan: false
 scan_sweep: false
 intensive_scan: false
 
+device_types: []
+excluded_modules: {}
+targets: []
+
+scan: {}
+pull: {}
+push: {}
+parse: {}
+
 out_dir: &OUTDIR "./peat_results/"
 run_dir: &RUNDIR !JOIN [*OUTDIR, "default_run_dir/"]
 device_dir: !JOIN [*RUNDIR, "devices/"]

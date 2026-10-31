@@ -2,6 +2,7 @@ import timeit
 from operator import itemgetter
 
 from peat import PeatError, __version__, config, consts, datastore, log, module_api, state, utils
+from peat.module_selection import get_exclusions, select_modules
 from peat.protocols import hosts_to_ips, sort_ips
 
 from .scan_api import scan
@@ -28,7 +29,15 @@ def pull(
 
     Returns:
         :ref:`pull-summary` as a :class:`dict`, or :obj:`None` if an error occurred
+
+    Raises:
+        PeatError: If the modules to use can't be determined when skipping the scan,
+            or if a target in ``excluded_modules`` is invalid
     """
+    # Module exclusions (excluded_modules)
+    exclusions = get_exclusions()
+    exclusions.log_summary()
+
     if skip_scan:
         log.warning(f"Skipping verification scan and pulling from {len(targets)} targets")
 
@@ -48,13 +57,20 @@ def pull(
                 if resolved:
                     host_module_map[ip] = resolved[0]
 
-        # Fallback to the explicitly specified device types when no per-host mapping exists
-        fallback_modules = module_api.lookup_types(device_types, filter_attr="ip_methods")
+        # Fallback to the explicitly specified device types when no per-host mapping exists.
+        # Modules excluded for all targets are removed first, so that
+        # e.g. "-d sel -x SELRTAC,SEL3620" results in a single module.
+        fallback_modules = select_modules(
+            device_types, filter_attr="ip_methods", exclusions=exclusions
+        )
         if len(fallback_modules) > 1 and not host_module_map:
             raise PeatError(
-                "More than 1 device type specified with --skip-scan and no per-host "
-                "'peat_module' found in YAML config. Specify a single module using '-d' or "
-                "add 'peat_module' to each host entry in the YAML config."
+                f"More than 1 device type specified with --skip-scan and no per-host "
+                f"'peat_module' found in YAML config (modules: "
+                f"{', '.join(m.__name__ for m in fallback_modules)}). Specify a single "
+                f"module using '-d' or 'device_types', exclude the other modules using "
+                f"'-x' or 'excluded_modules', or add 'peat_module' to each host entry "
+                f"in the YAML config."
             )
         fallback_module = fallback_modules[0] if len(fallback_modules) == 1 else None
 
@@ -65,6 +81,15 @@ def pull(
                 log.error(f"No module resolved for {ip}, unable to pull")
                 state.error = True
                 return None
+
+            if exclusions.is_excluded(module, dev=datastore.search(ip, "ip"), target=ip):
+                # NOTE: another module isn't used instead, since the module
+                # configured for the host is the only module that should be used.
+                log.warning(
+                    f"Skipping pull from {ip}: the module {module.__name__} "
+                    f"is excluded for this target by excluded_modules"
+                )
+                continue
 
             dev = datastore.get(ip)
             dev._is_active = True
@@ -95,6 +120,14 @@ def pull(
     pull_results = []
 
     for device in devices:
+        # Final check of exclusions, e.g. for devices that were already in the datastore
+        if exclusions.is_excluded(device._module, dev=device):
+            log.warning(
+                f"Skipping pull from {device.get_id()}: the module "
+                f"{device._module.__name__} is excluded for this device by excluded_modules"
+            )
+            continue
+
         try:
             successful = device._module.pull(device)
             if not successful:
@@ -126,7 +159,9 @@ def pull(
         "peat_version": __version__,
         "peat_run_id": str(consts.RUN_ID),
         "pull_duration": pull_duration,
-        "pull_modules": module_api.lookup_names(device_types),
+        "pull_modules": module_api.lookup_names(
+            select_modules(device_types, exclusions=exclusions)
+        ),
         "pull_targets": targets if skip_scan else scan_summary["scan_targets"],
         "pull_original_targets": targets,
         "pull_devices": [dev.get_id() for dev in devices],

@@ -1,3 +1,5 @@
+import pytest
+
 from peat import __version__, config, datastore
 from peat.api.parse_api import parse
 
@@ -93,3 +95,30 @@ def test_parse_api_multiple_files(test_dir, tmp_path, mocker, assert_glob_path, 
 
     assert_glob_path(parse_path, "parse-summary.json")
     assert_no_errors()
+
+
+@pytest.mark.usefixtures("isolated_config")
+def test_parse_global_exclusion(test_dir, tmp_path, mocker, caplog):
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    path = test_dir / "modules" / "sandia" / "data_files" / "bp" / "dnp3-client.xml"
+
+    config.EXCLUDED_MODULES = {"SELRelay": True, "SCEPTRE": ["192.0.2.1"]}
+    summary = parse([path], ["SCEPTRE", "SELRelay"])
+    assert summary
+    assert summary["parse_modules"] == ["SCEPTRE"]
+    assert summary["num_parse_successes"] == 1
+    assert "Excluded modules (all targets): SELRelay" in caplog.text
+    assert "don't apply to parsing" in caplog.text
+
+    config.EXCLUDED_MODULES = {"SCEPTRE": True, "SELRelay": True}
+    assert parse([path], ["SCEPTRE", "SELRelay"]) is None
+    assert "all of them are excluded" in caplog.text
