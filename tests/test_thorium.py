@@ -209,9 +209,11 @@ def test_upload_file_already_submitted(requests_mock, thorium_env, tmp_path):  #
 
 
 def test_multipart_body(tmp_path):
-    path = tmp_path / 'we"ird\r\nname.bin'
+    path = tmp_path / "data.bin"
     path.write_bytes(b"\x00\x01data" * 1000)
-    body = MultipartFileBody([("groups", "ot"), ("tags[a]", "b c")], "data", path.name, path)
+    # The name is passed separately, since Windows doesn't allow " or CR/LF in file names
+    hostile_name = 'we"ird\r\nname.bin'
+    body = MultipartFileBody([("groups", "ot"), ("tags[a]", "b c")], "data", hostile_name, path)
     content = b""
     while chunk := body.read(333):  # Small reads span the parts
         content += chunk

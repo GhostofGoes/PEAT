@@ -197,6 +197,23 @@ def load_yaml_file(path: Path) -> Any | None:
     return data
 
 
+def is_anchored(path: str) -> bool:
+    r"""
+    If ``path`` has a root or a drive on POSIX *or* Windows, i.e. it isn't
+    relative to the current (or the run) directory on either OS.
+
+    Paths in a run directory may have been written on another OS, and
+    :meth:`~pathlib.PurePath.is_absolute` isn't enough on Windows: ``/x``
+    and ``\x`` are relative to the current drive (``run_dir / "/x"`` is
+    ``\x`` on the drive of ``run_dir``), and ``C:x`` is relative to the
+    current directory of drive ``C:``.
+
+    >>> [is_anchored(p) for p in ("/x", "\\x", "C:\\x", "C:x", "x", "../x")]
+    [True, True, True, True, False, False]
+    """
+    return bool(PurePosixPath(path).root or PureWindowsPath(path).anchor)
+
+
 def _is_regular_file(path: Path) -> bool:
     """If ``path`` is a regular file, and not a symlink."""
     return not path.is_symlink() and path.is_file()
@@ -521,33 +538,57 @@ class RunResults:
     def _configured_dir(self, key: str, value: Any) -> Path | None:
         """
         A sub-directory from the saved configuration, if it's inside the run
-        directory. Paths under the saved ``RUN_DIR`` are mapped into
-        :attr:`path`, in case the run directory was moved or copied.
-        Paths outside the run directory aren't used (or even checked).
+        directory (see :meth:`map_saved_path`). Paths outside the run
+        directory aren't used (or even checked).
         """
         if not value or not isinstance(value, str):
             return None
-        candidate = None
-        saved_run_dir = (self.config_data or {}).get("RUN_DIR")
-        if isinstance(saved_run_dir, str) and saved_run_dir:
-            # The run may have been on another OS
-            for pure_path in (PurePosixPath, PureWindowsPath):
-                try:
-                    rel = pure_path(value).relative_to(pure_path(saved_run_dir))
-                except ValueError:
-                    continue
-                candidate = self.path.joinpath(*rel.parts)
-                break
-        if candidate is None and Path(value).is_relative_to(self.path):
-            candidate = Path(value)
+        candidate = self.map_saved_path(value)
         if candidate is None:
-            if Path(value).is_absolute() or PureWindowsPath(value).is_absolute():
+            if is_anchored(value):
                 self.load_errors.append(
                     f"The configured {key.lower()} '{value}' is outside the "
                     f"run directory and wasn't used"
                 )
             return None
         return _contained_dir(self.path, candidate)
+
+    def map_saved_path(self, value: str) -> Path | None:
+        """
+        Map a path recorded by the run (e.g. in the saved configuration or
+        state) to the same location in :attr:`path`.
+
+        Paths under the saved ``RUN_DIR`` (from POSIX or Windows) are mapped
+        into :attr:`path`, in case the run directory was moved or copied,
+        or was created on another OS. Paths under :attr:`path` are used as-is.
+
+        This is a lexical check, nothing is accessed: the result may not exist,
+        and symlinks or ``..`` in it may point outside of :attr:`path`.
+
+        Returns:
+            The path in the run directory, or :obj:`None` if ``value`` isn't
+            in the run directory (including relative paths)
+        """
+        rel: tuple[str, ...] | None = None
+        saved_run_dir = (self.config_data or {}).get("RUN_DIR")
+        if isinstance(saved_run_dir, str) and saved_run_dir:
+            # The run may have been on another OS
+            for pure_path in (PurePosixPath, PureWindowsPath):
+                try:
+                    rel = pure_path(value).relative_to(pure_path(saved_run_dir)).parts
+                except ValueError:
+                    continue
+                break
+        if rel is None:
+            try:
+                rel = Path(value).relative_to(self.path).parts
+            except ValueError:
+                return None
+        # On Windows, a part with a root or a drive (e.g. "\x" or "C:x" from a
+        # POSIX path) replaces the run directory when joined to it
+        if any(is_anchored(part) for part in rel):
+            return None
+        return self.path.joinpath(*rel)
 
     @classmethod
     def from_config(cls, conf: Any = None, st: Any = None) -> RunResults:
@@ -715,4 +756,4 @@ class RunResults:
         yield from _walk_files(self.path)
 
 
-__all__ = ["DeviceResults", "RunResults", "find_run_dirs", "is_run_dir"]
+__all__ = ["DeviceResults", "RunResults", "find_run_dirs", "is_anchored", "is_run_dir"]

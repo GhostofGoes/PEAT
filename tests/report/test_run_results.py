@@ -159,13 +159,32 @@ def test_open_config_dir_moved_run_dir(make_run_dir, saved_run_dir, saved_device
     assert [d.dir_name for d in results.devices()] == [PULLED_IP]
 
 
-@pytest.mark.parametrize("target", ["outside", "/", "../outside", "C:\\Users"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        "outside",
+        "/",
+        "/outside",
+        # Not absolute on Windows, but outside the run directory:
+        # relative to the current drive, or to the current directory of drive C:
+        "\\",
+        "\\outside",
+        "C:outside",
+        "C:\\Users",
+        # Under the run directory on POSIX, but on Windows, joining the
+        # relative part to the run directory replaces the run directory
+        "{run_dir}/\\outside",
+        "{run_dir}/C:outside",
+        "../outside",
+    ],
+)
 def test_open_config_dir_outside_ignored(make_run_dir, tmp_path, target):
     """Directories outside the run directory from the (untrusted) configuration aren't used."""
     run_dir = make_run_dir()
     outside = tmp_path / "outside"
     (run_dir / "devices").rename(outside)
     (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    target = target.format(run_dir=run_dir.as_posix())
     if target == "outside":
         target = outside.as_posix()
     _set_config(run_dir, run_dir=run_dir.as_posix(), device_dir=target)
@@ -175,6 +194,34 @@ def test_open_config_dir_outside_ignored(make_run_dir, tmp_path, target):
     assert "secret.txt" not in {f.name for f in results.iter_files()}
     if target != "../outside":  # Relative paths are only mapped from the saved RUN_DIR
         assert any("outside the run directory" in e for e in results.load_errors)
+
+
+@pytest.mark.parametrize(
+    ("saved_run_dir", "value", "expected"),
+    [
+        ("/old/run", "/old/run/devices/x", ("devices", "x")),
+        ("C:\\old\\run", "C:\\old\\run\\devices\\x", ("devices", "x")),
+        ("C:\\old\\run", "C:/old/run/devices/x", ("devices", "x")),  # as_posix() on Windows
+        ("C:\\old\\run", "c:\\OLD\\run\\devices", ("devices",)),  # Windows ignores case
+        ("/old/run", "/old/other/x", None),
+        ("/old/run", "/old/runx/x", None),
+        ("/old/run", "devices/x", None),  # Relative paths aren't mapped
+        ("/old/run", "/old/run/\\x", None),  # Joined on Windows: the root of the drive
+        ("/old/run", "/old/run/C:x", None),  # Joined on Windows: on drive C:
+        ("/old/run", "/old/run/devices/C:\\x", None),
+        ("", "/old/run/devices", None),
+    ],
+)
+def test_map_saved_path(make_run_dir, saved_run_dir, value, expected):
+    run_dir = make_run_dir()
+    results = RunResults.open(run_dir, config_data={"run_dir": saved_run_dir, "debug": 1})
+    assert results.map_saved_path(value) == (run_dir.joinpath(*expected) if expected else None)
+    # Paths under the current location of the run directory
+    assert results.map_saved_path((run_dir / "logs" / "peat.log").as_posix()) == (
+        run_dir / "logs" / "peat.log"
+    )
+    assert results.map_saved_path(str(run_dir / "logs")) == run_dir / "logs"
+    assert results.map_saved_path(run_dir.parent.as_posix()) is None
 
 
 def test_summary_duplicates(make_run_dir):
