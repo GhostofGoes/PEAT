@@ -190,9 +190,9 @@ def group_table_rows(values: Iterable[dict]) -> dict[str, list[dict]]:
         values: response dicts from :meth:`SNMP.get` or :meth:`SNMP.walk`
 
     Returns:
-        Rows by table name, e.g. ``{"ifTable": [{"_index": "1", "_index_parts": [1],
-        "ifIndex": 1, "ifDescr": "eth0", ...}, ...]}``. ``_index`` is the row's
-        index as a string, and ``_index_parts`` the decoded index values.
+        Rows by table name, e.g. ``{"ifTable": [{"_index": "1", "ifIndex": 1, ...}]}``.
+        ``_index`` is the row's index as a string, and ``_index_parts`` (also in
+        each row) the decoded index values.
     """
     tables: dict[str, dict[str, dict]] = {}
 
