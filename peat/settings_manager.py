@@ -438,6 +438,10 @@ class SettingsManager(dict):
         elif typecast is bool and isinstance(value, str):
             # Accepts: yes, no, true, false, 0, 1 (case-insensitive)
             casted = str_to_bool(value)
+        # Handle comma-separated strings for lists (e.g. environment
+        # variable "md5,sha256"), instead of a list of characters
+        elif typecast in (list, set, tuple) and isinstance(value, str):
+            casted = typecast(v.strip() for v in value.split(",") if v.strip())
         else:
             casted = typecast(value)  # type: ignore
 

@@ -475,6 +475,37 @@ class Configuration(SettingsManager):
     """
     Base name of elasticsearch index to use for :class:`peat.data.models.UEFIHash`
     """
+
+    THORIUM_URL: str | None = None
+    """
+    URL of the `Thorium <https://github.com/cisagov/thorium>`__ server that
+    ``peat import`` uploads files collected from devices to, e.g.
+    ``https://thorium.example.com/``. Uploading to Thorium is disabled
+    if this is unset.
+
+    The API token is read from the ``PEAT_THORIUM_TOKEN`` environment variable
+    (it's intentionally not a configuration option, so it isn't saved in the
+    configuration dumps). Alternatively, a username and password can be included
+    in the URL, e.g. ``https://user:password@thorium.example.com/``, which
+    are exchanged for a token. Usernames and passwords in URLs are removed from
+    the configuration pushed to Elasticsearch.
+    """
+
+    THORIUM_GROUPS: list[str] = []
+    """
+    Thorium groups that files are uploaded to. At least one group is
+    required to upload files to Thorium. Group names in the list can also
+    be separated by commas, e.g. ``PEAT_THORIUM_GROUPS="ot-team,ics"``.
+    """
+
+    THORIUM_VERIFY_TLS: bool = True
+    """
+    If the TLS certificate of the Thorium server should be verified.
+    Set to false for servers with self-signed certificates. Custom
+    certificate authorities can be configured with the ``REQUESTS_CA_BUNDLE``
+    environment variable.
+    """
+
     HEAT_ELASTIC_SERVER: str | None = None
     """
     Elasticsearch server to pull :term:`HEAT` data from.

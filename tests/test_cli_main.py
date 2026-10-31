@@ -155,3 +155,23 @@ def test_cli_write_readme(mocker, tmp_path):
 
     assert expected_path.is_file()
     assert first_text == expected_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [(None, False), ({"num_runs_failed": 0}, True), ({"num_runs_failed": 1}, False)],
+)
+def test_cli_import_main(mocker, capsys, summary, expected):
+    mocked = mocker.patch.object(cli_main, "import_results", return_value=summary)
+    mocker.patch.dict(config["runtime_configs"], {"PRINT_RESULTS": True})
+    assert cli_main.oneshot_main({"func": "import", "import_paths": ["./x"]}) is expected
+    mocked.assert_called_once_with(["./x"])
+    if summary:
+        assert '"num_runs_failed"' in capsys.readouterr().out
+
+
+def test_cli_import_main_no_paths(mocker, caplog):
+    mocked = mocker.patch.object(cli_main, "import_results")
+    assert cli_main.oneshot_main({"func": "import", "import_paths": []}) is False
+    assert "No paths to import" in caplog.text
+    mocked.assert_not_called()

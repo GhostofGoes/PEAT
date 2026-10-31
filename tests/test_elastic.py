@@ -80,3 +80,50 @@ def test_elastic_live_ci(mocker, tmp_path):
     assert len(es.search("alerts-*")) == 1
     assert len(es.search("alerts*")) == 2
     es.disconnect()
+
+
+def test_dated_index(mocker):
+    es = Elastic()
+    mocker.patch("peat.utils.utc_now", return_value=datetime(2021, 2, 25, 1, 2, 3))
+    assert es._dated_index("peat-configs") == "peat-configs-2021.02.25"
+    es.index_date = datetime(2019, 12, 31)
+    assert es._dated_index("peat-configs") == "peat-configs-2019.12.31"
+
+
+def test_attribute_to_run():
+    es = Elastic()
+    other = Elastic()
+    orig_agent = es.base_info["agent"]
+    orig_id = orig_agent["id"]
+    orig_start = es.start_time
+    start = datetime.fromisoformat("2026-10-31T07:31:49+00:00")
+
+    with es.attribute_to_run("179343190989", start):
+        assert es.base_info["agent"]["id"] == "179343190989"
+        assert es.index_date == start
+        assert es.start_time == "2026-10-31T07:31:49.000Z"
+        assert Elastic.time_now() == "2026-10-31T07:31:49.000Z"
+        assert es.gen_body({})["@timestamp"] == "2026-10-31T07:31:49.000Z"
+        # event.ingested from time_now() is the actual time, other values are kept
+        content = {"event": {"ingested": Elastic.time_now(), "kind": "event"}}
+        body = es.gen_body(content)
+        assert body["event"]["ingested"] != "2026-10-31T07:31:49.000Z"
+        assert body["event"]["kind"] == "event"
+        assert content["event"]["ingested"] == "2026-10-31T07:31:49.000Z"  # Not modified
+        ingested = "2020-01-02T03:04:05.000Z"
+        assert es.gen_body({"event": {"ingested": ingested}})["event"]["ingested"] == ingested
+        # Other instances (e.g. the logging sink) keep their own index dates
+        assert other.index_date is None
+    assert es.base_info["agent"] is orig_agent
+    assert orig_agent["id"] == orig_id  # Not modified in place
+    assert es.start_time == orig_start
+    assert es.index_date is None
+    assert Elastic._time_override is None
+    assert Elastic.time_now() != "2026-10-31T07:31:49.000Z"
+
+    # None values keep the current values, and values are restored on errors
+    with pytest.raises(ValueError), es.attribute_to_run(None, None):
+        assert es.base_info["agent"]["id"] == orig_id
+        assert es.index_date is None
+        raise ValueError
+    assert Elastic._time_override is None

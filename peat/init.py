@@ -198,7 +198,7 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
         not state.peat_initialized
         and not entrypoint == "Package"
         and (
-            conf.get("func", "") not in ["parse", "pillage"]  # Skip passive
+            conf.get("func", "") not in ["parse", "pillage", "import"]  # Skip passive
             and not (conf.get("ports") or conf.get("port_list"))  # Skip serial
         )
     ):

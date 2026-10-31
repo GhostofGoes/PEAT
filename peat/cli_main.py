@@ -21,6 +21,7 @@ from peat import (
     encrypt_results_api,
     exit_handler,
     heat_main,
+    import_results,
     initialize_peat,
     log,
     module_api,
@@ -140,6 +141,9 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
             if raw_config.get(opt):
                 del raw_config[opt]
 
+        # Don't save passwords in URLs (e.g. ELASTIC_SERVER, THORIUM_URL)
+        raw_config = utils.redact_url_credentials(raw_config)
+
         if not state.elastic.push(config.ELASTIC_CONFIG_INDEX, raw_config):
             log.warning(f"Failed to save configuration to {state.elastic.type}")
 
@@ -149,7 +153,8 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
             f"Saving state to {state.elastic.type} (index basename: {config.ELASTIC_STATE_INDEX})"
         )
 
-        if not state.elastic.push(config.ELASTIC_STATE_INDEX, state.export()):
+        state_data = utils.redact_url_credentials(state.export())
+        if not state.elastic.push(config.ELASTIC_STATE_INDEX, state_data):
             log.warning(f"Failed to save state to {state.elastic.type}")
 
     # Record end time and duration in the log
@@ -240,6 +245,9 @@ def oneshot_main(args: dict[str, Any]) -> bool:
         else:
             log.critical("Error encountered while decrypting results archive, exiting...")
             sys.exit(1)
+
+    if args["func"] == "import":
+        return import_main(args)
 
     targets = []  # type: list[str]
     device_types = set()  # type: set[str]
@@ -347,6 +355,32 @@ def oneshot_main(args: dict[str, Any]) -> bool:
         log.exception(f"{args['func']} failed due to unhandled exception")
 
     return False
+
+
+def import_main(args: dict[str, Any]) -> bool:
+    """
+    Run ``peat import``: import existing run directories into
+    Elasticsearch/OpenSearch and/or Thorium.
+
+    Returns:
+        If everything was imported successfully
+    """
+    if not args.get("import_paths"):
+        log.error(
+            'No paths to import, e.g. "peat import ./peat_results/ -e". '
+            "Note that -e without a URL uses the next argument as the URL, "
+            "so put the paths before it."
+        )
+        return False
+
+    summary = import_results(args["import_paths"])
+    if summary is None:
+        return False
+
+    if config.PRINT_RESULTS:
+        print(json.dumps(summary, indent=4), flush=True)  # noqa: T201
+
+    return summary["num_runs_failed"] == 0
 
 
 def export_device_data(args: dict[str, Any]) -> bool:
@@ -638,7 +672,7 @@ directory in the same directory you were in when running PEAT.
 ## Description of folders in output
 
 - `devices/` : All data collected from OT devices and/or parsed out of files.
-- `elastic_data/` : Copies of documents pushed to Elasticsearch. These can be used to rebuild the Elasticsearch data if you only have the files or don't have a Elasticsearch server available when running PEAT.
+- `elastic_data/` : Copies of documents pushed to Elasticsearch. These can be used to rebuild the Elasticsearch data if you only have the files or don't have a Elasticsearch server available when running PEAT. To push the results in a run directory to Elasticsearch, OpenSearch or Malcolm (or upload the files collected from devices to Thorium) after the fact, use "peat import <run-dir>".
     - `mappings/` : Elasticsearch type mappings for the PEAT indices
 - `heat_artifacts/` : Output from HEAT ("peat heat <args>")
 - `logs/` : PEAT's log files, including the main log file, JSON-formatted log files, and protocol- and module-specific log files (e.g. Telnet logs, ENIP logs).

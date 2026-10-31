@@ -20,6 +20,7 @@ Notes
 - ALL timestamps are in the :term:`UTC` timezone
 - Field types (the "Type" column in the tables) are Elasticsearch datatypes (`reference <https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-types.html>`__). When storing as a plain :term:`JSON` file, ensure the format it is stored in either matches or can be cohered to the corresponding ES format.
 - The document's ``_id`` field is unique for each document. The format is: ``peat~<run-id>~<microsecond>``, where ``<microsecond>`` is an integer.
+- Documents imported by ``peat import`` (:mod:`peat.api.import_api`) have deterministic IDs, in the format ``peat~<run-id>~import~<hash>``, where ``<run-id>`` is the ID of the original run and ``<hash>`` identifies the data (e.g. the device and the position of an event), so importing the same run again updates the existing documents. They are attributed to the original run with :meth:`Elastic.attribute_to_run() <peat.elastic.Elastic.attribute_to_run>`.
 - Sub-fields are nested :term:`JSON` objects. From the `ECS Guidelines <https://www.elastic.co/guide/en/ecs/current/ecs-guidelines.html>`__: "The document structure should be nested JSON objects. If you use Beats or Logstash, the nesting of JSON objects is done for you automatically. If you're ingesting to Elasticsearch using the API, your fields must be nested objects, not strings containing dots."
 
 .. seealso::
