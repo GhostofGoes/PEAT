@@ -726,10 +726,12 @@ def test_drain(tmp_path, mocker):
     capture._drain()
     assert 0.05 <= time.monotonic() - start < 0.3
 
-    # Packets keep arriving: stops waiting at the maximum
+    # Packets keep arriving: stops waiting at the maximum. The activity is
+    # recorded after the sleep, so a sleep that overruns on a loaded machine
+    # (Windows CI) doesn't look like a quiet period.
     def _busy(seconds):
-        capture._last_activity = time.monotonic()
         time.sleep(seconds)
+        capture._last_activity = time.monotonic()
 
     mocker.patch.object(pcap, "_sleep", side_effect=_busy)
     start = time.monotonic()
