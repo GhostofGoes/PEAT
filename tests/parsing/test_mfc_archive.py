@@ -26,6 +26,18 @@ from peat.parsing.mfc_archive import (
         # cp1252
         (b"\x03\x80\xe9\x9f", "€éŸ"),
     ],
+    # Explicit IDs: pytest puts the test ID in the PYTEST_CURRENT_TEST
+    # environment variable, and an ID built from the 70000-byte input is
+    # longer than the 32767 characters Windows allows.
+    ids=[
+        "empty",
+        "byte-length",
+        "word-length",
+        "dword-length-70000",
+        "utf16",
+        "utf16-word-length",
+        "cp1252",
+    ],
 )
 def test_read_cstring(data, expected):
     value, end = read_cstring(data + b"trailing", 0)
