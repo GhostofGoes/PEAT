@@ -5,6 +5,7 @@ Commandline argument parsing and help. Used by cli_main.py.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 
 from pathvalidate.argparse import validate_filepath_arg
@@ -218,6 +219,13 @@ peat pull -d sceptre -Y -i 192.0.2.35
 
 # Use previous results and skip online check
 peat pull --assume-online -f examples/example-scan-summary.json
+
+# Don't reuse any data collected from the device during the scan
+# (by default, data such as HTTP pages is reused for up to 300 seconds)
+peat pull -i 192.0.2.1 --no-cache
+
+# Reuse data collected from devices for up to 10 minutes
+peat pull -i 192.0.2.0/24 --cache-ttl 600
 
 # Pull from a Woodward 2301E on serial port 0 (COM0 on Windows or /dev/ttyS0 on Linux)
 peat pull -d 2301e -s 0
@@ -448,6 +456,21 @@ ALL_EXAMPLES: dict[str, str] = {
     "encrypt_config": encrypt_config_examples,
     "decrypt_config": decrypt_config_examples,
 }
+
+
+def _seconds_arg(value: str) -> float:
+    """
+    argparse type for a finite number of seconds that's 0 or greater.
+    """
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid number of seconds: '{value}'") from None
+    if not math.isfinite(seconds) or seconds < 0:
+        raise argparse.ArgumentTypeError(
+            f"must be a finite number of seconds that's 0 or greater: '{value}'"
+        )
+    return seconds
 
 
 def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
@@ -1007,6 +1030,24 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
             "and ports checked vary based on the imported modules "
             "and other information sources, such as imported scan "
             "results.",
+        )
+        subp.add_argument(
+            "--no-cache",
+            action="store_false",
+            default=None,
+            dest="cache_enabled",
+            help="Do not reuse data PEAT already collected from a device during "
+            "this run (HTTP pages, TLS certificates and FTP files). Every "
+            "request is sent to the device.",
+        )
+        subp.add_argument(
+            "--cache-ttl",
+            type=_seconds_arg,
+            default=None,
+            metavar="SECONDS",
+            dest="cache_ttl",
+            help="Seconds that data collected from a device is reused before it's "
+            "requested from the device again (default: 300). 0 disables reuse.",
         )
         # pull can omit host args when a YAML config with hosts is provided
         host_group = subp.add_mutually_exclusive_group(required=subp is not pull_parser)

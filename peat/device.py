@@ -15,6 +15,7 @@ from peat import (
     utils,
 )
 from peat.file_signature import FileSignature
+from peat.protocols.cache import data_cache
 
 
 class DeviceModule:
@@ -225,7 +226,14 @@ class DeviceModule:
 
         cls.log.info(f"Pushing {push_type} to {dev.get_id()}")
 
-        result = cls._push(dev, to_push, push_type)
+        try:
+            # Never use cached data during a push
+            with data_cache.bypass():
+                result = cls._push(dev, to_push, push_type)
+        finally:
+            # Data collected from the device before the push may be out of date now
+            for host in {h for h in (dev.ip, dev.hostname) if h}:
+                data_cache.invalidate(host=host)
 
         if not result:
             cls.log.error(f"{push_type.capitalize()} push to {dev.get_id()} failed")

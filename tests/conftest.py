@@ -21,6 +21,7 @@ from deepdiff import DeepDiff
 from elasticsearch import Elasticsearch
 
 from peat import config, exit_handler, results_crypto
+from peat.protocols.cache import data_cache
 
 # NOTE: we can't have arguments before subcommands anymore
 PEAT_CMD = [sys.executable, "-m", "peat"]
@@ -148,6 +149,18 @@ def pytest_assertrepr_compare(op, left, right):  # noqa: ARG001
             changes.append(str(right))
 
         return ["data differences", *changes]
+
+
+@pytest.fixture(autouse=True)
+def _reset_data_cache():
+    """
+    Isolate tests from data cached by other tests in PEAT's
+    process-wide in-memory data cache (peat.protocols.cache).
+    """
+    data_cache.clear()
+    data_cache.reset_stats()
+    yield
+    data_cache.clear()
 
 
 @pytest.fixture

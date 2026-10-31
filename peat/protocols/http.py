@@ -1,18 +1,136 @@
 from __future__ import annotations
 
+import copy
+import json
 import re
 import socket
 import ssl
 import tempfile
 import urllib.parse
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from bs4 import BeautifulSoup
 from requests import Response, Session
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth, HTTPProxyAuth
+from requests.cookies import RequestsCookieJar, merge_cookies
+from requests.models import PreparedRequest
+from requests.sessions import merge_setting
+from requests.structures import CaseInsensitiveDict
 
 import peat  # Avoid circular imports
 from peat import config, consts, log, utils
+
+from .cache import NS_HTTP, NS_HTTP_POST, NS_TLS_CERT, CacheKey, data_cache
+
+# Keyword arguments to Requests that can be included in a cache key.
+# Requests with any other keyword arguments (e.g. "stream", "hooks",
+# "files") are never cached.
+_KEYABLE_KWARGS = frozenset(
+    {"headers", "cookies", "allow_redirects", "verify", "cert", "proxies", "data", "json"}
+)
+
+# Attributes PEAT adds to Response objects, which copy.copy() drops
+_RESPONSE_EXTRA_ATTRS = ("request_timestamp", "response_timestamp", "file_path")
+
+
+def _auth_fingerprint(auth: Any) -> tuple | None:
+    """
+    Identify the credentials of a Requests "auth" argument.
+
+    The auth object is never called, since some (e.g. ``HTTPDigestAuth``)
+    change their state when called. Unknown types of auth return
+    :obj:`None`, which means the request is not cached.
+    """
+    if auth is None:
+        return ("none",)
+    if isinstance(auth, tuple) and len(auth) == 2:
+        return ("basic", str(auth[0]), str(auth[1]))
+    if isinstance(auth, HTTPDigestAuth):
+        return ("digest", auth.username, auth.password)
+    if isinstance(auth, HTTPProxyAuth):  # subclass of HTTPBasicAuth, so check first
+        return ("proxy", auth.username, auth.password)
+    if isinstance(auth, HTTPBasicAuth):
+        return ("basic", auth.username, auth.password)
+    return None
+
+
+def _body_fingerprint(data: Any, json_body: Any) -> tuple | None:
+    """
+    Identify a request body. File-like objects and generators return :obj:`None`.
+    """
+    if data is not None and not isinstance(data, (str, bytes, dict, list, tuple)):
+        return None
+    try:
+        return (repr(data), json.dumps(json_body, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return None
+
+
+def _response_is_cacheable(response: Response | None) -> bool:
+    """
+    Only successful responses that don't set cookies are cached.
+
+    A response that sets a cookie establishes a session. A cached copy would
+    not set the cookie in another caller's session, so it's transient data.
+    """
+    if response is None or response.status_code != 200:
+        return False
+    return not any("set-cookie" in r.headers for r in (*response.history, response))
+
+
+def _response_size(response: Response) -> int:
+    headers_size = sum(len(k) + len(v) for k, v in response.headers.items())
+    return len(response.content or b"") + headers_size + 512
+
+
+def _clone_response(response: Response) -> Response:
+    """
+    Copy of a response that can't affect the original.
+
+    The copy (and the copies of the redirect responses in its ``history``)
+    doesn't have the ``raw`` and ``connection`` attributes, so a cached
+    response doesn't keep network connection objects in memory.
+    """
+    clone = copy.copy(response)  # uses Response.__getstate__()
+    clone.headers = CaseInsensitiveDict(response.headers)
+    clone.cookies = response.cookies.copy()
+    clone.history = [_clone_response(hop) for hop in response.history]
+    if response.request is not None:
+        clone.request = response.request.copy()
+    for attr in _RESPONSE_EXTRA_ATTRS:
+        setattr(clone, attr, getattr(response, attr, None))
+    clone.from_cache = getattr(response, "from_cache", False)
+    return clone
+
+
+def _follower_wait(timeout: Any) -> float:
+    """
+    Seconds to wait for another thread that's making the same request.
+    ``timeout`` may be a number, a ``(connect, read)`` tuple, or :obj:`None`.
+    """
+    try:
+        total = sum(timeout) if isinstance(timeout, (tuple, list)) else float(timeout)
+    except (TypeError, ValueError):
+        total = 0.0
+    return max(30.0, 3 * total)
+
+
+def _normalize_url(url: str) -> tuple[str, str, int]:
+    """
+    Normalize a URL for use in a cache key.
+
+    Returns:
+        Tuple of (URL, host, port). The URL has a lowercase scheme and host,
+        an explicit port, and no fragment.
+    """
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    port = parts.port or (443 if scheme == "https" else 80)
+    netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    base = urllib.parse.urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
+    return base, host, port
 
 
 class HTTP:
@@ -20,7 +138,13 @@ class HTTP:
     Basic set of reusable HTTP functionality.
     """
 
-    page_cache: dict[str, Response] = {}  # Global cache of page data, keyed by URL
+    USE_CACHE: bool = True
+    """
+    Default value for the ``use_cache`` argument of :meth:`get` and
+    :meth:`get_ssl_certificate`. Subclasses for devices where all
+    pages are dynamic can set this to :obj:`False`.
+    """
+
     DEFAULT_HEADERS: dict = {}
 
     def __init__(
@@ -170,31 +294,102 @@ class HTTP:
         except Exception:
             self.log.exception(f"Failed to write page '{page}' to file")
 
+    def _cache_key(
+        self,
+        method: str,
+        url: str,
+        params: Any,
+        auth: Any,
+        kwargs: dict[str, Any],
+        namespace: str = NS_HTTP,
+    ) -> CacheKey | None:
+        """
+        Build the cache key for a request.
+
+        The key includes everything that can change the response: method,
+        URL and parameters, headers and cookies (of the session and the
+        request), credentials, body and connection options.
+
+        Returns:
+            The key, or :obj:`None` if the request can't be cached
+        """
+        unknown = set(kwargs) - _KEYABLE_KWARGS
+        auth_fp = _auth_fingerprint(auth if auth is not None else self.session.auth)
+        body_fp = _body_fingerprint(kwargs.get("data"), kwargs.get("json"))
+        if unknown or auth_fp is None or body_fp is None:
+            self.log.trace2(f"Not caching {method} {url}: unsupported request options")
+            return None
+
+        try:
+            base, host, port = _normalize_url(url)
+            # Requests uses credentials in the URL if "auth" isn't set
+            split_url = urllib.parse.urlsplit(url)
+            url_creds = (split_url.username, split_url.password)
+            prepped = PreparedRequest()
+            prepped.prepare_url(base, params)  # encodes the parameters
+
+            headers = merge_setting(
+                kwargs.get("headers"), self.session.headers, dict_class=CaseInsensitiveDict
+            )
+            header_items = sorted(
+                (str(k).lower(), str(v)) for k, v in headers.items() if v is not None
+            )
+
+            jar = merge_cookies(RequestsCookieJar(), self.session.cookies)
+            jar = merge_cookies(jar, kwargs.get("cookies"))
+            cookie_items = sorted((c.domain, c.path, c.name, c.value or "") for c in jar)
+
+            options = (
+                kwargs.get("allow_redirects", True),
+                kwargs.get("verify", self.session.verify),
+                repr(kwargs.get("cert", self.session.cert)),
+                repr(sorted((kwargs.get("proxies") or {}).items())),
+            )
+        except Exception as ex:
+            self.log.trace2(f"Not caching {method} {url}: {ex}")
+            return None
+
+        variant = data_cache.fingerprint(
+            method, prepped.url, url_creds, header_items, cookie_items, auth_fp, options, body_fp
+        )
+
+        # The resource is logged, so it excludes the "params" argument
+        # (which may contain session tokens) and any credentials in the URL.
+        return CacheKey(namespace, host, port, f"{method} {base}", variant)
+
     def get(
         self,
         page: str = "",
         protocol: Literal["http", "https", ""] = "",
         url: str = "",
-        use_cache: bool = True,
+        use_cache: bool | None = None,
         params: dict | None = None,
         auth=None,
         allow_errors: bool = False,
         dev: peat.data.models.DeviceData | None = None,
         timeout: float | None = None,
+        cache_ttl: float | None = None,
         **kwargs,
     ) -> Response | None:
         """
         Perform a HTTP ``GET`` request and return the response.
 
         .. warning::
-           Results of queries for an identical URL are cached by default for
-           a single run of PEAT. If your tool is querying the status or looking
-           for changes within a single run of PEAT, then set ``use_cache``
-           to :obj:`False`.
+           Successful responses are cached in memory (:mod:`peat.protocols.cache`)
+           and reused by any instance of this class (and subclasses) that makes
+           an identical request during the same run of PEAT, until they expire
+           (:attr:`~peat.settings.Configuration.CACHE_TTL`). Requests with
+           different parameters, credentials, headers or cookies are cached
+           separately. Responses with an error status code or that set cookies
+           are never cached. If the page is dynamic (e.g. status or uptime),
+           or your code is looking for changes within a single run of PEAT,
+           then set ``use_cache`` to :obj:`False`.
 
         .. note::
-           The response object will have three additional attributes:
-           ``request_timestamp``, ``response_timestamp``, ``file_path``.
+           The response object will have four additional attributes:
+           ``request_timestamp``, ``response_timestamp``, ``file_path``,
+           and ``from_cache``. For a cached response, the timestamps and
+           file path are from the original request.
 
         Args:
             page: URL path of the page to get
@@ -202,19 +397,26 @@ class HTTP:
                 If empty string (default), the HTTP instance's "protocol" will be used, if set.
                 Otherwise, it will default to "http".
             url: URL to use instead of the auto-constructed one
-            use_cache: If the internal page cache should be used.
+            use_cache: If cached data should be used, and the response cached.
+                If :obj:`None`, the class attribute ``USE_CACHE`` is used
+                (default: :obj:`True`).
             params: Additional HTTP parameters to include in the request
             auth: Authentication to use for the request (refer to Requests docs)
+            allow_errors: Return the response even if the status code is not 200
             dev: DeviceData object to save files to
             timeout: Timeout for the query. If :obj:`None`, the default
                 timeout for this class instance is used instead.
+            cache_ttl: Seconds the response stays fresh in the cache. If :obj:`None`,
+                :attr:`~peat.settings.Configuration.CACHE_TTL` is used.
+                A value of ``0`` means the cache is not used for this request.
             kwargs: Additional keyword arguments that will be passed
                 directly to ``Requests.get()``
 
         Returns:
             The response object, or :obj:`None` if the request failed.
-            The response object will have three additional attributes:
-            ``request_timestamp``, ``response_timestamp``, ``file_path``.
+            The response object will have four additional attributes:
+            ``request_timestamp``, ``response_timestamp``, ``file_path``,
+            and ``from_cache``.
         """
         if not protocol and self.protocol:
             protocol = self.protocol
@@ -238,12 +440,8 @@ class HTTP:
             # TODO: use urllib.parse.urljoin()
             url = f"{protocol}://{self.ip}:{port}/{page}"
 
-        # TODO: add a lifetime to the cache
-        if use_cache and self.page_cache.get(url):
-            self.log.info(f"GET -> {url} (using cached response)")
-            return self.page_cache[url]
-
-        self.log.info(f"GET -> {url}")
+        if use_cache is None:
+            use_cache = self.USE_CACHE
 
         if not dev and self.dev:
             dev = self.dev
@@ -251,30 +449,51 @@ class HTTP:
         if timeout is None:
             timeout = self.timeout
 
-        try:
-            req_ts = utils.utc_now()  # rough timestamp of send time
+        def _fetch() -> Response | None:
+            self.log.info(f"GET -> {url}")
+            try:
+                req_ts = utils.utc_now()  # rough timestamp of send time
+                resp: Response = self.session.get(
+                    url, timeout=timeout, params=params, auth=auth, **kwargs
+                )
+            except Exception as ex:
+                self.log.warning(f"Failed to GET '{url}': {ex}")
+                return None
 
-            response: Response = self.session.get(
-                url, timeout=timeout, params=params, auth=auth, **kwargs
+            # Record where the file was saved as a Path object
+            resp.file_path = self._save_response_to_file(resp, page, url, dev)
+            # Record rough timestamps of request and response
+            resp.request_timestamp = req_ts
+            resp.response_timestamp = req_ts + resp.elapsed
+            resp.from_cache = False
+            return resp
+
+        key = self._cache_key("GET", url, params, auth, kwargs) if use_cache else None
+        if key is None:
+            response = _fetch()
+        else:
+            result = data_cache.get_or_fetch(
+                key,
+                _fetch,
+                ttl=cache_ttl,
+                store_if=_response_is_cacheable,
+                size_of=_response_size,
+                copier=_clone_response,
+                wait_timeout=_follower_wait(timeout),
             )
+            response = result.value
+            if result.from_cache:
+                response.from_cache = True
+                self.log.info(f"GET -> {url} (cached response from {result.age:.1f}s ago)")
 
-            file_path = self._save_response_to_file(response, page, url, dev)
+        if response is None:
+            return None
 
-            if not allow_errors and response.status_code != 200:
-                err = f"status code {response.status_code}"
-            else:
-                # Record rough timestamps of request and response
-                response.request_timestamp = req_ts
-                response.response_timestamp = req_ts + response.elapsed
-                # Record where the file was saved as a Path object
-                response.file_path = file_path
-                self.page_cache[url] = response
-                return response
-        except Exception as ex:
-            err = str(ex)
+        if not allow_errors and response.status_code != 200:
+            self.log.warning(f"Failed to GET '{url}': status code {response.status_code}")
+            return None
 
-        self.log.warning(f"Failed to GET '{url}': {err}")
-        return None
+        return response
 
     def post(
         self,
@@ -282,47 +501,54 @@ class HTTP:
         timeout: float | None = None,
         dev: peat.data.models.DeviceData | None = None,
         use_cache: bool = False,
+        cache_ttl: float | None = None,
         **kwargs,
     ) -> Response | None:
         """
         Perform a HTTP ``POST`` request and return the response.
 
+        A successful ``POST`` removes cached ``GET`` responses for the same URL
+        from the cache, since the request may have changed the data on the device.
+
         .. note::
-           The response object will have three additional attributes:
-           ``request_timestamp``, ``response_timestamp``, ``file_path``.
+           The response object will have four additional attributes:
+           ``request_timestamp``, ``response_timestamp``, ``file_path``,
+           and ``from_cache``.
 
         Args:
             url: URL to use for the request
             timeout: Timeout for the query. If :obj:`None`, the default
                 timeout for this class instance is used instead.
             dev: DeviceData object to save files to
-            use_cache: If the internal page cache should be used
+            use_cache: If the response should be cached and an identical
+                cached ``POST`` response reused. Only use this if the
+                ``POST`` doesn't change anything on the device.
+                ``GET`` responses are never used for a ``POST``.
+            cache_ttl: Seconds the response stays fresh in the cache. If :obj:`None`,
+                :attr:`~peat.settings.Configuration.CACHE_TTL` is used.
             kwargs: Additional keyword arguments that will be passed
                 directly to ``Requests.post()``
 
         Returns:
             The response object, or :obj:`None` if the request failed.
-            The response object will have three additional attributes:
-            ``request_timestamp``, ``response_timestamp``, ``file_path``.
+            The response object will have four additional attributes:
+            ``request_timestamp``, ``response_timestamp``, ``file_path``,
+            and ``from_cache``.
         """
-
-        # TODO: add a lifetime to the cache
-        if use_cache and self.page_cache.get(url):
-            self.log.info(f"POST -> {url} (using cached response)")
-            return self.page_cache[url]
-
-        self.log.info(f"POST -> {url}")
-
         if not dev and self.dev:
             dev = self.dev
 
         if timeout is None:
             timeout = self.timeout
 
-        try:
-            req_ts = utils.utc_now()  # rough timestamp of send time
-
-            response: Response = self.session.post(url, timeout=timeout, **kwargs)
+        def _fetch() -> Response | None:
+            self.log.info(f"POST -> {url}")
+            try:
+                req_ts = utils.utc_now()  # rough timestamp of send time
+                resp: Response = self.session.post(url, timeout=timeout, **kwargs)
+            except Exception as ex:
+                self.log.warning(f"Failed to POST '{url}': {ex}")
+                return None
 
             # Save the raw response text body to disk as an artifact
             parts = urllib.parse.urlparse(url)
@@ -331,31 +557,103 @@ class HTTP:
             if parts.query:
                 page = f"{page}{parts.query}.html"
 
-            file_path = self._save_response_to_file(response, page, url, dev)
+            # Record where the file was saved as a Path object
+            resp.file_path = self._save_response_to_file(resp, page, url, dev)
+            # Record rough timestamps of request and response
+            resp.request_timestamp = req_ts
+            resp.response_timestamp = req_ts + resp.elapsed
+            resp.from_cache = False
+            return resp
 
-            if response.status_code != 200:
-                err = f"status code {response.status_code}"
-            else:
-                # Record rough timestamps of request and response
-                response.request_timestamp = req_ts
-                response.response_timestamp = req_ts + response.elapsed
-                # Record where the file was saved as a Path object
-                response.file_path = file_path
-                self.page_cache[url] = response
+        key = None
+        if use_cache:
+            other_kwargs = {k: v for k, v in kwargs.items() if k not in ("params", "auth")}
+            key = self._cache_key(
+                "POST",
+                url,
+                kwargs.get("params"),
+                kwargs.get("auth"),
+                other_kwargs,
+                namespace=NS_HTTP_POST,
+            )
 
-                return response
-        except Exception as ex:
-            err = str(ex)
+        if key is None:
+            response = _fetch()
+        else:
+            result = data_cache.get_or_fetch(
+                key,
+                _fetch,
+                ttl=cache_ttl,
+                store_if=_response_is_cacheable,
+                size_of=_response_size,
+                copier=_clone_response,
+                wait_timeout=_follower_wait(timeout),
+            )
+            response = result.value
+            if result.from_cache:
+                response.from_cache = True
+                self.log.info(f"POST -> {url} (cached response from {result.age:.1f}s ago)")
 
-        self.log.warning(f"Failed to POST '{url}': {err}")
-        return None
+        if response is None:
+            return None
 
-    def get_ssl_certificate(self) -> peat.data.models.X509 | None:
+        # A successful POST may change the resource, so drop cached GETs
+        # of the same URL (RFC 9111, section 4.4).
+        if response.status_code < 400 and not getattr(response, "from_cache", False):
+            try:
+                base, host, port = _normalize_url(url)
+                data_cache.invalidate(
+                    namespace=NS_HTTP, host=host, port=port, resource=f"GET {base}"
+                )
+            except ValueError:
+                pass
+
+        if response.status_code != 200:
+            self.log.warning(f"Failed to POST '{url}': status code {response.status_code}")
+            return None
+
+        return response
+
+    def get_ssl_certificate(self, use_cache: bool | None = None) -> peat.data.models.X509 | None:
         """
         Retrieve and parse the server's SSL certificate.
 
+        The parsed certificate is cached (:mod:`peat.protocols.cache`) and
+        reused by other instances of this class for the same IP and port,
+        until it expires (:attr:`~peat.settings.Configuration.CACHE_TTL`).
+        Each call returns a separate copy.
+
+        Args:
+            use_cache: If a cached certificate should be used, and the certificate
+                cached. If :obj:`None`, the class attribute ``USE_CACHE`` is used
+                (default: :obj:`True`).
+
         Returns:
             SSL certificate data in Elastic Common Schema (:term:`ECS`)-compliant format
+        """
+        if not (self.USE_CACHE if use_cache is None else use_cache):
+            return self._fetch_ssl_certificate()
+
+        # The TLS handshake uses no client credentials and the
+        # server name indication (SNI) is always the IP, so the IP
+        # and port identify the server's certificate.
+        key = CacheKey(NS_TLS_CERT, self.ip, self.port, f"certificate (sni: {self.ip})")
+        result = data_cache.get_or_fetch(
+            key,
+            self._fetch_ssl_certificate,
+            size_of=lambda c: 2 * len(c.original or "") + 2048,
+            copier=lambda c: c.copy(deep=True),
+            wait_timeout=_follower_wait(self.timeout),
+        )
+
+        if result.from_cache:
+            self.log.debug(f"Using cached SSL certificate (fetched {result.age:.1f}s ago)")
+
+        return result.value
+
+    def _fetch_ssl_certificate(self) -> peat.data.models.X509 | None:
+        """
+        Retrieve and parse the server's SSL certificate, without using the cache.
         """
         emsg = "Failed to get SSL certificate"
 

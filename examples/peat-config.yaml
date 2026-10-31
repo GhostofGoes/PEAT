@@ -93,6 +93,27 @@ default_timeout: 5.0
 
 # -----------------------------------------------------------------------------
 
+# --- Options for reusing data collected from devices (in-memory cache) ---
+
+# Reuse data PEAT already collected from a device during this run (such as HTTP
+# pages, TLS certificates and FTP files) instead of requesting it from the
+# device again. Data is kept in memory only, is never written to disk, and is
+# never reused during a push.
+cache_enabled: true
+
+# Seconds data collected from a device is reused before it's requested again.
+# 0 disables reuse.
+cache_ttl: 300.0
+
+# Maximum number of items in the cache (least-recently-used items are removed)
+cache_max_entries: 4096
+
+# Approximate maximum total size of the cache in bytes (default: 128 MiB).
+# Items larger than 1/8 of this value are never cached. 0 disables reuse.
+cache_max_bytes: 134217728
+
+# -----------------------------------------------------------------------------
+
 # --- Options for controlling lookups of addresses ---
 
 # If PEAT should attempt to resolve device IP address from a hostname or MAC address

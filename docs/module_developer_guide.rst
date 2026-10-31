@@ -212,3 +212,52 @@ There are two debugging-specific command line arguments:
 
 - ``--pdb`` (``--launch-debugger``): this will begin the run, then break into the Python Debugger (pdb). This is useful for inspecting program state, and stepping through the program.
 - ``--repl`` (``--launch-interpreter``): begin the PEAT run, then break out into the Python interactive interpreter (aka the "Read-Eval-Print-Loop" or "REPL"). This is useful for getting access to the Python API via the executable distribution, checking program state, or testing a hypothesis about how stuff should function in specific conditions.
+
+Reusing data collected by other modules
+---------------------------------------
+PEAT has a process-wide, in-memory cache of data collected from devices (:mod:`peat.protocols.cache`), so modules can reuse data another module (or an earlier scan) already retrieved, instead of requesting it from the device again. Operators can disable it or change how long data stays fresh (refer to :ref:`peat-data-cache-operate`). Most of it works automatically in PEAT's protocol classes:
+
+- :meth:`HTTP.get() <peat.protocols.http.HTTP.get>`: successful ``GET`` responses are shared by all :class:`~peat.protocols.http.HTTP` instances (and subclasses). The cache key includes the URL and parameters, headers and cookies (of the session and the request), credentials and other request options, so requests that differ in any of these never share a response. Responses with an error status code, or that set cookies, are never cached. Each caller gets a separate copy of the response, with ``response.from_cache`` set to :obj:`True` if it was reused.
+- :meth:`HTTP.post() <peat.protocols.http.HTTP.post>`: responses are only cached if ``use_cache=True`` is passed (only do this if the ``POST`` doesn't change anything on the device). A successful ``POST`` removes cached ``GET`` responses for the same URL.
+- :meth:`HTTP.get_ssl_certificate() <peat.protocols.http.HTTP.get_ssl_certificate>`: the parsed certificate is shared for the same IP and port. Each call returns a separate copy.
+- :class:`~peat.protocols.telnet.Telnet`: the data the server sends before any input is sent (the "banner") is captured in every session. Use :meth:`~peat.protocols.telnet.Telnet.get_banner` to get it (from the cache if it's fresh, without connecting), or :meth:`Telnet.cached_banner() <peat.protocols.telnet.Telnet.cached_banner>` to check the cache only. Input must be sent with :meth:`~peat.protocols.telnet.Telnet.write` or :meth:`~peat.protocols.telnet.Telnet.write_raw`, not by calling ``comm.write()`` directly, otherwise the replies to the commands end up in the banner. The banner is whatever was received before the first write, so if a session reads for only a short time before sending a command, the banner may be incomplete. Don't use the absence of a string in a cached banner as proof that a device isn't a match.
+- :class:`~peat.protocols.ftp.FTP`: the welcome message is cached on connect (:meth:`FTP.cached_welcome() <peat.protocols.ftp.FTP.cached_welcome>`). Files downloaded with :meth:`~peat.protocols.ftp.FTP.download_binary` and :meth:`~peat.protocols.ftp.FTP.download_text` are cached by user and absolute path. The files are still saved to disk on a cache hit. For relative paths to be cached, the directory must be changed using :meth:`FTP.cd() <peat.protocols.ftp.FTP.cd>`. If the directory or user is changed in any other way (e.g. ``ftp.ftp.cwd(...)`` or ``ftp.cmd("CWD ...")``), downloads are not cached for the rest of the session. Uploads, deletes, renames and other commands that may change files remove cached files from that server.
+- During a :meth:`~peat.device.DeviceModule.push`, the cache is not used, and afterwards all cached data from the device is removed.
+
+Dynamic data must not be reused, since it would hide changes:
+
+- Pass ``use_cache=False`` for pages and files that change on every request, such as status, uptime or log pages. Pass ``cache_ttl=<seconds>`` for data that is only stable for a short time.
+- Set ``USE_CACHE = False`` on a subclass of :class:`~peat.protocols.http.HTTP` if all pages of the device are dynamic.
+- Use ``with data_cache.bypass():`` to make sure everything in a block of code (in the current thread) is requested from the device.
+
+Other types of data can be cached with :meth:`data_cache.get_or_fetch() <peat.protocols.cache.DataCache.get_or_fetch>`. The ``variant`` of the key **must** include every credential and option that can change the answer, using :meth:`data_cache.fingerprint() <peat.protocols.cache.DataCache.fingerprint>`. ``resource`` is logged, so it must not contain credentials or session tokens.
+
+.. code-block:: python
+
+   from peat.protocols.cache import CacheKey, data_cache
+
+   key = CacheKey(
+       namespace="snmp",
+       host=dev.ip,
+       port=161,
+       resource="1.3.6.1.2.1.1.1.0",
+       variant=data_cache.fingerprint(community, snmp_version),
+   )
+   result = data_cache.get_or_fetch(
+       key,
+       lambda: query_sysdescr(dev.ip, community, snmp_version),
+       store_if=lambda value: bool(value),  # don't cache errors or empty values
+       copier=copy.deepcopy,  # callers can't modify the cached value
+   )
+   sysdescr = result.value
+
+The cache is different from ``dev._cache``:
+
+.. csv-table::
+   :header: "", "``dev._cache``", "``data_cache``"
+   :widths: 20, 40, 40
+
+   "Holds", "Live objects and module state: sessions, connections, flags, verified credentials", "Data a device returned"
+   "Scope", "One device", "Whole process, all modules"
+   "Expiry", "None", "Time-to-live and least-recently-used eviction"
+   "Mutability", "Mutable, shared references", "Copied when stored and when used"

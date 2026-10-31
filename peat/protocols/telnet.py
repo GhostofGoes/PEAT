@@ -6,6 +6,7 @@ import peat
 from peat import CommError, log
 
 from . import forked_telnetlib as telnetlib
+from .cache import NS_TELNET_BANNER, CacheKey, data_cache
 
 
 class Telnet:
@@ -19,6 +20,8 @@ class Telnet:
     - Logging messages
     - Records all commands and responses and saves to a file
     - Simpler function calls
+    - Captures the banner (data the server sends before any input is sent)
+      and caches it for use by other modules (:meth:`get_banner`)
     """
 
     # These will vary by device and should be overridden as needed
@@ -27,6 +30,8 @@ class Telnet:
     POST_WRITE_SLEEP: float = 0.1
     READ_DELAY: float = 0.15
     LINE_TERMINATOR: str = "\r\n"
+    BANNER_READ_DELAY: float = 1.0
+    BANNER_MAX_BYTES: int = 65536  # banners are truncated to this size
 
     def __init__(self, ip: str, port: int = 23, timeout: float = 5.0) -> None:
         self.ip: str = ip
@@ -46,6 +51,12 @@ class Telnet:
 
         self.successful_creds: tuple[str, str] | None = None
         self._comm: telnetlib.Telnet = telnetlib.Telnet()
+
+        self.banner: str | None = None
+        """Data the server sent before any input was sent (decoded)."""
+        self._input_sent: bool = False
+        self._pre_input_raw: list[bytes] = []
+        self._pre_input_len: int = 0
 
         self.log.trace2(f"Initialized {repr(self)}")
 
@@ -77,6 +88,9 @@ class Telnet:
             try:
                 self._comm.open(self.ip, self.port, self.timeout)
                 self.connected = True
+                self._input_sent = False
+                self._pre_input_raw = []
+                self._pre_input_len = 0
                 self.log.info(f"Connected to {self.ip}:{self.port}")
             except Exception as ex:
                 raise CommError(f"Failed to connect to {self.ip}:{self.port}: {ex}") from ex
@@ -86,6 +100,85 @@ class Telnet:
     @comm.setter
     def comm(self, obj: telnetlib.Telnet) -> None:
         self._comm = obj
+
+    @staticmethod
+    def banner_key(ip: str, port: int = 23) -> CacheKey:
+        """Cache key of the Telnet banner of a server."""
+        return CacheKey(NS_TELNET_BANNER, ip, port, "banner")
+
+    @classmethod
+    def cached_banner(cls, ip: str, port: int = 23, encoding: str | None = None) -> str | None:
+        """
+        Get the banner of a Telnet server, if it was captured recently
+        by any :class:`Telnet` instance, without connecting to the server.
+
+        Args:
+            ip: IP address of the server
+            port: Port of the server
+            encoding: Encoding to decode the banner with.
+                If :obj:`None`, the class's ``ENCODING`` is used.
+
+        Returns:
+            The banner, or :obj:`None` if there is no fresh banner in the cache
+        """
+        raw = data_cache.get(cls.banner_key(ip, port))
+        if raw is None:
+            return None
+        return raw.decode(encoding or cls.ENCODING, errors="replace")
+
+    def _record_banner(self) -> None:
+        """Save the data received before any input was sent as the banner."""
+        if self._input_sent or not self._pre_input_raw:
+            return
+        raw = b"".join(self._pre_input_raw)[: self.BANNER_MAX_BYTES]
+        self.banner = raw.decode(self.ENCODING, errors="replace")
+        data_cache.put(self.banner_key(self.ip, self.port), raw, size=len(raw) + 64)
+
+    def _mark_input_sent(self) -> None:
+        """
+        Finish the banner capture before PEAT sends input to the server.
+
+        Connects first (if needed), since connecting resets the banner capture.
+        """
+        self.comm  # noqa: B018
+        if self._input_sent:
+            return
+        self._record_banner()
+        self._input_sent = True
+        self._pre_input_raw = []
+        self._pre_input_len = 0
+
+    def get_banner(self, delay: float | None = None, use_cache: bool = True) -> str:
+        """
+        Get the banner of the server, which is the data the server sends
+        after connecting and before any input is sent (e.g. a login prompt).
+
+        If the banner was captured recently (by this or another instance),
+        the cached banner is returned without connecting to the server.
+
+        Args:
+            delay: Seconds to wait for the banner after connecting.
+                If :obj:`None`, ``BANNER_READ_DELAY`` is used.
+            use_cache: If a cached banner can be used
+
+        Returns:
+            The banner, or an empty string if the server didn't send one
+
+        Raises:
+            CommError: If connecting to the server failed
+        """
+        if use_cache:
+            cached = self.cached_banner(self.ip, self.port, self.ENCODING)
+            if cached is not None:
+                self.log.trace(f"Using cached banner for {self.ip}:{self.port}")
+                return cached
+
+        if self._input_sent:  # session is already in use, return what was captured
+            return self.banner or ""
+
+        self.read(delay=self.BANNER_READ_DELAY if delay is None else delay)
+        self._record_banner()
+        return self.banner or ""
 
     def test_connection(self) -> bool:
         """
@@ -103,6 +196,7 @@ class Telnet:
         Cleanly disconnect from the device.
         """
         if self.connected and self._comm:
+            self._record_banner()  # the session may have only read data
             self._comm.close()
             self.connected = False
             self.log.debug(f"Disconnected from {self.ip}")
@@ -125,6 +219,9 @@ class Telnet:
         """
         self.log.debug(f"Writing command: {command}")
 
+        # The banner is complete once PEAT starts sending input
+        self._mark_input_sent()
+
         # If it's an int, first convert to a string, which will then be encoded
         if isinstance(command, int):
             command = str(command)
@@ -146,6 +243,21 @@ class Telnet:
 
         if flush:
             self.comm.read_very_eager()
+
+    def write_raw(self, data: bytes) -> None:
+        """
+        Send raw bytes to the device, as-is.
+
+        Unlike :meth:`write`, the data isn't encoded, no line terminator is
+        appended and there are no sleeps. Use this instead of calling
+        ``comm.write()`` directly, so the banner capture knows that input
+        was sent to the device.
+
+        Args:
+            data: Bytes to send
+        """
+        self._mark_input_sent()
+        self.comm.write(data)
 
     def login(self, user: str, passwd: str) -> dict | None:
         """
@@ -214,6 +326,10 @@ class Telnet:
         Decodes and saves responses from device.
         """
         self.raw_output.append(raw_data)
+        # Only keep what can end up in the banner
+        if raw_data and not self._input_sent and self._pre_input_len < self.BANNER_MAX_BYTES:
+            self._pre_input_raw.append(raw_data)
+            self._pre_input_len += len(raw_data)
 
         data = raw_data.decode(self.ENCODING)
         self.all_output.append(data)

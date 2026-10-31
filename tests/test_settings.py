@@ -30,3 +30,15 @@ def test_simple_example_yaml_config_matches_settings(examples_path):
     exported = lower_dict(conf.json_dict(include_none_vals=True))
     yml_config = yaml.safe_load(examples_path("peat-config-simple.yaml").read_text())
     assert sorted(exported.keys()) == sorted(yml_config.keys())
+
+
+def test_cache_settings_from_environment(monkeypatch):
+    monkeypatch.setenv("TEST_CACHE_CACHE_TTL", "60")
+    monkeypatch.setenv("TEST_CACHE_CACHE_ENABLED", "false")
+    monkeypatch.setenv("TEST_CACHE_CACHE_MAX_ENTRIES", "10")
+    conf = Configuration("configuration", env_prefix="TEST_CACHE_", init_env=True)
+    assert conf.CACHE_TTL == 60.0
+    assert isinstance(conf.CACHE_TTL, float)
+    assert conf.CACHE_ENABLED is False
+    assert conf.CACHE_MAX_ENTRIES == 10
+    assert conf.CACHE_MAX_BYTES == 134217728
