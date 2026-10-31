@@ -2,7 +2,7 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from itertools import cycle
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 from deepdiff import DeepDiff
@@ -13,6 +13,7 @@ from peat.data.compare import (
     MAX_DEPTH,
     Change,
     DeviceDiff,
+    _quote,
     compare_device_data,
 )
 from peat.data.models import (
@@ -31,6 +32,15 @@ from peat.data.models import (
 
 def _paths(diff: DeviceDiff) -> list[tuple[str, str]]:
     return [(c.kind, c.path) for c in diff.changes]
+
+
+def _file_sel(path: str) -> str:
+    """Selector for a ``File.path`` set on a model.
+
+    ``File.path`` is a ``PurePath``, so on Windows ``/etc/passwd`` is stored
+    and exported as ``\\etc\\passwd``, which the path then quotes.
+    """
+    return f"files[path={_quote(str(PurePath(path)))}]"
 
 
 @pytest.fixture
@@ -412,12 +422,12 @@ def test_files_matched_by_path_and_host_fields_excluded():
     ]
 
     diff = old.compare(new)
-    assert _paths(diff) == [("changed", "files[path=/etc/passwd].hash.sha256")]
+    assert _paths(diff) == [("changed", f"{_file_sel('/etc/passwd')}.hash.sha256")]
 
     all_diff = old.compare(new, use_default_excludes=False)
     paths = [c.path for c in all_diff.changes]
-    assert "files[path=/etc/passwd].mtime" in paths
-    assert "files[path=/etc/passwd].local_path" in paths
+    assert f"{_file_sel('/etc/passwd')}.mtime" in paths
+    assert f"{_file_sel('/etc/passwd')}.local_path" in paths
 
 
 def test_default_excludes(make_device):
@@ -810,9 +820,9 @@ def test_local_copies_in_different_run_dirs(mocker, tmp_path):
     new_export["files"][1]["path"] = "/etc/app2.conf"
     new_export["files"][2]["owner"] = "admin"
     paths = _paths(compare_device_data(old_export, new_export))
-    assert ("removed", "files[path=/etc/app.conf]") in paths
+    assert ("removed", _file_sel("/etc/app.conf")) in paths
     assert ("added", "files[path=/etc/app2.conf]") in paths
-    assert ("changed", "files[path=/etc/shadow].owner") in paths
+    assert ("changed", f"{_file_sel('/etc/shadow')}.owner") in paths
 
     # Changed content of a local copy is still detected
     changed = _pulled_device(tmp_path / "pull_2026-03-01_333", "root", "new logic")
