@@ -44,7 +44,7 @@ Pillage API
 
 Import API
 ^^^^^^^^^^
-See :ref:`peat-import` for details on ``peat import``.
+See :ref:`importing-results` for details on ``peat import``.
 
 .. automodule:: peat.api.import_api
    :members:

@@ -803,7 +803,7 @@ Examples
    :end-before: """  # End HEAT examples
 
 
-.. _peat-import:
+.. _importing-results:
 
 Import
 ======
@@ -912,7 +912,7 @@ Configuration and notes
 
 JSON file copies of Elasticsearch exports
 -----------------------------------------
-Most data sent to Elasticsearch by PEAT is saved locally as :term:`JSON` files. These files can be used to rebuild the indices in case of a issue with the server, or if you want to import the data to another server and have lost access to the server the data was originally exported to. To push the results in a run directory to a server after the run, including runs that didn't use Elasticsearch, use :ref:`peat import <peat-import>`. By default, these files are saved to ``peat_results/the_run_name/elastic_data/``. This location can be configured via the :attr:`ELASTIC_DIR <peat.settings.Configuration.ELASTIC_DIR>` :doc:`configuration option <configure>` in a config file or the ``PEAT_ELASTIC_DIR`` environment variable.
+Most data sent to Elasticsearch by PEAT is saved locally as :term:`JSON` files. These files can be used to rebuild the indices in case of a issue with the server, or if you want to import the data to another server and have lost access to the server the data was originally exported to. To push the results in a run directory to a server after the run, including runs that didn't use Elasticsearch, use :ref:`peat import <importing-results>`. By default, these files are saved to ``peat_results/the_run_name/elastic_data/``. This location can be configured via the :attr:`ELASTIC_DIR <peat.settings.Configuration.ELASTIC_DIR>` :doc:`configuration option <configure>` in a config file or the ``PEAT_ELASTIC_DIR`` environment variable.
 
 .. _peat-device-modules:
 
