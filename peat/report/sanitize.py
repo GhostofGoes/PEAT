@@ -26,9 +26,10 @@ REDACTED = "[REDACTED]"
 # overrides and isolates, line/paragraph separators, word joiners and the BOM.
 # Bidi characters can make displayed text differ from the actual bytes
 # ("Trojan Source", CVE-2021-42574).
+# Raw string, so the regex gets the escapes rather than the control characters.
 _UNSAFE_CHARS_RE = re.compile(
-    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200b-\u200f"
-    "\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]"
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200b-\u200f"
+    r"\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]"
 )
 
 # The userinfo is everything up to the *last* "@" before the host, since an
