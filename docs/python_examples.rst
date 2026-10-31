@@ -79,6 +79,19 @@ Parse a ``.L5X`` file exported from Rockwell Studio5000.
    dev = L5X.parse(input_file)
    pprint(dev.export())
 
+Parsing a RSLogix 500 project file
+----------------------------------
+Parse a ``.RSS`` project file saved by Rockwell RSLogix 500 (SLC 500 and MicroLogix PLCs). The equivalent command is ``peat parse -d RSLogix500 -- project.RSS``.
+
+.. code-block:: python
+
+   from pathlib import Path
+   from peat import RSLogix500
+
+   dev = RSLogix500.parse(Path("project.RSS"))
+   print(dev.logic.parsed)  # Ladder logic as mnemonic text
+   print(dev.extra["rslogix500"]["warnings"])  # Problems found while decoding
+
 
 Other examples
 ==============

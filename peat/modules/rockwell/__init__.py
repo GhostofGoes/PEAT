@@ -3,3 +3,4 @@ from .clx_http import ClxHTTP
 from .clx_string_logic_parser import DisassembleStringLogicError
 from .controllogix import ControlLogix
 from .logic_l5x import L5X
+from .logic_rss import RSLogix500

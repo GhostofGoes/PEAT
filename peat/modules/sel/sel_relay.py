@@ -210,10 +210,20 @@ class SELRelay(DeviceModule):
         except zlib.error:
             return False
 
+    def _is_not_rslogix500(data):
+        """
+        Exclude Rockwell RSLogix 500 projects (.RSS), which are also OLE files.
+        """
+        # NOTE: imported here, so the Rockwell code is only loaded for this check
+        from peat.modules.rockwell.rss_parse import is_rslogix500_project
+
+        return not is_rslogix500_project(data)
+
     file_signatures = [
         FileSignature(
             default_filename="sel_relay.rdb",
             magic_number=olefile.MAGIC.hex(),  # "d0cf11e0a1b11ae1"
+            custom_check=_is_not_rslogix500,
         ),
         FileSignature(
             default_filename="cfg.txt",

@@ -262,6 +262,9 @@ peat parse -d selrelay ./SET_ALL.TXT
 peat parse -d sel breaker-1.rdb
 peat parse -d sel ./*.rdb
 
+# Parse a Rockwell RSLogix 500 project file (SLC 500 or MicroLogix)
+peat parse -d rslogix500 ./project.RSS
+
 # Multiple file paths arguments. PEAT will automatically select the
 # appropriate module to use based on the file names, in this case SELRelay.
 peat parse ./set_all.txt ./751_001.rdb

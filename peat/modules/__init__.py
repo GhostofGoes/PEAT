@@ -5,7 +5,7 @@ from peat.modules.fortinet import Fortigate
 from peat.modules.ge import GERTU, GERelay
 from peat.modules.idirect import Idirect
 from peat.modules.openplc import OpenPLCv4
-from peat.modules.rockwell import L5X, ControlLogix
+from peat.modules.rockwell import L5X, ControlLogix, RSLogix500
 from peat.modules.sandia import SCEPTRE
 from peat.modules.schneider import M340, Sage
 from peat.modules.sel import SEL3620, SELRTAC, SELRelay
