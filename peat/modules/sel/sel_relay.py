@@ -115,6 +115,7 @@ from peat import (
 from peat.file_signature import FileSignature
 from peat.protocols import FTP, check_tcp_port
 
+from . import sel_scl
 from .relay_parse import (
     SER_DEVICE_TIME_KEY,
     SETTINGS_FILENAME_RE,
@@ -237,20 +238,26 @@ class SELRelay(DeviceModule):
     # Targeted function for file_signatures custom_check usage
     def is_cid(data):
         """
-        Take zlib compressed data and test if contains expected CID data
-        """
-        import zlib
+        Take zlib compressed data and test if contains expected CID data.
 
-        try:
-            decompressed_bytes = zlib.decompress(data.read())
-            sig = FileSignature(
-                default_filename="",
-                xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
-                substrings=("IEC 61850",),
-            )
-            return sig.matches(decompressed_bytes)
-        except zlib.error:
+        Only data with a zlib header is decompressed (any compression level),
+        and at most :data:`~peat.modules.sel.sel_scl.MAX_CID_CHECK_SIZE`
+        bytes of it, since this runs on every file when parsing a directory.
+        """
+        decompressed_bytes = sel_scl.read_zlib_prefix(data)
+        if not decompressed_bytes:
             return False
+
+        # Don't let the XML check parse a document type declaration (entities)
+        if sel_scl.has_dtd(decompressed_bytes):
+            return False
+
+        sig = FileSignature(
+            default_filename="",
+            xml_tags=(f"{{{sel_scl.SCL_NAMESPACE}}}SCL",),
+            substrings=("IEC 61850",),
+        )
+        return sig.matches(decompressed_bytes)
 
     file_signatures = [
         FileSignature(
@@ -266,7 +273,8 @@ class SELRelay(DeviceModule):
         ),
         FileSignature(
             default_filename="SET_61850.CID",
-            magic_number="7801",  # zlib---no compression, no preset dictionary
+            # zlib with any compression level (0x7801 on SEL relays)
+            magic_number="78??",
             custom_check=is_cid,  # examine decompressed content
         ),
     ]
@@ -695,7 +703,10 @@ class SELRelay(DeviceModule):
         for filename, file_info in all_files.items():
             if filename.upper().endswith(".CID") and file_info["data"]:
                 process_cid_file(
-                    data=file_info["data"], filepath=file_info["device_path"], dev=dev
+                    data=file_info["data"],
+                    filepath=file_info["device_path"],
+                    dev=dev,
+                    from_device=True,
                 )
 
         return successful

@@ -44,6 +44,7 @@ Data Collected
 - Trip logic
 - Modbus and DNP3 register maps
 - Sequential Events Recorder (SER) and event history, and the uptime calculated from the SER
+- IEC 61850 configuration: the IED name and the SCL in ``.CID`` files, compared with the values the relay reports
 
 Relays
 ------
@@ -240,9 +241,9 @@ If there are multiple relays in the file, each relay is parsed into its own devi
 
 Configured IED Description (.CID) Files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-``.CID`` files are zlib-compressed text data. This may be :term:`XML` data, or it could be other data. The only file we've seen so far is ``SET_61850.CID``, and it decompresses to XML. The schema for the XML is (I think) standardized by IEC 61850-6. If you are willing to pay for a copy of the standard, then maybe you can make some use out of the XML. It's only relevant if IEC61850 or GOOSE is enabled.
+``.CID`` files are zlib-compressed text data. The only file we've seen so far is ``SET_61850.CID``, which decompresses to the relay's IEC 61850 configuration in the Substation Configuration Language (SCL), an :term:`XML` format defined by IEC 61850-6. It's only relevant if IEC 61850 (MMS or GOOSE) is enabled. PEAT parses it, refer to `IEC 61850 CID files`_.
 
-If any ``.CID`` files are found during a PEAT pull, PEAT will attempt to decompress them and put the results in the device output directory with the name of ``decompressed_<filename>.xml`` (or ``.txt`` if non-XML data was extracted from the file). They can also be parsed directly with ``peat parse -d selrelay <filename>`` (e.g. ``peat parse -d selrelay ./SET_61850.CID``).
+If any ``.CID`` files are found during a PEAT pull, PEAT decompresses them and saves the result in the device output directory as ``<name>_decompressed.xml`` (e.g. ``SET_61850_decompressed.xml``), or ``<name>_decompressed.txt`` if the data isn't XML. They can also be parsed directly with ``peat parse -d selrelay <filename>`` (e.g. ``peat parse -d selrelay ./SET_61850.CID``).
 
 To manually extract them without using PEAT:
 
@@ -251,6 +252,41 @@ To manually extract them without using PEAT:
    sudo apt update
    sudo apt install qpdf
    zlib-flate -uncompress < ./SET_61850.CID > SET_61850.xml
+
+IEC 61850 CID files
+^^^^^^^^^^^^^^^^^^^
+PEAT parses the SCL in ``.CID`` files (:mod:`peat.modules.sel.sel_scl`) from pulls and ``peat parse``, and compares it with the IEC 61850 values the relay reports with the ``ID`` command.
+
+Decompression:
+
+- Any zlib header is accepted (``0x7801`` on SEL relays, ``0x789C`` or ``0x78DA`` from other tools), and data after the end of the compressed data is ignored. A ``.CID`` file that isn't compressed is parsed as-is. When parsing files (``peat parse``), a ``.CID`` file that isn't compressed and whose IED is from another manufacturer is skipped, since it isn't from a SEL relay. Files downloaded from a relay are always parsed.
+- The decompressed data is saved exactly as it was decompressed (including a byte order mark, if there is one), so its hashes are the same as the output of other tools, such as ``zlib-flate``. The file's ``extra`` has the ``zlib_header``, the number of ``trailing_bytes`` after the compressed data (if there are any), and ``incomplete`` if the file is truncated or corrupted. Then the data that could be decompressed is saved, and a warning is logged. If nothing could be decompressed (e.g. the file is only a zlib header), an error is logged and no file is saved.
+- The decompressed size is limited to 64 MiB. When ``peat parse`` checks if a file is a CID file (its file signature), only files that start with a zlib header are decompressed, and at most 16 MiB of each.
+- A ``.CID`` file transferred with ``FILE SHOW`` (over Telnet, or serial without YMODEM) is sent as terminal text, which usually corrupts it. FTP and YMODEM transfer it intact.
+
+The XML is parsed with the Python standard library (ElementTree). CID files come from devices, so they aren't trusted: a file with a document type declaration (``<!DOCTYPE``, which is needed to declare entities) isn't parsed, so entity expansion ("billion laughs") and external entities can't be used. SCL files don't use them. The decompressed file is still saved.
+
+The values are in ``extra.iec61850``:
+
+- ``ied_name``, ``ied_type``, and ``config_version``: from the ``ID`` command (``iedName``, ``type``, and ``configVersion``), or if it wasn't run, from the IED in the SCL. ``lib61850_id`` (``LIB61850ID``) is from the ``ID`` command, and ``manufacturer`` is from the SCL.
+- ``id_command``: the values the ``ID`` command reported.
+- ``parse_failure``: the ``ID`` keys the relay reported as ``PARSE FAILURE``. Relays do this if their CID file is invalid, and then they don't send or receive IEC 61850 messages.
+- ``scl``: a summary of the SCL file:
+
+  - ``file``, ``scl_version``, ``scl_revision``, ``scl_release``, ``ied_count``, and ``header`` (``id``, ``version``, ``revision``, ``tool_id``, and the last ``History`` item: ``when``, ``who``, ``what``).
+  - ``ied``: the relay's IED: ``name``, ``type``, ``manufacturer``, ``config_version``, the ``services`` it supports (e.g. ``FileHandling``), its ``access_points`` (with the ``authentication`` settings of the MMS server), ``ldevices``, ``ln_classes`` (e.g. ``PTOC``, ``XCBR``), ``gse_controls`` (GOOSE) and ``smv_controls`` (Sampled Values), ``input_ieds`` (the IEDs it subscribes to), and ``counts`` (logical devices and nodes, data sets, report, log, GOOSE, and Sampled Value control blocks, and inputs).
+  - ``connected_aps``: the relay's addresses: IP address, subnet mask, gateway, and OSI selectors, and the MAC addresses, APPIDs, VLANs, and retransmission times of its GOOSE and Sampled Value messages.
+  - ``peers`` and ``other_ieds``: the addresses of other IEDs in the file (e.g. the IEDs it receives GOOSE messages from), and the other IEDs.
+
+- ``other_scl_files``: if there's more than one ``.CID`` file for a relay (e.g. in a directory of relay files), the values above are from the first file with an IED, and the summaries of the other files are in this list (with a warning). The addresses in all of them are added to ``related``.
+- ``mismatches``: the values that are different between the ``ID`` command and the SCL, e.g. ``{"ied_name": {"id_command": "SEL_351S_1", "scl": "SEL_351S_2"}}``. The relay reports the values of the CID file it's using, so a difference means the SCL that was parsed isn't the configuration the relay is running (or it's from another relay). A warning is logged.
+
+Also:
+
+- An ``iec61850`` service (MMS, TCP port 102) is added, with the IED name (and the access point) in its ``extra``, if the relay reports an IED name or the IED in the SCL has an MMS server. It's added to the interface with the IP address in the SCL, if there is one.
+- The IP addresses (and gateways) and GOOSE and Sampled Value MAC addresses of the relay and its peers are added to ``related.ip`` and ``related.mac``, and ``iec61850`` to ``related.protocols``. If the IP address in the SCL is different from the relay's IP address, it's logged.
+- ``extra.iedName`` is still set from the ``ID`` command. If the device doesn't have another name, the IED name is used (from the ``ID`` command, or else from the SCL). ``type``, ``configVersion``, and ``LIB61850ID`` from the ``ID`` command are also still in ``extra``, as before.
+- PEAT runs the ``ID`` command when it verifies a relay over Telnet or serial. A relay verified over HTTP only has the values from the SCL.
 
 Events and uptime
 ^^^^^^^^^^^^^^^^^
@@ -380,4 +416,4 @@ Compressed ASCII is the comma-delimited form of SEL ASCII responses, meant to be
 - Label lines (all strings) name the values in the lines after them. Rows can be shorter than the labels (e.g. ``Relay Powered Up`` has no state), and are mapped to the labels by name, not position. PEAT doesn't use the ``TERSE`` option, which removes the label lines.
 - ``CAS`` (``CASCII``) lists the compressed commands on the relay, the minimum access level for each, and their layout: ``"<n>H"`` lines with the labels and ``"<n>D"`` lines with the data types (``I`` integer, ``F`` float, ``<n>S`` string) and the maximum number of data lines. :func:`~peat.modules.sel.sel_cascii.parse_cas` parses it, and :func:`~peat.modules.sel.sel_cascii.parse_report` can use the layout instead of guessing which lines are labels.
 
-``ID`` output is parsed by :func:`~peat.modules.sel.sel_cascii.parse_id_output`: each ``KEY=VALUE`` is split at the first ``=``, with the spaces removed (700-series relays print ``"iedName =TEMPLATE"``), keys without a value (``"iedName="``) are skipped, and the checksums are verified. Some relays print ``PARSE FAILURE`` as the IEC 61850 values if their CID file is invalid. Those values aren't used, and the keys are listed in ``extra.iec61850_parse_failure``. The previous parser dropped the last two lines of the output (e.g. ``LIB61850ID``) and cut off values with a ``=`` in them.
+``ID`` output is parsed by :func:`~peat.modules.sel.sel_cascii.parse_id_output`: each ``KEY=VALUE`` is split at the first ``=``, with the spaces removed (700-series relays print ``"iedName =TEMPLATE"``), keys without a value (``"iedName="``) are skipped, and the checksums are verified. Some relays print ``PARSE FAILURE`` as the IEC 61850 values if their CID file is invalid. Those values aren't used, and the keys are listed in ``extra.iec61850.parse_failure`` (refer to `IEC 61850 CID files`_). The previous parser dropped the last two lines of the output (e.g. ``LIB61850ID``) and cut off values with a ``=`` in them.
