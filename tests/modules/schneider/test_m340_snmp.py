@@ -126,9 +126,11 @@ def test_pull_snmp_structures_groups(install_fake_agent):
 
 
 def test_pull_snmp_standard_mibs_resolution(install_fake_agent):
-    # RFC1213-MIB is only used for ipAddrTable, SNMPv2-MIB and IF-MIB take precedence
+    # RFC1213-MIB is only used for ipAddrTable, PySNMP's copy doesn't define the
+    # system and interfaces groups (those are resolved using SNMPv2-MIB and IF-MIB)
     agents = install_fake_agent()
     m340_snmp.pull_snmp(DEV_IP)
+    assert len(agents[0].all_output) == len(agents[0].queries)  # every query is kept
     values = [v for out in agents[0].all_output.values() for v in out]
     mib_by_object = {v["object_name"]: v["mib_name"] for v in values}
     assert mib_by_object["sysDescr"] == "SNMPv2-MIB"

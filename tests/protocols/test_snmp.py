@@ -1,9 +1,12 @@
+from datetime import UTC, datetime
+
 import pytest
 from pyasn1.type import univ
 from pysnmp.proto import rfc1902, rfc1905
 
-from peat import config
+from peat import config, utils
 from peat.modules.schneider.m340.m340_snmp import SCHNEIDER_MIBS_DIR
+from peat.protocols import snmp as snmp_module
 from peat.protocols.snmp import (
     MAX_VALUE_LENGTH,
     SNMP,
@@ -354,3 +357,30 @@ def test_walk_max_varbinds(fake_snmp_cls):
     assert len(snmp.walk("1.3.6.1.2.1.2.2", max_varbinds=4)) == 4
     assert snmp.responses == 4
     assert len(snmp.walk("1.3.6.1.2.1.2.2", max_varbinds=0)) == len(IF_TABLE_ENTRIES)
+
+
+def test_all_output_keys_unique_with_coarse_clock(fake_snmp_cls, monkeypatch):
+    # The wall clock may not advance between queries (its resolution is 15.6 ms on
+    # Windows before Python 3.13), the queries mustn't overwrite each other's output
+    monkeypatch.setattr(utils, "utc_now", lambda: datetime(2000, 1, 1, tzinfo=UTC))
+    monkeypatch.setattr(snmp_module, "_last_output_time", None)
+    first = fake_snmp_cls(ip="192.0.2.10", entries=IF_TABLE_ENTRIES)
+    second = fake_snmp_cls(ip="192.0.2.10", entries=IF_TABLE_ENTRIES)
+    first.load_mibs("IF-MIB")
+
+    results = [
+        first.walk("1.3.6.1.2.1.2.2.1.2"),
+        first.walk("1.3.6.1.2.1.2.2.1.3"),
+        first.get("1.3.6.1.2.1.2.2.1.1.1"),
+        second.get("1.3.6.1.2.1.2.2.1.1.2"),
+    ]
+    assert all(results)
+    assert list(first.all_output.values()) == results[:3]
+    assert list(second.all_output.values()) == results[3:]
+    # Unique across instances, since their outputs are merged into the same file
+    assert [*first.all_output, *second.all_output] == [
+        "2000-01-01T00:00:00+00:00",
+        "2000-01-01T00:00:00.000001+00:00",
+        "2000-01-01T00:00:00.000002+00:00",
+        "2000-01-01T00:00:00.000003+00:00",
+    ]

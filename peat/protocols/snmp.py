@@ -54,8 +54,10 @@ Authors:
 
 import os.path
 import re
+import threading
 from collections.abc import Iterable, Iterator
 from copy import deepcopy
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
 
@@ -212,6 +214,32 @@ def group_table_rows(values: Iterable[dict]) -> dict[str, list[dict]]:
 # Resolves response variable bindings using the MIBs loaded into a SNMP engine
 _VAR_BINDS: Final[CommandGeneratorVarBinds] = CommandGeneratorVarBinds()
 
+# Time of the last SNMP.all_output key (of any instance), refer to _output_key()
+_last_output_time: datetime | None = None
+_output_time_lock: Final[threading.Lock] = threading.Lock()
+
+
+def _output_key() -> str:
+    """
+    Key for a query's values in :attr:`SNMP.all_output`: the current UTC time
+    (ISO 8601), unique and increasing across all :class:`SNMP` instances.
+
+    The wall clock can be coarse (15.6 ms on Windows before Python 3.13), so
+    queries completing within the same clock tick would otherwise get the same
+    key and overwrite each other's values, including when the outputs of several
+    instances are merged into a device's ``raw-snmp-output.json``. If the clock
+    hasn't advanced past the previous key, the key is 1 microsecond after it.
+    """
+    global _last_output_time
+
+    with _output_time_lock:
+        now = utils.utc_now()
+        if _last_output_time is not None and now <= _last_output_time:
+            now = _last_output_time + timedelta(microseconds=1)
+        _last_output_time = now
+
+    return now.isoformat()
+
 
 class SNMP:
     """
@@ -277,6 +305,8 @@ class SNMP:
         self.transport = UdpTransportTarget((self.ip, self.port), timeout=self.timeout)
         self.context = ContextData()
 
+        #: Values of every query, by the (unique) UTC time the query completed.
+        #: Saved to the device's ``raw-snmp-output.json`` file on exit.
         self.all_output: dict[str, list[dict]] = {}
         #: Error from the last query (:meth:`~SNMP.get`), e.g. a PySNMP
         #: ``ErrorIndication`` for a timeout, or :obj:`None` if there wasn't one.
@@ -478,7 +508,7 @@ class SNMP:
                 f"were kept as raw OIDs: {examples}"
             )
 
-        self.all_output[utils.utc_now().isoformat()] = deepcopy(values)
+        self.all_output[_output_key()] = deepcopy(values)
 
         return values
 

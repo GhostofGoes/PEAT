@@ -100,8 +100,9 @@ TFE_MIB: Final[str] = "TFPRIVATE-MIB"
 TFE_ROOT: Final[str] = "1.3.6.1.4.1.3833.1"
 
 #: Standard MIBs used, from PySNMP or ``peat/protocols/mibs``.
-#: ``RFC1213-MIB`` (from PySNMP) is only needed for ``ipAddrTable``: the objects it
-#: shares with ``SNMPv2-MIB`` and ``IF-MIB`` resolve to those newer MIBs.
+#: ``RFC1213-MIB`` (from PySNMP) is only needed for ``ipAddrTable``: PySNMP's copy
+#: doesn't define the ``system`` and ``interfaces`` groups, so their objects always
+#: resolve to ``SNMPv2-MIB`` and ``IF-MIB``.
 STANDARD_MIBS: Final[tuple[str, ...]] = ("SNMPv2-MIB", "IF-MIB", "RFC1213-MIB")
 
 #: Default maximum number of GetNext requests per walked subtree
