@@ -65,6 +65,9 @@ hidden_imports = [
     'pysnmp.smi.exval', 'pysnmp.cache',
     'dataclasses', 'pydantic',
     'tzlocal', 'manuf',
+    # libyal modules used by Pillage to read disk images. These are imported lazily
+    # in peat/api/pillage_image.py (PyInstaller should find them, this is a safety net).
+    'pyewf', 'pyvmdk', 'pyvhdi', 'pyqcow', 'pyfsntfs', 'pyfsfat', 'pyfsext',
 ]
 
 

@@ -7,3 +7,5 @@ The PEAT software includes the following third-party software:
 beremiz - GNU General Public License v2.0: Copyright (C) 2016: Andrey Skvortsov, Copyright (C) 2007: Edouard TISSERANT and Laurent BESSARD. See COPYING file in plc_open directory for copyrights details.
 
 nrbf.py - .NET Remoting Binary Format reading library for Python 3.6+ - Copyright (C) 2017, 2020, 2021 Christopher Gurnee
+
+libyal libraries (libewf, libvmdk, libvhdi, libqcow, libfsntfs, libfsfat and libfsext, used through their Python bindings libewf-python, libvmdk-python, libvhdi-python, libqcow-python, libfsntfs-python, libfsfat-python and libfsext-python) - GNU Lesser General Public License v3.0 or later: Copyright (C) Joachim Metz <joachim.metz@gmail.com>. Source code: https://github.com/libyal

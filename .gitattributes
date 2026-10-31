@@ -56,6 +56,8 @@ SYSLOG.LOG  text eol=crlf
 *.firmware  binary
 *.wset      binary
 *.CID       binary
+*.E01       binary
+*.xz        binary
 WebServer.out   binary
 vxWorks     binary
 BOOTROM.SYS binary

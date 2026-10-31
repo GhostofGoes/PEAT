@@ -73,8 +73,9 @@ Basics
 
    # Pillage
    # NOTE: currently (04/20/2023) a configuration file with a "pillage" section is required.
-   # NOTE: pillage MUST be run as root, using sudo or by su'ing to root ("sudo su")
-   peat pillage -c ./examples/peat-config.yaml -P <raw-image-file>
+   # Disk images (raw, EWF/E01, VMDK, VHD/VHDX, qcow2) are read without mounting them,
+   # on any OS and without root. Refer to the Pillage section for details.
+   peat pillage -c ./examples/peat-config.yaml -P <disk-image-file>
    peat pillage -c ./examples/peat-config.yaml -P <local-filesystem-path>
 
    # List available device modules
@@ -659,26 +660,104 @@ Pillage
 
 Description
 -----------
-Pillage is a sub-command of PEAT that searches for relevant :term:`ICS`/:term:`OT` project files to import into PEAT for further analysis and comparison to project files retrieved elsewhere.  It can search through a specific directory on the host system, a directory that is connected/mounted to the host system, or a raw disk image for possible files.
+Pillage is a sub-command of PEAT that searches for relevant :term:`ICS`/:term:`OT` project files to import into PEAT for further analysis and comparison to project files retrieved elsewhere.  It can search through a specific directory on the host system, a directory that is connected/mounted to the host system, or a disk image (e.g. an EnCase/EWF image of an engineering workstation's drive) for possible files.
 
 The search criteria defined in the configuration file is used to validate if a file should be considered a a valid file for copying.
 
 When a valid file is found it will be copied into a ``./pillage_results/`` directory located in the current working directory of PEAT.  The valid files are sorted into sub-directories based on the brands (plus ``DEFAULT``) defined in the pillage configuration file.  If a file is found to fit multiple brands then it will be copied into a ``MULTIPLE`` sub-directory for the user to determine which specific brand it belongs too.  For more details regarding which brands apply to a file and why it was copied review the PEAT logs after the run.
 
-Before a file is copied into a results sub-directory Pillage checks to see if a file with the same name already exists.  If it does then the new file is copied to the results sub-directory and renamed with an integer added.  For example if ``set_all.txt`` is found but a file with that same name already exists in ``./pillage_results/SEL/``, then the new file will be renamed to ``set_all.1.txt``
+If no source is given with ``-P``, the current directory is searched. PEAT's own output (``./pillage_results/`` and the ``peat_results`` directory, :attr:`OUT_DIR <peat.settings.Configuration.OUT_DIR>`) is never searched. To pillage PEAT's output on purpose, use it as the source (e.g. ``-P peat_results``).
+
+Before a file is copied into a results sub-directory Pillage checks to see if a file with the same name already exists.  If it does then the new file is copied to the results sub-directory and renamed with an integer added.  For example if ``set_all.txt`` is found but a file with that same name already exists in ``./pillage_results/SEL/``, then the new file will be renamed to ``set_all.txt.1``
 
 Refer to :ref:`pillage-config` for the available options and examples.
 
 Requirements
 ------------
-- Must be run on a Linux host system (Currently only tested on Ubuntu 18+)
-- Must be run as ``root``.  This is specifically needed if mounting an image.
-- ``qemu-nbd``, a part of the ``qemu-utils`` package. Installation: ``sudo apt install qemu-utils``
-- ``kmodpy`` Python package. This should be automatically installed with PEAT.
-- If pillaging a raw disk image, the host system must support the filesystem. The filesystems supported by the host can be found by:
+- **Directory**: any OS (Linux, Windows, macOS). No special permissions are needed, but folders and files the user can't read are skipped (with a warning).
+- **Disk image, read without mounting** (the ``library`` backend, used by default): any OS, no root or Administrator permissions needed. The libraries used to read images are installed with PEAT and included in the PEAT executables. Refer to :ref:`pillage-images`.
+- **Disk image, mounted** (the ``mount`` backend):
 
-  - Opening the file ``/proc/filesystems`` on the host system
-  - Running ``ls -1 /lib/modules/$(uname -r)/kernel/fs`` on the host system
+  - Must be run on a Linux host system (Currently only tested on Ubuntu 18+), not WSL
+  - Must be run as ``root``
+  - ``qemu-nbd``, a part of the ``qemu-utils`` package. Installation: ``sudo apt install qemu-utils``
+  - ``kmodpy`` Python package. This should be automatically installed with PEAT.
+  - The host system must support the filesystem. The filesystems supported by the host can be found by:
+
+    - Opening the file ``/proc/filesystems`` on the host system
+    - Running ``ls -1 /lib/modules/$(uname -r)/kernel/fs`` on the host system
+
+.. _pillage-images:
+
+Disk images
+-----------
+By default, Pillage reads files directly from disk images, without mounting them (the ``library`` backend). This works the same on Linux, Windows and macOS, doesn't need root, and searches **all** partitions in the image with a supported filesystem. Partitions that can't be read (for example, BitLocker or an unsupported filesystem) are skipped with a warning.
+
+Supported images:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Format
+     - Examples
+     - Notes
+   * - EnCase/Expert Witness Format (EWF)
+     - ``disk.E01``, ``disk.Ex01``, ``disk.S01``
+     - Use the first segment. The other segments (``.E02``, ``.E03``, ...) are found automatically, they must be in the same directory. Images with any number of segments can be read (only a few are open at a time). An error is reported if segments at the end are missing. L01/Lx01 (logical evidence) files are not disk images and aren't supported.
+   * - Raw
+     - ``disk.img``, ``disk.dd``, ``disk.raw``
+     - Files with an unknown extension are treated as raw images
+   * - Split raw
+     - ``disk.001``, ``disk.002``, ...
+     - Use the first file (``.001``, or ``.000``). The parts must be in the same directory and have numeric extensions.
+   * - VMware VMDK
+     - ``disk.vmdk``, ``disk-flat.vmdk``, ``disk-s001.vmdk``
+     - Use the file without ``-sXXX`` or ``-flat`` in the name. Extent files must be in the same directory. VMware Workstation and ESXi (``createType="vmfs"``) disks are supported, and single-file (monolithic sparse or stream-optimized) disks can be renamed. Snapshots (child disks) and raw device mappings are refused.
+   * - VHD and VHDX
+     - ``disk.vhd``, ``disk.vhdx``
+     - Differencing disks (``.avhd``/``.avhdx``, child disks) are refused
+   * - qcow2
+     - ``disk.qcow2``
+     - Images with a backing file, or encrypted images, are refused
+
+The image format is determined from the file's contents, then from the file extension. To override it, set ``image_format`` in the ``pillage`` section of the configuration (e.g. ``image_format: ewf``).
+
+Supported partition tables: GPT, MBR (including extended/logical partitions) or none (e.g. an image of a single partition, or a CompactFlash card).
+
+Supported filesystems: NTFS, FAT12/16/32, exFAT and ext2/3/4. Symbolic links, junctions and other reparse points in the image are never followed to their targets. Directories with a reparse point that isn't a link, for example OneDrive folders, are searched. For NTFS, only the default data stream of a file is read (no alternate data streams).
+
+The hashes and metadata stored in an EWF image (e.g. the case number and MD5 hash) are logged and saved in the summary. Pillage doesn't verify the hash of the image.
+
+A small image can describe a lot of data (e.g. sparse files, or many hard links to one large file), so the ``library`` backend limits how much is copied from an image:
+
+- Files larger than the ``max_file_size`` Pillage option (256 MiB by default) are skipped
+- Hard links to a file that was already copied (and FAT files that share the same data, which only happens in corrupt or malicious images) aren't copied again. They're listed in the summary.
+- Copying stops with an error if the total size of the copied files would be larger than the ``max_total_size`` Pillage option (8 GiB by default), or if there would be less than 512 MiB of free disk space left
+
+These limits don't apply to directories, or to images that are mounted (the ``mount`` backend).
+
+Each run with the ``library`` backend saves a summary to ``summaries/pillage-summary.json`` in the run directory. This includes the image format, partitions, filesystems, the metadata stored in the image, the files that were copied (where they were in the image, where they were copied to, their size and SHA256 hash), the hard links that weren't copied again, and why copying stopped early (if it did).
+
+.. warning::
+   Disk images should be treated as untrusted input. The files are read in user space, without root, using the `libyal <https://github.com/libyal>`__ libraries (``libewf``, ``libvmdk``, ``libvhdi``, ``libqcow``, ``libfsntfs``, ``libfsfat`` and ``libfsext``). These libraries are considered "experimental" by their developers. This is still much safer than having the operating system mount an untrusted filesystem as root.
+
+Choosing a backend
+^^^^^^^^^^^^^^^^^^
+How disk images are read is configured by the ``pillage_backend`` option (:attr:`PILLAGE_BACKEND <peat.settings.Configuration.PILLAGE_BACKEND>`), or the ``--pillage-backend`` command line argument:
+
+- ``auto`` (the default): ``library`` if it supports the image, otherwise ``mount``. If no supported filesystem is found in the image (e.g. XFS, btrfs or LVM), PEAT tries to mount the image instead (Linux and root only).
+- ``library``: always read the image without mounting it.
+- ``mount``: always mount the image with ``qemu-nbd`` (Linux and root only). This is how Pillage worked before PEAT could read images directly. Only the first partition is searched. EWF and split raw images can't be mounted with ``qemu-nbd``. To mount an EWF image, mount it yourself with ``ewfmount`` from the ``ewf-tools`` package, then pillage the mounted directory.
+
+Windows
+^^^^^^^
+Pillage works on Windows without Administrator permissions, both for disk images and for directories (e.g. ``peat pillage -c peat-config.yaml -P C:\``). When searching a directory:
+
+- Folders that can't be read (e.g. ``C:\System Volume Information``) and files that are locked or can't be read are skipped, with a warning
+- Directory junctions and symbolic links are not followed. Folders with other reparse points, for example OneDrive folders, are searched.
+- The excluded top-level folders (e.g. ``Windows``) are matched case-insensitively
+
+Locked files of a running system (e.g. files open in other programs) can't be copied. To get these, use a disk image of the system, or a Volume Shadow Copy.
 
 Running Pillage
 ---------------
@@ -692,12 +771,27 @@ Pillage files from a raw disk image
    peat pillage -c examples/peat-config.yaml -P raw_disk.img
 
 
+Pillage files from an EnCase (EWF) image
+
+.. code-block:: bash
+
+   peat pillage -c examples/peat-config.yaml -P evidence/EWS01.E01
+
+
 Pillage files from VM images
 
 .. code-block:: bash
 
    peat pillage -c examples/peat-config.yaml -P eng_vm.qcow2
    peat pillage -c examples/peat-config.yaml -P SomeVM.vmdk
+   peat pillage -c examples/peat-config.yaml -P SomeVM.vhdx
+
+
+Pillage files from a VMware disk on Windows (PowerShell)
+
+.. code-block:: powershell
+
+   peat.exe pillage -c peat-config.yaml -P C:\VMs\EWS\EWS.vmdk
 
 
 Pillage files from a mounted drive or local directory
@@ -705,6 +799,13 @@ Pillage files from a mounted drive or local directory
 .. code-block:: bash
 
    peat pillage -c examples/peat-config.yaml -P /home/peat/pillage_this
+
+
+Mount the image instead of reading it directly (Linux, as root)
+
+.. code-block:: bash
+
+   sudo peat pillage -c examples/peat-config.yaml -P raw_disk.img --pillage-backend mount
 
 
 Results can also be pushed to Elasticsearch
@@ -716,7 +817,8 @@ Results can also be pushed to Elasticsearch
 Command line arguments
 ^^^^^^^^^^^^^^^^^^^^^^
 - ``-c`` The PEAT configuration file to use. Refer to :ref:`pillage-config`.
-- ``-P`` The source image or directory to search
+- ``-P`` The source image or directory to search. Defaults to the current directory.
+- ``--pillage-backend`` How disk images are read: ``auto``, ``library`` or ``mount``. Refer to :ref:`pillage-images`.
 
 Examples
 ^^^^^^^^
@@ -728,7 +830,7 @@ Examples
 
 When things go wrong
 --------------------
-If there is a critical failure and PEAT is unable to cleanup, run the following commands to cleanup ``pillage_temp``:
+If there is a critical failure when mounting an image (the ``mount`` backend) and PEAT is unable to cleanup, run the following commands to cleanup ``pillage_temp``:
 
 .. code-block:: bash
 
@@ -737,12 +839,15 @@ If there is a critical failure and PEAT is unable to cleanup, run the following 
    sudo qemu-nbd -d /dev/nbd1
    sudo rmmod nbd
 
+If an image can't be read without mounting it, the reason is logged (e.g. ``no supported filesystems found``). Images with BitLocker, LVM, Windows dynamic disks (LDM), APFS, HFS+, XFS or btrfs volumes can't be read by the ``library`` backend.
+
 Notes
 -----
-- If a disk image is used as the source it must be a raw disk image.  Pillage does not support any other image formats.  To use unsupported images with pillage either convert it to a raw disk image or mount it to the host filesystem manually and provide the mount point as the input source to Pillage.
-- If a disk image is used as a source Pillager will mount it (read only) to a directory prior to searching called ``pillage_temp``.  It will be located in the current working directory when Pillage is ran.  Once Pillager is complete the image will be unmounted and this directory will be removed.
+- When an image is mounted (the ``mount`` backend), it's mounted read only to a directory called ``pillage_temp`` prior to searching.  It will be located in the current working directory when Pillage is ran.  Once Pillager is complete the image will be unmounted and this directory will be removed. Only the first partition of the image is mounted.
 - There have been times during development and testing when the host OS would not mount the image, but if the same Pillage command was tried again after waiting a few seconds it would mount just fine.
 - If running in a VMware Workstation VM, pillage can run on a disk image or file system loaded in a shared folder. See the VMware documentation for details on how to set this up. If you run into issues, this askubuntu answer may be helpful: `How do I mount shared folders in Ubuntu using VMware tools? <https://askubuntu.com/a/1051620>`__
+- Images in formats that can't be read without mounting (e.g. VirtualBox VDI) can be converted with ``qemu-img`` (e.g. ``qemu-img convert -O qcow2 disk.vdi disk.qcow2``), or mounted with the ``mount`` backend.
+- Live systems, raw devices (e.g. ``\\.\PhysicalDrive0`` or ``/dev/sdb``) and Volume Shadow Copies can't be used as the source. Search a directory, or make a disk image first.
 - To manually mount an image in the same manner as pillage:
 
 .. code-block:: shell

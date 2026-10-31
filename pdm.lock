@@ -5,7 +5,7 @@
 groups = ["default", "dev", "docs", "exe", "lint", "test"]
 strategy = []
 lock_version = "4.5.0"
-content_hash = "sha256:6f6962681be193db32aa6af1c9e02449931741863f7ffe65d3603ab1efe7f169"
+content_hash = "sha256:21fa781c9fe7f6d7e83028a9fb918ff96aac48d1f39b569a645493ffeb565e0e"
 
 [[metadata.targets]]
 requires_python = ">=3.11,<3.14"
@@ -801,6 +801,186 @@ files = [
 ]
 
 [[package]]
+name = "libewf-python"
+version = "20260924"
+requires_python = ">=3.10"
+summary = "Python bindings for libewf"
+files = [
+    {file = "libewf_python-20260924-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:c445ee9cad80e508c0c9ae60d10885a0443b5e58dfa39e31eddda8f820967666"},
+    {file = "libewf_python-20260924-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:a9c5e0910b389c9f0604545d401e808b7b42fb7bd505097f69151bb0662ff661"},
+    {file = "libewf_python-20260924-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0a5b917ba9ec4828293c3be45b0b1bf7a1a4b826debc827664c8791ac6ae43cb"},
+    {file = "libewf_python-20260924-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cfe101e0bc768d86d67525b2809836ffe8c4dfff4726cb9fef2dd93ffce60c78"},
+    {file = "libewf_python-20260924-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:470069bafaaad625929aa66dfdb9f064920ae168e9d7995a70be4c97b0863bf9"},
+    {file = "libewf_python-20260924-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:a0e631e53e663da4725519cc731e8644607983a9c133adb479c247fbb5e31c40"},
+    {file = "libewf_python-20260924-cp311-cp311-win32.whl", hash = "sha256:6a955f020012bb39f63b42063b538def8a08af1c25058f8128e8393b8b85af93"},
+    {file = "libewf_python-20260924-cp311-cp311-win_amd64.whl", hash = "sha256:3d6aba6382fb043eb16cab5fe2eeb5a9c597d1ff7f37ccf263f4be18926fe2c0"},
+    {file = "libewf_python-20260924-cp311-cp311-win_arm64.whl", hash = "sha256:da786a9f12a087e649f18cc09b761756e568d3956698481923d39f82d2f5b969"},
+    {file = "libewf_python-20260924-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:89cabb0a6cffa8fa7438bce20fc7b01f1205a67c9867ad7203101900996cb96b"},
+    {file = "libewf_python-20260924-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:643178f88458e9dc3a9bd4d6aa530fdf163757c405d2b99bb498854913101b73"},
+    {file = "libewf_python-20260924-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:27c88d8b756d0a12f1a3d7a712edecbef9d65657b67bd85d7f07656e4c70c969"},
+    {file = "libewf_python-20260924-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e00d0c2b5e9ef9deb6adaa3d8e70ef41b9f117d9dbcdf14f26c31364e325b18d"},
+    {file = "libewf_python-20260924-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:1a817cdfedf1b611fd0bb10ef8ecff6785b52307cb14944ba695efeb2cbed04d"},
+    {file = "libewf_python-20260924-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:2d1cbb5a6ce9cfd2aeb34ae3d2aeb3dc37074385cec8fe544be718cf90ec7cab"},
+    {file = "libewf_python-20260924-cp312-cp312-win32.whl", hash = "sha256:bddf8fd99bc8b544ecc17ac0370f7a3f48c77c0d362aad1879f63b87b69aafcd"},
+    {file = "libewf_python-20260924-cp312-cp312-win_amd64.whl", hash = "sha256:6d7ea35cfbb14f5360dba0111e5382ffae4984879f6e5a26dcd207501a3d1f5a"},
+    {file = "libewf_python-20260924-cp312-cp312-win_arm64.whl", hash = "sha256:b5aaf7776ed8eaf93f8fe73c96815875c3cffaf9f1ff1b4ff7ad4cec24cfe369"},
+    {file = "libewf_python-20260924-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:2ef95283125faf05259c37d2c243a0cf1ebe22b85d73b6cb31c12a88433f4098"},
+    {file = "libewf_python-20260924-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:2fe13bc1fac516486e26ce7169548d99383bfdf3dbe93de786ffa8e1802fc60f"},
+    {file = "libewf_python-20260924-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9eba042f802d032db063d416745311624211fc8c668a525aa77b132cf6fae53f"},
+    {file = "libewf_python-20260924-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0798b96710656ed1c84727d5ab9caf61c8bdf62c2fa69747503ee1c9e07e7563"},
+    {file = "libewf_python-20260924-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:07f25814feb0cb38d316ef82a9cdfce9e3a0734605e7c8ac468b2b23c76b8ce9"},
+    {file = "libewf_python-20260924-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:01dc0a76eada70421b1fabb77e381199183f45c7ad5defe094549a317dc14ba1"},
+    {file = "libewf_python-20260924-cp313-cp313-win32.whl", hash = "sha256:c514f620b1b37431a63d6e21eee21da61e3d5301080ac974b958de65101de09f"},
+    {file = "libewf_python-20260924-cp313-cp313-win_amd64.whl", hash = "sha256:022b2382c4130efc7321b25b7391d17c964a1b00ffafdfccdf445924bc02600d"},
+    {file = "libewf_python-20260924-cp313-cp313-win_arm64.whl", hash = "sha256:5383c60c721f9f1b21675da687f2cc230efeba28eb151aa9fdec5c159562c23c"},
+    {file = "libewf_python-20260924.tar.gz", hash = "sha256:72f67b7bcb80987662b506d9a72825afe7ad07e87c0d7dfbdb0d187a32add671"},
+]
+
+[[package]]
+name = "libfsext-python"
+version = "20260821"
+requires_python = ">=3.10"
+summary = "Python bindings for libfsext"
+files = [
+    {file = "libfsext_python-20260821-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:dfe209a41bbd551b12d67cb7b03659b3520985d51d4444280953dfa7fafd8e3a"},
+    {file = "libfsext_python-20260821-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:ffe83c538cbfcafcd7d4022d7ce4b294033a6e29a467c68d8b2fc2ed2455041f"},
+    {file = "libfsext_python-20260821-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2bf1fd6ae17c83c9404fa8e8e32836dc8657a598ec2eeb99ecbb4f30110be0d4"},
+    {file = "libfsext_python-20260821-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d42face784db23bb3583485c93162c614a5ea1780092112023531d4dff9a4a19"},
+    {file = "libfsext_python-20260821-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:6a52efc20fa7fc052e309ec220145af1666c83618d4351210fcdc458103d454c"},
+    {file = "libfsext_python-20260821-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:faad5071cb808fc43aa8efa1ef5cf1a3066d7743c807e45628c7a6fe4a6e8844"},
+    {file = "libfsext_python-20260821-cp311-cp311-win32.whl", hash = "sha256:09a876bbad1f7a78e27a2fb35e86abe09760859f758812640573828fe404b5b2"},
+    {file = "libfsext_python-20260821-cp311-cp311-win_amd64.whl", hash = "sha256:02865ac0f1494636f59ee9af91b5a10ba421f821bb1cfaf11e17bd8c424ada05"},
+    {file = "libfsext_python-20260821-cp311-cp311-win_arm64.whl", hash = "sha256:a1a4c9c4bf1264de27a998325c4a3db5152f14b2079d833804eb94d5aef69c9d"},
+    {file = "libfsext_python-20260821-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:867b8e694abb1a2154337598cf132e16747f0d3eed62c8a560d02e4ea134e3a8"},
+    {file = "libfsext_python-20260821-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:8eeca14da904419eeadbcc2a97f3721f39cb89137006dacdc80f8ec8a5c2f6ed"},
+    {file = "libfsext_python-20260821-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1bc566e6c610ffcc4401c4f35ceeeaf44054903114e5ad9fdde06dacc8cff948"},
+    {file = "libfsext_python-20260821-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:23d01dac66064f66c74631a956cb9c163687712a7dea4c34f2b7a2dce69f04cf"},
+    {file = "libfsext_python-20260821-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:b8a289529f79710597370dcdcaf50ab57bac6835b92135ddc0d98963cb5495c6"},
+    {file = "libfsext_python-20260821-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ed964340a366f58195911af2456340ca2d4ef6920e60eb5e250faee540e95f3d"},
+    {file = "libfsext_python-20260821-cp312-cp312-win32.whl", hash = "sha256:c9ff36c2da8688d3f3cebd34ff9516fb7a2e00461b5d332fb02834ae707bae8d"},
+    {file = "libfsext_python-20260821-cp312-cp312-win_amd64.whl", hash = "sha256:f4eeadc79c66b807f20ecf2dc3674788c9301bd40622b58310c9f9ecefa80eea"},
+    {file = "libfsext_python-20260821-cp312-cp312-win_arm64.whl", hash = "sha256:2af8d84ab998dbde74ab44439051eae181a09c76042757bb1c13fe7711022a6b"},
+    {file = "libfsext_python-20260821-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:1f1313f0d10226aae8b7d48371b6e10cd3156b7ba3d38be989ff2fd56a600e83"},
+    {file = "libfsext_python-20260821-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:16550b08ac7fd9a608ea6726e0ba05573b4a2b28e34ae4ab6137b526041bfb3f"},
+    {file = "libfsext_python-20260821-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:75a04255f048ae610b1d2d9f67b375a9597c1e5bc2b3d4b173ed0d9d47afa616"},
+    {file = "libfsext_python-20260821-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1c53040c84397520e8e147cb5157150b8995e10b44c178bdc9cdad21002d8933"},
+    {file = "libfsext_python-20260821-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:e4b08fc6707359b12d622a6b3ea178f806cd037e7fdfbdb5c465565ce47ed592"},
+    {file = "libfsext_python-20260821-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:f8b0026b451b54c235911976902f331d36b5fdc6615ed87446a46d995cbfdf0a"},
+    {file = "libfsext_python-20260821-cp313-cp313-win32.whl", hash = "sha256:05b4d77904af923d250dd77429d4e45a9394f7a1d92b12451f62b950a2be999d"},
+    {file = "libfsext_python-20260821-cp313-cp313-win_amd64.whl", hash = "sha256:3702e11dc81991ace3f1c22948e4c532e3500cb1399b2aa5157c90a14ee677aa"},
+    {file = "libfsext_python-20260821-cp313-cp313-win_arm64.whl", hash = "sha256:717b4fc495e4c89034ace704693d95dbac2e3f9bc09392eccb1d59495e51b5f6"},
+    {file = "libfsext_python-20260821.tar.gz", hash = "sha256:ba22374dbaac66b1852a5a028c3dee769dbfbe45748e8e705f40a01bd86a7cc3"},
+]
+
+[[package]]
+name = "libfsfat-python"
+version = "20260826"
+requires_python = ">=3.10"
+summary = "Python bindings for libfsfat"
+files = [
+    {file = "libfsfat_python-20260826-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:14971cfaa6ec056fef4551a13436116ae29ceb93eb2f810f637ca4512a82a852"},
+    {file = "libfsfat_python-20260826-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:caffc2cc48363ca39dc49dc088b73524337fe370b43f7c83236fd7baba2abbe5"},
+    {file = "libfsfat_python-20260826-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f0907ddd7ff59b8d2b808a709e5aaffea3523a6a887a3d1a0e3e28646d8204e2"},
+    {file = "libfsfat_python-20260826-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:09e61357006cc376bd9f2f3456306605d370a975af02051625f59802a5fa3bf6"},
+    {file = "libfsfat_python-20260826-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:9acdc0d1e936ff90d542bc12e081d05911f51d92ee2614a34bea71c6d2c8c0be"},
+    {file = "libfsfat_python-20260826-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:31f046b521a25ab97dd3fa245fbdb81082f6d938da45162114eb8b0dc092a62c"},
+    {file = "libfsfat_python-20260826-cp311-cp311-win32.whl", hash = "sha256:f4cd5744c0076c7782b25a57a5e9df8076169432de8891b6c11dd39a7e0075f0"},
+    {file = "libfsfat_python-20260826-cp311-cp311-win_amd64.whl", hash = "sha256:8074b244b8ca848b0927f88c2b1fca2adee02e1bfaaa660aad05565201f3a8fe"},
+    {file = "libfsfat_python-20260826-cp311-cp311-win_arm64.whl", hash = "sha256:4bd11dd8bf6aa0a959994e3d98e24b84f5cc05a969631dce310892ec81feb2b4"},
+    {file = "libfsfat_python-20260826-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:2e3ecf99ff2ef82b4f0e91c030f90142b1d5a6e425ec84d238fd1328fd98f4f3"},
+    {file = "libfsfat_python-20260826-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5d332215dd6b81bc339297926f8a89203a1204b96158960ef0474059b3e09778"},
+    {file = "libfsfat_python-20260826-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c35c7bf0ab4e81ebc9195c79f38fd348e95a244acea7f6d41422f12b07b5ebcb"},
+    {file = "libfsfat_python-20260826-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f58e32fbb53c3536eab91d8f1644c6b0a17332c646d6ad37a460cdc505d2ca1d"},
+    {file = "libfsfat_python-20260826-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:5ea2a85df084dfefea26197ae349048f901da400e114865876f992f78ae55e26"},
+    {file = "libfsfat_python-20260826-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:10640b39e76bd4b2d01c2cc075a40eb7926ab4ea0b1c483aa085e592b32fc1ac"},
+    {file = "libfsfat_python-20260826-cp312-cp312-win32.whl", hash = "sha256:f3e420cfe76b7126ff045f7dbfbb0d8e9b0013219e2024bd037e78f98d1a89fc"},
+    {file = "libfsfat_python-20260826-cp312-cp312-win_amd64.whl", hash = "sha256:7fe275977e847a2c20e2d9bb66d688055824c59bda710499595eb5086eaf3f83"},
+    {file = "libfsfat_python-20260826-cp312-cp312-win_arm64.whl", hash = "sha256:a9083f2c1319be5738eca02d38afee1494491ed9bad49198a6704d3d07c4869d"},
+    {file = "libfsfat_python-20260826-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:10d1113cb404ed2d6a3cdaabd9cb6b1dbac1e8931cda68a9aa2aa80e29fcdab4"},
+    {file = "libfsfat_python-20260826-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:c3cd549f6b9f12c397a2ce557c689bf8194603a2ec91ba2fb600419fa1f3cd1b"},
+    {file = "libfsfat_python-20260826-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:fec88b7de8df867cc2607f25c8ac13b99ef522ddb882d973196b1b9aca377fee"},
+    {file = "libfsfat_python-20260826-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f5813be8a7b5371c40213459819264ca3315be5dae9341e8c6d851a757e28135"},
+    {file = "libfsfat_python-20260826-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:349be2fcb80b333ecc85897e0ab4831e3962a027bd1ed91bc22f0963d4791adb"},
+    {file = "libfsfat_python-20260826-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:aa5dd3e3e12d06636e51fd40144c7707b3b41d9dc2f2fd1711952eadf04c7e9a"},
+    {file = "libfsfat_python-20260826-cp313-cp313-win32.whl", hash = "sha256:24b7c6d8252a9cad17bae657dc44564532c05f20a9e33169f21a8144d8699de0"},
+    {file = "libfsfat_python-20260826-cp313-cp313-win_amd64.whl", hash = "sha256:3ac1e183644844a13f09a57b9f8e6e84bcd09b735488ffe45b01794e9b7229cd"},
+    {file = "libfsfat_python-20260826-cp313-cp313-win_arm64.whl", hash = "sha256:d96fafefcba2de3d0ada081c8dff06273a17882b418d5e5ab4663318655e2ed2"},
+    {file = "libfsfat_python-20260826.tar.gz", hash = "sha256:a631cf1eb25a9a9f79b40f6a9d9b325daaaf19b51f83a7a71104c779afc70119"},
+]
+
+[[package]]
+name = "libfsntfs-python"
+version = "20260827"
+requires_python = ">=3.10"
+summary = "Python bindings for libfsntfs"
+files = [
+    {file = "libfsntfs_python-20260827-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:9de93f499cef27e7a65066c43184d7acadeb7019a922fa1b00cb267a14647c55"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:40d184c02211625251e5877e2960c6e90bf457dc041e146a1c3f7ad31c3e2926"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:72e544c52ab0903052656be36d64fd94ef30978904439231e97be29a843fbdb3"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c7492df79b5d31ae7dd339a10cd6b4589c0a2f0d12ee4fb399cb78fa31984332"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:2495aca8d5eaf6dc1a0fb0837397631fad9fe7175ff89f92d89b637ec63beb5b"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:d050243e843ab937f9b5d623f99681af7e93d07ebf4a81f8deab248a2361331f"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-win32.whl", hash = "sha256:c48384cac2f6df391599aadf5c2c7cde949f40612c5656ec886da8cd1ddb9e6f"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-win_amd64.whl", hash = "sha256:a3e4c0ee3a9461fcff7667fdd4713f253fde4612bb67426f3d25a80186b8e2ac"},
+    {file = "libfsntfs_python-20260827-cp311-cp311-win_arm64.whl", hash = "sha256:4a8651e56399b879acf04b2a74f56ace536dbf179860cdad1c2cb7905fc26451"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:6a5c3f18fa4b70798467708a26d27d59da501d7a4863b3ff36fc44ebbfbd0a3b"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f4f68eea1c0dc0d5cb7bd070f1c7063c5f5a9a721d952757bdbff361df748576"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:cc62d24964505275004857ed11c44af0eb52f58487e18ffabe45b46ce284f6f2"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ed14f3272a93a87e6aa508cb5521690b078f90ad2541f90e2b9d34f5530f7f22"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:e24fdd3bbb1495f8e63eefb4cce672f62048ee6d3c7cc9d6f1726a1259921dc3"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ee65eec3bd0a6d10af73b01de860f48bde1ce5dfb4de0427eac255b057388c91"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-win32.whl", hash = "sha256:5c069839c552a75b972f6d0bab4c2b5e9f3f0f21036980c191e4a73902a2a4d5"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-win_amd64.whl", hash = "sha256:beb9644ad37b205bc1dc0551059fb5acee0985f3032b140f9c016a28c45b9edc"},
+    {file = "libfsntfs_python-20260827-cp312-cp312-win_arm64.whl", hash = "sha256:9e1ac1eb5b1d65060709f4b103e7d0805c635e74a4f9cb1947c43e604b6c722f"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:fb7188c0c0b568ad9d070d8a920a0e5c5a121b697c56563e3637591f4fb2b361"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:bc4608aade527ce0232a7566cb62a01d43ac92b10cb85802989860a975a64f6c"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a3085f33851444ff8b451c041825aec654baac1d8c6c1034e11c67a305677234"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:adce582c1616c168fbee0433dcb1470bf227a1c9cc1656cf13604f9132a26c42"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:c3ca40af5c995e7d9f3312e8b10dd59d29cf72f6279def115584489960cc2f7f"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:7618edb3da6e5696c79ad00b4e592bb3dbeabacedb027ce29876b6efd5fb746d"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-win32.whl", hash = "sha256:112905bd85f43849a39dcc593b846c7a6fa0b5c2093e8378cdbbddc6ebca3f61"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-win_amd64.whl", hash = "sha256:77748219549deb64c6ecb57780f06a001a334a3a08521570112269be57c9c140"},
+    {file = "libfsntfs_python-20260827-cp313-cp313-win_arm64.whl", hash = "sha256:02011aa50f495ef9d39802ca3a96b460e204a47f9111cb5f64fbcc602a090f1b"},
+    {file = "libfsntfs_python-20260827.tar.gz", hash = "sha256:1603c9c842157ea963e149312c93f4fe011f840a8edb3f7446f03ee5fef21eca"},
+]
+
+[[package]]
+name = "libqcow-python"
+version = "20260703"
+requires_python = ">=3.10"
+summary = "Python bindings for libqcow"
+files = [
+    {file = "libqcow_python-20260703-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:1c97800c0255f5c320de599dc76dc84c735a9729f7768ae0805584f8f943a0e8"},
+    {file = "libqcow_python-20260703-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:9a6c42429a3bcb79d009911e6285ace3567205f611063522b8c2c32147eb89e4"},
+    {file = "libqcow_python-20260703-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8f818dd7e76a0016c811fe950a553e0f5278c543db8638918bb8ad097ce5f6f8"},
+    {file = "libqcow_python-20260703-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f68468f5fc8c2ba2d94f2d9f1be39fd5ef5359eb721057440ece9f1af60a562c"},
+    {file = "libqcow_python-20260703-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:f74fba7c6166aa56c93c1c86b3620a1cd8856a83c0a9cff0d741919b30f9e099"},
+    {file = "libqcow_python-20260703-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:632c3b6a7f770df454c5471a59bd88249fde0dcf019cd3db919640d712a4865a"},
+    {file = "libqcow_python-20260703-cp311-cp311-win32.whl", hash = "sha256:bb8556a9538782456d09d1e68d06269fd96d73cd4d18bf7a0d391afc7bd202f4"},
+    {file = "libqcow_python-20260703-cp311-cp311-win_amd64.whl", hash = "sha256:c039cf54477f566d6e88e3ab36c688216fbc9e2054e055df83cbe8299da282bb"},
+    {file = "libqcow_python-20260703-cp311-cp311-win_arm64.whl", hash = "sha256:56e53dbdca93f54305da072357944906ac450ab15a5253b867d0821a1989db98"},
+    {file = "libqcow_python-20260703-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:75ac1ecef9e303a77f8b9d36968c359b257917efdc7e340f458cf7715f68ecf6"},
+    {file = "libqcow_python-20260703-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:bb97925fff803db81071ea2d4dbfc56149d9b09648aa36af7efa522639a9eed6"},
+    {file = "libqcow_python-20260703-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d521451e2792963739398edebfc98e775a322a8057e42e4994cb449efc776c31"},
+    {file = "libqcow_python-20260703-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1557d855aa12509aaf7eebdc2c65d648d139472e064001334890c3055f54404d"},
+    {file = "libqcow_python-20260703-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:63275f3fd2e4a4763b39123dc02a88c5b2dbbce1b9add45d303a445545c4aeb6"},
+    {file = "libqcow_python-20260703-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ce016c86fe9ffa5c7723ea8b28b43c65a9ecdc18b1fe3ea225c569d612990f71"},
+    {file = "libqcow_python-20260703-cp312-cp312-win32.whl", hash = "sha256:baecfa27a98a9301a8c818452a262ca9673b4f07fa3b5e07b488bedba27db8bf"},
+    {file = "libqcow_python-20260703-cp312-cp312-win_amd64.whl", hash = "sha256:0f95ae7c61704f39d1ec5443855a276a5edd6a94f321ebbe6901166c638eee91"},
+    {file = "libqcow_python-20260703-cp312-cp312-win_arm64.whl", hash = "sha256:f98a754f1c8eaa392f45b4041a8550f0e657ce112959813c378c72da2f782d4c"},
+    {file = "libqcow_python-20260703-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:f5d3667a698fca354fc9305d53a4cb8682efb8920caff354190c07747e43adfe"},
+    {file = "libqcow_python-20260703-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:eeecb4429dc489e3132183872b14ec5d3a9d121b737dc528896e18b6557d96d1"},
+    {file = "libqcow_python-20260703-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:37d4482a92515340fcbd99a6177ff165445e88cc69f4b8316c63e4b8f91d4872"},
+    {file = "libqcow_python-20260703-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a1fb5eee093e044297ff69bf852d489b4f7f22f1d060a8573294da7cc5da00d8"},
+    {file = "libqcow_python-20260703-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:b81341e57289e5defc2b3a6a81e4586363a436d38106025ee4efaf39c9b4b181"},
+    {file = "libqcow_python-20260703-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:243400388b1b202af594ba0c73e93f5114e6a11d0fc36cd6f3fe93696d813a4d"},
+    {file = "libqcow_python-20260703-cp313-cp313-win32.whl", hash = "sha256:08270d5a322c299163a1293343f2ba5046b8afdcddc83f2779c74ed116fbdae8"},
+    {file = "libqcow_python-20260703-cp313-cp313-win_amd64.whl", hash = "sha256:6e55b278aeb14f3c272f918b843d2594d61bf7adf7afec5ea7bf4122b2698a57"},
+    {file = "libqcow_python-20260703-cp313-cp313-win_arm64.whl", hash = "sha256:d54ea1a4263b98b12a6591a5763af5941960a911e9cddea6dc3a1739bea1af63"},
+    {file = "libqcow_python-20260703.tar.gz", hash = "sha256:ebf0256c73318016bc289f55440f82fe1411ba174f632144a7240b0f5d602762"},
+]
+
+[[package]]
 name = "librt"
 version = "0.8.0"
 requires_python = ">=3.9"
@@ -846,6 +1026,78 @@ files = [
     {file = "librt-0.8.0-cp313-cp313-win_amd64.whl", hash = "sha256:25b3e667cbfc9000c4740b282df599ebd91dbdcc1aa6785050e4c1d6be5329ab"},
     {file = "librt-0.8.0-cp313-cp313-win_arm64.whl", hash = "sha256:e9a3a38eb4134ad33122a6d575e6324831f930a771d951a15ce232e0237412c2"},
     {file = "librt-0.8.0.tar.gz", hash = "sha256:cb74cdcbc0103fc988e04e5c58b0b31e8e5dd2babb9182b6f9490488eb36324b"},
+]
+
+[[package]]
+name = "libvhdi-python"
+version = "20260901"
+requires_python = ">=3.10"
+summary = "Python bindings for libvhdi"
+files = [
+    {file = "libvhdi_python-20260901-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:f73a319f640e000159601408733a1d8871e741c0fb83038c71a77f3134cce309"},
+    {file = "libvhdi_python-20260901-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:8117b04a2e52aeb42a1956eb4c41bab17d8dfe28491d84006f58d5378fbe387c"},
+    {file = "libvhdi_python-20260901-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:806e3cffc6365f4ed899dfa6cda89e45e53957718ce2b6c5ba4edf3a9c32c45b"},
+    {file = "libvhdi_python-20260901-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:faf491b323f4d81ba1f8447347242c127491b6773c92525d81c3268c3a9fc3b1"},
+    {file = "libvhdi_python-20260901-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:a2e93098568b891717280eeeb1fcf84f35e2439994c67e812745b528700cb43c"},
+    {file = "libvhdi_python-20260901-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:1943a18e23e71b118de80c66375f3b107e86f55d16c98970168f6ed39e35b8e2"},
+    {file = "libvhdi_python-20260901-cp311-cp311-win32.whl", hash = "sha256:89f4697e0f547505d5b4d1d7059132f3517950595b3c25926d053dc7cfeea75f"},
+    {file = "libvhdi_python-20260901-cp311-cp311-win_amd64.whl", hash = "sha256:239796b1c0a82494a7d06dff876986c1366ea653cdfd5325ce4bb7c00395cb2c"},
+    {file = "libvhdi_python-20260901-cp311-cp311-win_arm64.whl", hash = "sha256:2ff4fe4048681d3cc81d883496e52b52d9b286dcce5516d9eb2293042a5fe7d6"},
+    {file = "libvhdi_python-20260901-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:14d8acc984d8811379b1c920e0656021dce8475f118eac6b2d7012a4c3efd4c5"},
+    {file = "libvhdi_python-20260901-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:8934fc33934381553f5855f5b80bf069b5043db7770ad2e7332861ea507c253d"},
+    {file = "libvhdi_python-20260901-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7b6cb07aa014221f158a37f5f4bf1e51a16c7add57fe29dfffb21fe1001f5889"},
+    {file = "libvhdi_python-20260901-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:533572c92ea7c930363e13e93e14c8df2d259dce2d47befa0d7208fbe799bd64"},
+    {file = "libvhdi_python-20260901-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:1d5f8c8c42aa904c7fd1460c082177d0904454f7a837d6c68a022c108ea8e08a"},
+    {file = "libvhdi_python-20260901-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:8b2554c3f320a051f2859e5cb9ccb08f8f899db2d2fffc4a304df58b2209460a"},
+    {file = "libvhdi_python-20260901-cp312-cp312-win32.whl", hash = "sha256:c3c2989377fb7ee309ba772954858f39a71f9d8399e99c64d2cfcccae7dd780e"},
+    {file = "libvhdi_python-20260901-cp312-cp312-win_amd64.whl", hash = "sha256:f61bfcd16fe847b40857299342b8473af605b04baaf6c4abc2c003198064246d"},
+    {file = "libvhdi_python-20260901-cp312-cp312-win_arm64.whl", hash = "sha256:3be36ed90d4823b67246ba17f924925b6067eaa3701b5dcad0be04f75ad5a944"},
+    {file = "libvhdi_python-20260901-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:38f3dcac7fbd9a48e123b15845b271bea58df5bfb9ba7d41babd00d22a28570c"},
+    {file = "libvhdi_python-20260901-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:223aed2aa25722f9fe859d6ab8fe29e38cc52a0e2f4fd50f4213157a36440467"},
+    {file = "libvhdi_python-20260901-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:99895360a5ec07d4e71b5008ec1e998ff3179aabc10a1152817a8efa39e5ea84"},
+    {file = "libvhdi_python-20260901-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2772f467185886bac80d5f2e635a8cdf5e9ba64eb1283e1111bf91bd5b5a830b"},
+    {file = "libvhdi_python-20260901-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:aa468681e747a180a4de3ec6cb9eb26e9016b9d44b14182a27055327e73082b5"},
+    {file = "libvhdi_python-20260901-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:d92d3f74c01314be06366876d24b39b365903ad545e6a913e42010ce70bf4715"},
+    {file = "libvhdi_python-20260901-cp313-cp313-win32.whl", hash = "sha256:a19a7fb891bb0a8051c674958d5a7575abab5cdc6ac8216b606c9353e6ccf170"},
+    {file = "libvhdi_python-20260901-cp313-cp313-win_amd64.whl", hash = "sha256:8b6a615a76cadb81bb541bbbb773e601c2dfdd5c33060de175b8a4a1042c6838"},
+    {file = "libvhdi_python-20260901-cp313-cp313-win_arm64.whl", hash = "sha256:3ee335f43681704ff3e289d118c2d8f7fffbbee4334538029c6bb05bcdd0fd0f"},
+    {file = "libvhdi_python-20260901.tar.gz", hash = "sha256:1106dc38ee2009996d6ee07fd8fafc4c851067d4f7a1fe589289ba0647bb31fc"},
+]
+
+[[package]]
+name = "libvmdk-python"
+version = "20260714"
+requires_python = ">=3.10"
+summary = "Python bindings for libvmdk"
+files = [
+    {file = "libvmdk_python-20260714-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:96226e3650dba800bc74529945b46f65d9c537217dbd260dbedd4af4b938b3e2"},
+    {file = "libvmdk_python-20260714-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:55f1474ce2f36d26615a7cab12f21b176e79ffe797903ae7c23d371a1b5ed700"},
+    {file = "libvmdk_python-20260714-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:873141d7178f19c801dda45e97c834a8a4ad64c92a38221e489e74b694e5ccdb"},
+    {file = "libvmdk_python-20260714-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b533e1cc8016d5bc6af7bdf098448ac08d863fd131bc5f8ca203865ff09ca534"},
+    {file = "libvmdk_python-20260714-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:86586ee35b3a5a766e6feb1cca9566252637ad93f842526a9e984e45bd88f82b"},
+    {file = "libvmdk_python-20260714-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:05b3bf65911c5bcc83ebe5f07ff029248b4765f0f936132c75b01014fa2c25ef"},
+    {file = "libvmdk_python-20260714-cp311-cp311-win32.whl", hash = "sha256:cba244410614ed7cc59d3fbc558e1d4b5905d0c730b59b0e7edf06ebd74227ff"},
+    {file = "libvmdk_python-20260714-cp311-cp311-win_amd64.whl", hash = "sha256:3eeddb0a23462cf91701b4d96cd61c78674d2adeff5372e80f2294238b87e98f"},
+    {file = "libvmdk_python-20260714-cp311-cp311-win_arm64.whl", hash = "sha256:ef873f599edc2c6ec65a3c34c02456680f11f7734ee3c9dfe52b58481402dc50"},
+    {file = "libvmdk_python-20260714-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:9457a514042e96ba84a1863a384d6901765300a571f742e15040a41c8cd91737"},
+    {file = "libvmdk_python-20260714-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:bf708f8b8bcef149ae4f0b0f6ec0f0125eb1dc11317a31fd2c8d83d212b894fa"},
+    {file = "libvmdk_python-20260714-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:52e6db527b419f48e5e079c9ab149acd35c08721f71381bb877bdb63001800ba"},
+    {file = "libvmdk_python-20260714-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c0892fb7bcd125ad9bec3a532c992fa0a76f44ea0590ec83717c0ee075a2b901"},
+    {file = "libvmdk_python-20260714-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:6a6c6fd7d062bae40abad249b9b90d2a6010a6a020702804350f4b096472d8fb"},
+    {file = "libvmdk_python-20260714-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:d2bd440376c434370fd344b8bb9c971bca1543ddebc18fd0146e546876026a75"},
+    {file = "libvmdk_python-20260714-cp312-cp312-win32.whl", hash = "sha256:26cd2d498b45a27f870fd88f3956cb4f497cbedd63bedf070e808da1b7cac9a0"},
+    {file = "libvmdk_python-20260714-cp312-cp312-win_amd64.whl", hash = "sha256:71e09979394c8e8a328a7420a6249abd89e3f6f7719d324d9a07b87525f975cb"},
+    {file = "libvmdk_python-20260714-cp312-cp312-win_arm64.whl", hash = "sha256:cd423a591fc9b727dd39208bbe19059cb70c8aa4fc7aaf9a6009913f2c4c03d4"},
+    {file = "libvmdk_python-20260714-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:3767905a35a15b074d74646068996450bbb871abdf3ed5636f0e0ed6bf93fb22"},
+    {file = "libvmdk_python-20260714-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:3895d83967d67698b6df81a62dbb0dad4fa1f6ceccda5fbeaa99b3046d8cff24"},
+    {file = "libvmdk_python-20260714-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:66394113030c73be8ba7409b3bfb3607770db595c42b984410f0918635cc6e17"},
+    {file = "libvmdk_python-20260714-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9f6b476fa265cdbd361661a7a2a47a72b7aba4a00b051790782ef5310fd1d03e"},
+    {file = "libvmdk_python-20260714-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:7d8dcfb6d3458736cf669de474b8f1597b4bc075fafb138bdeb579142918251b"},
+    {file = "libvmdk_python-20260714-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:447efb74ec863d7b481f29638fc3f88673326364a3693e54f686a626ba1fee96"},
+    {file = "libvmdk_python-20260714-cp313-cp313-win32.whl", hash = "sha256:e0404c336cb324d03fdc76eb5df69fa2fcfdc383c42f95153ea15acd7bdc7e64"},
+    {file = "libvmdk_python-20260714-cp313-cp313-win_amd64.whl", hash = "sha256:ebebd1698def62495fd18c7cf70b84dd63cc57f436244e860a0bd1f9ac2773fa"},
+    {file = "libvmdk_python-20260714-cp313-cp313-win_arm64.whl", hash = "sha256:daa6ac02950b04297536269507504aae85d77479c6d1ed543d3226bd28eee28f"},
+    {file = "libvmdk_python-20260714.tar.gz", hash = "sha256:d4ebabc53e8f14cb9efb67c73357f135b1586a740a2c1e41e35d43d1aaece18f"},
 ]
 
 [[package]]

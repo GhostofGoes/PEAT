@@ -1,0 +1,1 @@
+The Pillage documentation now covers the supported disk image formats, partition tables and filesystems, the limits on how much is copied from an image, choosing a backend, running on Windows, and the summary file. The name of renamed duplicate files is now documented correctly (``set_all.txt.1``, not ``set_all.1.txt``).
