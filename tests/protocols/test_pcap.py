@@ -478,7 +478,7 @@ def test_capture_supported(mocker):
     mocker.patch.object(scapy.config, "conf", mocker.Mock(use_pcap=False))
     ok, reason = pcap.capture_supported()
     assert not ok
-    assert "npcap.com" in reason
+    assert reason == "Npcap is not installed (install it from https://npcap.com)"
 
 
 # ---------------------------------------------------------------------------
