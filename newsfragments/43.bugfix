@@ -1,0 +1,1 @@
+Running ``peat parse`` on a directory that contains RSLogix 500 ``.RSS`` files no longer sends them to the ``SELRelay`` module, which failed to parse them and marked the run as failed. The SEL ``.rdb`` file signature now excludes RSLogix 500 projects.

@@ -124,7 +124,7 @@ Setting categories (configuration sections)
 
 SEL software: RDB Project Files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-SEL configuration software stores device configurations in project files with a ``.rdb`` file extension. The ``.rdb`` SEL project files use a file structure called Compound File Binary Format, or Microsoft OLE2 File. PEAT uses the ``olefile`` method ``isOleFile()`` to check the file for the magic number at the start of the header to determine if it is the correct format. If it is, the ``SET_ALL`` configuration for the device is extracted and parsed (with the same parsing code used for configurations pulled form devies).
+SEL configuration software stores device configurations in project files with a ``.rdb`` file extension. The ``.rdb`` SEL project files use a file structure called Compound File Binary Format, or Microsoft OLE2 File. PEAT uses the ``olefile`` method ``isOleFile()`` to check the file for the magic number at the start of the header to determine if it is the correct format. If it is, the ``SET_ALL`` configuration for the device is extracted and parsed (with the same parsing code used for configurations pulled form devies). Rockwell RSLogix 500 project files (``.RSS``) are also OLE files, so they're excluded when PEAT selects modules automatically (they're parsed by :class:`~peat.modules.rockwell.logic_rss.RSLogix500` instead). Use ``-d SELRelay`` to force a file to be parsed as a SEL project.
 
 
 Configured IED Description (.CID) Files

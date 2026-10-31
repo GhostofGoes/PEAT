@@ -407,6 +407,11 @@ pillage:
     L5X:
       extensions:
         - l5x
+    # Rockwell RSLogix 500 projects and backups (e.g. "PROJECT_BAK000.RSS").
+    # RSS news feeds also have this extension, they're skipped when parsing.
+    RSLogix500:
+      extensions:
+        - rss
     ION:
       filenames:
         - DEVINFO.DAT

@@ -7,3 +7,5 @@ The PEAT software includes the following third-party software:
 beremiz - GNU General Public License v2.0: Copyright (C) 2016: Andrey Skvortsov, Copyright (C) 2007: Edouard TISSERANT and Laurent BESSARD. See COPYING file in plc_open directory for copyrights details.
 
 nrbf.py - .NET Remoting Binary Format reading library for Python 3.6+ - Copyright (C) 2017, 2020, 2021 Christopher Gurnee
+
+blast.c (ported to Python as peat/parsing/pkware_dcl.py) - zlib License: Copyright (C) 2003, 2012, 2013 Mark Adler. The Python port is an altered version of the original software. See the license notice in peat/parsing/pkware_dcl.py.

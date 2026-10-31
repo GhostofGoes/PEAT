@@ -173,3 +173,15 @@ Command Parsers
 
 .. automodule:: peat.parsing.command_parsers
    :members:
+
+MFC CArchive reader
+-------------------
+
+.. automodule:: peat.parsing.mfc_archive
+   :members:
+
+PKWARE DCL decompression
+------------------------
+
+.. automodule:: peat.parsing.pkware_dcl
+   :members:
