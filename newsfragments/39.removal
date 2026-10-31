@@ -1,0 +1,1 @@
+Removed the undocumented ``HTTP.page_cache`` class attribute. Use ``peat.protocols.cache.data_cache`` instead, for example ``data_cache.invalidate(namespace="http")`` to remove cached pages.
