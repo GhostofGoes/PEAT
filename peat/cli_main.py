@@ -28,12 +28,14 @@ from peat import (
     pillage,
     pull,
     push,
+    report_api,
     scan,
     state,
     utils,
 )
 from peat.config_builder import launch_builder
 from peat.heat import HEAT_EXTRACTORS
+from peat.report import REPORT_COMMANDS
 
 TargetsType = tuple[list[str], consts.AllowedCommTypes, list[str]]
 
@@ -156,6 +158,15 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
     duration = timeit.default_timer() - start_time
     log.info(f"Finished run in {utils.fmt_duration(duration)} at {utils.utc_now()} UTC")
 
+    # Generate the HTML report (peat-report.html) in the run directory
+    if (
+        config.HTML_REPORT
+        and args.get("func") in REPORT_COMMANDS
+        and config.OUT_DIR
+        and config.RUN_DIR
+    ):
+        write_run_report(args)
+
     # Cleanup all empty directories on exit
     if config.OUT_DIR and config.RUN_DIR.exists():
         utils.clean_empty_dirs(config.RUN_DIR)
@@ -240,6 +251,9 @@ def oneshot_main(args: dict[str, Any]) -> bool:
         else:
             log.critical("Error encountered while decrypting results archive, exiting...")
             sys.exit(1)
+
+    if args["func"] == "report":
+        return report_api(args.get("run_dirs") or [], output_file=args.get("report_file"))
 
     targets = []  # type: list[str]
     device_types = set()  # type: set[str]
@@ -347,6 +361,27 @@ def oneshot_main(args: dict[str, Any]) -> bool:
         log.exception(f"{args['func']} failed due to unhandled exception")
 
     return False
+
+
+def write_run_report(args: dict[str, Any]) -> bool:
+    """
+    Generate the HTML report (``peat-report.html``) for the current run.
+
+    A failure to generate the report is logged as an error, but doesn't
+    fail the run (:attr:`state.error <peat.settings.State.error>` isn't changed).
+
+    Returns:
+        If the report was generated
+    """
+    try:
+        from peat.report import LiveRunInfo, generate_report
+
+        live = LiveRunInfo.from_current_run(str(args.get("func") or ""))
+        return generate_report(config.RUN_DIR, live=live) is not None
+    except Exception as ex:  # The report must never break a run
+        log.error(f"Failed to generate HTML report: {ex}")
+        log.opt(exception=True).debug("HTML report traceback")
+        return False
 
 
 def export_device_data(args: dict[str, Any]) -> bool:
@@ -641,6 +676,7 @@ directory in the same directory you were in when running PEAT.
 - `elastic_data/` : Copies of documents pushed to Elasticsearch. These can be used to rebuild the Elasticsearch data if you only have the files or don't have a Elasticsearch server available when running PEAT.
     - `mappings/` : Elasticsearch type mappings for the PEAT indices
 - `heat_artifacts/` : Output from HEAT ("peat heat <args>")
+- `peat-report.html` : Self-contained HTML report summarizing the run. Open it in a web browser. It can be regenerated with "peat report <run-dir>".
 - `logs/` : PEAT's log files, including the main log file, JSON-formatted log files, and protocol- and module-specific log files (e.g. Telnet logs, ENIP logs).
 - `peat_metadata/` : JSON and YAML-formatted dumps of PEAT's configuration and internal state.
 - `summaries/` : Summary results of a command, e.g. scan-summary, pull-summary, or parse-summary. These include metadata about the operation (e.g., how many files were parsed), as well as a combined set of device summaries (most of the data, but some fields are excluded, like events, memory, blobs, etc.). To view the complete results for devices, look in the "devices/" directory.
@@ -677,6 +713,7 @@ variables were configured, e.g. `OUT_DIR`, `ELASTIC_DIR` or `LOG_DIR`.
 ./peat_results/
     README.md
     <command>_<config-name>_<timestamp>_<run_id>/
+        peat-report.html
         devices/
             <device-id>/
                 device-data-summary.json

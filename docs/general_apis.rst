@@ -42,6 +42,24 @@ Pillage API
    :members:
    :undoc-members:
 
+Report API
+^^^^^^^^^^
+See :ref:`html-report` for details on the HTML report.
+
+.. automodule:: peat.api.report_api
+   :members:
+
+.. automodule:: peat.report
+   :members: generate_report, LiveRunInfo
+
+.. automodule:: peat.report.sanitize
+   :members:
+
+Run results
+-----------
+.. automodule:: peat.run_results
+   :members: RunResults, DeviceResults, find_run_dirs, is_run_dir
+
 Network Discovery
 -----------------
 .. automodule:: peat.protocols.discovery

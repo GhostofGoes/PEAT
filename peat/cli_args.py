@@ -18,6 +18,8 @@ To list modules currently imported by PEAT: "peat scan --list-modules" (or other
 
 Data collected by PEAT is written to files in "./peat_results/" in the current directory (by default). Data can also be saved to Elasticsearch. See the help for specific sub-commands for details.
 
+A self-contained HTML report summarizing each run is written to "peat-report.html" in the run's directory. To regenerate the report for a previous run: "peat report ./peat_results/<run-dir>/"
+
 Refer to the PEAT documentation for a list of supported devices.
 You can also run --list-modules or --list-all to get a list of the currently included device modules (e.g., "peat scan --list-modules").
 
@@ -436,6 +438,20 @@ decrypt_config_examples = """
 peat decrypt-config -f '<my_path>/encrypted_config.yaml' -p secret -w '<my_path>/example_config.yaml'
 """  # End decrypt-config examples
 
+report_examples = """
+# Regenerate the HTML report for one run (written to <run-dir>/peat-report.html)
+peat report ./peat_results/pull_default-config_2026-10-31_13-08-59_179343190989/
+
+# Generate HTML reports for every run in a results directory
+peat report ./peat_results/
+
+# Write the report somewhere else (e.g. if the run directory is on read-only media)
+peat report -w ./site-a-report.html /media/evidence/peat_results/pull_site-a_2026-10-31_13-08-59_179343190989/
+
+# Don't generate the HTML report at the end of a run
+peat pull --no-html-report -i 192.0.2.0/24
+"""  # End report examples
+
 ALL_EXAMPLES: dict[str, str] = {
     "scan": scan_examples,
     "pull": pull_examples,
@@ -447,6 +463,7 @@ ALL_EXAMPLES: dict[str, str] = {
     "decrypt_results": decrypt_results_examples,
     "encrypt_config": encrypt_config_examples,
     "decrypt_config": decrypt_config_examples,
+    "report": report_examples,
 }
 
 
@@ -608,6 +625,21 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         description=decrypt_results_description,
     )
     decrypt_results_parser.set_defaults(func="decrypt_results")
+
+    # HTML report command
+    report_description = (
+        "Generate (or regenerate) the self-contained HTML report summarizing "
+        "existing PEAT run directories. One report is written per run directory, "
+        "to peat-report.html in the run directory (an existing report is replaced)."
+    )
+    report_parser = subparsers.add_parser(
+        name="report",
+        # help: displayed next to the sub-command when running "peat --help"
+        help=report_description,
+        # description: displayed before the arguments when running "peat <command> --help"
+        description=report_description,
+    )
+    report_parser.set_defaults(func="report")
 
     # Add arguments that we want specified after a command to all subparsers.
     # This is where any "general" peat arguments go (e.g "verbose").
@@ -1124,6 +1156,19 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
     )
     add_list_module_args(pillage_parser)  # Hack to add "--list-*" commands
 
+    # Automatic HTML report at the end of a run
+    for subp in [scan_parser, pull_parser, push_parser, parse_parser, pillage_parser, heat_parser]:
+        report_args = subp.add_argument_group("report arguments")
+        report_args.add_argument(
+            "--html-report",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            dest="html_report",
+            help="Generate (or with --no-html-report, don't generate) the "
+            "self-contained HTML report peat-report.html in the run directory "
+            "when the command finishes. Enabled by default.",
+        )
+
     # Encrypt Config command
     encrypt_config_parser.add_argument(
         "-f",
@@ -1234,6 +1279,28 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         help="Specify password to use to encrypt/decrypt zip",
     )
     add_list_module_args(decrypt_results_parser)  # Hack to add "--list-*" commands
+
+    # HTML report
+    report_parser.add_argument(
+        "run_dirs",
+        type=str,
+        nargs="*",
+        metavar="RUN_DIR",
+        help="PEAT run directories, or results directories containing run "
+        'directories (e.g. "./peat_results/").',
+    )
+    report_group = report_parser.add_argument_group("report arguments")
+    report_group.add_argument(
+        "-w",
+        "--write-file",
+        type=validate_filepath_arg,
+        metavar="FILE",
+        default=None,
+        dest="report_file",
+        help="Write the report to FILE instead of <run-dir>/peat-report.html. "
+        "Only valid with a single run directory.",
+    )
+    add_list_module_args(report_parser)  # Hack to add "--list-*" commands
 
     return parser
 

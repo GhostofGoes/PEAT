@@ -151,6 +151,8 @@ Disabling file output
 ---------------------
 Setting directory-related configuration options (e.g. :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>`) to an empty string will **disable** any output to that directory. For example, setting :attr:`LOG_DIR <peat.settings.Configuration.LOG_DIR>` to an empty string (e.g. ``LOG_DIR=""``) will disable writing of logging data to files, including PEAT's logging and any protocols that log to a file (such as Telnet).
 
+The :ref:`HTML report <html-report>` (``peat-report.html``) written to the run directory at the end of a run can be disabled by setting :attr:`HTML_REPORT <peat.settings.Configuration.HTML_REPORT>` to ``false`` (``html_report: false`` in a YAML configuration file, or the environment variable ``PEAT_HTML_REPORT=false``), or with the ``--no-html-report`` command line argument.
+
 This feature is works well for most of the general options, such as :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>` or :attr:`ELASTIC_DIR <peat.settings.Configuration.ELASTIC_DIR>`. Be warned, however, that mileage may vary for heavily used output dirs, such as :attr:`DEVICE_DIR <peat.settings.Configuration.DEVICE_DIR>` and :attr:`OUT_DIR <peat.settings.Configuration.OUT_DIR>`. They should work fine, but there have been regressions in the past where files have been written when :attr:`OUT_DIR <peat.settings.Configuration.OUT_DIR>` was disabled (in one case). If disabling file output is critical to your use case, we recommend testing locally before executing in the field.
 
 Auto-generated configs

@@ -167,6 +167,8 @@ jobs:
           ./dist/peat --version
           ./dist/peat parse --list-modules
           ./dist/peat parse -vVV -d AwesomeTool -I examples/example_peat_module/ -- examples/example_peat_module/awesome_output.json
+          ls -l peat_results/parse_*/peat-report.html
+          ./dist/peat report peat_results/
       - name: Build Sneakypeat executable
         run: pdm run build-linux-sneakypeat
       - name: List Sneakypeat executable contents
@@ -217,6 +219,7 @@ jobs:
           ./dist/peat.exe --help
           ./dist/peat.exe parse --list-modules
           ./dist/peat.exe parse -vVV -d AwesomeTool -I examples/example_peat_module/ -- examples/example_peat_module/awesome_output.json
+          ./dist/peat.exe report peat_results/
       - name: Build Sneakypeat executable
         run: pdm run build-sneakypeat
       - name: Check Sneakypeat executable
@@ -273,6 +276,8 @@ jobs:
           ./dist/peat --help
           ./dist/peat parse --list-modules
           ./dist/peat parse -vVV -d AwesomeTool -I examples/example_peat_module/ -- examples/example_peat_module/awesome_output.json
+          ls -l peat_results/parse_*/peat-report.html
+          ./dist/peat report peat_results/
           mv dist/peat "dist/peat_macos_${{ matrix.arch }}"
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

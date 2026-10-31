@@ -84,6 +84,7 @@ pcaps: null
 no_run_zeek: false
 zeek_dir: null
 formatted_output: true
+html_report: true
 
 pillage:
   auto_copy: true

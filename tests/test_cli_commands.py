@@ -396,3 +396,50 @@ def test_cli_results_decryption(run_peat, tmp_path, mock_encrypted_peat_results)
     run_peat(args)[0]
 
     assert tmp_path / "unencrypted" / "mock_peat_results.zip"
+
+
+@pytest.mark.slow
+def test_cli_html_report(exec_peat, tmp_path, example_module_file, examples_path):
+    """A report is generated at the end of a run, and can be regenerated."""
+    run_dir = tmp_path / "run"
+    args = [
+        "parse",
+        "-I",
+        example_module_file("awesome_module.py").as_posix(),
+        "-d",
+        "AwesomeTool",
+        "--run-dir",
+        run_dir.as_posix(),
+        examples_path("example_peat_module/awesome_output.json").as_posix(),
+    ]
+    result = exec_peat(args)
+    assert result.returncode == 0, result.stderr.decode()
+    report = run_dir / "peat-report.html"
+    html_text = report.read_text(encoding="utf-8")
+    assert "192.168.0.20" in html_text
+    assert "AwesomeTool" in html_text
+    assert "(live)" in html_text
+
+    out = tmp_path / "other" / "r.html"
+    result = exec_peat(
+        ["report", "-o", (tmp_path / "out").as_posix(), "-w", out.as_posix(), run_dir.as_posix()]
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert "192.168.0.20" in out.read_text(encoding="utf-8")
+    assert "(regenerated)" in out.read_text(encoding="utf-8")
+
+    # Disabled
+    run_dir_2 = tmp_path / "run2"
+    args[args.index(run_dir.as_posix())] = run_dir_2.as_posix()
+    result = exec_peat([*args, "--no-html-report"])
+    assert result.returncode == 0, result.stderr.decode()
+    assert run_dir_2.is_dir()
+    assert not (run_dir_2 / "peat-report.html").exists()
+
+    # Nothing to do
+    assert (
+        exec_peat(
+            ["report", "-o", (tmp_path / "out").as_posix(), (tmp_path / "missing").as_posix()]
+        ).returncode
+        == 1
+    )

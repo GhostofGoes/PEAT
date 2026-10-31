@@ -37,7 +37,8 @@ active_base = ("--host-file FILE", "-i HOSTS", "-s PORTS")
         ("pull", [*all_base, *active_base, "--peat-modules TYPE "]),
         ("push", [*all_base, *active_base, "input_source", "--peat-modules DEVICE "]),
         ("pillage", [*all_base, "-P SOURCE"]),
-        ("heat", [*all_base, "--heat-file-only"]),
+        ("heat", [*all_base, "--heat-file-only", "--html-report, --no-html-report"]),
+        ("report", [*all_base, "-w", "--write-file FILE", "RUN_DIR"]),
         (
             "decrypt",
             [
@@ -94,7 +95,7 @@ def test_cli_list_modules(run_peat, subcmd):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("subcmd", ["scan", "parse", "pull", "push", "pillage", "heat"])
+@pytest.mark.parametrize("subcmd", ["scan", "parse", "pull", "push", "pillage", "heat", "report"])
 def test_cli_examples(run_peat, subcmd):
     examples = run_peat([subcmd, "--examples"])[0].replace("\r\n", "\n")
     all_examples = run_peat([subcmd, "--all-examples"])[0].replace("\r\n", "\n")

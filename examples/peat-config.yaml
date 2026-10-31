@@ -210,6 +210,11 @@ zeek_logdir: !JOIN [*RUNDIR, "zeek_logs/"]
 # Defaults to false for minified version.
 formatted_output: true
 
+# Generate a self-contained HTML report (peat-report.html) in the run
+# directory summarizing everything PEAT did, when a command finishes.
+# Defaults to true. Can also be disabled with "--no-html-report".
+html_report: true
+
 
 # -----------------------------------------------------------------------------
 
