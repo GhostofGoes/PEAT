@@ -1,6 +1,15 @@
 """
 Retrieve and extract data via HTTP from SEL devices.
 
+The methods of :class:`SELHTTP` fetch pages, and the parsing is done by pure
+functions that can be tested without a device:
+
+- Relay pages contain the output of an ASCII command, which is parsed by
+  functions that also work for the output of the command over Telnet or
+  serial (:mod:`~peat.modules.sel.relay_command_parse` and
+  :mod:`~peat.modules.sel.relay_parse`)
+- RTAC and SEL-3620 pages are parsed by :mod:`~peat.modules.sel.sel_web_parse`
+
 Authors
 
 - Aidan Kollar
@@ -12,25 +21,34 @@ Authors
 - Ryan Vrecenar
 """
 
-import re
+from collections.abc import Callable, Mapping
 from pathlib import PurePosixPath
 from time import sleep
 from typing import Literal
 from urllib.parse import urljoin, urlparse
 
-import humanfriendly
-from bs4 import BeautifulSoup
 from requests import Response
 
-from peat import DeviceData, Event, PeatError, config, consts, datastore, log, utils
-from peat.data.models import User
-from peat.data.validators import validate_hash
-from peat.protocols import HTTP, split_ipv4_cidr
+from peat import DeviceData, PeatError, config, datastore, log, utils
+from peat.protocols import HTTP
 
+from .relay_command_parse import (
+    merge_show_groups,
+    normalize_keys,
+    parse_comments,
+    parse_eth_output,
+    parse_meter_energy,
+    parse_meter_values,
+    parse_show_groups,
+    parse_simple_line,  # noqa: F401 (was defined in this module)
+    parse_ver_output,
+    process_eth_info,
+    process_ver_info,
+)
 from .relay_parse import (
+    get_date_format,
     parse_and_process_events,
     parse_status_output,
-    process_fid,
     process_info_into_dev,
     process_port_settings,
     split_lines,
@@ -41,6 +59,31 @@ from .sel_files import (
     SOURCE_WEB_PAGE,
     record_downloaded_file,
     write_and_record_file,
+)
+from .sel_web_parse import (
+    GATEWAY_PAGES,
+    clean_text,  # noqa: F401 (was defined in this module)
+    derive_relay_session_url,
+    extract_login_token,
+    extract_pre_text,
+    parse_gateway_index,
+    parse_gateway_syslog,
+    parse_html_table,
+    parse_rtac_device_info,
+    parse_rtac_diagnostics,
+    parse_rtac_files,
+    parse_rtac_post_summary,
+    parse_soe_csv,
+    parse_web_accounts,
+    parse_x509_export_links,
+    process_gateway_syslog,
+    process_rtac_device_info,
+    process_rtac_diagnostics,
+    process_rtac_files,
+    process_rtac_post_summary,
+    process_soe_events,
+    process_web_accounts,
+    read_html,  # noqa: F401 (was defined in this module)
 )
 
 
@@ -63,6 +106,9 @@ class SELHTTP(HTTP):
         self.session_id: str = ""
         self.rtac_logged_in: bool = False
         self.relay_logged_in: bool = False
+        self.cookies: dict[str, str] = {}
+        self.gateway_l1_user: str = ""
+        self.gateway_logged_in: bool = False
         super().__init__(*args, **kwargs)
 
     @property
@@ -77,6 +123,23 @@ class SELHTTP(HTTP):
             self.rtac_log_out()
         super().disconnect()
 
+    def _extract_login_token(self, page: Response, hidden_only: bool = True) -> str | None:
+        """
+        Token in a login page that's sent with the credentials (the value
+        of the hidden ``<input>``), for relays, RTACs, and the SEL-3620.
+        Refer to :func:`~peat.modules.sel.sel_web_parse.extract_login_token`.
+
+        Returns:
+            The token, or :obj:`None` if the page doesn't have one
+        """
+        token = extract_login_token(page.content, hidden_only=hidden_only)
+
+        if token is None:
+            self.log.debug("Failed to find 'input' field in login page")
+            self.log.trace2(f"** Page data **\n{page.content!r}\n")
+
+        return token
+
     def login(
         self,
         user: str = "ACC",
@@ -89,6 +152,9 @@ class SELHTTP(HTTP):
         If the login succeeds, the credentials are stored in the
         ``successful_creds`` class variable and :obj:`True` is returned.
 
+        The session URL is determined from the response by
+        :func:`~peat.modules.sel.sel_web_parse.derive_relay_session_url`.
+
         .. warning::
            This method is NOT to be used for SEL RTACs.
            Instead, use :meth:`~peat.modules.sel.sel_http.SELHTTP.login_rtac`
@@ -99,7 +165,14 @@ class SELHTTP(HTTP):
             protocol: HTTP protocol to use ('http' or 'https')
 
         Returns:
-            If the login was successful
+            If the login was successful. :obj:`False` if the relay rejected
+            the credentials, or the login couldn't be attempted.
+
+        Raises:
+            PeatError: The relay didn't reject the credentials, but the session
+                can't be determined from the response. This is an exception,
+                so callers don't try other credentials (failed logins on the
+                relay), e.g. the credential loop in ``SELRelay._verify_http``.
         """
         self.log.debug(f"Attempting login via {protocol}")
 
@@ -111,21 +184,14 @@ class SELHTTP(HTTP):
 
         # TODO: if "2AC" is in the login page script, it's probably a 351S
         #   Tested two 451's and neither has it
-        soup = self.gen_soup(page.content)
-        input_element = soup.find("input", type="hidden")
-
-        if not input_element:
-            input_element = soup.find("input")
-
-        if not input_element:
-            self.log.debug("Failed to find 'input' field in login page")
-            self.log.trace2(f"** Page data **\n{repr(page.content)}\n")
+        token = self._extract_login_token(page, hidden_only=False)
+        if token is None:
             return False
 
         # set protocol now that we know it worked
         self.protocol = protocol
 
-        self._rando = str(input_element.get("value"))
+        self._rando = token
         self.log.trace2(f"Rando: {self._rando}")
 
         # TODO: 351S allows login to level 2
@@ -141,29 +207,25 @@ class SELHTTP(HTTP):
             )
             return False
 
-        # 351S has "login.html"
-        # 451 has "login_query.html"
-        # 351 has "login"
         self.log.trace(f"Response URL: {resp.url}")
-        sess_url = (
-            resp.url.replace("login_query.html", "").replace("login.html", "").replace("login", "")
-        )
 
-        self.log.trace(f"Intermediate session URL: {sess_url}")
-
-        if "error=invalid" in sess_url:
+        if "error=invalid" in resp.url:
             self.log.error(f"Login failed: invalid credentials for user '{user}'")
             return False
 
-        # 351 doesn't include the magic in the response
-        if "/N" not in sess_url:
-            soup = self.gen_soup(resp.content)
-            magic = soup.find("a")["href"].replace("ver.html", "")
-            sess_url += magic[1:]
-
-        # 451 (351S includes "protected" in the response url)
-        if "protected/" not in sess_url:
-            sess_url = sess_url.replace("/N", "/protected/N")
+        sess_url = derive_relay_session_url(resp.url, resp.content, base_url=login_url)
+        if not sess_url:
+            # The relay didn't reject the credentials, so they're probably valid.
+            # Returning False would make callers try other credentials (e.g. the
+            # credential loop in SELRelay._verify_http), which are failed logins
+            # on the relay that may trigger an alarm or a lockout. So this raises,
+            # as the SEL-351 path did before (TypeError when there was no link).
+            # The response URL isn't logged here, since it may have the session ID.
+            self.relay_logged_in = False
+            raise PeatError(
+                f"Relay login for user '{user}' was not rejected, but the session URL "
+                f"could not be determined from the response (not trying other credentials)"
+            )
 
         self._session_url = sess_url
         self.log.trace(f"Final session URL: {self._session_url}")
@@ -281,16 +343,17 @@ class SELHTTP(HTTP):
         """
         Parse raw HTML page data and extract the contents of the ``pre`` section.
 
-        The "pre" tag contains rax HTML text. For the SEL relays, this usually
+        The "pre" tag contains raw text. For the SEL relays, this usually
         contains the output of the command run "under the hood", e.g. "sho p1".
+        Refer to :func:`~peat.modules.sel.sel_web_parse.extract_pre_text`.
+
+        Raises:
+            PeatError: if the page doesn't have a ``pre`` section
         """
-        # TODO: a page may have multiple groups, we need to parse all of them and return as a list
-        pre = self.gen_soup(content).find("pre")
-
-        if not pre:
-            raise PeatError("Failed to find 'pre' section in page content")
-
-        return pre.string.replace("\r\n", "\n")  # Replace CRLF with LF
+        try:
+            return extract_pre_text(content)
+        except ValueError:
+            raise PeatError("Failed to find 'pre' section in page content") from None
 
     # -------------------- RTAC Web Pages --------------------
 
@@ -312,18 +375,10 @@ class SELHTTP(HTTP):
             return False
 
         # NOTE: SEL RTAC does not contain Device ID on front page
-        # NOTE: do NOT decode here, it won't handle sites with
-        # non-utf8 encodings, e.g. during a PEAT scan.
-        # BeautifulSoup4 is able to determine the encoding
-        # and process it appropriately.
-        soup = self.gen_soup(page.content)
-
-        input_element = soup.find("input", type="hidden")
-        if not input_element:
-            self.log.debug("Failed to find 'input' field in login page")
-            self.log.trace2(f"** Page data **\n{page.content}\n")
+        token = self._extract_login_token(page)
+        if token is None:
             return False
-        self._rando = str(input_element.get("value"))
+        self._rando = token
 
         # set protocol now that we know it worked
         self.protocol = protocol
@@ -349,241 +404,107 @@ class SELHTTP(HTTP):
 
         return True
 
-    @staticmethod
-    def dump_htmltable(html_page: Response, config: dict) -> None:
-        tables = read_html(html_page.content)
-        # Cleanup keys to remove ":" characters and any stray spaces
-        tables = {k.replace(":", " ").strip(): v for k, v in tables.items()}
+    def _post_rtac(self, page: str, dev: DeviceData, query: bool = False) -> Response | None:
+        """
+        ``POST`` a page of the RTAC web interface with the session parameters,
+        e.g. ``device_info.sel``. If ``query`` is set, a timestamp is added
+        to the URL (as the RTAC web interface does for some pages).
+        """
+        url = f"{self.url}/{page}"
+        if query:
+            url = f"{url}?{querystr()}"
 
+        return self.post(url, params=self._rtac_session, dev=dev)
+
+    @staticmethod
+    def dump_htmltable(html_page: Response | None, results: dict) -> None:
+        """
+        Read the first table in a page into ``results``, with
+        :func:`~peat.modules.sel.sel_web_parse.parse_html_table`.
+        Nothing is added if there isn't a page or a table.
+        """
         # TODO: return dict instead of updating a passed variable
-        config.update(tables)
+        if html_page is not None:
+            results.update(parse_html_table(html_page.content))
 
     def get_index(self, dev: DeviceData) -> dict:
         """
-        Get the data from the gateway dashboard.
+        Get the data from the gateway dashboard (``index.sel``).
+        Refer to :func:`~peat.modules.sel.sel_web_parse.parse_gateway_index`.
         """
-        config = {"web_device_info": {}}
         self.log.info("Getting Gateway index info")
-        device_info = self.get(
-            page="index.sel",
-            protocol="https",
-            params=self.cookies,
-            dev=dev,
-        )
-        self.dump_htmltable(device_info, config["web_device_info"])
-        version_info = {"Version Information": ""}
-        for key in config.get("web_device_info", None):
-            if key.startswith("Version Information"):
-                versions = key.split("\n")
-                for i, info in enumerate(versions):
-                    if "FID String" in info:
-                        version_info["Firmware Version"] = versions[i + 1]
-                        break
-                version_info["Version Information"] = key
-                break
-        version_info["Version Information"].split("\n")
-        config["web_device_info"].update(version_info)
-        return config
 
-    # TODO: split this function up into 3 separate functions?
+        # NOTE: the cookie dict is also sent as query parameters, as it always
+        # has been. It's unknown if the gateway needs them, so this is kept
+        # until it can be tested on a device.
+        device_info = self.get(page="index.sel", protocol="https", params=self.cookies, dev=dev)
+
+        return {
+            "web_device_info": parse_gateway_index(device_info.content if device_info else None)
+        }
+
     def view_dashboard(self, dev: DeviceData) -> dict:
         """
-        Get the data from the RTAC 'dashboard' (``device_info.sel``).
+        Get the data from the RTAC 'dashboard': device information
+        (``device_info.sel``), diagnostics (``diagnostics.sel``, or
+        ``diag_report.sel`` if that fails), and the power-on self test
+        summary (``post_summary.sel``).
         """
         dash_config = {
             "web_device_info": {},
             "web_diagnostics": {},
             "web_post_summary": {},
-            # "web_dashboard_info": {},
         }
 
         # === Device Info ===
         self.log.info("Getting RTAC device info (device_info.sel)")
-        dev_info_response = self.post(
-            f"{self.url}/device_info.sel?{querystr()}",
-            params=self._rtac_session,
-            dev=dev,
-        )
+        dev_info_response = self._post_rtac("device_info.sel", dev, query=True)
 
         if not dev_info_response or not dev_info_response.content:
             self.log.error("No RTAC device info data (device_info.sel)")
         else:
-            try:
-                self.dump_htmltable(dev_info_response, dash_config["web_device_info"])
-                dev.extra["web_device_info"] = dash_config["web_device_info"]
-                # Not useful to include, even in "extra"
-                if "Default Home Page" in dev.extra["web_device_info"]:
-                    del dev.extra["web_device_info"]["Default Home Page"]
-            except ValueError as ex:
-                self.log.warning(f"No table in 'device_info': {ex} (check credentials?)")
-
-        # This was previously inside SELRTAC._verify_http()
-        web_inf = dash_config["web_device_info"]
-        if web_inf:
-            if web_inf.get("Host Name"):
-                if not dev.name:
-                    dev.name = web_inf["Host Name"]
-                if not dev.hostname:
-                    dev.hostname = web_inf["Host Name"]
-                dev.id = web_inf["Host Name"]
-
-            # This sets:
-            # - dev.description.model
-            # - dev.description.product
-            # - dev.firmware (multiple fields, including version)
-            if web_inf.get("Firmware Version"):
-                process_fid(web_inf["Firmware Version"], dev)
-
-            # NOTE: this was added in RTAC firmware release R152
-            # on 2023-11-09: https://selinc.com/api/download/138911/
-            if web_inf.get("Firmware Hash"):
-                try:
-                    upper = web_inf["Firmware Hash"].upper()
-                    if "SHA256" in upper:
-                        hash_str = upper.split(":")[-1].strip()
-                        dev.firmware.hash.sha256 = hash_str
-                except Exception as ex:
-                    self.log.warning(
-                        f"Failed to parse firmware hash '{web_inf['Firmware Hash']}': {ex}"
-                    )
-
-            if web_inf.get("BIOS Version"):
-                if not dev.boot_firmware.version:
-                    dev.boot_firmware.version = web_inf["BIOS Version"]
-
-            if web_inf.get("Firmware Checksum"):
-                fw_checksum = web_inf["Firmware Checksum"]
-                dev.firmware.checksum = fw_checksum
-                # This may or may not be an actual hash, and in some
-                # cases it's definitely not, e.g. "B0AB".
-                try:
-                    checksum_hash = validate_hash(fw_checksum)
-                    dev.related.hash.add(checksum_hash)
-                    if not dev.firmware.hash.md5 and len(fw_checksum) == 32:
-                        dev.firmware.hash.md5 = checksum_hash
-                except ValueError:
-                    pass
-
-            if web_inf.get("Project ID"):
-                proj_id = web_inf["Project ID"]
-                dev.logic.id = proj_id
-
-                # This may or may not be an actual hash
-                try:
-                    proj_id_hash = validate_hash(proj_id)
-                    dev.related.hash.add(proj_id_hash)
-                    if not dev.logic.hash.md5 and len(proj_id_hash) == 32:
-                        dev.logic.hash.md5 = proj_id_hash
-                except ValueError:
-                    pass
-
-            if web_inf.get("Serial Number"):
-                dev.serial_number = web_inf["Serial Number"]
-            if web_inf.get("Part Number"):
-                dev.part_number = web_inf["Part Number"]
-
-            # These were enabled by improvements to HTML parsing
-            if web_inf.get("Device Name"):
-                dev.name = web_inf["Device Name"]
-
-            if web_inf.get("Device Location"):
-                dev.geo.name = web_inf["Device Location"]
-
-            if web_inf.get("Device Description"):
-                if not dev.description.description:
-                    dev.description.description = web_inf["Device Description"]
+            web_inf = parse_rtac_device_info(dev_info_response.content)
+            if not web_inf:
+                self.log.warning("No table in 'device_info' (check credentials?)")
+            dash_config["web_device_info"] = web_inf
+            dev.extra["web_device_info"] = web_inf
+            # This was previously inside SELRTAC._verify_http()
+            process_rtac_device_info(web_inf, dev)
 
         # === Diagnostics ===
         self.log.debug("Getting RTAC diagnostics data (diagnostics.sel)")
-        diag_url = f"{self.url}/diagnostics.sel?{querystr()}"
-        diag_response = self.post(diag_url, params=self._rtac_session, dev=dev)
+        diag_response = self._post_rtac("diagnostics.sel", dev, query=True)
 
-        # TODO: move diag parsing into separate function to clean this up
         if not diag_response or not diag_response.content:
-            report_url = f"{self.url}/diag_report.sel"
-            self.log.warning(f"No results from '{diag_url}', attempting '{report_url}")
-            diag_response = self.post(report_url, params=self._rtac_session, dev=dev)
-            # TODO: handle errors if diag_report.sel fails
+            self.log.warning("No results from 'diagnostics.sel', attempting 'diag_report.sel'")
+            diag_response = self._post_rtac("diag_report.sel", dev)
 
-        try:
-            web_diag = {}
-            self.dump_htmltable(diag_response, web_diag)
-
-            # strings from lists to decimal
-            if "Main Task Usage" in web_diag:
-                mt_use = web_diag.pop("Main Task Usage")[1][:-1]
-                web_diag["main_task_usage"] = int(mt_use) / 100.0
-            if "Automation Task Usage" in web_diag:
-                at_use = web_diag.pop("Automation Task Usage")[1][:-1]
-                web_diag["automation_task_usage"] = int(at_use) / 100.0
-
-            if "Power Source Voltage" in web_diag:
-                web_diag["power_source_voltage"] = float(web_diag.pop("Power Source Voltage"))
-
-            # KB strings to int
-            # (TODO: better way to do this that handles other types, e.g MB, GB)
-            # use humanfriendly?
-            for key in [
-                "Memory Usage (RAM)",
-                "Memory Available (RAM)",
-                "Storage Usage",
-                "Storage Available",
-                "Number of Users Logged In",
-            ]:
-                if key in web_diag:
-                    new_key = utils.clean_replace(key, "", "():").replace(" ", "_").lower()
-                    web_diag[new_key] = int(str(web_diag.pop(key)).split(" ")[0])
-
+        if not diag_response or not diag_response.content:
+            self.log.warning("No RTAC diagnostics data (diagnostics.sel or diag_report.sel)")
+        else:
+            web_diag = parse_rtac_diagnostics(diag_response.content)
+            if not web_diag:
+                self.log.warning("No table in 'diagnostics' (check credentials?)")
+            web_diag = process_rtac_diagnostics(web_diag, dev)
             dash_config["web_diagnostics"] = web_diag
-
-            if web_diag.get("memory_usage_ram"):
-                dev.hardware.memory_usage = int(web_diag.pop("memory_usage_ram"))
-            if web_diag.get("memory_available_ram"):
-                dev.hardware.memory_available = int(web_diag.pop("memory_available_ram"))
-            if web_diag.get("storage_usage"):
-                dev.hardware.storage_usage = int(web_diag.pop("storage_usage"))
-            if web_diag.get("storage_available"):
-                dev.hardware.storage_available = int(web_diag.pop("storage_available"))
-            if web_diag.get("Current Project"):
-                dev.logic.name = str(web_diag.pop("Current Project")).strip()
-            if web_diag.get("Modified Time of Project"):
-                try:
-                    raw_ts = str(web_diag["Modified Time of Project"]).strip()
-                    dev.logic.last_updated = utils.parse_date(raw_ts)
-                    del web_diag["Modified Time of Project"]  # del here in case parsing fails
-                except Exception as ex:
-                    self.log.warning(f"Failed to parse project modification timestamp: {ex}")
-
-            dev.extra["web_diagnostics"] = dash_config["web_diagnostics"]
-        except ValueError:
-            self.log.exception(
-                "No table in 'diagnostics' or failed to parse parts of it (check credentials?)"
-            )
+            dev.extra["web_diagnostics"] = web_diag
 
         # === Post summary ===
         self.log.info("Getting RTAC post summary data (post_summary.sel)")
-        post_summary = self.post(
-            f"{self.url}/post_summary.sel?{querystr()}",
-            params=self._rtac_session,
-            dev=dev,
-        )
+        post_summary = self._post_rtac("post_summary.sel", dev, query=True)
 
         if not post_summary or not post_summary.content:
             self.log.error("No RTAC post summary data (post_summary.sel)")
         else:
-            try:
-                self.dump_htmltable(post_summary, dash_config["web_post_summary"])
-                dev.extra["web_post_summary"] = dash_config["web_post_summary"]
-                # TODO: cleanup the default keys and values for the dicts from various pages
-                #   remove ':', lowercase underscore_separated, bools
-                # TODO: dump parsed intermediate representations to JSON files
-                if (
-                    "DDR2 SDRAM OK" in dash_config["web_post_summary"]
-                    and not dev.hardware.memory_type
-                ):
-                    dev.hardware.memory_type = "ddr2_sdram"
-            except ValueError as ex:
-                self.log.debug(f"No table in 'post_summary': {ex} (check credentials?)")
+            # TODO: cleanup the default keys and values for the dicts from various pages
+            #   remove ':', lowercase underscore_separated, bools
+            # TODO: dump parsed intermediate representations to JSON files
+            summary = parse_rtac_post_summary(post_summary.content)
+            if not summary:
+                self.log.debug("No table in 'post_summary' (check credentials?)")
+            dash_config["web_post_summary"] = summary
+            dev.extra["web_post_summary"] = summary
+            process_rtac_post_summary(summary, dev)
 
         return dash_config
 
@@ -594,8 +515,7 @@ class SELHTTP(HTTP):
         self.log.info("Getting RTAC usage policy (customize.sel)")
 
         web_usagepolicy = {}
-        usage_policy = self.post(f"{self.url}/customize.sel", params=self._rtac_session, dev=dev)
-        self.dump_htmltable(usage_policy, web_usagepolicy)
+        self.dump_htmltable(self._post_rtac("customize.sel", dev), web_usagepolicy)
         dev.extra["web_usagepolicy"] = web_usagepolicy
 
         return {"web_usagepolicy": web_usagepolicy}
@@ -603,38 +523,18 @@ class SELHTTP(HTTP):
     def view_filesondevice(self, dev: DeviceData) -> dict:
         """
         Get data about files on a RTAC (``file_repository.sel``).
+        Refer to :func:`~peat.modules.sel.sel_web_parse.parse_rtac_files`.
         """
         self.log.info("Getting RTAC file listing (file_repository.sel)")
 
         # Note: we can potentially upload files via this interface using
         # upload_file.sel (params from data + contents)
 
-        files_repo = self.post(
-            f"{self.url}/file_repository.sel", params=self._rtac_session, dev=dev
-        )
+        files_repo = self._post_rtac("file_repository.sel", dev)
 
-        raw_web_files = {}
-        self.dump_htmltable(files_repo, raw_web_files)
+        web_files = parse_rtac_files(files_repo.content if files_repo else None)
+        process_rtac_files(web_files, dev)
 
-        web_files = {}
-        for filename, values in raw_web_files.items():
-            if not filename:  # Skip None-types
-                continue
-
-            file_data = {
-                "name": str(filename),
-                "size": int(values[1]),
-            }
-
-            try:
-                file_data["timestamp"] = utils.parse_date(values[0])
-            except Exception as ex:
-                self.log.warning(f"Failed to parse web file timestamp for '{values[0]}': {ex}")
-
-            web_files[filename] = file_data
-            dev.related.files.add(str(filename))
-
-        dev.extra["web_files"] = web_files
         return {"web_files": web_files}
 
     def download_http_files(self, dev: DeviceData) -> dict:
@@ -643,7 +543,7 @@ class SELHTTP(HTTP):
         """
         # just a dict to indicate a file was downloaded from the device
         downloaded_files = {}
-        if not dev.extra["web_files"]:
+        if not dev.extra.get("web_files"):
             self.log.error(
                 "PEAT did not find any web files listed on the device, skipping file download..."
             )
@@ -685,13 +585,21 @@ class SELHTTP(HTTP):
         self.log.info("Getting RTAC features list (licensed_features.sel)")
 
         web_features = {}
-        features = self.post(
-            f"{self.url}/licensed_features.sel", params=self._rtac_session, dev=dev
-        )
-        self.dump_htmltable(features, web_features)
+        self.dump_htmltable(self._post_rtac("licensed_features.sel", dev), web_features)
 
         dev.extra["web_features"] = web_features
         return {"web_features": web_features}
+
+    def _process_accounts_page(self, page: Response | None, dev: DeviceData) -> dict:
+        """
+        Parse and process a page with the table of user accounts, which is
+        the same on the RTAC (``user_table.sel``) and SEL-3620 (``Users.sel``).
+        Refer to :func:`~peat.modules.sel.sel_web_parse.parse_web_accounts`.
+        """
+        web_accounts, usernames = parse_web_accounts(page.content if page else None)
+        process_web_accounts(web_accounts, usernames, dev)
+
+        return {"web_accounts": web_accounts}
 
     def view_accounts(self, dev: DeviceData) -> dict:
         """
@@ -709,52 +617,7 @@ class SELHTTP(HTTP):
 
         self.log.info("Getting RTAC user accounts (user_table.sel)")
 
-        accounts_page = self.post(f"{self.url}/user_table.sel", params=self._rtac_session, dev=dev)
-
-        raw_web_accounts = {}
-        self.dump_htmltable(accounts_page, raw_web_accounts)
-
-        # Dates are <Create, Last Login, Password Changed>
-        # TODO: could do this with a string slice or something intelligent
-        regex = (
-            r"(?P<created>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
-            r"(?P<last_login>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
-            r"(?P<password_changed>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
-        )
-        web_accounts = {}
-
-        for username, values in raw_web_accounts.items():
-            # add username to related even if there's no values
-            dev.related.user.add(username)
-
-            if not values:
-                self.log.warning(f"values is empty for username {username}")
-                continue
-
-            web_accounts[username] = {
-                "status": values[0],
-            }
-
-            if len(values) < 2:
-                self.log.warning(f"len(values) < 2: {values}")
-                continue
-
-            # parse out web account timestamps into fields
-            match = re.match(regex, values[1], re.ASCII | re.IGNORECASE)
-            if match:
-                web_accounts[username].update(match.groupdict())
-
-        # Add users to data model
-        for username, values in web_accounts.items():
-            user = User(
-                name=username,
-                extra=values,
-            )
-
-            dev.store("users", user, lookup="name")
-
-        dev.extra["web_accounts"] = web_accounts
-        return {"web_accounts": web_accounts}
+        return self._process_accounts_page(self._post_rtac("user_table.sel", dev), dev)
 
     def view_user_roles(self, dev: DeviceData) -> dict:
         """
@@ -766,10 +629,7 @@ class SELHTTP(HTTP):
         self.log.info("Getting RTAC user roles (list_user_roles.sel)")
 
         web_user_roles = {}
-        user_roles = self.post(
-            f"{self.url}/list_user_roles.sel", params=self._rtac_session, dev=dev
-        )
-        self.dump_htmltable(user_roles, web_user_roles)
+        self.dump_htmltable(self._post_rtac("list_user_roles.sel", dev), web_user_roles)
         for role in web_user_roles.keys():
             dev.related.roles.add(role.strip())
 
@@ -779,6 +639,9 @@ class SELHTTP(HTTP):
     def view_syslog(self, dev: DeviceData) -> dict:
         """
         Get the system log (SOE, Sequence of Events) from a RTAC (``soe.csv``).
+
+        The log is parsed by :func:`~peat.modules.sel.sel_web_parse.parse_soe_csv`
+        and :func:`~peat.modules.sel.sel_web_parse.process_soe_events`.
         """
         self.log.info("Getting RTAC system log data (soe.csv)")
 
@@ -790,6 +653,7 @@ class SELHTTP(HTTP):
 
         if not response or not response.text:
             self.log.error("No response or data for Sequence of Events (SOE) log (soe.csv)")
+            return {}
 
         write_and_record_file(
             dev=dev,
@@ -802,250 +666,11 @@ class SELHTTP(HTTP):
             description="RTAC Sequence of Events (SOE) log",
         )
 
-        # Ensure csv has contents
-        # TODO: can we just read this using python's csv module?
-        # TODO: move SOE file parsing into separate function
         # TODO: support parsing of SOE log file directly with SELRTAC.parse()
-        # TODO: this code needs some serious cleanup and refactoring
-        web_syslog_events = []
-        syslog_lines = response.text.split("\n")
-        if len(syslog_lines) > 0:
-            labels = syslog_lines[0].split(",")
-            # TODO: better error handling for parsing of each event, failure
-            #   of one event's parsing shouldn't break the rest of them
-            for i in range(1, len(syslog_lines)):
-                # If event has no entries, skip
-                if len(syslog_lines[i]) == 0:
-                    continue
-                raw = {}
-                line = [x.strip('"') for x in syslog_lines[i].split('",') if x]
-                # For each event column, fill in details, and populate event
-                for col_idx in range(len(labels)):
-                    trim_label = labels[col_idx][1:-1]
-                    raw[trim_label] = line[col_idx]
-                web_syslog_events.append(raw)
+        records = parse_soe_csv(response.text)
+        process_soe_events(records, dev)
 
-                # Process the event into the data model
-                # TODO: add more log messages with status of parsing
-                msg = raw["message"].lower()
-                raw_msg = raw["message"].strip()
-
-                if raw.get("tag_name"):
-                    event_action = raw["tag_name"].split(".")[-1].lower().replace("_", "-")
-                else:
-                    event_action = utils.clean_replace(msg, "-", " ,:")
-                    event_action = event_action.strip("-").replace("--", "-")
-
-                event_category = {"host"}
-                event_kind = {"event"}
-                # TODO: set outcome to alarm state in some cases?
-                event_outcome = ""  # "success", "failure", "unknown", ""
-                event_type = {"info"}
-                extra = {}
-
-                if "user_changed_settings" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.update({"change", "access", "user"})
-
-                    match = re.match(
-                        # "Time System modified settings"
-                        r"^(?P<username>.*) (changed|modified) settings$",
-                        # NOTE: want to make sure the username is case-sensitive
-                        raw_msg,
-                        flags=re.IGNORECASE,
-                    )
-
-                    if match:
-                        extra["user"] = match.groupdict()["username"].strip()
-                        dev.related.user.add(extra["user"])
-                    else:
-                        self.log.warning(
-                            f"user_changed_settings: "
-                            f"Failed to match username regex for message '{raw_msg}'"
-                        )
-                        event_kind.add("pipeline_error")
-                elif "password_changed" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.update({"change", "access", "user", "connection"})
-                    match = re.match(
-                        # "admin changed password for admin"
-                        r"^(?P<username>.*) changed password for (?P<target>.*)$",
-                        # NOTE: want to make sure the username is case-sensitive
-                        raw_msg,
-                        flags=re.IGNORECASE,
-                    )
-
-                    if match:
-                        extra["acting_user"] = match.groupdict()["username"].strip()
-                        extra["target_user"] = match.groupdict()["target"].strip()
-                        dev.related.user.add(extra["acting_user"])
-                        dev.related.user.add(extra["target_user"])
-                    else:
-                        self.log.warning(
-                            f"password_changed: "
-                            f"Failed to match username regex for message '{raw_msg}'"
-                        )
-                        event_kind.add("pipeline_error")
-                elif "change" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.add("change")
-                elif "power" in msg and "up" in msg:
-                    event_type.add("start")
-                elif "archive cleared" in msg:
-                    event_category.add("database")
-                    event_type.update({"change", "deletion"})
-                elif "factory reset" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.add("change")
-                elif (
-                    "attempt failed" in msg
-                    or "login attempt from" in msg
-                    or "unauthorized" in msg
-                    or "unsuccessful_log_on_attempt" in msg
-                ):
-                    event_category.update({"authentication", "network", "session"})
-                    event_type.update({"access", "connection", "denied", "user"})
-                    event_outcome = "failure"
-                    if "login attempt" in msg:
-                        event_action = "login-attempt"
-                        match = re.match(
-                            # "admin login attempt failed"
-                            # "Unknown login attempt from 192.168.1.1 failed"
-                            r"^(?P<username>.*) login attempt (from (?P<host>[:\.\w]+) )?failed.*",
-                            # NOTE: want to make sure the username is case-sensitive
-                            raw_msg,
-                            flags=re.IGNORECASE,
-                        )
-
-                        if match:
-                            extra["user"] = match.groupdict()["username"].strip()
-                            dev.related.user.add(extra["user"])
-
-                            host = match.groupdict().get("host")
-                            if (
-                                host
-                                and utils.is_ip(host)
-                                and not (":" in host and host.count(".") == 3)
-                            ):
-                                dev.related.ip.add(host)
-                            elif host:
-                                dev.related.hosts.add(host)
-                        else:
-                            self.log.warning(
-                                f"login_attempt: "
-                                f"Failed to match username regex for message '{raw_msg}'"
-                            )
-                            event_kind.add("pipeline_error")
-                elif "logged o" in msg or "login" in msg or "log_On" in msg:
-                    event_category.update({"authentication", "network", "session"})
-                    event_type.update({"access", "allowed", "connection", "user"})
-                    event_outcome = "success"
-
-                    # "<User> logged off device via Web"
-                    # "<User> logged on device via ODBC"
-                    match = re.match(
-                        r"^(?P<username>.*) logged (?P<direction>off|on) "
-                        r"device via (?P<service>.*)$",
-                        # NOTE: want to make sure the username is case-sensitive
-                        raw_msg,
-                    )
-
-                    if match:
-                        extra["logon_user"] = match.groupdict()["username"].strip()
-                        dev.related.user.add(extra["logon_user"])
-                        extra["logon_service"] = match.groupdict()["service"].strip().lower()
-                        if extra["logon_service"] in ["odbc", "web"]:
-                            event_category.add("database")
-                        event_action = (
-                            f"user-logged-{match.groupdict()['direction']}"
-                            f"-via-{extra['logon_service']}"
-                        )
-                    else:
-                        self.log.warning(
-                            f"logged_on: Failed to match username regex for message '{raw_msg}'"
-                        )
-                        event_kind.add("pipeline_error")
-                elif "application_status" in msg:
-                    # "The rtacsnmpmgr application has been restarted"
-                    # TODO: extract application name and put in metadata
-                    event_category.update({"process", "host"})
-                    event_outcome = "unknown"
-                    event_type.add("change")
-                    if "restarted" in msg:
-                        event_action = "application-restarted"
-                elif "firmware: " in msg or "project: " in msg or "power_up_description" in msg:
-                    event_kind.add("state")
-                    event_action = "rtac-started"
-                    # TODO: using a regex here would be more flexible to format changes
-                    if "project: " in msg:
-                        project_name = msg.split("project: ")[-1].strip()
-                        extra["project_name"] = project_name
-                        if not dev.logic.name:
-                            dev.logic.name = project_name
-                    if "firmware: " in msg:
-                        extra["firmware"] = msg.split(",")[0].split("firmware: ")[-1].strip()
-                        process_fid(extra["firmware"], dev)
-
-                # TODO: change time parsing if 't_dst_enabled' is 't' instead of 'f'?
-                #   In other words, if daylight savings time is enabled on device
-                # t_value: when event actually occurred
-                # this value can sometimes be 'f' for some reason
-                created_ts = None
-                t_value = raw.get("t_value", "").strip()
-                if t_value and len(t_value) > 1:
-                    created_ts = utils.parse_date(t_value)
-                # TODO: add a 3rd timestamp to Event data model for this thing
-                #   creation_timestamp: when log was last generated
-                #       on RTAC (recovered/rebuilt?)
-                ingest_ts = None
-                ct = raw.get("creation_timestamp", "").strip()
-                if ct and len(ct) > 1:
-                    ingest_ts = utils.parse_date(ct)
-                if ingest_ts:
-                    extra["creation_timestamp"] = ingest_ts
-
-                for key in [
-                    "category",
-                    "priority",
-                    "tag_name",
-                    "host_name",
-                    "device_name",
-                    "device_guid",
-                    "comment",
-                    "ack_operator_username",
-                ]:
-                    val = raw.get(key, "").strip()
-                    if val:
-                        if val.lower() == "f":
-                            extra[key] = False
-                        elif val.lower() == "t":
-                            extra[key] = True
-                        else:
-                            extra[key] = val
-                if "device_name" in extra:
-                    dev.related.hosts.add(extra["device_name"])
-                if "host_name" in extra:
-                    dev.related.hosts.add(extra["host_name"])
-
-                event = Event(
-                    action=event_action,
-                    category=event_category,
-                    created=created_ts,
-                    dataset="web_syslog",
-                    kind=event_kind,
-                    message=raw["message"].strip(),
-                    extra=extra,
-                    module="SELRTAC" if not dev._module else dev._module.__name__,
-                    original=syslog_lines[i],
-                    outcome=event_outcome,
-                    provider=dev.name if dev.name else dev.get_id(),
-                    sequence=int(i),
-                    type=event_type,
-                )
-                # If a event exists with the same timestamp, update it.
-                # Otherwise, it's a new event and don't bother comparing values.
-                dev.store("event", event)
-
+        web_syslog_events = [record.fields for record in records]
         dev.write_file(web_syslog_events, "raw-web-syslog-events.json")
 
         return {"web_syslog_events": web_syslog_events}
@@ -1058,7 +683,7 @@ class SELHTTP(HTTP):
             exeguard, prp diagnostic, arp table.
         """
         self.log.info("Getting RTAC network info (services_rpt.cev)")
-        ip_settings = self.post(f"{self.url}/services_rpt.cev", params=self._rtac_session, dev=dev)
+        ip_settings = self._post_rtac("services_rpt.cev", dev)
 
         if not ip_settings or not ip_settings.text:
             self.log.warning("No content returned for services_rpt.cev (web_ip_settings)")
@@ -1074,62 +699,31 @@ class SELHTTP(HTTP):
 
     def view_ldap(self, dev: DeviceData) -> dict:
         """
-        Get LDAP data from a RTAC (``ldap_server_table.sel``).
+        Get LDAP data from a RTAC (``ldap_server_table.sel``,
+        ``ldap_settings_table.sel``, ``ldap_group_mapping_table.sel``,
+        and ``ldap_attribute_mapping_table.sel``).
         """
         # NOTE: upload with "upload_file.sel" (params form data+contents)
-        config = {
-            "web_ldap": {
-                "servers": {},
-                "ldap_setting": {},
-                "ldap_group_mapping": {},
-                "ldap_attribute_mapping": {},
-            }
+        web_ldap = {
+            "servers": {},
+            "ldap_setting": {},
+            "ldap_group_mapping": {},
+            "ldap_attribute_mapping": {},
         }
 
         self.log.info("Getting RTAC LDAP data")
 
-        ldap_server = self.post(
-            f"{self.url}/ldap_server_table.sel", params=self._rtac_session, dev=dev
-        )
-        try:
-            self.dump_htmltable(ldap_server, config["web_ldap"]["servers"])
+        for page, key, extra_key in [
             # TODO: dev.related.user.add(...)
-            dev.extra["web_ldap_accounts"] = config["web_ldap"]["servers"]
-        except ValueError:
-            self.log.exception("not table in servers")
+            ("ldap_server_table.sel", "servers", "web_ldap_accounts"),
+            ("ldap_settings_table.sel", "ldap_setting", "web_ldap_setting"),
+            ("ldap_group_mapping_table.sel", "ldap_group_mapping", "web_ldap_grpmapping"),
+            ("ldap_attribute_mapping_table.sel", "ldap_attribute_mapping", "web_ldap_attmapping"),
+        ]:
+            self.dump_htmltable(self._post_rtac(page, dev), web_ldap[key])
+            dev.extra[extra_key] = web_ldap[key]
 
-        ldap_settings = self.post(
-            f"{self.url}/ldap_settings_table.sel", params=self._rtac_session, dev=dev
-        )
-        try:
-            self.dump_htmltable(ldap_settings, config["web_ldap"]["ldap_setting"])
-            dev.extra["web_ldap_setting"] = config["web_ldap"]["ldap_setting"]
-        except ValueError:
-            self.log.exception("not table in general settings")
-
-        ldap_groups = self.post(
-            f"{self.url}/ldap_group_mapping_table.sel",
-            params=self._rtac_session,
-            dev=dev,
-        )
-        try:
-            self.dump_htmltable(ldap_groups, config["web_ldap"]["ldap_group_mapping"])
-            dev.extra["web_ldap_grpmapping"] = config["web_ldap"]["ldap_group_mapping"]
-        except ValueError:
-            self.log.exception("not table in group mapping")
-
-        ldap_attributes = self.post(
-            f"{self.url}/ldap_attribute_mapping_table.sel",
-            params=self._rtac_session,
-            dev=dev,
-        )
-        try:
-            self.dump_htmltable(ldap_attributes, config["web_ldap"]["ldap_attribute_mapping"])
-            dev.extra["web_ldap_attmapping"] = config["web_ldap"]["ldap_attribute_mapping"]
-        except ValueError:
-            self.log.exception("not table in attribute mapping")
-
-        return config
+        return {"web_ldap": web_ldap}
 
     # -------------------- RTAC COMMANDS --------------------
 
@@ -1168,9 +762,9 @@ class SELHTTP(HTTP):
 
     # -------------------- Relay Web pages --------------------
 
-    # TODO: split parsing of page results into separate methods
-    #   e.g: parse_device_features() that gets called by get_device_features()
-    # TODO: unit tests of parsing methods
+    # The pages contain the output of ASCII commands, which is parsed by
+    # functions that also work for the output of the commands over Telnet
+    # or serial (relay_command_parse and relay_parse).
 
     # NOTE: get_device_features() needs to be called before other methods for
     #   some reason, need to get to the bottom of why this is.
@@ -1179,7 +773,8 @@ class SELHTTP(HTTP):
         """
         Get basic information about a relay.
 
-        ``ver`` command page.
+        ``ver`` command page, parsed by
+        :func:`~peat.modules.sel.relay_command_parse.parse_ver_output`.
 
         Data
 
@@ -1187,7 +782,7 @@ class SELHTTP(HTTP):
         - FID
         - BFID
         - CID
-        - Checksum (firmware)
+        - Checksum (boot firmware)
         - Firmware info
         - Part number
         - Serial number
@@ -1199,103 +794,7 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to read device features page: {ex}")
             return False
 
-        process_info_into_dev(
-            {
-                "FID": parse_simple_line("FID", page),
-                "BFID": parse_simple_line("BFID", page),
-            },
-            dev,
-        )
-
-        # 451  : "Checksum:    <checksum>"
-        # 351S : "checksum <checksum>"
-        checksum_res = re.findall(r"hecksum[:]?\s*(\S+)\s*(?:OK)?\n", page)
-        if checksum_res:
-            checksum = checksum_res[0].strip()
-            dev.firmware.checksum = checksum
-            # This may or may not be an actual hash, and in some
-            # cases it's definitely not, e.g. "B0AB".
-            try:
-                checksum_hash = validate_hash(checksum)
-                dev.related.hash.add(checksum_hash)
-                if not dev.firmware.hash.md5 and len(checksum) == 32:
-                    dev.firmware.hash.md5 = checksum_hash
-            except ValueError:
-                pass
-
-        # Serial number
-        if "Serial Number" in page:
-            dev.serial_number = parse_simple_line("Serial Number", page)
-
-        # NOTE: 351S doesn't have CID on ver page
-        if "CID" in page:
-            dev.extra["CID"] = parse_simple_line("CID", page)
-
-        # 351S is "Partnumber"
-        dev.part_number = parse_simple_line(
-            "Partnumber" if "Partnumber" in page else "Part Number", page
-        )
-
-        # TODO: separate 451/351S specific information into sub-structures?
-        # Data present on the 451 page
-        if "Mainboard" in page:
-            dev.extra["mainboard"] = parse_simple_table("Mainboard", "Front", page)
-
-        if dev.extra.get("mainboard"):
-            # memory_available
-            if dev.extra["mainboard"].get("RAM Size") and not dev.hardware.memory_total:
-                try:
-                    dev.hardware.memory_total = humanfriendly.parse_size(
-                        dev.extra["mainboard"]["RAM Size"], binary=True
-                    )
-                    if not dev.hardware.memory_type:
-                        dev.hardware.memory_type = "ram"
-                except Exception as ex:
-                    self.log.error(f"Failed to parse RAM size: {ex}")
-
-        if "Front Panel" in page:
-            dev.extra["front_panel"] = parse_simple_line("Front Panel", page)
-
-        # TODO: structure of page is totally different on 311L,
-        # need to make more robust parsers
-        # Text for start of tables is the same, and they're indented
-        # (2 spaces on 311L, 4 spaces on 451)
-        # Maybe a regex?
-        #   parse section by section using regex for various formats
-        #   on 451, selboot is a table
-        if "Extended Relay Features" in page:
-            dev.extra["extended_relay_features"] = parse_simple_list(
-                "Extended Relay Features", "If the above", page
-            )
-
-        if "E4 Configuration" in page:
-            dev.extra["e4_configuration"] = parse_simple_line("E4 Configuration", page)
-
-        if "Interface Boards" in page:
-            dev.extra["interface_boards"] = parse_simple_table("Interface Boards", "E4", page)
-
-        if "Analog Inputs" in page:
-            dev.extra["analog_inputs"] = parse_simple_table(
-                "Analog Inputs",
-                "Interface Boards",
-                # Device on the MOSAICS rack had this text,
-                # while the one on the PEAT rack did not.
-                page.replace(" (provided by remote Axion Nodes)", ""),
-            )
-
-        # Data present on the 351/351S page
-        # 451 has "Extended Relay Features" so use a newline to differentiate
-        if "\nRelay Features" in page:
-            dev.extra["relay_features"] = parse_simple_list("Relay Features", "SELboot", page)
-
-        # TODO: 351/351S Analog Input Voltage
-        #   Analog Input Voltage (PT):  300 Vac, Wye, Delta, or Single connected
-        # TODO: 351/351S Analog Input Current
-        #   Analog Input Current (CT):  1 Amp Phase, 1 Amp Neutral
-        # TODO: 351/351S Main Board I/O
-        #   Main Board I/O:  2 High I/C Outputs, 6 Standard Outputs, 6 Inputs
-        # TODO: 351S Additional I/O
-        #   Additional I/O:  4 Standard Outputs, 16 Inputs
+        process_ver_info(parse_ver_output(page), dev)
 
         return True
 
@@ -1319,6 +818,9 @@ class SELHTTP(HTTP):
         """
         Get communication interface status and current state from a relay.
 
+        ``eth`` command page, parsed by
+        :func:`~peat.modules.sel.relay_command_parse.parse_eth_output`.
+
         NOTE: this is not available on 351S or 351.
         """
         try:
@@ -1327,94 +829,45 @@ class SELHTTP(HTTP):
             self.log.warning("Failed to get communications page ('eth')")
             return False
 
-        # Extract info about the communication ports
-        extracted_ports = re.findall(r"\nPORT\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)", page)
-        port_information = {
-            str(port[0]): {  # Key is the port name
-                "link": str(port[1]).lower(),
-                "speed": str(port[2]).replace("---", ""),
-                "duplex": str(port[3]).replace("---", ""),
-                "media": port[4],
-            }
-            for port in extracted_ports
-        }
-
-        # Extract MAC addresses (451 in PEAT rack has "MAC 1" and "MAC 2")
-        extracted_macs = re.findall(r"\nMAC(?::| \d:)\s(\S+)", page)
-        # Use a set to ensure there are no duplicates, then convert to list
-        macs = list({m.lower().replace("-", ":") for m in extracted_macs})
-
-        # Extract Ethernet statistics
-        # NOTE: if counters exceed a certain value, then the values will be
-        # replaced with "$$$$" characters. What this value is exactly is
-        # unknown and doesn't appear to be referenced in SEL's documentation.
-        # This behavior will likely vary by relay model and firmware revision.
-        # Simple fix is to reset the counters with "eth c" command on the relay.
-        # Example output below:
-        #      PACKETS                 BYTES               ERRORS
-        #    SENT     RCVD         SENT       RCVD      SENT    RCVD
-        # $$$$$$$  $$$$$$$   1463657022 1664082074         0       0
-        extracted_stats = re.findall(
-            r"\n\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)",
-            page,
-        )
-
-        if extracted_stats:
-            stats = extracted_stats[0]
-            network_statistics = {
-                "packets_sent": int(stats[0]) if "$" not in stats[0] else -1,
-                "packets_received": int(stats[1]) if "$" not in stats[1] else -1,
-                "bytes_sent": int(stats[2]) if "$" not in stats[2] else -1,
-                "bytes_received": int(stats[3]) if "$" not in stats[3] else -1,
-                "errors_sent": int(stats[4]) if "$" not in stats[4] else -1,
-                "errors_received": int(stats[5]) if "$" not in stats[5] else -1,
-            }
-        else:
-            self.log.warning("Failed to extract network statistics from ETH page (no regex match)")
-            network_statistics = {}
-
-        # Extract IPv4 address and subnet information
-        extracted_addr = parse_simple_line("IP ADDRESS", page)
-        if "/" in extracted_addr:
-            addr, mask = split_ipv4_cidr(extracted_addr)
-        else:
-            # TODO: 351 probably stores subnet mask as separate value
-            addr = extracted_addr
-            mask = ""
-
-        communications = {
-            "mac_addresses": macs,
-            "ipv4_address": addr,
-            "ipv4_subnet_mask": mask,
-            "gateway": parse_simple_line("DEFAULT GATEWAY", page),
-            "network_mode": parse_simple_line("NETMODE", page),
-            "primary_port": parse_simple_line("PRIMARY PORT", page),
-            "active_port": parse_simple_line("ACTIVE PORT", page),
-            "port_information": port_information,
-            "statistics": network_statistics,
-        }
-
         # TODO: add data to the appropriate Interface in data model
-        dev.extra["communications"] = communications
+        process_eth_info(parse_eth_output(page), dev)
 
         return True
 
     def get_port_settings(self, dev: DeviceData) -> bool:
         """
         Get communication port settings from a relay.
+
+        The ``sho`` pages are parsed by
+        :func:`~peat.modules.sel.relay_command_parse.parse_show_groups`.
+        ``dev.extra["interfaces"]`` has the settings of each port, grouped
+        by heading on relays that group them (e.g. the 451).
         """
         # Simple device model-agnostic check to determine the proper URL format
         p1_page = ""  # Cache the page from our silly check
         if not self._port_args_len:
+            fallback = None
+
             # %20 = space character (" "). So, "sho" with "P 1" as parameter for 451.
             for args in [("shop1",), ("sho", "P%201")]:
                 try:
-                    p1_page = self.read_page(*args)
+                    page = self.read_page(*args)
                 except Exception:
                     continue
-                else:
-                    self._port_args_len = len(args)
-                    break
+
+                # The relay may return a page for a command it doesn't know.
+                # Try the other format, and use this one if that fails too.
+                if "Invalid Command" in page:
+                    if fallback is None:
+                        fallback = (len(args), page)
+                    continue
+
+                self._port_args_len = len(args)
+                p1_page = page
+                break
+
+            if not self._port_args_len and fallback:
+                self._port_args_len, p1_page = fallback
 
         if not self._port_args_len:
             self.log.warning("Unable to find a valid port settings page")
@@ -1445,30 +898,16 @@ class SELHTTP(HTTP):
             if "Invalid Command" in page:
                 self.log.debug(f"Device doesn't have {port_name} ('Invalid Command')")
                 port_results[port_name] = {}
+                continue
 
-            # SEL 351, 351S, 311L
-            elif self._port_args_len == 1:
-                raw = re.sub("Port .", "", page, count=1, flags=re.ASCII)
-                raw = re.sub("= *", "=", raw, flags=re.ASCII)
-                raw = " ".join(raw.split()).replace(" =", "=")
+            groups = parse_show_groups(page)
+            settings = merge_show_groups(groups)
 
-                pairs = [x.split("=") for x in raw.split(" ") if "=" in x]
-                raw_settings = {x[0]: x[1] for x in pairs}
-                port_results[port_name] = raw_settings
+            # SEL 351, 351S, 311L: settings aren't grouped.
+            # SEL 451: settings are grouped by heading, e.g. "Protocol Selection".
+            port_results[port_name] = settings if self._port_args_len == 1 else groups
 
-                process_port_settings(port_id, raw_settings, dev)
-
-            # SEL 451
-            else:
-                raw_settings = parse_multiple_lists(page)
-                port_results[port_name] = raw_settings
-
-                # TODO: this is a hack and we may be losing some information
-                flat_settings = {}
-                for val in raw_settings.values():
-                    flat_settings.update(val)
-
-                process_port_settings(port_id, flat_settings, dev)
+            process_port_settings(port_id, settings, dev)
 
         dev.extra["interfaces"] = port_results
         return True
@@ -1476,6 +915,10 @@ class SELHTTP(HTTP):
     def get_front_panel_settings(self, dev: DeviceData) -> bool:
         """
         Get front panel settings from a relay.
+
+        ``dev.extra["front_panel_data"]`` has the settings grouped by heading
+        (e.g. ``front_panel_settings``), with comments split from the values
+        of ``front_panel_settings``.
         """
         try:
             page = self.read_page("sho", "F")
@@ -1483,8 +926,11 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to get front panel settings page: {ex}")
             return False
 
-        settings = normalize_keys(parse_multiple_lists(page))
-        settings["front_panel_settings"] = parse_comments(settings["front_panel_settings"])
+        settings = normalize_keys(parse_show_groups(page))
+        if "front_panel_settings" in settings:
+            settings["front_panel_settings"] = parse_comments(settings["front_panel_settings"])
+        else:
+            self.log.debug("No 'Front Panel Settings' heading in the front panel settings page")
 
         dev.extra["front_panel_data"] = settings
         return True
@@ -1550,9 +996,7 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to get meter automation page: {ex}")
             return False
 
-        values = re.findall(r"(AMV\d*)\s=\s+(\S+)", page)
-
-        dev.extra["meter_automation"] = {v[0]: float(v[1]) for v in values}
+        dev.extra["meter_automation"] = parse_meter_values(page, "AMV")
         return True
 
     def get_meter_protection(self, dev: DeviceData) -> bool:
@@ -1567,14 +1011,13 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to get meter protection page: {ex}")
             return False
 
-        values = re.findall(r"(PMV\d*)\s=\s+(\S+)", page)
-
-        dev.extra["meter_protection"] = {v[0]: float(v[1]) for v in values}
+        dev.extra["meter_protection"] = parse_meter_values(page, "PMV")
         return True
 
     def get_meter_energy(self, dev: DeviceData) -> bool:
         """
         Get meter energy data from a relay.
+        Refer to :func:`~peat.modules.sel.relay_command_parse.parse_meter_energy`.
         """
         # TODO: more flexible way to check this instead of the model
         args = ["met", "E"] if "451" in dev.description.model else ["mete"]
@@ -1584,38 +1027,7 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to get meter energy page: {ex}")
             return False
 
-        page = page.strip().replace("\n\n", "\n")
-        values = [re.split(r"\s{3,}", line) for line in page.split("\n") if line]
-        meter_energy = {}
-
-        # 351/351S: "LAST RESET 04/10/19 14:56:09.206"
-        # 451: "LAST ENERGY RESET: <timestamp>"
-        if isinstance(values[-1][0], str) and "reset" in values[-1][0].lower():
-            reset_ts_res = re.search(
-                r"(\d+/\d+/\d+ \d+:\d+:\d+\.\d+)",
-                values[-1][0],
-                re.ASCII | re.IGNORECASE,
-            )
-            if reset_ts_res and reset_ts_res.groups():
-                reset_ts = utils.parse_date(reset_ts_res.groups()[0])
-                if reset_ts:
-                    reset_ts = reset_ts.isoformat()
-                meter_energy["last_energy_reset"] = reset_ts
-            else:
-                self.log.debug("Failed to parse last_energy_reset")
-
-        # TODO: make energy parsing work for 351/351S (only works for 451 currently)
-        try:
-            for x in range(1, len(values[0]) - 1):
-                meter_energy[values[0][x]] = {
-                    "in": float(values[1][x]),
-                    "out": float(values[2][x]),
-                    "total": float(values[3][x]),
-                }
-        except IndexError as ex:
-            self.log.debug(f"Failed to parse meter energy values: {ex}")
-
-        dev.extra["meter_energy"] = meter_energy
+        dev.extra["meter_energy"] = parse_meter_energy(page, get_date_format(dev))
         return True
 
     def get_output_data(self, dev: DeviceData) -> bool:
@@ -1630,15 +1042,14 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to get output data page: {ex}")
             return False
 
-        results = normalize_keys(parse_multiple_lists(page))
+        results = normalize_keys(parse_show_groups(page))
         if "main_board" in results:
             results["main_board"] = parse_comments(results["main_board"])
 
         dev.extra["output_data"] = results
         return True
 
-    # TODO: this isn't getting called anywhere at the moment.
-    # Still needs a lot of work.
+    # NOTE: this isn't called by SELRelay.pull_http() at the moment
     def get_logic_data(self, dev: DeviceData) -> bool:
         """
         Get logic settings and control equations from a relay.
@@ -1652,11 +1063,15 @@ class SELHTTP(HTTP):
         This should work on 351S.
 
         The 451 calls this "Protection", and structure is far more complicated.
+
+        The settings are parsed by
+        :func:`~peat.modules.sel.relay_command_parse.parse_show_groups`
+        (``=`` and ``:=`` styles, with equations continued on the next line).
+        If a page has no settings, the page is kept as-is.
         """
 
         # 351S: "shol1.html", "shol2.html", etc.
-        # TODO: implement for 351.
-        #   "sho1.html" which shows "SHO 1" and "SHO L 1"
+        # 351: "sho1.html" which shows "SHO 1" and "SHO L 1"
         #   in two separate sections in the returned page.
         # TODO: implement SEL-451 Group and Protection logic parsing.
 
@@ -1716,41 +1131,14 @@ class SELHTTP(HTTP):
             if "invalid command" in page.lower():
                 self.log.debug(f"Device doesn't have logic group {index} ('Invalid Command')")
                 logic_results[group_str] = {}
+                continue
 
-            # TODO: 351
-            # SEL 351S
-            elif self._logic_page_style == "351S":
-                try:
-                    raw_settings = {}
-                    for line in page.splitlines():
-                        if "=" not in line:
-                            continue
-
-                        parts = line.strip().partition("=")
-                        raw_settings[parts[0].strip()] = parts[2].strip()
-
-                    logic_results[group_str] = raw_settings
-                except Exception as ex:
-                    self.log.warning(f"Failed to parse 351S-style logic page: {ex}")
-                    logic_results[raw_group_str] = page
-
-            # TODO: implement 351, there are two "pre" tagged pages
-            elif self._logic_page_style == "351":
-                raw_settings = parse_multiple_lists(page)
-                if not raw_settings:
-                    logic_results[raw_group_str] = page
-                else:
-                    logic_results[group_str] = raw_settings
-
-            # TODO: implement 451
-            elif self._logic_page_style == "451":
-                raw_settings = parse_multiple_lists(page)
-                if not raw_settings:
-                    logic_results[raw_group_str] = page
-                else:
-                    logic_results[group_str] = raw_settings
+            raw_settings = merge_show_groups(parse_show_groups(page))
+            if raw_settings:
+                logic_results[group_str] = raw_settings
             else:
-                raise PeatError(f"Unknown logic_page_style: {self._logic_page_style}")
+                self.log.warning(f"No settings in logic group {index} page, keeping it as-is")
+                logic_results[raw_group_str] = page
 
         dev.extra["control_equations"] = logic_results
         return True
@@ -1782,15 +1170,11 @@ class SELHTTP(HTTP):
             self.log.warning("Login failed: could not retrieve login page.")
             return False
 
-        soup = self.gen_soup(page.content)
-
-        input_element = soup.find("input", type="hidden")
-        if not input_element:
-            self.log.debug("Failed to find 'input' field in login page.")
-            self.log.trace2(f"** Page data **\n{page.content}\n")
+        token = self._extract_login_token(page)
+        if token is None:
             return False
 
-        self._rando = str(input_element.get("value"))
+        self._rando = token
         SELSESSID = self._rando
         self.protocol = "https"  # Set protocol after confirming it worked
 
@@ -1822,6 +1206,45 @@ class SELHTTP(HTTP):
     # TODO: generate backup
     #   FileManagement.sel#backupFileTab
 
+    def _pull_gateway_page(self, dev: DeviceData, name: str) -> dict:
+        """
+        Read a page of the SEL-3620 that isn't parsed yet, from
+        :data:`~peat.modules.sel.sel_web_parse.GATEWAY_PAGES`.
+
+        The page is saved (by :meth:`~peat.protocols.http.HTTP.post`), and
+        an empty :class:`dict` is put in ``dev.extra``.
+
+        .. note::
+           The name of this method must not start with ``gateway_``, since
+           :meth:`~peat.modules.sel.sel_3620.SEL3620._pull` calls every method
+           of this class whose name starts with ``gateway_``.
+
+        Returns:
+            ``{<result key>: {}}``, or an empty :class:`dict` if the page
+            couldn't be read
+        """
+        page = GATEWAY_PAGES[name]
+        self.log.info(f"Getting {page.description} ({page.page})...")
+        url = urljoin(self.url, page.page)
+
+        try:
+            response = self.post(url, data=self._rando, dev=dev)
+            response.raise_for_status()  # Raise an error for bad responses
+        except Exception as ex:
+            self.log.warning(f"Failed to read {page.description} page ({page.page}): {ex}")
+            return {}
+
+        if page.require_content and not response.content:
+            self.log.warning(f"Failed to read {page.description} page ({page.page}): no data")
+            return {}
+
+        # TODO: parse the page and put the data into the data model.
+        #   The pages likely have tables, which parse_html_table() can read.
+        data = {}
+
+        dev.extra[page.extra_key] = data
+        return {page.result_key: data}
+
     def gateway_accounts(self, dev: DeviceData) -> dict:
         """
         Get user accounts from gateway (``Users.sel``).
@@ -1831,427 +1254,114 @@ class SELHTTP(HTTP):
         url = urljoin(self.url, "Users.sel")
         accounts_page = self.post(url, data=self._rando, dev=dev)
 
-        raw_web_accounts = {}
-        self.dump_htmltable(accounts_page, raw_web_accounts)
-
-        # TODO: more customization for fields, could do this
-        # with a string slice or something intelligent.
-        regex = (
-            r"(?P<created>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
-            r"(?P<last_login>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
-            r"(?P<password_changed>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
-        )
-        web_accounts = {}
-
-        for username, values in raw_web_accounts.items():
-            # add username to related even if there's no values
-            dev.related.user.add(username)
-
-            if not values:
-                self.log.warning(f"values is empty for username {username}")
-                continue
-
-            web_accounts[username] = {
-                "status": values[0],
-            }
-
-            if len(values) < 2:
-                self.log.warning(f"len(values) < 2: {values}")
-                continue
-
-            # parse out web account timestamps into fields
-            match = re.match(regex, values[1], re.ASCII | re.IGNORECASE)
-            if match:
-                web_accounts[username].update(match.groupdict())
-
-        # Add users to data model
-        for username, values in web_accounts.items():
-            user = User(
-                name=username,
-                extra=values,
-            )
-
-            dev.store("users", user, lookup="name")
-
-        dev.extra["web_accounts"] = web_accounts
-        return {"web_accounts": web_accounts}
+        return self._process_accounts_page(accounts_page, dev)
 
     def gateway_ldap(self, dev: DeviceData) -> dict:
         """
         Get LDAP settings (``LDAP.sel``).
         """
-        self.log.info("Getting LDAP settings...")
-        url = urljoin(self.url, "LDAP.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()  # Raise an error for bad responses
-        except Exception as ex:
-            self.log.warning(f"Failed to read LDAP page: {ex}")
-            return {}
-
-        ldap_data = {}
-
-        # TODO: parse LDAP data and put into data model
-        # self.dump_htmltable(response, ldap_data)
-
-        dev.extra["ldap"] = ldap_data
-        return {"ldap_data": ldap_data}
+        return self._pull_gateway_page(dev, "ldap")
 
     def gateway_radius(self, dev: DeviceData) -> dict:
         """
         Get RADIUS settings (``RADIUS.sel``).
         """
-        self.log.info("Getting radius settings...")
-        url = urljoin(self.url, "RADIUS.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read RADIUS settings page: {ex}")
-            return {}
-
-        radius_settings = {}
-
-        # TODO: parse RADIUS settings and put into data model
-        # self.dump_htmltable(response, radius_settings)
-
-        dev.extra["radius_settings"] = radius_settings
-        return {"radius_settings": radius_settings}
+        return self._pull_gateway_page(dev, "radius")
 
     def gateway_local_groups(self, dev: DeviceData) -> dict:
         """
         Get local groups (``LocalGroups.sel``).
         """
-        self.log.info("Getting local group configuration...")
-        url = urljoin(self.url, "LocalGroups.sel")
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read local groups page: {ex}")
-            return {}
-
-        local_groups = {}
-
-        # TODO: parse groups from page and put into data model
-        # self.dump_htmltable(response, local_groups)
-
-        dev.extra["local_groups"] = local_groups
-        return {"local_groups": local_groups}
+        return self._pull_gateway_page(dev, "local_groups")
 
     def gateway_network_settings(self, dev: DeviceData) -> dict:
         """
         Get network settings (``NetworkSettings.sel``).
         """
-        self.log.info("Getting network settings...")
-        url = urljoin(self.url, "NetworkSettings.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read network settings page: {ex}")
-            return {}
-
-        gateway_network_settings = {}
-
-        # TODO: parse network settings data and put into data model
-        # self.dump_htmltable(response, gateway_network_settings)
-
-        dev.extra["gateway_network_settings"] = gateway_network_settings
-        return {"gateway_network_settings": gateway_network_settings}
+        return self._pull_gateway_page(dev, "network_settings")
 
     def gateway_static_routes(self, dev: DeviceData) -> dict:
         """
         Get static route configuration (``StaticRoutes.sel``).
         """
-        self.log.info("Getting static route configuration...")
-        url = urljoin(self.url, "StaticRoutes.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read static routes page: {ex}")
-            return {}
-
-        static_routes = {}
-
-        # TODO: parse routes and put into data model
-        # self.dump_htmltable(response, static_routes)
-
-        dev.extra["static_routes"] = static_routes
-        return {"static_routes": static_routes}
+        return self._pull_gateway_page(dev, "static_routes")
 
     def gateway_firewall(self, dev: DeviceData) -> dict:
         """
         Get firewall settings (``Firewall.sel``).
         """
-        self.log.info("Getting host configuration...")
-        url = urljoin(self.url, "Firewall.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read firewall page: {ex}")
-            return {}
-
-        firewall_settings = {}
-
-        # TODO: parse firewall settings and put into data model
-        # self.dump_htmltable(response, firewall_settings)
-
-        dev.extra["firewall_settings"] = firewall_settings
-        return {"firewall_settings": firewall_settings}
+        return self._pull_gateway_page(dev, "firewall")
 
     def gateway_nat(self, dev: DeviceData) -> dict:
         """
         Get NAT settings (``NAT.sel``).
         """
-        self.log.info("Getting host configuration...")
-        url = urljoin(self.url, "NAT.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read NAT page: {ex}")
-            return {}
-
-        nat_settings = {}
-
-        # TODO: parse NAT settings and put into data model
-        # self.dump_htmltable(response, nat_settings)
-
-        dev.extra["nat_settings"] = nat_settings
-        return {"nat_settings": nat_settings}
+        return self._pull_gateway_page(dev, "nat")
 
     def gateway_hosts(self, dev: DeviceData) -> dict:
         """
         Get host configuration (``Hosts.sel``).
         """
-        self.log.info("Getting host configuration...")
-        url = urljoin(self.url, "Hosts.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read Hosts page: {ex}")
-            return {}
-
-        gateway_hosts = {}
-
-        # TODO: parse hosts data and put into data model
-        # self.dump_htmltable(response, gateway_hosts)
-
-        dev.extra["gateway_hosts"] = gateway_hosts
-        return {"gateway_hosts": gateway_hosts}
+        return self._pull_gateway_page(dev, "hosts")
 
     def gateway_snmp(self, dev: DeviceData) -> dict:
         """
         Get SNMP settings (``SNMP.sel``).
         """
-        self.log.info("Getting SNMP settings...")
-        url = urljoin(self.url, "SNMP.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read SNMP page: {ex}")
-            return {}
-
-        snmp_settings = {}
-
-        # TODO: parse SNMP settings and put into data model
-        # self.dump_htmltable(response, snmp_settings)
-
-        dev.extra["snmp_settings"] = snmp_settings
-        return {"snmp_settings": snmp_settings}
+        return self._pull_gateway_page(dev, "snmp")
 
     def gateway_port_settings(self, dev: DeviceData) -> dict:
         """
         Get serial port settings (``SerialPortSettings.sel``).
         """
-        self.log.info("Getting serial port settings...")
-        url = urljoin(self.url, "SerialPortSettings.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read port settings page: {ex}")
-            return {}
-
-        port_settings = {}
-
-        # TODO: parse serial port settings and put into data model
-        # self.dump_htmltable(response, port_settings)
-
-        dev.extra["port_settings"] = port_settings
-        return {"port_settings": port_settings}
+        return self._pull_gateway_page(dev, "port_settings")
 
     def gateway_port_profiles(self, dev: DeviceData) -> dict:
         """
         Get serial port profiles (``SerialPortProfiles.sel``).
         """
-        self.log.info("Getting serial port profiles...")
-        url = urljoin(self.url, "SerialPortProfiles.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to port profiles page: {ex}")
-            return {}
-
-        port_profiles = {}
-
-        # TODO: parse serial port profiles and put into data model
-        # self.dump_htmltable(response, port_profiles)
-
-        dev.extra["port_profiles"] = port_profiles
-        return {"port_profiles": port_profiles}
+        return self._pull_gateway_page(dev, "port_profiles")
 
     def gateway_port_mappings(self, dev: DeviceData) -> dict:
         """
         Get port mappings (``PortMappings.sel``).
         """
-        self.log.info("Getting port mappings...")
-        url = urljoin(self.url, "PortMappings.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to port mappings page: {ex}")
-            return {}
-
-        port_mappings = {}
-
-        # TODO: parse port mappings and put into data model
-        # self.dump_htmltable(response, port_mappings)
-
-        dev.extra["port_mappings"] = port_mappings
-        return {"port_mappings": port_mappings}
+        return self._pull_gateway_page(dev, "port_mappings")
 
     def gateway_ipsec(self, dev: DeviceData) -> dict:
         """
         Get IPSec connections (``IPsec.sel``).
         """
-        self.log.info("Getting IPSec connections...")
-        url = urljoin(self.url, "IPsec.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read IPsec page: {ex}")
-            return {}
-
-        ipsec = {}
-
-        # TODO: parse ipsec connections and put into data model
-        # self.dump_htmltable(response, ipsec)
-
-        dev.extra["ipsec"] = ipsec
-        return {"ipsec": ipsec}
+        return self._pull_gateway_page(dev, "ipsec")
 
     def gateway_macsec(self, dev: DeviceData) -> dict:
         """
         Get MACSec connections (``MACsec.sel``).
         """
-        self.log.info("Getting MACSec connections...")
-        url = urljoin(self.url, "MACsec.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read MACsec page: {ex}")
-            return {}
-
-        macsec = {}
-
-        # TODO: parse macsec connections and put into data model
-        # self.dump_htmltable(response, macsec)
-
-        dev.extra["macsec"] = macsec
-        return {"macsec": macsec}
+        return self._pull_gateway_page(dev, "macsec")
 
     def gateway_allowed_clients(self, dev: DeviceData) -> dict:
         """
         Get Allowed Clients (``AllowedClients.sel``).
         """
-        self.log.info("Getting Allowed Clients...")
-        url = urljoin(self.url, "AllowedClients.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read Allowed Clients page: {ex}")
-            return {}
-
-        allowed_clients = {}
-
-        # TODO: parse allowed clients and put into data model
-        # self.dump_htmltable(response, allowed_clients)
-
-        dev.extra["allowed_clients"] = allowed_clients
-        return {"allowed_clients": allowed_clients}
+        return self._pull_gateway_page(dev, "allowed_clients")
 
     def gateway_sshkey(self, dev: DeviceData) -> dict:
         """
         Get SSH Host Keys (``SSH_Host_Key.sel``).
         """
-        self.log.info("Getting SSH Host Key...")
-        url = urljoin(self.url, "SSH_Host_Key.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read SSH Host Key page: {ex}")
-            return {}
-
-        ssh_host_key = {}
-
-        # TODO: parse gateway SSH keys and put into data model
-        # self.dump_htmltable(response, ssh_host_key)
-
-        dev.extra["ssh_host_key"] = ssh_host_key
-        return {"ssh_host_key": ssh_host_key}
+        return self._pull_gateway_page(dev, "sshkey")
 
     def gateway_password_management(self, dev: DeviceData) -> dict:
         """
         Get password management messages (``PasswordManagement.sel``).
         """
-        self.log.info("Getting password management messages...")
-        url = urljoin(self.url, "PasswordManagement.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read Password Management page: {ex}")
-            return {}
-
-        password_management = {}
-
-        # TODO: parse password management messages and put into data model
-        # self.dump_htmltable(response, password_management)
-
-        dev.extra["password_management"] = password_management
-        return {"password_management": password_management}
+        return self._pull_gateway_page(dev, "password_management")
 
     def gateway_system_logs(self, dev: DeviceData) -> dict:
         """
         Get system logs (``SysLogReport.sel``).
+        Refer to :func:`~peat.modules.sel.sel_web_parse.parse_gateway_syslog`.
         """
         self.log.info("Getting gateway system logs...")
         url = urljoin(self.url, "SysLogReport.sel")
@@ -2263,37 +1373,8 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to read system logs page: {ex}")
             return {}
 
-        soup = self.gen_soup(response.content)
-        table = soup.find("table", id="syslogReport")
-        rows = list(table.find_all("tr"))
-        raw_logs = []
-
-        # skip first row, it has UI elements for sorting, etc.
-        for row in reversed(rows[1:]):
-            # recvTime, tag, severity, facility, msg
-            e_data = {
-                col["class"][0]: col.get_text()
-                for col in row.find_all("td")
-                if col["class"][0] != "actions"
-            }
-            e_data["id"] = row["id"].split("_")[-1]  # id='id_######'
-            raw_logs.append(e_data)
-
-            event = Event(
-                created=utils.parse_date(e_data["recvTime"]),
-                dataset="gateway_system_logs",
-                id=e_data["id"],
-                message=e_data["msg"].strip(),
-                original=e_data["msg"],
-                provider=dev.name if dev.name else dev.get_id(),
-                sequence=int(e_data["id"]),
-                severity=e_data["severity"],
-                extra={
-                    "tag": e_data["tag"],
-                    "facility": e_data["facility"],
-                },
-            )
-            dev.store("event", event)
+        raw_logs = parse_gateway_syslog(response.content)
+        process_gateway_syslog(raw_logs, dev)
 
         dev.write_file(raw_logs, "gateway-system-logs.json")
 
@@ -2303,76 +1384,55 @@ class SELHTTP(HTTP):
         """
         Get diagnostic data from SEL gateway (``Diagnostics.sel``).
         """
-
-        self.log.info("Getting gateway diagnostic data...")
-        url = urljoin(self.url, "Diagnostics.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-
-            if not response or not response.content:
-                self.log.warning("Failed to read Diagnostics page")
-                return {}
-        except Exception as ex:
-            self.log.warning(f"Failed to read Diagnostics page: {ex}")
-            return {}
-
-        gateway_diagnostics = {}
-        # TODO: parse gateway diagnostics and put into data model
-        # self.dump_htmltable(response, gateway_diagnostics)
-
-        dev.extra["gateway_diagnostics"] = gateway_diagnostics
-        return {"gateway_diagnostics": gateway_diagnostics}
+        return self._pull_gateway_page(dev, "diagnostics")
 
     def gateway_proxy_reports(self, dev: DeviceData) -> dict:
         """
         Get proxy reports from ``ProxyReports.sel``.
         """
-        self.log.info("Getting proxy reports from gateway...")
-        url = urljoin(self.url, "ProxyReports.sel")
-
-        try:
-            response = self.post(url, data=self._rando, dev=dev)
-            response.raise_for_status()
-        except Exception as ex:
-            self.log.warning(f"Failed to read proxy reports Key page: {ex}")
-            return {}
-
         # TODO: generate and download reports
         # commands and devices
         # password updates
         # Managed Device Passwords
         # Password Change Log
+        return self._pull_gateway_page(dev, "proxy_reports")
 
-        proxy_reports = {}
-
-        dev.extra["proxy_reports"] = proxy_reports
-        return {"proxy_reports": proxy_reports}
+    def _is_device_url(self, url: str) -> bool:
+        """
+        If a URL is a HTTP(S) URL for this device, so a link in a page
+        doesn't send the session to another host.
+        """
+        parts = urlparse(url)
+        return (
+            parts.scheme in ("http", "https")
+            and (parts.hostname or "").lower() == str(self.ip).lower()
+        )
 
     def gateway_cert_export(self, dev: DeviceData) -> dict:
         """
-        Export X509 certificates from  (``x509.sel``).
+        Export X509 certificates from the gateway (``X509.sel``).
+
+        Each certificate linked by an ``Export`` button is downloaded.
+        Relative and absolute links work. Links to other hosts are skipped.
         """
         self.log.info("Downloading X509 certificates from gateway...")
         url = urljoin(self.url, "X509.sel")
 
         response = self.post(url, data=self._rando, dev=dev, use_cache=True)
-        response.raise_for_status()
+        if not response:
+            self.log.warning("Failed to read X509 certificates page (X509.sel)")
+            return {}
 
         # Grab the export pages containing all X509 certs listed on the X509 main page
-        soup = BeautifulSoup(response._content, "html.parser")
-        view_links = [
-            link["href"]
-            for link in soup.find_all("a", class_="listButton")
-            if link.text.strip() == "Export"
-        ]
-        view_pages = [href.split("https://")[0] for href in view_links]
-
         x509_cert_export = {}
-        for href in view_pages:
-            # A 5-second timeout sometimes fails, device can be slow
+        for href in parse_x509_export_links(response.content):
+            # The links may be absolute ("https://<gateway>/...") or relative
             cert_url = urljoin(self.url, href)
+            if not self._is_device_url(cert_url):
+                self.log.warning(f"Skipping certificate link that isn't on the gateway: {href!r}")
+                continue
+
+            # A 5-second timeout sometimes fails, device can be slow
             response = self.post(cert_url, data=self._rando, dev=dev, timeout=17.0)
 
             if not response or response.status_code != 200:
@@ -2404,8 +1464,8 @@ class SELHTTP(HTTP):
             # If filename was extracted from response, use that as the key
             # to the dict.
             dict_key = href
-            if response.file_path:
-                dict_key = response.file_path.name
+            if file_path:
+                dict_key = file_path.name
                 dev.related.files.add(dict_key)
 
             x509_obj.annotate(dev)
@@ -2421,156 +1481,68 @@ def querystr() -> str:
     return f"asfdasfowefsj={utils.utc_now()}"  # NOTE: this was previously datetime.utcnow()
 
 
-def parse_simple_table(table_start: str, table_end: str, page_data: str) -> dict:
-    try:
-        regex = rf"{table_start}:\n([\s\S]+){table_end}"
-        data = re.findall(regex, page_data)[0].split("\n")
-        table_data = [re.findall(r"\s+([^=|:]+)[=|:]\s+(.+)", line)[0] for line in data if line]
-        return {v[0]: v[1] for v in table_data}
-    except IndexError:
+def login_with_web_credentials(
+    dev: DeviceData,
+    login: Callable[[str, str], bool],
+    web_options: Mapping,
+    device_name: str = "web",
+) -> bool:
+    """
+    Log in to the web interface of a device, with the credentials from the
+    ``web`` device options.
+
+    If credentials were verified for the device before (``verified_web_user``
+    and ``verified_web_pass`` in ``dev._cache``), only those are tried.
+    Otherwise, each user is tried with each password, in order: the ``user``
+    option (or the ``users`` list if it's not set) with the ``pass`` option
+    (or the ``passwords`` list). The first combination that works is cached
+    and the user is added to ``dev.related.user``.
+
+    This is used by :class:`~peat.modules.sel.sel_3620.SEL3620`.
+    :class:`~peat.modules.sel.sel_rtac.SELRTAC` has the same loop and can use it too.
+
+    .. warning::
+       Each combination is a login attempt on the device, which may count
+       towards a lockout of the account. Set the ``user`` and ``pass``
+       options to make a single attempt.
+
+    Args:
+        dev: The device
+        login: Function that logs in with a user and password, and returns
+            if it succeeded, e.g. :meth:`SELHTTP.login_3620`
+        web_options: The ``web`` device options, i.e. ``dev.options["web"]``.
+            This is passed by the caller, since the device options depend on
+            the module that reads them.
+        device_name: Name of the kind of device, for log messages
+
+    Returns:
+        If the login succeeded
+    """
+    if dev._cache.get("verified_web_user") and dev._cache.get("verified_web_pass"):
+        return login(dev._cache["verified_web_user"], dev._cache["verified_web_pass"])
+
+    users = [web_options["user"]] if web_options.get("user") else web_options.get("users", [])
+    passwords = (
+        [web_options["pass"]] if web_options.get("pass") else web_options.get("passwords", [])
+    )
+
+    if not users or not passwords:
         log.warning(
-            f"Failed parse_simple_table\nTable start: '{table_start}'\n"
-            f"Table end: '{table_end}'\nRaw data: {repr(page_data)}\n"
+            f"No web users or passwords configured for {device_name} login to {dev.get_id()}"
         )
-        return {}
+        return False
+
+    for username in users:
+        log.debug(f"Attempting {device_name} login to {dev.get_id()} with user '{username}'")
+
+        for password in passwords:
+            if login(username, password):
+                dev._cache["verified_web_user"] = username
+                dev._cache["verified_web_pass"] = password
+                dev.related.user.add(username)
+                return True
+
+    return False
 
 
-def parse_simple_list(list_start: str, list_end: str, page_data: str) -> list[str]:
-    try:
-        regex = rf"{list_start}:\n([\s\S]+){list_end}"
-        data = re.findall(regex, page_data)[0].split("\n")
-        return [line.strip() for line in data if line]
-    except IndexError:
-        log.warning(
-            f"Failed parse_simple_list\nList start: '{list_start}'\n"
-            f"List end: '{list_end}'\nRaw data: {repr(page_data)}\n"
-        )
-        return []
-
-
-def parse_multiple_lists(page_data: str) -> dict:
-    try:
-        settings = page_data.split("\n\n")
-        parsed = {}
-        for x in range(0, len(settings), 2):
-            list_name = settings[x].strip()
-            data = re.findall(r"(\S*)\s*:=(.+?(?=\s\s|\n))", settings[x + 1] + "\n")
-            if len(data) > 0:
-                parsed[list_name] = {v[0]: v[1].lstrip().replace('"', "") for v in data}
-        return parsed
-    except IndexError:
-        log.warning(f"Failed parse_multiple_lists\nRaw data: {repr(page_data)}\n")
-        return {}
-
-
-def parse_simple_line(param_name: str, page_data: str) -> str:
-    if param_name not in page_data:
-        log.warning(f"Failed parse_simple_line: param '{param_name}' not in page")
-        return ""
-    try:
-        return re.findall(rf"\n\s*{param_name}[=|:]\s*(\S+)", page_data)[0]
-    except IndexError:
-        log.warning(
-            f"Failed parse_simple_line\nParam name: '{param_name}'\nRaw data: {repr(page_data)}\n"
-        )
-        return ""
-
-
-def normalize_keys(obj: dict) -> dict:
-    """
-    Convert dictionary keys to lowercase underscore-separated.
-    """
-    return {key.strip().lower().replace(" ", "_"): value for key, value in obj.items()}
-
-
-def parse_comments(obj: dict) -> dict:
-    """
-    Split value strings with comments into the value and the comment.
-    """
-    results = {}
-
-    for name, value in obj.items():
-        parts = value.split("#")
-        results[name] = {
-            "value": parts[0].strip(),
-            "comment": parts[1].strip() if len(parts) > 1 else "",
-        }
-
-    return results
-
-
-def read_html(content: str | bytes) -> dict[str, str]:
-    """
-    Replace functionality of the Pandas HTML parser.
-    """
-
-    soup = BeautifulSoup(content, features=consts.BS4_PARSER)
-
-    table = soup.find("table")
-    if not table:
-        return {}
-
-    unknown_i = 0
-    data = {}
-
-    # Find rows in html table objects
-    for row in table.find_all("tr"):
-        if not row:
-            continue
-
-        # Find columns in each row
-        col = row.find_all("td")
-        if len(col) < 2:
-            continue
-
-        # Row Label
-        # '<td class="firstColumn">Host Name:</td>' => "Host Name"
-        name = clean_text(col[0].get_text())
-
-        # handle case where empty string as key
-        if not name:
-            name = f"Unknown_{unknown_i}"
-            unknown_i += 1
-
-        if len(col) == 2:
-            data[name] = clean_text(col[1].get_text())
-
-            # Some cells have a <input/> tag as their value, instead of the text
-            # These fields are designed to take user input, and provide the current
-            # value in the "value" attribute.
-            if not data[name] and col[1].contents:
-                input_tag = col[1].find("input")
-
-                # We don't care about other tag types for now,
-                # they may be things like links to other pages.
-                if not input_tag:
-                    continue
-
-                # Current value
-                if input_tag.attrs.get("value"):
-                    data[name] = clean_text(input_tag.attrs["value"])
-
-                # Checkbox fields
-                elif input_tag.attrs.get("type", "") == "checkbox":
-                    # boolean, if attr named "checked", then true, else false
-                    if "checked" in input_tag.attrs:
-                        data[name] = "true"
-                    else:
-                        data[name] = "false"
-        else:
-            # Iterate over columns
-            data[name] = []
-            for pos in col[1:]:
-                data[name].append(clean_text(pos.get_text()))
-
-    return data
-
-
-def clean_text(data: str) -> str:
-    """
-    Attempt to remove whitespace and new line characters.
-    """
-    return data.replace("\\\\n", "").replace("\\n", "").lstrip().rstrip()
-
-
-__all__ = ["SELHTTP"]
+__all__ = ["SELHTTP", "login_with_web_credentials"]

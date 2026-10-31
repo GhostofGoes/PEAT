@@ -10,7 +10,7 @@ Authors
 
 from peat import DeviceData, DeviceModule, IPMethod, exit_handler
 
-from .sel_http import SELHTTP
+from .sel_http import SELHTTP, login_with_web_credentials
 
 
 class SEL3620(DeviceModule):
@@ -48,38 +48,11 @@ class SEL3620(DeviceModule):
         )
 
         session = SELHTTP(dev.ip, port, timeout)
-        logged_in = False
 
-        if dev._cache.get("verified_web_user") and dev._cache.get("verified_web_pass"):
-            logged_in = session.login_3620(
-                dev._cache["verified_web_user"],
-                dev._cache["verified_web_pass"],
-            )
-        # Check all user, and pass, only proceed when logged_in is True, or exhausted
-        else:
-            if dev.options["web"]["user"]:
-                users = [dev.options["web"]["user"]]
-            else:
-                users = dev.options["web"]["users"]
-
-            if dev.options["web"]["pass"]:
-                passwords = [dev.options["web"]["pass"]]
-            else:
-                passwords = dev.options["web"]["passwords"]
-
-            for username in users:
-                cls.log.debug(f"Attempting SEL-3620 login to {dev.ip} with user '{username}'")
-
-                for password in passwords:
-                    logged_in = session.login_3620(username, password)
-                    if logged_in:
-                        dev._cache["verified_web_user"] = username
-                        dev._cache["verified_web_pass"] = password
-                        dev.related.user.add(username)
-                        break
-
-                if logged_in:
-                    break
+        # Cached credentials, or each user and password from the options
+        logged_in = login_with_web_credentials(
+            dev, session.login_3620, dev.options["web"], device_name="SEL-3620"
+        )
 
         if logged_in:
             try:
