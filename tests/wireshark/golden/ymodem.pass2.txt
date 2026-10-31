@@ -1,0 +1,15 @@
+# frame.number|selascii.direction|selascii.type|selascii.cmd|selascii.cmd.category|selascii.response_to|selascii.request_in|selascii.prompt|selascii.access_level|selascii.line_count|selascii.error|selascii.id.fid|selascii.id.iedname|selascii.cascii.checksum.status|selascii.password|selascii.input|selascii.question|selascii.fast.type|selfm.msgtype|selascii.ymodem.block|selascii.ymodem.filename|selascii.reassembled_in|selascii.password.factory_default|selascii.cmd.operates_equipment|selascii.cmd.state_change|selascii.access_level.changed|selascii.cascii.bad_checksum|selascii.telnet_sb_unterminated|_ws.lua.error|_ws.malformed
+4|1|Prompt|||||=>|1|||||||||||||||||||||
+5|0|Command|FIL|Read|||||||||||||||||||||||||
+6|1|Echo / unframed text|||FIL READ SET_1.TXT|5|||1||||||||||||||||||||
+8|1|YMODEM block|||||||||||||||||0|SET_1.TXT|||||||||
+9|0;0|Transfer control;Transfer control|||FIL READ SET_1.TXT||||||||||||||||||||||||
+12|1|YMODEM block|||||||||||||||||1||||||||||
+13|0;0|Transfer control;Transfer control|||FIL READ SET_1.TXT||||||||||||||||||||||||
+14|1|Transfer control|||||||||||||||||||||||||||
+15|0|Transfer control|||||||||||||||||||||||||||
+16|1|Transfer control|||||||||||||||||||||||||||
+17|0|Transfer control|||||||||||||||||||||||||||
+19|1|YMODEM block|||||||||||||||||0||||||||||
+20|0;0|Transfer control;Transfer control|||FIL READ SET_1.TXT||||||||||||||||||||||||
+21|1|Prompt|||FIL READ SET_1.TXT|5|=>|1|||||||||||||||||||||

@@ -216,3 +216,14 @@ What PEAT sees (note the 0x03 and 0x02 characters):
 .. code-block:: Python
 
    ['id', '\x02', '"FID=SEL-700G-R200-V0-Z006003-D20180629","08F0"', '"BFID=BOOTLDR-R501-V0-Z000000-D20140224","0947"', '"CID=59A0","025C"', '"DEVID=SEL-700G","0408"', '"DEVCODE=74","0312"', '"PARTNO=0700G12B1B1B7281A230","06C2"', '"CONFIG=112222010","041E"', '"SEL DISPLAY PACKAGE=1.0.50700.2000","087C"', '"CUSTOMER DISPLAY PACKAGE=1.574871567","09A2"', '"iedName=","0360"', '"type=","026F"', '"configVersion=","0609"', '"LIB61850ID=5C9A14CB","04F1"', '\x03\x02', '=>>\x03']
+
+.. _sel-wireshark-dissector:
+
+Wireshark dissector for SEL ASCII
+---------------------------------
+The PEAT repository includes a Wireshark Lua plugin, ``distribution/wireshark/selascii.lua``, that decodes SEL ASCII and Compressed ASCII sessions: commands with their category (read, access level, settings change, control, maintenance or firmware), response lines, access level prompts, device errors, Compressed ASCII records with their checksums, and the ID command output (firmware ID, part number, IEC 61850 ``iedName``). SEL Fast binary messages in the same stream are handed to Wireshark's built-in ``selfm`` dissector, and YMODEM file transfer blocks are recognized. This makes it possible to review exactly what PEAT, or any other tool, sent to a device and what the device answered.
+
+It decodes Telnet and raw TCP captures (for example RTAC engineering access ports), RTAC Communication Monitor captures (LINKTYPE_RTAC_SERIAL), serial sessions recorded with ``socat`` and converted with ``distribution/wireshark/socat2pcap.py``, and USB captures of SEL front-panel ports. The plugin is a single file that does not need PEAT: copy ``selascii.lua`` into Wireshark's personal Lua plugins folder (shown in *Help > About Wireshark > Folders*), or load it once with ``wireshark -X lua_script:selascii.lua``. Installation, capture recipes, fields and preferences are in the `README <https://github.com/sandialabs/PEAT/blob/main/distribution/wireshark/README.md>`__.
+
+.. warning::
+   SEL ASCII passwords are sent in cleartext, so captures of SEL ASCII sessions contain them. The dissector masks passwords in the protocol tree and flags factory-default passwords, but the bytes are still in the capture file. Handle such captures as sensitive data.
