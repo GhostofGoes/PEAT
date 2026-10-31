@@ -115,15 +115,26 @@ class Telnet:
                 except Exception as ex:
                     self.log.warning(f"Failed to write raw output to file: {ex}")
 
-    def write(self, command: bytes | str | int, flush: bool = False) -> None:
+    def write(
+        self, command: bytes | str | int, flush: bool = False, sensitive: bool = False
+    ) -> None:
         """
         Send a Telnet command to the device.
 
         Args:
             command: Command to send (this will be automatically encoded)
             flush: If the responses to the command should be dropped
+            sensitive: If the command is a secret (e.g. a password), which
+                will not be logged and is redacted from all log messages
         """
-        self.log.debug(f"Writing command: {command}")
+        if sensitive:
+            # Imported here to avoid a circular import
+            from peat.log_utils import register_secret
+
+            register_secret(command)
+            self.log.debug("Writing command: <redacted>")
+        else:
+            self.log.debug(f"Writing command: {command}")
 
         # If it's an int, first convert to a string, which will then be encoded
         if isinstance(command, int):
@@ -141,7 +152,7 @@ class Telnet:
         # worked in the REPL, but not the script...well, it was the pauses
         # between sending and reading commands. JustTelnetThings.
         sleep(self.PRE_WRITE_SLEEP)
-        self.comm.write(command)
+        self.comm.write(command, sensitive=sensitive)
         sleep(self.POST_WRITE_SLEEP)
 
         if flush:

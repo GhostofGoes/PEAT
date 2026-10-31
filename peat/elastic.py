@@ -28,6 +28,7 @@ from opensearchpy import OpenSearch
 from opensearchpy.exceptions import OpenSearchException
 from opensearchpy.helpers import parallel_bulk as opensearch_parallel_bulk
 from opensearchpy.serializer import JSONSerializer as OSJSONSerializer
+from requests.exceptions import SSLError
 
 from peat import (
     __version__,
@@ -40,6 +41,7 @@ from peat import (
     utils,
 )
 from peat.protocols import HTTP
+from peat.protocols.http import resolve_tls_verify
 
 from .es_mappings import PEAT_INDICES
 
@@ -186,10 +188,22 @@ class Elastic:
         to the server. Otherwise, will return the existing instance.
         """
         if self._es is None:
+            verify = resolve_tls_verify(
+                host=self.host, warn=self.safe_url.lower().startswith("https")
+            )
+
             # use gen_session() to ensure proxy isn't set
             # TODO: this probably won't fly with Malcolm's fronting proxy
-            with HTTP.gen_session() as sess:
-                r = sess.get(self.unsafe_url)
+            with HTTP.gen_session(verify=verify) as sess:
+                try:
+                    r = sess.get(self.unsafe_url)
+                except SSLError as ex:
+                    raise ConnectionError(
+                        f"TLS certificate verification failed for {self.type} server "
+                        f"{self.safe_url}: {ex}. Set 'tls_ca_bundle' to a file with the "
+                        f"server's CA certificate, or set 'tls_verify: false' "
+                        f"(PEAT_TLS_VERIFY=false) to disable verification."
+                    ) from None
                 if not r or r.status_code != 200:
                     raise ConnectionError(
                         "Failed to connect to Elasticsearch or OpenSearch server"
@@ -223,7 +237,9 @@ class Elastic:
 
                 self._es = es_klass(
                     hosts=[self.unsafe_url],
-                    verify_certs=False,
+                    verify_certs=bool(verify),
+                    ca_certs=verify if isinstance(verify, str) else None,
+                    # resolve_tls_verify() warns if verification is disabled
                     ssl_show_warn=False,
                     timeout=config.ELASTIC_TIMEOUT,
                     serializer=self.serializer,  # type: ignore

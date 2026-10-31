@@ -147,6 +147,53 @@ Configuration options can be set via system environment variables that are prefi
 Additional topics
 =================
 
+.. _tls-verification:
+
+TLS certificate verification
+----------------------------
+PEAT verifies TLS (SSL) certificates for HTTPS connections, including connections to devices and to Elasticsearch/OpenSearch. Many older OT devices use self-signed certificates, which fail verification, and PEAT will log a warning explaining how to proceed when this happens. There are three ways to connect to these devices:
+
+- **Trust the certificate (recommended)**: add the device's certificate, or the CA that issued it, to a PEM file and set :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>` (``tls_ca_bundle: /path/to/ca-bundle.pem``).
+- **Disable verification for specific hosts**: set the ``https.verify`` option to ``false`` for the host. Setting it in ``device_options`` disables verification for all devices, while still verifying the Elasticsearch server.
+- **Disable verification everywhere**: set :attr:`TLS_VERIFY <peat.settings.Configuration.TLS_VERIFY>` to false (``tls_verify: false`` in the config file, or ``PEAT_TLS_VERIFY=false``).
+
+.. code-block:: yaml
+   :caption: Disable TLS certificate verification for a single host
+
+   hosts:
+   - label: "SEL-3530"
+     identifiers:
+       ip: 192.0.2.30
+     options:
+       https:
+         verify: false
+
+.. warning::
+   When verification is disabled, anyone who can intercept the connection can capture credentials PEAT sends over it (e.g. web logins). PEAT logs a warning for each host that verification is disabled for.
+
+
+.. _ssh-host-keys:
+
+SSH host keys
+-------------
+PEAT checks the host key of every device it connects to with SSH, before sending any credentials. Keys are checked against the system ``~/.ssh/known_hosts`` file and PEAT's own known_hosts file, set by :attr:`SSH_KNOWN_HOSTS <peat.settings.Configuration.SSH_KNOWN_HOSTS>` (default: ``~/.peat/known_hosts``, in the home directory of the user running PEAT, e.g. ``/root`` if run with ``sudo``).
+
+- **New host**: the key is trusted on first use and saved to PEAT's known_hosts file, and a warning with its fingerprint (``SHA256:...``, the format output by ``ssh-keygen -lf``) is logged. If possible, check the fingerprint against the device.
+- **Changed key**: the connection is refused and an error is logged with the expected and actual fingerprints. This can mean the connection is being intercepted, or that the device's key changed (e.g. after a firmware update or device replacement). If the change is expected, remove the old key from the known_hosts file, or set the ``ssh.trust_new_host_key`` option to ``true`` for the host to accept and save the new key.
+- **Pinned key**: set the ``ssh.host_key_fingerprint`` option for a host to only accept a key with that fingerprint (``SHA256:...`` or MD5 hex). Pinned keys are not saved to the known_hosts file.
+- **Unusable known_hosts file**: if PEAT's known_hosts file can't be read or saved (e.g. a read-only home directory, or a file that isn't a known_hosts file), a warning is logged once and connections continue. Keys trusted during the run are kept in memory, so a key that changes during the run is still refused. Set ``ssh_known_hosts: ""`` to not use a PEAT known_hosts file.
+
+.. code-block:: yaml
+   :caption: Pin the SSH host key of a single host
+
+   hosts:
+   - label: "Sage-RTU"
+     identifiers:
+       ip: 192.0.2.40
+     options:
+       ssh:
+         host_key_fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8"
+
 Disabling file output
 ---------------------
 Setting directory-related configuration options (e.g. :attr:`SUMMARIES_DIR <peat.settings.Configuration.SUMMARIES_DIR>`) to an empty string will **disable** any output to that directory. For example, setting :attr:`LOG_DIR <peat.settings.Configuration.LOG_DIR>` to an empty string (e.g. ``LOG_DIR=""``) will disable writing of logging data to files, including PEAT's logging and any protocols that log to a file (such as Telnet).
@@ -179,8 +226,12 @@ Pillage config reference
 ========================
 - ``auto_copy`` [True or False] If ``True`` automatically copy a file to the results directory.  If ``False`` ask for permission to copy first.  This can be helpful in the case when there may be lot of false positives and the user wants to verify prior to copying. For example if you are searching for ``xml`` files.
 - ``recursive`` [True of False] If ``True`` search in the source parent directory and all sub directories.  If ``False`` only search in the source parent directory and ignore all sub directories.
+- ``max_file_size`` [Integer, bytes] Files larger than this are skipped (with a warning) instead of copied. Defaults to ``268435456`` (256 MiB). Set to ``0`` to disable the limit.
 - Default/Brand specific search criteria:
 
   - ``locations`` [List of strings, each one should be a directory path] If empty search through all directories.  If directories exist only files in those directories will be considered. **Not yet implemented, Pillage currently searches through all directories regardless of what is listed here.**
   - ``filenames`` [List of strings] A list of filenames to search for.  When searching filenames take precedence over extensions and will be used first to determine the validity of a file.  No wildcards are accepted.  Must be the full filename with extension. Example ``['set_all.txt', '700g_001.rdb']``
   - ``extensions`` [List of strings] A list of extensions to search for.  No wildcards are accepted.  Example ``['txt', 'rdb', 'xml']``
+
+.. note::
+   Pillage only copies regular files. Symbolic links, device files, FIFOs, and other special files found in the source are skipped, as are the top-level ``Windows``, ``System Volume Information``, ``PerfLogs``, ``MSOCache``, ``cygwin64``, ``Recovery``, ``Boot``, and ``$Recycle.Bin`` directories. Disk images are mounted read-only with the ``nodev``, ``nosuid``, and ``noexec`` options.

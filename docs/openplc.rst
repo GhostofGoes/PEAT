@@ -56,6 +56,9 @@ Default Options
 * **plugins_to_query**: A mapping of plugin name to the command to send to that plugin during a data pull, for example ``{"ethercat": "status"}``. The output of each command is saved under ``extra.plugin_status``.
 * **https**: Port and TLS settings for the runtime's REST API (the OpenPLC Runtime v4 default is HTTPS on port ``8443``).
 
+.. note::
+   PEAT verifies TLS certificates by default, and the OpenPLC Runtime v4 uses a self-signed certificate unless one is configured. Either add the runtime's certificate to a bundle set with ``tls_ca_bundle``, or disable verification for the runtime with ``https: {verify: false}`` in its options. Refer to :ref:`tls-verification`.
+
 These defaults can be overridden in the ``device_options`` section of the PEAT :doc:`YAML configuration file <configure>`, or per-host in the ``hosts`` section. For example:
 
 .. code-block:: yaml

@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
+import threading
+import urllib.parse
+from collections.abc import Iterable
 from datetime import UTC
 from pathlib import Path
 from pprint import pformat
-from traceback import format_tb
+from traceback import format_exception, format_tb
+from typing import Any, Final
 
 import loguru
 from loguru import logger
@@ -22,6 +27,187 @@ from peat import (
     state,
     utils,
 )
+
+#: Replaces secret values in log messages
+REDACTED: Final[str] = "<redacted>"
+
+#: Secrets shorter than this aren't redacted, since they're too likely
+#: to match unrelated text (e.g. an ION meter password of "0")
+MIN_SECRET_LENGTH: Final[int] = 4
+
+#: Device option keys with values that are secrets (passwords, SNMP communities, etc.)
+SECRET_OPTION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "pass",
+        "passwd",
+        "password",
+        "passphrase",
+        "community",
+        "communities",
+        "creds",
+        "passwords",
+    }
+)
+
+_secrets: Final[set[str]] = set()
+_secrets_lock: Final = threading.Lock()
+# Compiled pattern matching any registered secret, or None if there aren't any.
+# Replaced (never mutated) when secrets are added, so it can be read without a lock.
+_secrets_re: re.Pattern[str] | None = None
+
+# A backslash escape (e.g. "\n" or "\x00" in a repr() of device output) right
+# before a secret is a boundary, even though it ends with a letter or digit.
+_ESCAPE_BOUNDARY: Final[str] = (
+    r"(?<=\\[abfnrtv])|(?<=\\x[0-9A-Fa-f]{2})|(?<=\\u[0-9A-Fa-f]{4})|(?<=\\U[0-9A-Fa-f]{8})"
+)
+
+
+def _secret_pattern(secret: str) -> str:
+    # Don't match inside longer words, e.g. a password of "TAIL" in "DETAIL"
+    pattern = re.escape(secret)
+    if secret[0].isalnum():
+        pattern = rf"(?:(?<![A-Za-z0-9])|{_ESCAPE_BOUNDARY}){pattern}"
+    if secret[-1].isalnum():
+        pattern = rf"{pattern}(?![A-Za-z0-9])"
+    return pattern
+
+
+def _secret_variants(secret: str) -> set[str]:
+    # Forms the secret commonly takes in log messages: as is, URL or form
+    # encoded (e.g. a HTTP login body), and escaped in JSON or a repr().
+    return {
+        secret,
+        urllib.parse.quote(secret, safe=""),
+        urllib.parse.quote_plus(secret, safe=""),
+        json.dumps(secret)[1:-1],
+        json.dumps(secret, ensure_ascii=False)[1:-1],
+        repr(secret)[1:-1],
+    }
+
+
+def register_secret(*values: Any) -> None:
+    """
+    Register secret values (e.g. passwords) to be redacted from all log messages.
+
+    This can be called at any time, e.g. when a password is discovered or
+    used for a login. Secrets are matched case-insensitively, and URL encoded,
+    JSON escaped and :func:`repr` escaped forms of them are also redacted.
+
+    :class:`bytes` values are decoded as UTF-8. Values that aren't strings or
+    bytes, or are shorter than :data:`~peat.log_utils.MIN_SECRET_LENGTH`, are ignored.
+    """
+    global _secrets_re
+
+    decoded = (
+        v.decode("utf-8", "replace") if isinstance(v, bytes | bytearray) else v for v in values
+    )
+    new: set[str] = set()
+    for value in decoded:
+        if isinstance(value, str) and len(value) >= MIN_SECRET_LENGTH:
+            new.update(_secret_variants(value))
+    if not new:
+        return
+
+    with _secrets_lock:
+        if new <= _secrets:
+            return
+        _secrets.update(new)
+        # Longest first, so a secret containing another secret is fully redacted
+        patterns = [_secret_pattern(v) for v in sorted(_secrets, key=len, reverse=True)]
+        _secrets_re = re.compile("|".join(patterns), re.IGNORECASE)
+
+
+def clear_secrets() -> None:
+    """Remove all registered secrets."""
+    global _secrets_re
+
+    with _secrets_lock:
+        _secrets.clear()
+        _secrets_re = None
+
+
+def redact_secrets(text: str) -> str:
+    """Replace any registered secret values in the text with ``<redacted>``."""
+    pattern = _secrets_re
+    if pattern is None or not text:
+        return text
+    return pattern.sub(REDACTED, text)
+
+
+def _find_option_secrets(options: Any, is_secret: bool = False) -> Iterable[str]:
+    if isinstance(options, dict):
+        for key, value in options.items():
+            yield from _find_option_secrets(value, is_secret or key in SECRET_OPTION_KEYS)
+    elif isinstance(options, list | tuple):
+        for value in options:
+            if (
+                is_secret
+                and isinstance(value, list | tuple)
+                and len(value) == 2
+                and all(isinstance(v, str) for v in value)
+            ):
+                # A (username, password) pair, e.g. "creds: [[user, pass], ...]"
+                yield value[1]
+            else:
+                yield from _find_option_secrets(value, is_secret)
+    elif is_secret and isinstance(options, str):
+        yield options
+
+
+def _url_secrets(url: str | None) -> list[str]:
+    if not url:
+        return []
+    try:
+        password = urllib.parse.urlsplit(url).password
+    except ValueError:
+        return []
+    if not password:
+        return []
+    return [password, urllib.parse.unquote(password)]
+
+
+def register_secrets_from_config() -> None:
+    """
+    Register secrets from the configuration to be redacted from log messages.
+
+    This includes the values of device options with keys in
+    :data:`~peat.log_utils.SECRET_OPTION_KEYS` (in ``device_options`` and
+    the options of ``hosts``), and passwords in Elasticsearch server URLs.
+    """
+    secrets = list(_find_option_secrets(config.DEVICE_OPTIONS))
+    for host in config.HOSTS or []:
+        if isinstance(host, dict):
+            secrets.extend(_find_option_secrets(host.get("options", {})))
+    secrets.extend(_url_secrets(config.ELASTIC_SERVER))
+    secrets.extend(_url_secrets(config.HEAT_ELASTIC_SERVER))
+    register_secret(*secrets)
+
+
+def patch_redact_secrets(record: loguru.Record) -> None:
+    """
+    Loguru patcher that redacts registered secrets from the message and exception.
+
+    If any secrets are registered, an exception is formatted here, without the
+    values of local variables (loguru's ``diagnose``), and stored redacted in
+    ``record["extra"]["redacted_exception"]``, which the formatters log
+    instead of the exception.
+    """
+    if _secrets_re is None:
+        return
+
+    record["message"] = redact_secrets(record["message"])
+
+    exc = record["exception"]
+    if exc is not None and exc.type is not None:
+        formatted = "".join(format_exception(exc.type, exc.value, exc.traceback))
+        record["extra"]["redacted_exception"] = redact_secrets(formatted)
+
+
+def _exception_field(record: loguru.Record) -> str:
+    # The redacted exception if secrets are registered, see patch_redact_secrets()
+    if "redacted_exception" in record["extra"]:
+        return "{extra[redacted_exception]}"
+    return "{exception}"
 
 
 class ElasticLogSink:
@@ -151,8 +337,8 @@ def generate_log_dict(record: loguru.Record) -> dict[str, dict | str | None]:
     if record["exception"]:
         content["error"] = {
             "type": record["exception"].type.__name__,
-            "message": str(record["exception"].value),
-            "stack_trace": "".join(format_tb(record["exception"].traceback)),
+            "message": redact_secrets(str(record["exception"].value)),
+            "stack_trace": redact_secrets("".join(format_tb(record["exception"].traceback))),
         }
 
     return content
@@ -182,9 +368,9 @@ def terminal_formatter(record: loguru.Record) -> str:
         fmt += "<bold>{extra[target]: <12}</bold> | "
 
     if record["level"].name in ["WARNING", "ERROR", "CRITICAL"]:
-        fmt += "<level>{level}: {message}\n{exception}</level>"
+        fmt += "<level>{level}: {message}\n" + _exception_field(record) + "</level>"
     else:
-        fmt += "<level>{message}\n{exception}</level>"
+        fmt += "<level>{message}\n" + _exception_field(record) + "</level>"
 
     return fmt
 
@@ -205,7 +391,7 @@ def file_formatter(record: loguru.Record) -> str:
     if "target" in record["extra"]:
         fmt += "Target: {extra[target]} | "
 
-    fmt += "{message}\n{exception}"
+    fmt += "{message}\n" + _exception_field(record)
     return fmt
 
 
@@ -235,6 +421,15 @@ def patch_json_string(record: loguru.Record) -> None:
     record["extra"]["json_log_string"] = json.dumps(
         generate_log_dict(record), separators=(",", ":")
     )
+
+
+def patch_record(record: loguru.Record) -> None:
+    """
+    Loguru patcher applied to every message before any sink sees it.
+    Secrets are redacted first, so they don't end up in the JSON log string.
+    """
+    patch_redact_secrets(record)
+    patch_json_string(record)
 
 
 def setup_logging(
@@ -268,8 +463,12 @@ def setup_logging(
     # TODO: only add this if doing json file or elastic output?
     # One nice effect of this is the JSON dict is only generated once if
     # JSON file and Elasticsearch output is enabled, reducing overhead.
+    #
+    # Secrets (e.g. device passwords) in the configuration are redacted
+    # from messages before they reach any sink (including Elasticsearch).
+    register_secrets_from_config()
     logger.configure(
-        patcher=patch_json_string,
+        patcher=patch_record,
     )
 
     # What level sinks should handle, based on configured DEBUG level

@@ -1,3 +1,5 @@
+from pathlib import PurePosixPath
+
 import pytest
 
 from peat import consts
@@ -100,16 +102,36 @@ def test_sanitize_filepath():
     )
     assert (
         consts.sanitize_filepath("/system/api/1/hardware-info.html")
-        == "/system/api/1/hardware-info.html"
+        == "system/api/1/hardware-info.html"
     )
     assert (
         consts.sanitize_filepath("/system/api/1/01:01:01-hardware-info.html")
-        == "/system/api/1/01_01_01-hardware-info.html"
+        == "system/api/1/01_01_01-hardware-info.html"
     )
     assert (
         consts.sanitize_filepath("/system/api/1/02:02:02/01:01:01-hardware-info.html")
-        == "/system/api/1/02_02_02/01_01_01-hardware-info.html"
+        == "system/api/1/02_02_02/01_01_01-hardware-info.html"
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("../../escape.txt", "escape.txt"),
+        ("/tmp/abs/escape.txt", "tmp/abs/escape.txt"),
+        ("a/../../b/./c.txt", "a/b/c.txt"),
+        ("..\\..\\windows\\escape.txt", "windows/escape.txt"),
+        ("//server/share/x.txt", "server/share/x.txt"),
+        ("C:/Windows/x.txt", "C_/Windows/x.txt"),
+        ("../..", "unnamed"),
+        ("/", "unnamed"),
+    ],
+)
+def test_sanitize_filepath_untrusted(path, expected):
+    result = consts.sanitize_filepath(path)
+    assert result == expected
+    assert not PurePosixPath(result).is_absolute()
+    assert ".." not in PurePosixPath(result).parts
 
 
 def test_sanitize_filename():

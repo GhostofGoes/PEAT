@@ -4,15 +4,111 @@ import re
 import socket
 import ssl
 import tempfile
+import threading
 import urllib.parse
-from pathlib import Path
-from typing import Literal
+from pathlib import Path, PurePosixPath
+from typing import Final, Literal
 
+import urllib3
 from bs4 import BeautifulSoup
 from requests import Response, Session
+from requests.exceptions import SSLError
 
 import peat  # Avoid circular imports
 from peat import config, consts, log, utils
+
+#: Added to errors about failed TLS certificate verification
+TLS_VERIFY_HINT: Final[str] = (
+    "If the server uses a self-signed or otherwise untrusted certificate (common "
+    "with older OT devices), either add its CA certificate to a bundle set with "
+    "'tls_ca_bundle', disable verification for that host with "
+    "'options: {https: {verify: false}}' in the 'hosts' section of the config file "
+    "(or for all devices in 'device_options'), or disable it everywhere with "
+    "'tls_verify: false' in the config file or the environment variable "
+    "PEAT_TLS_VERIFY=false."
+)
+
+_tls_warned_hosts: Final[set[str]] = set()
+_tls_warn_lock: Final = threading.Lock()
+
+#: Hosts that TLS_VERIFY_HINT was logged for, so it's only logged once per host
+_tls_hint_hosts: Final[set[str]] = set()
+
+#: CA bundles that an error was logged for, since they don't exist
+_tls_bad_ca_bundles: Final[set[str]] = set()
+
+
+def _ca_bundle_path() -> str:
+    # Check the bundle exists, since otherwise every request fails with a
+    # generic error ("Could not find a suitable TLS CA certificate bundle")
+    bundle = Path(config.TLS_CA_BUNDLE).expanduser()
+    if not bundle.is_file():
+        with _tls_warn_lock:
+            first = str(bundle) not in _tls_bad_ca_bundles
+            _tls_bad_ca_bundles.add(str(bundle))
+        if first:
+            log.error(
+                f"The CA certificate bundle set with 'tls_ca_bundle' ('{bundle}') "
+                f"doesn't exist or isn't a file, so HTTPS connections will fail. Fix "
+                f"the path, or set 'tls_ca_bundle' to an empty string to use the "
+                f"default CA certificates."
+            )
+    return str(bundle)
+
+
+def resolve_tls_verify(
+    host: str = "", device_verify: bool = True, warn: bool = True
+) -> bool | str:
+    """
+    Determine if TLS certificates should be verified for a connection to a host.
+
+    Verification is enabled unless it's been disabled globally with
+    :attr:`TLS_VERIFY <peat.settings.Configuration.TLS_VERIFY>` or for the
+    device with the ``https.verify`` device option. If verification is disabled,
+    a warning is logged (once per host) and urllib3's ``InsecureRequestWarning``
+    is silenced, since the user has explicitly chosen to disable it.
+
+    Args:
+        host: Host (and optionally port) the connection is for, used for logging
+        device_verify: Value of the ``https.verify`` option for the device, if any
+        warn: If a warning should be logged when verification is disabled
+
+    Returns:
+        Value for the ``verify`` argument of :mod:`requests`: :obj:`False` if
+        verification is disabled, the path to the CA bundle set with
+        :attr:`TLS_CA_BUNDLE <peat.settings.Configuration.TLS_CA_BUNDLE>`,
+        or :obj:`True` to use the default CA certificates.
+    """
+    if config.TLS_VERIFY and device_verify:
+        if config.TLS_CA_BUNDLE:
+            return _ca_bundle_path()
+        return True
+
+    if warn:
+        with _tls_warn_lock:
+            first_warning = not _tls_warned_hosts
+            already_warned = host in _tls_warned_hosts
+            _tls_warned_hosts.add(host)
+
+        if first_warning:
+            # The user turned verification off, don't spam warnings for every request
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        if not already_warned:
+            if not config.TLS_VERIFY:
+                how = "'tls_verify' is false. To enable it, set 'tls_verify: true'"
+            else:
+                how = (
+                    "the device option 'https.verify' is false. To enable it, remove "
+                    "the option or set it to true"
+                )
+            log.warning(
+                f"TLS certificate verification is DISABLED for {host or 'all servers'}, "
+                f"since {how}. The connection can be intercepted, and any credentials "
+                f"sent over it can be captured."
+            )
+
+    return False
 
 
 class HTTP:
@@ -77,9 +173,47 @@ class HTTP:
         return f"{self.protocol}://{self.ip}:{self.port}"
 
     @property
+    def tls_verify(self) -> bool | str:
+        """
+        If TLS certificates should be verified for this host, as determined by
+        :func:`~peat.protocols.http.resolve_tls_verify` using the global
+        configuration and the device's ``https.verify`` option.
+        """
+        dev = self.dev
+        if dev is None:
+            dev = peat.data.datastore.search(self.ip, "ip")
+
+        device_verify = True
+        if dev is not None:
+            device_verify = bool(dev.options.get("https", {}).get("verify", True))
+
+        return resolve_tls_verify(
+            host=f"{self.ip}:{self.port}",
+            device_verify=device_verify,
+            warn=self.protocol != "http",
+        )
+
+    def ssl_context(self) -> ssl.SSLContext:
+        """
+        SSL context for raw TLS sockets that honors the TLS verification settings
+        (refer to :attr:`~peat.protocols.http.HTTP.tls_verify`).
+        """
+        verify = self.tls_verify
+        if verify is False:
+            context = ssl._create_unverified_context()
+        else:
+            context = ssl.create_default_context(
+                cafile=verify if isinstance(verify, str) else None
+            )
+        # Python 3.10+ already defaults to this; set it explicitly so the
+        # minimum is not left to the interpreter's build-time defaults.
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return context
+
+    @property
     def session(self) -> Session:
         if self._session is None:
-            self._session = self.gen_session()
+            self._session = self.gen_session(verify=self.tls_verify)
             if self.DEFAULT_HEADERS:
                 self._session.headers.update(self.DEFAULT_HEADERS)
         return self._session
@@ -130,7 +264,10 @@ class HTTP:
                 if cd and "filename" in cd:
                     fn_match = re.findall(r"filename=(.+)", cd)
                     if fn_match:
-                        f_name = fn_match[0].strip('"')
+                        # Only use the final component of the name the server
+                        # suggests, per RFC 6266, so it can't select the directory.
+                        f_name = fn_match[0].split(";")[0].strip().strip("\"'")
+                        f_name = PurePosixPath(f_name.replace("\\", "/")).name
 
                 if not f_name:
                     if not page and url:
@@ -270,6 +407,9 @@ class HTTP:
                 response.file_path = file_path
                 self.page_cache[url] = response
                 return response
+        except SSLError as ex:
+            self._log_tls_failure("GET", url, ex)
+            return None
         except Exception as ex:
             err = str(ex)
 
@@ -344,11 +484,31 @@ class HTTP:
                 self.page_cache[url] = response
 
                 return response
+        except SSLError as ex:
+            self._log_tls_failure("POST", url, ex)
+            return None
         except Exception as ex:
             err = str(ex)
 
         self.log.warning(f"Failed to POST '{url}': {err}")
         return None
+
+    def _log_tls_failure(self, method: str, url: str, ex: Exception) -> None:
+        """
+        Log a failed TLS certificate verification, with :data:`TLS_VERIFY_HINT`
+        the first time for a host, and at DEBUG level after that, since
+        scanning a network with self-signed devices would otherwise be very noisy.
+        """
+        host = urllib.parse.urlsplit(url).netloc
+        with _tls_warn_lock:
+            first = host not in _tls_hint_hosts
+            _tls_hint_hosts.add(host)
+
+        msg = f"Failed to {method} '{url}': TLS certificate verification failed: {ex}"
+        if first:
+            self.log.warning(f"{msg}. {TLS_VERIFY_HINT}")
+        else:
+            self.log.debug(msg)
 
     def get_ssl_certificate(self) -> peat.data.models.X509 | None:
         """
@@ -372,6 +532,9 @@ class HTTP:
             #   context.options &= ~ssl.OP_NO_SSLv3
             #   context.check_hostname = False
             #   context.verify_mode = ssl.CERT_NONE
+            #
+            # NOTE: the certificate is deliberately NOT verified here, since
+            # this only records the certificate (no credentials are sent).
             #
             context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
             context.set_ciphers("DEFAULT")
@@ -519,15 +682,24 @@ class HTTP:
         return BeautifulSoup(text, features=consts.BS4_PARSER)
 
     @staticmethod
-    def gen_session() -> Session:
+    def gen_session(verify: bool | str | None = None) -> Session:
         """
-        Session with SSL certificate verification disabled and no
-        proxies from environment (e.g. ``http_proxy``/``https_proxy``).
+        Session with no proxies, ``.netrc`` credentials, or CA bundles
+        from the environment (e.g. ``https_proxy`` or ``REQUESTS_CA_BUNDLE``).
+
+        Args:
+            verify: TLS certificate verification setting for the session
+                (the ``verify`` argument of :mod:`requests`). If :obj:`None`,
+                the global configuration is used (refer to
+                :func:`~peat.protocols.http.resolve_tls_verify`).
         """
+        if verify is None:
+            verify = resolve_tls_verify()
+
         session = Session()
-        session.verify = False
+        session.verify = verify
         session.trust_env = False
         return session
 
 
-__all__ = ["HTTP"]
+__all__ = ["HTTP", "TLS_VERIFY_HINT", "resolve_tls_verify"]

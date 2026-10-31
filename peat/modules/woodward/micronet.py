@@ -14,11 +14,10 @@ Authors
 
 import ftplib
 import pathlib
-from pathlib import Path
 
 from dateutil import parser
 
-from peat import CommError, DeviceData, DeviceModule, IPMethod
+from peat import CommError, DeviceData, DeviceModule, IPMethod, consts, utils
 from peat.protocols import FTP
 
 from . import parse_micronet
@@ -135,8 +134,11 @@ class MicroNet(DeviceModule):
             # We want to mirror the directory structure of the target
             # first check if this is the top level dir,
             # this if just avoids having two path objects with separate anchors
+            #
+            # NOTE: directory and file names come from the device's file listing,
+            # so ensure they can't be used to write outside of output_dir.
             if directory != "/":
-                path = output_dir / directory
+                path = utils.safe_join(output_dir, consts.sanitize_filepath(directory))
             else:
                 path = output_dir
 
@@ -152,15 +154,16 @@ class MicroNet(DeviceModule):
             # if there are files in the directory, iterate through them
             if file_list:
                 for filename in file_list:
+                    local_path = utils.safe_join(path, consts.sanitize_filepath(filename))
                     if cls.is_file(filename, ftp):  # if file, download and save locally
                         try:
-                            ftp.download_binary(filename, dev.get_out_dir() / path / filename)
+                            ftp.download_binary(filename, local_path)
                             # get file hashes and store in dev.extra
                             timestamp = ftp.cmd(f"MDTM {filename}").split()[1]
                             date_time = parser.parse(timestamp)
                             parse_micronet.create_artifact(
                                 dev,
-                                dev.get_out_dir() / path / filename,
+                                local_path,
                                 date_time.isoformat(),
                             )
                         except ftplib.all_errors:
@@ -182,7 +185,7 @@ class MicroNet(DeviceModule):
                         date_time = parser.parse(timestamp)
                         cls.log.info(f"Firmware last modified at {date_time}")
 
-                        filepath = Path(dev.get_out_dir(), path, filename)
+                        filepath = local_path
 
                         parse_micronet.get_info_firmware(dev, filepath, date_time)
 
@@ -193,13 +196,13 @@ class MicroNet(DeviceModule):
                         date_time = parser.parse(timestamp)
                         cls.log.info(f"Boot firmware last modified at {date_time}")
 
-                        filepath = Path(dev.get_out_dir(), path, filename)
+                        filepath = local_path
 
                         parse_micronet.get_info_bootrom(dev, filepath, date_time)
 
                     if "Log.txt" in filename[0:7] and "HD1Flash" in str(path):
                         cls.log.info(f"Attempting to extract info from {filename}")
-                        parse_micronet.parse_log(dev, dev.get_out_dir() / path / filename)
+                        parse_micronet.parse_log(dev, local_path)
 
                 # Now recurse over the folders
                 for folder in folder_list:

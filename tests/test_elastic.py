@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from peat import Elastic, config
+from peat.protocols import http as http_module
 
 
 def test_init():
@@ -80,3 +81,30 @@ def test_elastic_live_ci(mocker, tmp_path):
     assert len(es.search("alerts-*")) == 1
     assert len(es.search("alerts*")) == 2
     es.disconnect()
+
+
+def test_es_self_signed_rejected(mocker, https_server):
+    mocker.patch.object(http_module, "_tls_warned_hosts", set(), create=True)
+    es = Elastic(f"https://elastic:SuperSecretES@127.0.0.1:{https_server.port}/")
+    with pytest.raises(ConnectionError, match="TLS certificate verification failed"):
+        es.es  # noqa: B018
+    # The credentials were never sent to the untrusted server
+    assert https_server.requests == []
+
+
+@pytest.mark.parametrize(
+    "tls_verify",
+    [True, False],
+)
+def test_es_client_tls_settings(mocker, https_server, tls_verify):
+    mocker.patch.object(http_module, "_tls_warned_hosts", set(), create=True)
+    mocker.patch.dict(
+        config["CONFIG"], {"TLS_VERIFY": tls_verify, "TLS_CA_BUNDLE": https_server.cert_path}
+    )
+    es_klass = mocker.patch("peat.elastic.Elasticsearch")
+
+    es = Elastic(f"https://127.0.0.1:{https_server.port}/")
+    assert es.es is es_klass.return_value
+    kwargs = es_klass.call_args.kwargs
+    assert kwargs["verify_certs"] is tls_verify
+    assert kwargs["ca_certs"] == (str(https_server.cert_path) if tls_verify else None)

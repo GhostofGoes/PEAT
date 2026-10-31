@@ -9,12 +9,13 @@ import re
 import shutil
 import site
 import sys
+import tarfile
 from collections.abc import Container, Iterable
 from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from traceback import format_exc
 from typing import Any
 
@@ -48,17 +49,116 @@ def clean_replace(to_clean: str, replace_with: str, chars: str) -> str:
     return clean
 
 
+def safe_join(base: Path, *untrusted: str | PurePath) -> Path:
+    """
+    Join untrusted path components (e.g. file names from a device or an
+    archive) to a trusted base directory, ensuring the result stays inside it.
+
+    Backslashes are treated as path separators, and empty, ``.`` and ``..``
+    components, Windows drives (``C:``) and any leading root (``/``) are
+    dropped. The joined path is then resolved (following any symbolic links
+    that already exist on disk) and checked to be ``base`` or a path under ``base``.
+
+    .. note::
+       This only does containment. Use :func:`~peat.consts.sanitize_filepath`
+       first if the components also need to be valid file names on Windows.
+
+    Args:
+        base: Trusted directory the result must stay inside
+        untrusted: Untrusted relative path components to join to ``base``
+
+    Returns:
+        The joined path (not resolved, so it's in the same form as ``base``)
+
+    Raises:
+        ValueError: The joined path resolves to a location outside of ``base``
+    """
+    base = Path(base)
+    parts = []
+    for component in untrusted:
+        for part in PurePosixPath(str(component).replace("\\", "/")).parts:
+            # Drop a Windows drive (e.g. "C:" or "C:name"), which joinpath()
+            # would otherwise treat as a new root on Windows
+            part = part[len(PureWindowsPath(part).drive) :]
+            if part.strip("/") not in ("", ".", ".."):
+                parts.append(part)
+
+    joined = base.joinpath(*parts)
+    resolved_base = base.resolve()
+    resolved = joined.resolve()
+
+    if resolved != resolved_base and resolved_base not in resolved.parents:
+        raise ValueError(
+            f"Path '{PurePosixPath(*parts).as_posix()}' resolves to '{resolved}', "
+            f"which is outside of '{resolved_base}'"
+        )
+
+    return joined
+
+
+def check_tar_member(
+    member: tarfile.TarInfo, dest: Path | str, allow_dirs: bool = False
+) -> tarfile.TarInfo | None:
+    """
+    Check if a member of an untrusted tar archive is safe to read or extract.
+
+    Only regular files (and directories, if ``allow_dirs`` is set) are allowed.
+    Members (including directories) are checked with :func:`tarfile.data_filter`,
+    which rejects absolute paths after stripping leading slashes, ``..`` traversals,
+    links, device nodes, and other special files. Rejected members are skipped
+    with a warning.
+
+    Args:
+        member: Tar archive member to check
+        dest: Directory the member would be extracted to
+        allow_dirs: If directory members should be allowed
+
+    Returns:
+        The filtered member (it may be a modified copy, e.g. with the leading
+        ``/`` stripped from the name), or :obj:`None` if it should be skipped
+    """
+    if member.isdir():
+        if not allow_dirs:
+            return None
+        # Directories are name-checked like files, so a hostile name (e.g. "../x")
+        # is skipped here instead of making extractall() raise or follow it.
+    elif not member.isfile():
+        log.warning(
+            f"Skipping tar member '{member.name}': not a regular file "
+            f"(type {member.type!r}, link target {member.linkname!r})"
+        )
+        return None
+
+    if not hasattr(tarfile, "data_filter"):  # Python < 3.11.4 (no PEP 706 filters)
+        parts = PurePosixPath(member.name.replace("\\", "/")).parts
+        if not parts or parts[0] == "/" or ".." in parts:
+            log.warning(f"Skipping unsafe tar member '{member.name}': unsafe path")
+            return None
+        return member
+
+    try:
+        return tarfile.data_filter(member, str(dest))
+    except tarfile.FilterError as ex:
+        log.warning(f"Skipping unsafe tar member '{member.name}': {ex}")
+        return None
+
+
 def clean_empty_dirs(to_clean: Path) -> None:
     """
     Recursively remove all empty directories on the path.
+
+    Symbolic links are not followed.
     """
     try:
+        if to_clean.is_symlink():
+            return
+
         listing = list(to_clean.iterdir())
         if not listing:
             to_clean.rmdir()
         else:
             for item in listing:
-                if item.is_dir():
+                if item.is_dir() and not item.is_symlink():
                     clean_empty_dirs(item)
     except OSError:
         pass
@@ -433,6 +533,8 @@ def check_file(file: Path | str, ext: list | str | None = None) -> str | Path | 
 def fix_file_owners(to_fix: Path) -> bool:
     """
     Change owner of file(s) and directorie(s) to actual user running PEAT instead of root.
+
+    Symbolic links are not followed (the owner of the link itself is changed).
     """
     if not consts.POSIX:
         log.warning("Can't fix file owners on non-POSIX system")
@@ -461,13 +563,17 @@ def fix_file_owners(to_fix: Path) -> bool:
 
         log.info(f"Changing owners of {to_fix} to uid={uid} gid={gid}")
 
-        if to_fix.is_file():
-            shutil.chown(str(to_fix), user=uid, group=gid)
+        # NOTE: follow_symlinks=False so a symbolic link in the results
+        # (e.g. from pillage or an extracted archive) can't be used to
+        # change the owner of an arbitrary file on the system.
+        if to_fix.is_symlink() or not to_fix.is_dir():
+            os.chown(to_fix, uid, gid, follow_symlinks=False)
         else:
-            for dirpath, _, filenames in os.walk(to_fix):
-                shutil.chown(dirpath, user=uid, group=gid)
-                for filename in filenames:
-                    shutil.chown(os.path.join(dirpath, filename), user=uid, group=gid)
+            # os.walk() doesn't descend into symbolic links to directories
+            for dirpath, dirnames, filenames in os.walk(to_fix):
+                os.chown(dirpath, uid, gid, follow_symlinks=False)
+                for name in filenames + dirnames:
+                    os.chown(os.path.join(dirpath, name), uid, gid, follow_symlinks=False)
 
         return True
     except Exception as ex:

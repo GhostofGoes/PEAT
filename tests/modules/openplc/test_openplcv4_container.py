@@ -20,6 +20,8 @@ def live_dev(mocker):
     mocker.patch.object(datastore, "objects", [])
     dev = datastore.get("127.0.0.1")
     dev._runtime_options["openplcv4"] = {"username": "admin", "password": "admin"}
+    # The OpenPLC runtime container serves a self-signed certificate
+    dev._runtime_options["https"] = {"verify": False}
     return dev
 
 

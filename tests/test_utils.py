@@ -1,5 +1,7 @@
+import io
 import json
 import sys
+import tarfile
 from datetime import datetime
 from pathlib import Path
 from platform import python_version
@@ -308,3 +310,147 @@ def test_is_mac():
 
     assert not utils.is_mac("")
     assert not utils.is_mac("01:02:03:04:05:0")
+
+
+@pytest.mark.parametrize(
+    ("untrusted", "expected"),
+    [
+        (("a.txt",), "a.txt"),
+        (("sub", "a.txt"), "sub/a.txt"),
+        (("../../escape.txt",), "escape.txt"),
+        (("/etc/passwd",), "etc/passwd"),
+        (("..\\..\\escape.txt",), "escape.txt"),
+        (("a/../../b.txt",), "a/b.txt"),
+        (("",), ""),
+        (("C:/Windows/x.txt",), "Windows/x.txt"),
+        (("..\\..\\D:\\x.txt",), "x.txt"),
+        (("a", "C:x.txt"), "a/x.txt"),
+        (("//server/share/x.txt",), "server/share/x.txt"),
+    ],
+)
+def test_safe_join(tmp_path, untrusted, expected):
+    result = utils.safe_join(tmp_path, *untrusted)
+    assert result == (tmp_path.joinpath(*expected.split("/")) if expected else tmp_path)
+    assert result.resolve().is_relative_to(tmp_path.resolve())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks require privileges on Windows")
+def test_safe_join_symlink_escape(tmp_path):
+    base = tmp_path / "base"
+    outside = tmp_path / "outside"
+    base.mkdir()
+    outside.mkdir()
+    (base / "link").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="outside of"):
+        utils.safe_join(base, "link", "x.txt")
+
+
+def _tar_info(name: str, typ: bytes = tarfile.REGTYPE, linkname: str = "") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type = typ
+    info.linkname = linkname
+    return info
+
+
+@pytest.mark.parametrize(
+    ("member", "expected_name"),
+    [
+        (_tar_info("dir/file.txt"), "dir/file.txt"),
+        (_tar_info("/abs/file.txt"), "abs/file.txt"),
+        (_tar_info("../../escape.txt"), None),
+        (_tar_info("dir/../../escape.txt"), None),
+        (_tar_info("link", tarfile.SYMTYPE, "/etc/passwd"), None),
+        (_tar_info("hard", tarfile.LNKTYPE, "dir/file.txt"), None),
+        (_tar_info("dev", tarfile.CHRTYPE), None),
+        (_tar_info("fifo", tarfile.FIFOTYPE), None),
+        (_tar_info("dir", tarfile.DIRTYPE), None),
+    ],
+)
+def test_check_tar_member(tmp_path, member, expected_name):
+    result = utils.check_tar_member(member, tmp_path)
+    if expected_name is None:
+        assert result is None
+    else:
+        assert result is not None
+        assert result.name == expected_name
+
+
+def test_check_tar_member_allow_dirs(tmp_path):
+    member = _tar_info("dir", tarfile.DIRTYPE)
+    result = utils.check_tar_member(member, tmp_path, allow_dirs=True)
+    assert result is not None
+    assert result.name == "dir"
+
+
+@pytest.mark.parametrize("name", ["../dirup", "dir/../../dirup"])
+def test_check_tar_member_unsafe_dir(tmp_path, name):
+    member = _tar_info(name, tarfile.DIRTYPE)
+    assert utils.check_tar_member(member, tmp_path, allow_dirs=True) is None
+
+
+@pytest.mark.parametrize("name", ["../dirup", "/abs/dir", "../escape.txt"])
+def test_check_tar_member_unsafe_without_data_filter(monkeypatch, tmp_path, name):
+    # Python 3.11.0 - 3.11.3 have no PEP 706 extraction filters
+    monkeypatch.delattr(tarfile, "data_filter")
+    typ = tarfile.REGTYPE if name.endswith(".txt") else tarfile.DIRTYPE
+    member = _tar_info(name, typ)
+    assert utils.check_tar_member(member, tmp_path, allow_dirs=True) is None
+
+
+def test_tarfile_default_extraction_filter(tmp_path):
+    import peat  # noqa: F401  (importing peat sets the default filter)
+
+    archive = tmp_path / "evil.tar"
+    with tarfile.open(archive, "w") as tar:
+        data = b"pwned"
+        info = tarfile.TarInfo("../escape.txt")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+    dest = tmp_path / "dest"
+    with tarfile.open(archive) as tar:
+        with pytest.raises(tarfile.FilterError):
+            tar.extractall(dest)
+    assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
+def test_fix_file_owners_does_not_follow_symlinks(mocker, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("owned by root", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    (run_dir / "sub").mkdir(parents=True)
+    (run_dir / "sub" / "file.txt").write_text("x", encoding="utf-8")
+    (run_dir / "sub" / "link.txt").symlink_to(outside)
+    (run_dir / "dirlink").symlink_to(tmp_path, target_is_directory=True)
+
+    calls = []
+
+    def fake_chown(path, uid, gid, *, dir_fd=None, follow_symlinks=True):  # noqa: ARG001
+        calls.append((Path(path), follow_symlinks))
+
+    mocker.patch("os.chown", side_effect=fake_chown)
+    mocker.patch("os.geteuid", return_value=0)
+    mocker.patch("os.getegid", return_value=0)
+    mocker.patch.dict("os.environ", {"SUDO_UID": "1000", "SUDO_GID": "1000"})
+
+    assert utils.fix_file_owners(run_dir) is True
+    chowned = {p for p, _ in calls}
+    assert run_dir / "sub" / "file.txt" in chowned
+    for path, follow_symlinks in calls:
+        assert path.is_relative_to(run_dir), path
+        assert not (path.is_symlink() and follow_symlinks), path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks require privileges on Windows")
+def test_clean_empty_dirs_does_not_follow_symlinks(tmp_path):
+    outside = tmp_path / "outside"
+    (outside / "empty").mkdir(parents=True)
+    to_clean = tmp_path / "to_clean"
+    (to_clean / "empty").mkdir(parents=True)
+    (to_clean / "link").symlink_to(outside, target_is_directory=True)
+
+    utils.clean_empty_dirs(to_clean)
+    assert not (to_clean / "empty").exists()
+    assert (outside / "empty").is_dir()

@@ -44,6 +44,7 @@ from peat import (
     IPMethod,
     Service,
     config,
+    consts,
     datastore,
     utils,
 )
@@ -849,7 +850,10 @@ class M340(DeviceModule):
 
         if dev.options["m340"]["generate_openplc_project"] == "dev_out_dir":
             proj_name = dev.logic.name if dev.logic.name else dev.get_id()
-            proj_path = dev.get_sub_dir(f"openplc_project_{proj_name.replace(' ', '-')}")
+            # The project name comes from the (untrusted) project file, ensure
+            # it's a single file name that can't escape the device's directory.
+            proj_dir = consts.sanitize_filename(f"openplc_project_{proj_name.replace(' ', '-')}")
+            proj_path = utils.safe_join(dev.get_out_dir(), proj_dir)
         else:
             proj_path = Path(dev.options["m340"]["generate_openplc_project"]).resolve()
 

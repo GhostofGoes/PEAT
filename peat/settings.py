@@ -111,6 +111,48 @@ class Configuration(SettingsManager):
     Default timeout for sockets and potentially other things.
     """
 
+    TLS_VERIFY: bool = True
+    """
+    If TLS (SSL) certificates should be verified for HTTPS connections, including
+    connections to devices and to Elasticsearch/OpenSearch.
+
+    Many older OT devices use self-signed certificates, which fail verification.
+    Verification can be disabled for specific hosts with the ``https.verify`` device
+    option (e.g. ``options: {https: {verify: false}}`` in the ``hosts`` section of
+    the config file), or for everything by setting this to :obj:`False` (e.g.
+    ``tls_verify: false`` in the config file, or ``PEAT_TLS_VERIFY=false``).
+    A warning is logged for each host verification is disabled for.
+
+    .. warning::
+       If verification is disabled, anyone who can intercept the connection can
+       capture any credentials PEAT sends over it.
+    """
+
+    TLS_CA_BUNDLE: Path | None = None
+    """
+    Path to a file with CA certificates (PEM format) to use to verify TLS
+    certificates, instead of the default CA certificates. This can be used
+    to trust the certificates of devices without disabling verification.
+    Only used if :attr:`~peat.settings.Configuration.TLS_VERIFY` is :obj:`True`.
+
+    :meta hide-value:
+    """
+
+    SSH_KNOWN_HOSTS: Path | None = Path("~/.peat/known_hosts")
+    """
+    File where PEAT saves the SSH host keys of devices it connects to (OpenSSH
+    ``known_hosts`` format). ``~`` is expanded to the home directory of the user
+    running PEAT. If empty, host keys aren't saved between runs.
+
+    SSH host keys are checked against the system ``~/.ssh/known_hosts`` file and
+    this file. The key of a host that isn't in either is trusted on first use and
+    saved here, with a warning that includes its fingerprint. If a host's key
+    doesn't match the known key, the connection is refused before any credentials
+    are sent. To accept a changed key, remove the old key from this file, pin the
+    new key with the ``ssh.host_key_fingerprint`` device option, or set the
+    ``ssh.trust_new_host_key`` device option to :obj:`True` for the host.
+    """
+
     RESOLVE_IP: bool = True
     """
     If PEAT should attempt to resolve device :term:`IP`

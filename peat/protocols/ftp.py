@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Optional
 
 import peat  # Avoid circular imports
-from peat import CommError, config, log, utils
+from peat import CommError, config, consts, log, utils
 
 
 class FTP:
@@ -132,6 +132,14 @@ class FTP:
         Returns:
             If the login was successful
         """
+        if passwd:
+            # Imported here to avoid a circular import
+            from peat.log_utils import register_secret
+
+            # The password may not be in the config (e.g. a module's default
+            # credentials), so ensure it's redacted from log messages.
+            register_secret(passwd)
+
         self.log.debug(f"Attempting login as user '{user}'")
 
         try:
@@ -495,7 +503,15 @@ class FTP:
         failed = 0
 
         for entry in to_download:
-            save_path = Path(local_dir, entry["path"].lstrip("/"))
+            try:
+                # The path comes from the device's file listing,
+                # ensure it can't be used to write outside of local_dir.
+                save_path = utils.safe_join(local_dir, consts.sanitize_filepath(entry["path"]))
+            except ValueError as ex:
+                self.log.warning(f"Skipping download of '{entry['path']}': {ex}")
+                failed += 1
+                continue
+
             if save_path.exists():
                 self.log.warning(f"{save_path} already exists, new file: {entry}")
             try:

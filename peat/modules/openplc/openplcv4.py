@@ -17,7 +17,6 @@ import json
 from pathlib import Path
 
 import requests
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 # PEAT Core Imports
 from peat import (
@@ -31,9 +30,8 @@ from peat import (
     User,
     utils,
 )
-
-# Suppress warnings from urllib3 for insecure/self-signed SSL connections
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+from peat.protocols import HTTP
+from peat.protocols.http import TLS_VERIFY_HINT, resolve_tls_verify
 
 
 # --- Standalone Data Processors ---
@@ -164,6 +162,24 @@ class OpenPLCv4(DeviceModule):
         },  # Hardcoded default https port for OpenPLC Runtime v4
     }
 
+    @staticmethod
+    def _gen_session(dev: DeviceData) -> requests.Session:
+        """
+        HTTPS session for the OpenPLC API that honors the TLS verification
+        settings (``tls_verify``, ``tls_ca_bundle``, and the ``https.verify``
+        device option) and ignores proxy settings from the environment.
+
+        .. note::
+           OpenPLC Runtime v4 uses a self-signed certificate by default. Either
+           trust it with ``tls_ca_bundle``, or disable verification for the host
+           with ``options: {https: {verify: false}}``.
+        """
+        verify = resolve_tls_verify(
+            host=f"{dev.ip}:{dev.options['https']['port']}",
+            device_verify=bool(dev.options["https"].get("verify", True)),
+        )
+        return HTTP.gen_session(verify=verify)
+
     @classmethod
     def _login(cls, dev: DeviceData, session: requests.Session) -> bool:
         """Logs into the OpenPLC API via HTTPS and stores the access token."""
@@ -183,9 +199,7 @@ class OpenPLCv4(DeviceModule):
 
         try:
             cls.log.info(f"Attempting to log in to {dev.ip} over HTTPS as '{username}'...")
-            response = session.post(
-                f"{api_url}/login", json=login_payload, verify=False, timeout=10
-            )
+            response = session.post(f"{api_url}/login", json=login_payload, timeout=10)
             if response.status_code == 200:
                 access_token = response.json().get("access_token")
                 if access_token:
@@ -206,6 +220,9 @@ class OpenPLCv4(DeviceModule):
                 )
                 cls.log.debug(f"Failed login response: {response.text}")
                 return False
+        except requests.exceptions.SSLError as e:
+            cls.log.error(f"Error during login to {dev.ip}: {e}. {TLS_VERIFY_HINT}")
+            return False
         except requests.exceptions.RequestException as e:
             cls.log.error(f"Error during login to {dev.ip}: {e}")
             return False
@@ -232,7 +249,6 @@ class OpenPLCv4(DeviceModule):
         url = f"{api_url}/{endpoint}"
         cls.log.debug(f"Making {method} request to: {url}")
         kwargs.setdefault("timeout", 60 if method.upper() == "POST" else 10)
-        kwargs.setdefault("verify", False)
 
         try:
             if method.upper() == "GET":
@@ -256,7 +272,7 @@ class OpenPLCv4(DeviceModule):
     @classmethod
     def _push(cls, dev: DeviceData, file: Path, _push_type: str) -> bool:
         """Pushes a program to the OpenPLC runtime."""
-        session = requests.Session()
+        session = cls._gen_session(dev)
 
         if not cls._login(dev, session):
             cls.log.error(f"Push failed for {dev.ip}: Could not authenticate to the API.")
@@ -311,7 +327,7 @@ class OpenPLCv4(DeviceModule):
             cls.log.info("Skipping OpenPLC pull: 'https' not in pull_methods.")
             return True
 
-        session = requests.Session()
+        session = cls._gen_session(dev)
 
         if not cls._login(dev, session):
             cls.log.error(f"Pull failed for {dev.ip}: Could not authenticate to the API.")
@@ -375,7 +391,8 @@ class OpenPLCv4(DeviceModule):
         cls.log.debug(f"Checking for OpenPLCv4 API at {url}")
 
         try:
-            response = requests.get(url, verify=False, timeout=5)
+            with cls._gen_session(dev) as session:
+                response = session.get(url, timeout=5)
             if response.status_code == 200:
                 version_data = response.json()
                 if "version" in version_data:
@@ -395,6 +412,12 @@ class OpenPLCv4(DeviceModule):
             cls.log.debug(
                 f"No valid OpenPLC API response from {dev.ip}. \
                 Status: {response.status_code}, Body: {response.text}"
+            )
+            return False
+        except requests.exceptions.SSLError as e:
+            cls.log.warning(
+                f"Failed to verify OpenPLCv4 at {dev.ip} via HTTPS API, TLS certificate "
+                f"verification failed: {e}. {TLS_VERIFY_HINT}"
             )
             return False
         except requests.exceptions.RequestException as e:

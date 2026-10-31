@@ -286,16 +286,21 @@ class Telnet:
         """Return the fileno() of the socket object used internally."""
         return self.sock.fileno()
 
-    def write(self, buffer):
+    def write(self, buffer, sensitive=False):
         """Write a string to the socket, doubling any IAC characters.
 
         Can block if the connection is blocked.  May raise
         OSError if the connection is closed.
 
+        If sensitive is True (e.g. a password), the data isn't logged.
+
         """
         if IAC in buffer:
             buffer = buffer.replace(IAC, IAC+IAC)
-        self.log.trace3("send %r" % buffer)
+        if sensitive:
+            self.log.trace3("send <redacted>")
+        else:
+            self.log.trace3("send %r" % buffer)
         self.sock.sendall(buffer)
 
     def read_until(self, match, timeout=None):

@@ -13,7 +13,6 @@ import warnings
 from time import sleep
 
 import requests
-import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 
@@ -55,15 +54,15 @@ class SageHTTP(HTTP):
         self.config_file_name: str = ""
         self.cookies: dict = {"SESSIONID": "", "KEY": ""}
 
-        # Disable warnings about unverified HTTPS requests being sent
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         # Disable warnings from the ssl library about "ssl.PROTOCOL_TLS" being deprecated
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         super().__init__(*args, **kwargs)
 
-    def gen_session(self) -> requests.Session:
-        session = super().gen_session()
+    def gen_session(self, verify: bool | str | None = None) -> requests.Session:
+        if verify is None:
+            verify = self.tls_verify
+        session = super().gen_session(verify=verify)
 
         if self.protocol == "https":
             ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
@@ -75,7 +74,7 @@ class SageHTTP(HTTP):
     def create_socket(self) -> socket.socket | None:
         try:
             if self.protocol == "https":
-                context = ssl._create_unverified_context()
+                context = self.ssl_context()
                 context.set_ciphers("DEFAULT")
 
                 with socket.create_connection(
@@ -182,7 +181,6 @@ class SageHTTP(HTTP):
                     data=config_page_post_data,
                     cookies=self.cookies,
                     headers={"Connection": "close"},
-                    verify=False,
                 )
 
                 # TODO: self.post, with recycled session
@@ -254,7 +252,6 @@ class SageHTTP(HTTP):
                 use_cache=False,
                 cookies=self.cookies,
                 stream=True,
-                verify=False,
             )
 
             if not response:
@@ -274,7 +271,6 @@ class SageHTTP(HTTP):
             if self.post(
                 f"{self.url}/fs/logout.html",
                 cookies=self.cookies,
-                verify=False,
             ):
                 return True
         except Exception as ex:
