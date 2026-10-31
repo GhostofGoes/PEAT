@@ -4,10 +4,11 @@ import copy
 import inspect
 import json
 import mimetypes
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path, PurePath
-from typing import Any, AnyStr, Literal
+from typing import TYPE_CHECKING, Any, AnyStr, Literal
 
 from pydantic import (
     Field,
@@ -54,6 +55,16 @@ from .validators import (
     validate_ip,
     validate_mac,
 )
+
+if TYPE_CHECKING:
+    from .compare import DeviceDiff
+
+_NO_ADDRESS_RESOLUTION: ContextVar[bool] = ContextVar("_NO_ADDRESS_RESOLUTION", default=False)
+"""
+If set, :meth:`Interface.annotate` doesn't resolve hostnames, IPs or MACs (no network
+requests), regardless of the ``RESOLVE_*`` settings. Used by :meth:`DeviceData.compare`.
+This is a context variable, so setting it only affects the current thread.
+"""
 
 # NOTE:
 # - values added directly to sets/lists are not validated (e.g. related.*) (TODO: fix this somehow?)
@@ -1580,20 +1591,22 @@ class Interface(BaseModel):
     _strip_quotes = validator("description", allow_reuse=True)(strip_quotes)
 
     def annotate(self, dev: DeviceData | None = None):
+        resolve = not _NO_ADDRESS_RESOLUTION.get()
+
         # Resolve host if not set OR if IP is changed and host is not
-        if config.RESOLVE_HOSTNAME and (self.ip and not self.hostname):
+        if resolve and config.RESOLVE_HOSTNAME and (self.ip and not self.hostname):
             self.hostname = addresses.resolve_ip_to_hostname(self.ip)
 
         # Resolve IP from MAC (may make an ARP request)
-        if config.RESOLVE_IP and self.mac and not self.ip:
+        if resolve and config.RESOLVE_IP and self.mac and not self.ip:
             self.ip = mac_to_ip(self.mac)
 
         # Resolve IP from hostname (may make a DNS request or broadcast)
-        if config.RESOLVE_IP and self.hostname and not self.ip:
+        if resolve and config.RESOLVE_IP and self.hostname and not self.ip:
             self.ip = addresses.resolve_hostname_to_ip(self.hostname)
 
         # Resolve MAC from IP
-        if config.RESOLVE_MAC and self.ip and not self.mac:
+        if resolve and config.RESOLVE_MAC and self.ip and not self.mac:
             self.mac = addresses.clean_mac(ip_to_mac(self.ip))
 
         if self.mac and not self.mac_vendor:
@@ -4271,6 +4284,76 @@ class DeviceData(BaseModel):
             container.append(value)
 
         return value
+
+    def compare(
+        self,
+        other: DeviceData | dict,
+        *,
+        include: str | list[str] | None = None,
+        exclude: str | list[str] | None = None,
+        use_default_excludes: bool = True,
+        include_original: bool = False,
+        ignore_order: bool = True,
+    ) -> DeviceDiff:
+        """
+        Compare this device's data to another device or to exported device data.
+
+        The result describes how to get from this device (the "old" data, e.g. a
+        baseline or an earlier pull) to ``other`` (the "new" data): ``added`` values
+        are only present in ``other``, ``removed`` values are only present in this
+        device, and ``changed`` values are present in both with different values.
+
+        Data is compared in its exported form (the same as ``device-data-full.json``).
+        Lists of sub-models, such as :attr:`interface`, :attr:`service`,
+        :attr:`files` or :attr:`registers`, are matched by identity keys (e.g. the
+        port and protocol of a service) instead of by position.
+        Refer to :func:`~peat.data.compare.compare_device_data` for details
+        on the arguments and the pattern syntax for ``exclude``.
+
+        .. note::
+           Like :meth:`export`, this populates and deduplicates fields on the
+           :class:`DeviceData` objects being compared. Hostname, IP and MAC
+           resolution (``RESOLVE_*`` settings) is disabled while comparing,
+           so comparing makes no network requests.
+
+        Examples:
+
+        - Configuration drift between two pulls: ``old_dev.compare(new_dev)``
+        - Compare to a baseline file:
+          ``dev.compare(json.loads(Path("device-data-full.json").read_text()))``
+        - Only compare logic and firmware: ``dev.compare(other, include=["logic", "firmware"])``
+        - Only compare interface IPs: ``dev.compare(other, include="interface.ip")``
+
+        Args:
+            other: Device to compare to, or a :class:`dict` of exported device data
+            include: Only compare these fields (top-level fields, or dotted paths
+                without list selectors, e.g. ``firmware.version``)
+            exclude: Patterns of fields to exclude, in addition to
+                :data:`~peat.data.compare.DEFAULT_COMPARE_EXCLUDES` (if enabled)
+            use_default_excludes: Exclude values that are expected to change between
+                pulls of an unchanged device, such as ``uptime`` or ``event``
+            include_original: Compare ``original`` fields (raw data)
+            ignore_order: Match list items by identity keys instead of by position
+
+        Returns:
+            The differences, as a :class:`~peat.data.compare.DeviceDiff`
+
+        Raises:
+            TypeError: If ``other`` is not a DeviceData or :class:`dict`
+            ValueError: If ``include`` is empty or has unknown field names,
+                or the data is nested too deeply
+        """
+        from .compare import compare_device_data
+
+        return compare_device_data(
+            self,
+            other,
+            include=include,
+            exclude=exclude,
+            use_default_excludes=use_default_excludes,
+            include_original=include_original,
+            ignore_order=ignore_order,
+        )
 
     def is_duplicate(self, other: DeviceData) -> bool:
         """
