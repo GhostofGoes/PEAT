@@ -101,6 +101,11 @@ def parse(
     parse_results = []
     parsed_devices = []
 
+    # Devices that existed before this parse. Devices created during the parse
+    # (e.g. one device per IED in an IEC 61850 SCD file, or the extra devices
+    # created by multi-device modules) are pushed to Elasticsearch as well.
+    existing = {id(d) for d in datastore.objects}
+
     # Iterate over the user-provided path arguments
     # TODO: breakup this logic a bit
     for path in paths:
@@ -173,7 +178,8 @@ def parse(
     # * Push results to Elasticsearch *
     if state.elastic:
         for d_dev in datastore.objects:
-            if d_dev not in parsed_devices:  # skip any not part of this parse
+            # skip any not part of this parse (neither parsed nor created by it)
+            if d_dev not in parsed_devices and id(d_dev) in existing:
                 log.trace(f"Skipping device not part of parse: {d_dev.get_id()}")
                 continue
             d_dev.export_to_elastic()

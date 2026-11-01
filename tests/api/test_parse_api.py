@@ -1,4 +1,4 @@
-from peat import __version__, config, datastore
+from peat import DeviceData, __version__, config, datastore, state
 from peat.api.parse_api import parse
 
 
@@ -93,3 +93,45 @@ def test_parse_api_multiple_files(test_dir, tmp_path, mocker, assert_glob_path, 
 
     assert_glob_path(parse_path, "parse-summary.json")
     assert_no_errors()
+
+
+def test_parse_api_pushes_devices_created_during_parse(test_dir, tmp_path, mocker):
+    """Devices created during a parse (e.g. one per IED of an SCD file) are pushed."""
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    elastic = mocker.MagicMock()
+    mocker.patch.dict(state["CONFIG"], {"elastic": elastic})
+
+    old_dev = datastore.get("192.0.2.1")  # existed before the parse: not pushed
+
+    def fake_parse_data(source, dev_cls):  # noqa: ARG001
+        parsed = datastore.get("192.0.2.10")
+        parsed.name = "PROT1"
+        extra = datastore.get("192.0.2.11")  # created as a side effect of the parse
+        extra.name = "MU1"
+        return parsed
+
+    mocker.patch("peat.api.parse_api.parse_data", side_effect=fake_parse_data)
+    pushed = []
+    mocker.patch.object(
+        DeviceData,
+        "export_to_elastic",
+        autospec=True,
+        side_effect=lambda dev, *args, **kwargs: pushed.append(dev.ip) or True,  # noqa: ARG005
+    )
+
+    path = test_dir / "modules" / "sandia" / "data_files" / "bp" / "dnp3-client.xml"
+    summary = parse([path], ["SCEPTRE"])
+
+    assert summary
+    assert summary["num_parse_successes"] == 1
+    assert sorted(pushed) == ["192.0.2.10", "192.0.2.11"]
+    assert old_dev.ip not in pushed

@@ -65,6 +65,20 @@ class BaseModel(PydanticBaseModel):
     _sort_by_fields: tuple[str] = PrivateAttr(default=())
     """Field names and order to use when sorting lists of this model."""
 
+    _dedupe_key: tuple[str] = PrivateAttr(default=())
+    """
+    Fields that identify a model inside a list. Items whose values for ALL these
+    fields are equal (and not all empty) are merged by ``dedupe_model_list()``,
+    and ``DeviceData.store()`` uses them as the default lookup.
+    """
+
+    _newest_wins_field: str = PrivateAttr(default="")
+    """
+    Name of a datetime field. When two models are merged and the source's value
+    is newer, the source's non-default values overwrite the destination's
+    (``NetworkStatistics`` is replaced wholesale, see ``merge_models()``).
+    """
+
     def __repr_args__(self) -> list[tuple]:
         return [
             (a, v) for a, v in super().__repr_args__() if v is not None and not self.is_default(a)

@@ -56,6 +56,18 @@ KEYWORD_AND_TEXT: Final[NestedMappingType] = {
     "fields": {"text": TEXT},
 }
 
+# Long keyword values (e.g. JSON-encoded expected/actual values of baseline findings)
+LONG_KEYWORD: Final[EsTypeType] = {"type": "keyword", "ignore_above": 4096}
+
+# Free text of fields added for ECS 9.5.0 / issue #48: keyword limited to 1024
+# characters like ECS keywords (a single value over 32766 bytes would otherwise
+# reject the whole document), full text searchable through the ".text" multi-field.
+FREE_TEXT: Final[NestedMappingType] = {
+    "type": "keyword",
+    "ignore_above": 1024,
+    "fields": {"text": TEXT},
+}
+
 
 # -- Reusable mapping definitions based on ECS --
 VENDOR_FIELDS: Final[MappingType] = {
@@ -122,6 +134,7 @@ RELATED_FIELDS: Final[MappingType] = {
     "roles": KEYWORD,
     "urls": KEYWORD,
     "user": KEYWORD,
+    "vlans": KEYWORD,
 }
 
 FILE_FIELDS: Final[NestedMappingType] = {
@@ -145,7 +158,97 @@ FILE_FIELDS: Final[NestedMappingType] = {
     "size": LONG,
     "target_path": KEYWORD,
     "type": KEYWORD,
+    "category": KEYWORD,
     "uid": KEYWORD,
+    "extra": FLATTENED,
+}
+
+VLAN_FIELDS: Final[MappingType] = {
+    "id": KEYWORD,
+    "name": KEYWORD,
+    "priority": BYTE,
+    "tagged": BOOL,
+}
+
+NETWORK_TRAFFIC_FIELDS: Final[MappingType] = {
+    "bytes": LONG,
+    "packets": LONG,
+    "unicast_packets": LONG,
+    "multicast_packets": LONG,
+    "broadcast_packets": LONG,
+    "messages": LONG,
+    "errors": LONG,
+    "dropped": LONG,
+    "crc_errors": LONG,
+    "unknown_protocols": LONG,
+}
+
+CONNECTION_STATISTICS_FIELDS: Final[MappingType] = {
+    "active": LONG,
+    "max": LONG,
+    "listening": LONG,
+    "total": LONG,
+    "failed": LONG,
+    "closed": LONG,
+    "resets": LONG,
+    "timeouts": LONG,
+    "authentication_successes": LONG,
+    "authentication_failures": LONG,
+}
+
+NETWORK_STATISTICS_FIELDS: Final[NestedMappingType] = {
+    "timestamp": DATE,
+    "since": DATE,
+    "interface": KEYWORD,
+    "type": KEYWORD,
+    "transport": KEYWORD,
+    "protocol": KEYWORD,
+    "ingress": {"properties": NETWORK_TRAFFIC_FIELDS},
+    "egress": {"properties": NETWORK_TRAFFIC_FIELDS},
+    "connections": {"properties": CONNECTION_STATISTICS_FIELDS},
+    "collisions": LONG,
+    "link_down_count": LONG,
+    "extra": FLATTENED,
+}
+
+SERVICE_SECURITY_FIELDS: Final[MappingType] = {
+    "authentication_required": BOOL,
+    "anonymous_access": BOOL,
+    "default_credentials": BOOL,
+    "encrypted": BOOL,
+    "security_mode": KEYWORD,
+    "authentication_methods": KEYWORD,
+    "tls_version": KEYWORD,
+    "extra": FLATTENED,
+}
+
+REDUNDANCY_FIELDS: Final[MappingType] = {
+    "protocol": KEYWORD,
+    "mode": KEYWORD,
+    "role": KEYWORD,
+    "state": KEYWORD,
+    "lan": KEYWORD,
+    "members": KEYWORD,
+    "partner": KEYWORD,
+    "extra": FLATTENED,
+}
+
+LOGIC_TASK_FIELDS: Final[NestedMappingType] = {
+    "name": KEYWORD,
+    "type": KEYWORD,
+    "interval": DOUBLE,  # timedelta -> seconds (float)
+    "priority": LONG,
+    "watchdog": DOUBLE,
+    "programs": KEYWORD,
+    "enabled": BOOL,
+    "scan_count": LONG,
+    "scan_time_min": DOUBLE,
+    "scan_time_max": DOUBLE,
+    "scan_time_avg": DOUBLE,
+    "scan_time_last": DOUBLE,
+    "overruns": LONG,
+    "cpu_percent": DOUBLE,
+    "description": FREE_TEXT,
     "extra": FLATTENED,
 }
 
@@ -175,6 +278,7 @@ LOGIC_FIELDS: Final[NestedMappingType] = {
     "name": KEYWORD_AND_TEXT,
     "original": TEXT,
     "parsed": TEXT,
+    "tasks": {"properties": LOGIC_TASK_FIELDS},
 }
 
 CERTENTITY_FIELDS: Final[MappingType] = {
@@ -204,7 +308,7 @@ X509_FIELDS: Final[NestedMappingType] = {
     "version_number": KEYWORD,
 }
 
-SERVICE_FIELDS: Final[MappingType] = {
+SERVICE_FIELDS: Final[NestedMappingType] = {
     "configured_port": LONG,
     "enabled": BOOL,
     "extra": FLATTENED,
@@ -216,6 +320,8 @@ SERVICE_FIELDS: Final[MappingType] = {
     "protocol": KEYWORD,
     "protocol_id": KEYWORD,
     "role": KEYWORD,
+    "security": {"properties": SERVICE_SECURITY_FIELDS},
+    "statistics": {"properties": NETWORK_STATISTICS_FIELDS},
     "status": KEYWORD,
     "transport": KEYWORD,
 }
@@ -229,6 +335,10 @@ INTERFACE_FIELDS: Final[NestedMappingType] = {
     "enabled": BOOL,
     "extra": FLATTENED,
     "name": KEYWORD,
+    "parent": KEYWORD,
+    "vlan": {"properties": VLAN_FIELDS},
+    "vlans": {"properties": VLAN_FIELDS},
+    "redundancy": {"properties": REDUNDANCY_FIELDS},
     "type": KEYWORD,
     "hostname": KEYWORD,
     "mac": KEYWORD,
@@ -238,6 +348,7 @@ INTERFACE_FIELDS: Final[NestedMappingType] = {
     "promiscuous_mode": BOOL,
     "speed": INTEGER,
     "uptime": LONG,
+    "statistics": {"properties": NETWORK_STATISTICS_FIELDS},
     "hardware_mac": KEYWORD,
     "id": KEYWORD,
     "ip": IP,
@@ -303,11 +414,318 @@ GEO_FIELDS: Final[MappingType] = {
     "timezone": KEYWORD,
 }
 
-EVENT_FIELDS: Final[NestedMappingType] = {
-    "action": KEYWORD,
+ROUTE_FIELDS: Final[NestedMappingType] = {
+    "destination": KEYWORD,
+    "gateway": IP,
+    "interface": KEYWORD,
+    "metric": LONG,
+    "type": KEYWORD,
+    "protocol": KEYWORD,
+    "flags": KEYWORD,
+    "enabled": BOOL,
+    "description": FREE_TEXT,
+    "extra": FLATTENED,
+}
+
+TIME_SOURCE_FIELDS: Final[MappingType] = {
+    "protocol": KEYWORD,
+    "address": KEYWORD,
+    "port": LONG,
+    "priority": LONG,
+    "stratum": LONG,
+    "state": KEYWORD,
+    "enabled": BOOL,
+    "selected": BOOL,
+    "offset": DOUBLE,
+    "last_sync": DATE,
+    "extra": FLATTENED,
+}
+
+CLOCK_FIELDS: Final[NestedMappingType] = {
+    "time": DATE,
+    "observed": DATE,
+    "offset": DOUBLE,
+    "utc_offset": KEYWORD,
+    "synchronized": BOOL,
+    "source": KEYWORD,
+    "last_sync": DATE,
+    "sources": {"properties": TIME_SOURCE_FIELDS},
+    "extra": FLATTENED,
+}
+
+RELATIONSHIP_ENDPOINT_FIELDS: Final[MappingType] = {
+    "address": KEYWORD,
+    "ip": IP,
+    "mac": KEYWORD,
+    "port": LONG,
+    "hostname": KEYWORD,
+    "id": KEYWORD,
+    "name": KEYWORD,
+    "interface": KEYWORD,
+    "serial_port": KEYWORD,
+    "protocol_address": KEYWORD,
+    "role": KEYWORD,
+}
+
+RELATIONSHIP_FIELDS: Final[NestedMappingType] = {
+    "id": KEYWORD,
+    "type": KEYWORD,
+    "protocol": KEYWORD,
+    "transport": KEYWORD,
+    "medium": KEYWORD,
+    "direction": KEYWORD,
+    "local": {"properties": RELATIONSHIP_ENDPOINT_FIELDS},
+    "remote": {"properties": RELATIONSHIP_ENDPOINT_FIELDS},
+    "vlan": {"properties": VLAN_FIELDS},
+    "reference": KEYWORD,
+    "state": KEYWORD,
+    "enabled": BOOL,
+    "evidence": KEYWORD,
+    "first_seen": DATE,
+    "last_seen": DATE,
+    "count": LONG,
+    "statistics": {"properties": NETWORK_STATISTICS_FIELDS},
+    "description": FREE_TEXT,
+    "extra": FLATTENED,
+}
+
+INDICATOR_FIELDS: Final[NestedMappingType] = {
+    "name": KEYWORD,
+    "label": FREE_TEXT,
+    "type": KEYWORD,
     "category": KEYWORD,
+    "state": KEYWORD,
+    "color": KEYWORD,
+    "blink_rate": DOUBLE,
+    "value": FREE_TEXT,
+    "description": FREE_TEXT,
+    "health": KEYWORD,
+    "latched": BOOL,
+    "equation": FREE_TEXT,
+    "interface": KEYWORD,
+    "position": KEYWORD,
+    "timestamp": DATE,
+    "extra": FLATTENED,
+}
+
+# ECS "process.*" leaf names (reuses USER_FIELDS and HASH_FIELDS)
+HOST_PROCESS_FIELDS: Final[NestedMappingType] = {
+    "pid": LONG,
+    "name": FREE_TEXT,
+    "title": FREE_TEXT,
+    "executable": FREE_TEXT,
+    "args": KEYWORD,
+    "command_line": FREE_TEXT,
+    "working_directory": FREE_TEXT,
+    "start": DATE,
+    "uptime": LONG,
+    "exit_code": LONG,
+    "entity_id": KEYWORD,
+    "parent": {"properties": {"pid": LONG, "name": KEYWORD}},
+    "user": {"properties": USER_FIELDS},
+    "hash": {"properties": HASH_FIELDS},
+    "type": KEYWORD,
+    "state": KEYWORD,
+    "priority": LONG,
+    "threads_count": LONG,
+    "cpu_percent": DOUBLE,
+    "memory_bytes": LONG,
+    "memory_percent": DOUBLE,
+    "extra": FLATTENED,
+}
+
+# ECS "package.*" leaf names
+PACKAGE_FIELDS: Final[NestedMappingType] = {
+    "name": KEYWORD,
+    "version": KEYWORD,
+    "type": KEYWORD,
+    "category": KEYWORD,
+    "architecture": KEYWORD,
+    "description": FREE_TEXT,
+    "installed": DATE,
+    "path": KEYWORD,
+    "license": KEYWORD,
+    "reference": KEYWORD,
+    "size": LONG,
+    "checksum": KEYWORD,
+    "build_version": KEYWORD,
+    "vendor": KEYWORD,
+    "cpe": KEYWORD,
+    "purl": KEYWORD,
+    "extra": FLATTENED,
+}
+
+ASSET_FIELDS: Final[NestedMappingType] = {
+    "id": KEYWORD,
+    "criticality": KEYWORD,
+    "owner": KEYWORD,
+    "business_unit": KEYWORD,
+    "site": KEYWORD,
+    "location": KEYWORD,
+    "zone": KEYWORD,
+    "conduits": KEYWORD,
+    "purdue_level": KEYWORD,
+    "safety": BOOL,
+    "tags": KEYWORD,
+    "description": FREE_TEXT,
+    "extra": FLATTENED,
+}
+
+IEC61850_ADDRESS_FIELDS: Final[NestedMappingType] = {
+    "mac": KEYWORD,
+    "appid": LONG,
+    "vlan": {"properties": VLAN_FIELDS},
+}
+
+IEC61850_FIELDS: Final[NestedMappingType] = {
+    "ied_name": KEYWORD,
+    "description": FREE_TEXT,
+    "manufacturer": KEYWORD,
+    "ied_type": KEYWORD,
+    "config_version": KEYWORD,
+    "original_scl_version": KEYWORD,
+    "scl_file": KEYWORD,
+    "header": {
+        "properties": {
+            "file_type": KEYWORD,
+            "scl_version": KEYWORD,
+            "id": KEYWORD,
+            "version": KEYWORD,
+            "revision": KEYWORD,
+            "tool_id": KEYWORD,
+            "name_structure": KEYWORD,
+            "history": {
+                "properties": {
+                    "version": KEYWORD,
+                    "revision": KEYWORD,
+                    "when": KEYWORD,
+                    "who": KEYWORD,
+                    "what": FREE_TEXT,
+                    "why": FREE_TEXT,
+                }
+            },
+        }
+    },
+    "access_points": {
+        "properties": {
+            "name": KEYWORD,
+            "subnetwork": KEYWORD,
+            "subnetwork_type": KEYWORD,
+            "ip": IP,
+            "subnet_mask": IP,
+            "gateway": IP,
+            "mms_port": LONG,
+            "server": BOOL,
+            "authentication": KEYWORD,
+            "redundancy": KEYWORD,
+            "physical_ports": KEYWORD,
+            "router": BOOL,
+            "clock": BOOL,
+            "osi": FLATTENED,
+        }
+    },
+    "logical_devices": {
+        "properties": {
+            "inst": KEYWORD,
+            "name": KEYWORD,
+            "description": FREE_TEXT,
+            "access_point": KEYWORD,
+            "logical_nodes": KEYWORD,
+        }
+    },
+    "publications": {
+        "properties": {
+            "type": KEYWORD,
+            "name": KEYWORD,
+            "ld_inst": KEYWORD,
+            "reference": KEYWORD,
+            "id": KEYWORD,
+            "dataset": KEYWORD,
+            "dataset_members_count": LONG,
+            "conf_rev": LONG,
+            "security": KEYWORD,
+            "address": {"properties": IEC61850_ADDRESS_FIELDS},
+            "min_time": LONG,
+            "max_time": LONG,
+            "smp_rate": LONG,
+            "smp_mod": KEYWORD,
+            "nof_asdu": LONG,
+            "subscribers": KEYWORD,
+            "description": FREE_TEXT,
+        }
+    },
+    "report_controls": {
+        "properties": {
+            "name": KEYWORD,
+            "ld_inst": KEYWORD,
+            "ln": KEYWORD,
+            "report_id": KEYWORD,
+            "dataset": KEYWORD,
+            "conf_rev": LONG,
+            "buffered": BOOL,
+            "buffer_time": LONG,
+            "integrity_period": LONG,
+            "trigger_options": KEYWORD,
+            "max_clients": LONG,
+            "clients": KEYWORD,
+        }
+    },
+    "subscriptions": {
+        "properties": {
+            "service_type": KEYWORD,
+            "publisher_ied": KEYWORD,
+            "publisher_ld_inst": KEYWORD,
+            "control_block": KEYWORD,
+            "reference": KEYWORD,
+            "address": {"properties": IEC61850_ADDRESS_FIELDS},
+            "ext_ref_count": LONG,
+        }
+    },
+    "datasets_count": LONG,
+    "setting_groups": LONG,
+    "active_setting_group": LONG,
+    "capabilities": FLATTENED,
+    "functional_locations": KEYWORD,
+    "extra": FLATTENED,
+}
+
+# ECS "rule.*" subset for baseline findings (rule.version is not emitted)
+RULE_FIELDS: Final[MappingType] = {
+    "id": KEYWORD,
+    "name": KEYWORD,
+    "ruleset": KEYWORD,
+    "reference": KEYWORD,
+    "category": KEYWORD,
+}
+
+# Custom root "baseline.*" of the baseline findings index
+BASELINE_DOC_FIELDS: Final[NestedMappingType] = {
+    "id": KEYWORD,
+    "name": KEYWORD,
+    "kind": KEYWORD,
+    "version": KEYWORD,
+    "finding": {
+        "properties": {
+            "path": KEYWORD,
+            "category": KEYWORD,
+            "result": KEYWORD,
+            "difference": KEYWORD,
+            "operator": KEYWORD,
+            "expected": LONG_KEYWORD,
+            "actual": LONG_KEYWORD,
+            "severity": KEYWORD,
+            "standards": KEYWORD,
+        }
+    },
+}
+
+EVENT_FIELDS: Final[NestedMappingType] = {
+    "action": KEYWORD_AND_TEXT,
+    "category": KEYWORD,
+    "code": KEYWORD,
     "created": DATE,
     "dataset": KEYWORD,
+    "end": DATE,  # relationships index: Relationship.last_seen
     "extra": FLATTENED,
     "hash": {"properties": HASH_FIELDS},
     "id": KEYWORD,
@@ -318,10 +736,19 @@ EVENT_FIELDS: Final[NestedMappingType] = {
     "original": TEXT,
     "outcome": KEYWORD,
     "provider": KEYWORD,
+    "reason": FREE_TEXT,
     "sequence": LONG,
     "severity": LONG,
+    "start": DATE,  # relationships index: Relationship.first_seen
     "timezone": KEYWORD,
     "type": KEYWORD,
+}
+
+# host.event[*] only: Event.log_level is exported as root "log.level" in the
+# events index, but as "host.event[*].log_level" in host documents.
+HOST_EVENT_FIELDS: Final[NestedMappingType] = {
+    **{k: v for k, v in EVENT_FIELDS.items() if k not in ("start", "end")},
+    "log_level": KEYWORD,
 }
 
 OS_FIELDS: Final[NestedMappingType] = {
@@ -408,11 +835,17 @@ BASIC_HOST_FIELDS: Final[NestedMappingType] = {
     "id": KEYWORD,
     "ip": IP,
     "mac": KEYWORD,
+    "mac_vendor": KEYWORD_AND_TEXT,
     "serial_port": KEYWORD,
     "name": KEYWORD,
+    "label": KEYWORD,
+    "comment": KEYWORD_AND_TEXT,
     "type": KEYWORD,
+    "serial_number": KEYWORD,
     "slot": KEYWORD,
     "geo": {"properties": GEO_FIELDS},
+    "asset": {"properties": ASSET_FIELDS},
+    "tags": KEYWORD,  # ECS 9.5.0 "host.tags" (= asset.tags)
 }
 
 HOST_FIELDS: Final[NestedMappingType] = {
@@ -439,24 +872,41 @@ HOST_FIELDS: Final[NestedMappingType] = {
     "slot": KEYWORD,
     "start_time": DATE,
     "status": KEYWORD,
+    "health": KEYWORD,
+    "key_switch": KEYWORD,
     "uptime": LONG,
+    "successful_pulls": FLATTENED,
     "os": {"properties": OS_FIELDS},
     "geo": {"properties": GEO_FIELDS},
+    "asset": {"properties": ASSET_FIELDS},
+    "clock": {"properties": CLOCK_FIELDS},
     "logic": {"properties": LOGIC_FIELDS},
+    "iec61850": {"properties": IEC61850_FIELDS},
+    "files": {"properties": FILE_FIELDS},
     "interface": {"properties": INTERFACE_FIELDS},
     "service": {"properties": SERVICE_FIELDS},
+    "statistics": {"properties": NETWORK_STATISTICS_FIELDS},
+    "protocol_statistics": {"properties": NETWORK_STATISTICS_FIELDS},
+    "routes": {"properties": ROUTE_FIELDS},
     "ssh_keys": {"properties": SSHKEY_FIELDS},
+    "processes": {"properties": HOST_PROCESS_FIELDS},
+    "software": {"properties": PACKAGE_FIELDS},
+    "indicators": {"properties": INDICATOR_FIELDS},
     "related": {"properties": RELATED_FIELDS},
     "registers": {"properties": REGISTER_FIELDS},
     "tag": {"properties": TAG_FIELDS},
     "io": {"properties": IO_FIELDS},
-    "event": {"properties": EVENT_FIELDS},
+    "event": {"properties": HOST_EVENT_FIELDS},
     "memory": {"properties": MEMORY_FIELDS},
     "users": {"properties": USER_FIELDS},
     "x509": {"properties": X509_FIELDS},
     "extra": FLATTENED,
     "uefi_image": {"properties": UEFI_FILE_FIELD},
     "uefi_hashes": {"properties": UEFI_HASH_FIELD},
+    # Derived in the host document only (not DeviceData fields).
+    # "relationships" and "baseline_findings" have their own indices.
+    "tags": KEYWORD,  # ECS 9.5.0 "host.tags" (= asset.tags)
+    "indicator_states": FLATTENED,  # {indicator name: live state or value}
 }
 
 PROCESS_FIELDS: Final[NestedMappingType] = {
@@ -471,6 +921,17 @@ PROCESS_FIELDS: Final[NestedMappingType] = {
     "thread": {"properties": {"id": LONG, "name": KEYWORD}},
     "title": KEYWORD_AND_TEXT,
     "working_directory": KEYWORD_AND_TEXT,
+}
+
+# ECS "source.*" / "destination.*" subset of relationship documents
+RELATIONSHIP_DOC_ENDPOINT_FIELDS: Final[MappingType] = {
+    "address": KEYWORD,
+    "ip": IP,
+    "mac": KEYWORD,
+    "port": LONG,
+    "domain": KEYWORD,
+    "bytes": LONG,
+    "packets": LONG,
 }
 
 PARSE_RESULT: Final[dict[str, NestedMappingType]] = {
@@ -494,7 +955,6 @@ PEAT_INDICES: Final[dict[str, dict]] = {
                 "properties": {
                     "level": KEYWORD,
                     "logger": KEYWORD,
-                    "original": KEYWORD,
                     "origin": {
                         "properties": {
                             "function": KEYWORD,
@@ -580,6 +1040,8 @@ PEAT_INDICES: Final[dict[str, dict]] = {
     "ot-device-hosts-timeseries": {
         "properties": {
             **BASE_FIELDS,
+            # Host documents are ECS asset documents ("event.kind: asset")
+            "event": {"properties": EVENT_FIELDS},
             "host": {
                 "properties": {
                     **HOST_FIELDS,
@@ -625,6 +1087,7 @@ PEAT_INDICES: Final[dict[str, dict]] = {
             **BASE_FIELDS,
             "event": {"properties": EVENT_FIELDS},
             "host": {"properties": BASIC_HOST_FIELDS},
+            "log": {"properties": {"level": KEYWORD}},  # Event.log_level
         }
     },
     "ot-device-memory": {
@@ -649,6 +1112,36 @@ PEAT_INDICES: Final[dict[str, dict]] = {
             "event": {"properties": EVENT_FIELDS},
             "host": {"properties": BASIC_HOST_FIELDS},
             "uefi": {"properties": UEFI_HASH_FIELD},
+        }
+    },
+    "ot-device-relationships": {
+        "properties": {
+            **BASE_FIELDS,
+            "event": {"properties": EVENT_FIELDS},
+            "host": {"properties": BASIC_HOST_FIELDS},
+            "relationship": {"properties": RELATIONSHIP_FIELDS},
+            "network": {
+                "properties": {
+                    "protocol": KEYWORD,
+                    "transport": KEYWORD,
+                    "direction": KEYWORD,
+                    "bytes": LONG,
+                    "packets": LONG,
+                    "vlan": {"properties": {"id": KEYWORD, "name": KEYWORD}},
+                }
+            },
+            "source": {"properties": RELATIONSHIP_DOC_ENDPOINT_FIELDS},
+            "destination": {"properties": RELATIONSHIP_DOC_ENDPOINT_FIELDS},
+            "related": {"properties": RELATED_FIELDS},
+        }
+    },
+    "ot-device-baseline-findings": {
+        "properties": {
+            **BASE_FIELDS,
+            "event": {"properties": EVENT_FIELDS},
+            "host": {"properties": BASIC_HOST_FIELDS},
+            "rule": {"properties": RULE_FIELDS},
+            "baseline": {"properties": BASELINE_DOC_FIELDS},
         }
     },
 }

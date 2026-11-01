@@ -44,7 +44,7 @@ ECS_EVENT_VALUES: dict[str, set[str]] = {
         "metric",
         "state",
         "pipeline_error",
-        "signal",  # Reserved by ECS for Kibana alerting; data sources should not set it
+        # "signal" is reserved by ECS for Kibana alerting: data sources must not set it
     },
     # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-outcome
     "outcome": {
@@ -83,9 +83,10 @@ def validate_ecs(v: str, field: ModelField) -> str:
 
     v = v.strip().lower().replace(" ", "_").replace("-", "_")
 
-    # for some reason a "_" gets prepended
-    # e.g. "category" gets changed to "_category"
-    field_name = field.name.replace("_", "")
+    # Reused validators get a "_" prepended to the field name
+    # (e.g. "category" becomes "_category"). Only strip leading underscores,
+    # so ECS field names containing underscores keep working.
+    field_name = field.name.lstrip("_")
 
     if v not in ECS_EVENT_VALUES[field_name]:
         raise ValueError(
@@ -159,9 +160,23 @@ def cleanstr(v: str) -> str:
     return v.strip().lower().replace(" ", "_")
 
 
+# Known spelling variants of application protocol names -> canonical name.
+# Canonical names are documented in docs/data_model.rst ("Protocol names").
+PROTOCOL_ALIASES: dict[str, str] = {
+    "c37.118": "c37_118",
+    "iec_104": "iec104",
+    "iec60870_5_104": "iec104",
+}
+
+
 def clean_protocol(v: str) -> str:
-    """Replace spaces and dashes with underscores."""
-    return v.replace("-", "_")
+    """
+    Replace dashes with underscores, then map known spelling variants
+    to the canonical protocol name (:data:`PROTOCOL_ALIASES`),
+    e.g. ``c37.118`` -> ``c37_118`` and ``iec-104`` -> ``iec104``.
+    """
+    v = v.replace("-", "_")
+    return PROTOCOL_ALIASES.get(v.lower(), v)
 
 
 def strip_quotes(v: str) -> str:

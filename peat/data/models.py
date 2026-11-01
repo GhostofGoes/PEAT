@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import copy
+import fnmatch
+import hashlib
 import inspect
+import ipaddress
 import json
 import mimetypes
+import re
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path, PurePath
 from typing import Any, AnyStr, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     Field,
@@ -16,12 +21,13 @@ from pydantic import (
     confloat,
     conint,
     constr,
+    root_validator,
     validator,
 )
 
 import peat
 from peat import Elastic, config, consts, state, utils, log
-from peat.es_mappings import KEYWORD_AND_TEXT
+from peat.es_mappings import FREE_TEXT, KEYWORD_AND_TEXT
 from peat.consts import SYSINFO, WINDOWS, PeatError
 from peat.data.default_options import DEFAULT_OPTIONS
 from peat.protocols import (
@@ -35,7 +41,11 @@ from peat.protocols import (
 from .base_model import BaseModel
 from .data_utils import (
     DeepChainMap,
+    dedupe_is_linear,
     dedupe_model_list,
+    dedupe_nested_lists,
+    has_nested_lists,
+    lookup_by_key,
     lookup_by_str,
     match_all,
     merge_models,
@@ -75,6 +85,170 @@ def __pathlib_modify_schema__(
 
 
 PurePath.__modify_schema__ = __pathlib_modify_schema__
+
+# --------------------------------------------------------------------------- #
+# Constants and helpers for the models below
+# --------------------------------------------------------------------------- #
+MAX_ES_LONG = 2**63 - 1
+
+NE107_HEALTH = Literal[
+    "normal", "failure", "check_function", "out_of_specification", "maintenance_required", ""
+]
+
+# Well-known server ports -> protocol (used by Relationship.annotate() inference)
+WELL_KNOWN_PORTS: dict[int, str] = {
+    20: "ftp",
+    21: "ftp",
+    22: "ssh",
+    23: "telnet",
+    25: "smtp",
+    53: "dns",
+    80: "http",
+    102: "mms",
+    123: "ntp",
+    161: "snmp",
+    162: "snmp",
+    443: "https",
+    502: "modbus_tcp",
+    514: "syslog",
+    2404: "iec104",
+    4712: "c37_118",
+    5432: "postgres",
+    20000: "dnp3",
+    44818: "cip",
+    47808: "bacnet",
+}
+TCP_PROTOCOLS = frozenset(
+    {"ftp", "ssh", "telnet", "smtp", "http", "https", "mms", "modbus_tcp", "iec104", "postgres"}
+)
+UDP_PROTOCOLS = frozenset({"ntp", "sntp", "snmp", "bacnet"})
+# Service.security.encrypted derivation when unset (Service.annotate)
+ENCRYPTED_PROTOCOLS = frozenset({"https", "ssh", "sftp", "ftps", "snmpv3_priv", "iec61850_tls"})
+CLEARTEXT_PROTOCOLS = frozenset(
+    {
+        "telnet",
+        "ftp",
+        "http",
+        "modbus_tcp",
+        "modbus",
+        "dnp3",
+        "mms",
+        "goose",
+        "sv",
+        "sel",
+        "mirrored_bits",
+        "iec104",
+        "c37_118",
+        "tftp",
+        "cip",
+        "bacnet",
+    }
+)
+# Relationship.medium vocabulary (Interface.type values outside it are not copied)
+MEDIUM_VALUES = frozenset(
+    {
+        "ethernet",
+        "serial",
+        "rs_232",
+        "rs_422",
+        "rs_485",
+        "usb",
+        "backplane",
+        "wireless",
+        "fiber_serial",
+        "loopback",
+    }
+)
+MEDIUM_ALIASES: dict[str, str] = {
+    "wifi": "wireless",
+    "wlan": "wireless",
+    "rs232": "rs_232",
+    "rs485": "rs_485",
+    "rs422": "rs_422",
+}
+EPHEMERAL_PORT_MIN = 1024
+
+
+def _parse_utc_offset(value: str) -> timezone | None:
+    """``"-07:00"``/``"+0530"``/``"UTC"`` -> fixed-offset tzinfo, else None."""
+    s = (value or "").strip().upper().removeprefix("UTC").removeprefix("GMT")
+    if not s:
+        return UTC if (value or "").strip() else None
+    m = re.fullmatch(r"([+-])(\d{1,2}):?(\d{2})?", s)
+    if not m:
+        return None
+    delta = timedelta(hours=int(m.group(2)), minutes=int(m.group(3) or 0))
+    return timezone(-delta if m.group(1) == "-" else delta)
+
+
+def _utc(ts: datetime | None, tz: str = "") -> datetime | None:
+    """
+    Normalize a datetime to tz-aware UTC. Naive values are device-local time
+    (same convention as ``Event.created``): localized with ``tz`` (the device's
+    ``geo.timezone``, IANA name or abbreviation) when known, else assumed UTC.
+    """
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        if tz:
+            try:
+                return ts.replace(tzinfo=ZoneInfo(tz)).astimezone(UTC)
+            except (ZoneInfoNotFoundError, ValueError):
+                log.debug(f"Unknown timezone '{tz}', assuming UTC for {ts}")
+        return ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC)
+
+
+def _dev_tz(dev: DeviceData | None) -> str:
+    return dev.geo.timezone if dev is not None and dev.geo.timezone else ""
+
+
+def _is_unicast_mac(mac: str) -> bool:
+    """False for multicast/broadcast MACs (I/G bit set), e.g. GOOSE 01:0C:CD:..."""
+    try:
+        return not (int(mac[:2], 16) & 1)
+    except (ValueError, TypeError):
+        return False
+
+
+def numeric_severity(value: str | int | None) -> int | None:
+    """Return the int value of a numeric severity string ("3", "-1"), else None."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if re.fullmatch(r"[+-]?\d+", s):
+        return int(s)
+    return None
+
+
+INDICATOR_COLORS = frozenset(
+    {"red", "green", "amber", "yellow", "orange", "blue", "white", "flashing_red"}
+)
+EVENT_KIND_PRECEDENCE = (
+    "alert",
+    "pipeline_error",
+    "state",
+    "metric",
+    "enrichment",
+    "asset",
+    "event",
+)
+
+
+def _normalize_vlan_ids(values: set) -> set[str]:
+    """``related.vlans`` hygiene: decimal strings 1-4095 (``.add(5)`` and ``"005"`` allowed)."""
+    out = set()
+    for v in values:
+        try:
+            vid = int(str(v).strip(), 10)
+        except ValueError:
+            log.warning(f"Ignoring invalid VLAN ID in related.vlans: {v!r}")
+            continue
+        if 0 < vid <= 4095:
+            out.add(str(vid))
+    return out
 
 
 class Vendor(BaseModel):
@@ -496,6 +670,18 @@ class Related(BaseModel):
     URLs related to the device or found on the device.
     """
 
+    vlans: set[constr(strip_whitespace=True)] = set()
+    """
+    VLAN IDs (decimal strings) related to the device: configured on its
+    interfaces, used by its relationships (e.g. GOOSE publications), or found in
+    its configuration. PEAT-specific (ECS has no ``related.vlans``).
+    VLAN ``0`` (priority tagging only) is never added.
+
+    Examples
+
+    - ``"100"``
+    """
+
     user: set[constr(strip_whitespace=True)] = set()
     """
     Any usernames related to the device or interface or found on the device.
@@ -545,11 +731,12 @@ class File(BaseModel):
     extension: constr(strip_whitespace=True) = ""
     """
     File extension, without a leading ``.`` character.
+    Only the last extension (ECS), e.g. ``gz`` for ``backup.tar.gz``.
 
     Examples
 
     - ``txt``
-    - ``tar.gz``
+    - ``gz``
     - ``xml``
     - ``zip``
     """
@@ -650,6 +837,22 @@ class File(BaseModel):
     - ``symlink`` : It's a symbolic link
     """
 
+    category: set[constr(strip_whitespace=True, to_lower=True)] = set()
+    """
+    What the file is, for OT analysis (PEAT-specific, lowercase).
+
+    Recommended values
+
+    - ``configuration``, ``settings``, ``logic``, ``project``, ``firmware``
+    - ``log``, ``event_record`` (SER/COMTRADE/oscillography), ``certificate``, ``key``
+    - ``script``, ``database``, ``report``, ``web``, ``diagnostic``, ``backup``
+    - ``iec61850`` (SCL files), ``other``
+
+    ``settings`` files (e.g. SEL ``SET_*.TXT``) are always also ``configuration``.
+    Files in ``log``/``event_record``/``diagnostic``/``report`` change on every
+    pull; baseline comparison only reports them when they go missing.
+    """
+
     uid: constr(strip_whitespace=True) = ""
     """
     Numeric user ID (UID) or security identifier (SID) of the file owner.
@@ -707,6 +910,10 @@ class File(BaseModel):
 
             _add_hashes_to_related(dev, self.hash)
 
+        # Values added with category.add() bypass validation
+        if any(not isinstance(c, str) or c != c.strip().lower() for c in self.category):
+            self.category = {str(c).strip().lower() for c in self.category if str(c).strip()}
+
     def gen_elastic_content(self, dev: DeviceData | None = None) -> dict:
         self.annotate(dev)  # populate fields
 
@@ -721,7 +928,13 @@ class File(BaseModel):
             "@timestamp": timestamp,
             "message": self.description if self.description else str(self.path),
             "tags": ["file"],
-            "event": {"ingested": time_now},
+            # ECS file inventory pattern
+            "event": {
+                "kind": "event",
+                "category": ["file"],
+                "type": ["info"],
+                "ingested": time_now,
+            },
             "file": self.dict(exclude_defaults=True),
         }
 
@@ -823,6 +1036,75 @@ class Firmware(BaseModel):
                     self.file.description = "Firmware for the device"
 
 
+class LogicTask(BaseModel):
+    """
+    A PLC/controller task (IEC 61131-3 TASK or vendor equivalent: Logix task,
+    Unity MAST/FAST, CODESYS task, RTAC task). OS processes are :class:`HostProcess`.
+    """
+
+    name: constr(strip_whitespace=True) = ""
+    """
+    Task name.
+
+    Examples
+
+    - ``MainTask``
+    - ``MAST``
+    """
+
+    type: Literal["cyclic", "periodic", "event", "continuous", "freewheeling", ""] = ""
+    """
+    Scheduling type. ``cyclic`` = fixed interval (IEC 61131-3 ``INTERVAL``,
+    CODESYS cyclic); ``periodic`` = Logix ``PERIODIC`` (same semantics, kept
+    as reported); ``event``; ``continuous`` (Logix); ``freewheeling`` (CODESYS).
+    """
+
+    interval: timedelta | None = None
+    """Configured period of cyclic/periodic tasks (ints are seconds)."""
+
+    priority: int | None = None
+    """Scheduler priority as configured (vendor-specific scale; IEC: 0 = highest)."""
+
+    watchdog: timedelta | None = None
+    """Watchdog time (ints are seconds)."""
+
+    programs: list[constr(strip_whitespace=True)] = []
+    """Programs/POU instances scheduled by the task, in execution order."""
+
+    enabled: bool | None = None
+    """``False`` if the task is inhibited/disabled."""
+
+    scan_count: conint(ge=0) | None = None
+    """Number of executions (counter)."""
+
+    scan_time_min: timedelta | None = None
+    """Minimum execution (scan) time."""
+
+    scan_time_max: timedelta | None = None
+    """Maximum execution (scan) time."""
+
+    scan_time_avg: timedelta | None = None
+    """Average execution (scan) time."""
+
+    scan_time_last: timedelta | None = None
+    """Last execution (scan) time."""
+
+    overruns: conint(ge=0) | None = None
+    """Watchdog/interval overruns (counter)."""
+
+    cpu_percent: confloat(ge=0) | None = None
+    """CPU usage of the task in percent (0-100), e.g. RTAC "Automation Task Usage"."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Task description/comment."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Vendor-specific task data (e.g. ``vendor_type``, ``cycle_latency_avg``)."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("name",))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("name",))
+
+
 class Logic(BaseModel):
     """
     What the device has been programmed to do (it's "logic").
@@ -915,6 +1197,11 @@ class Logic(BaseModel):
     protection schemes on a substation relay.
     """
 
+    tasks: list[LogicTask] = []
+    """
+    PLC/controller tasks (configured scheduling and runtime statistics).
+    """
+
     _strip_quotes = validator("author", "description", "name", "id", "parsed", allow_reuse=True)(
         strip_quotes
     )
@@ -996,8 +1283,7 @@ class X509(BaseModel):
     """
     Unique serial number issued by the certificate authority.
 
-    For consistency, if this value is alphanumeric, it should be
-    formatted without colons and uppercase characters.
+    ECS 9: base 16 (hexadecimal), uppercase, without colons.
     """
 
     signature_algorithm: constr(strip_whitespace=True) = ""
@@ -1105,6 +1391,419 @@ class UEFIFile(BaseModel):
             if dev._module:
                 content["event"]["module"] = dev._module.__name__
         return content
+
+
+class Vlan(BaseModel):
+    """
+    IEEE 802.1Q VLAN tag or membership. Field names follow the ECS ``vlan.*``
+    field set (``network.vlan.*``, ``observer.ingress.vlan.*``).
+    """
+
+    id: constr(strip_whitespace=True) = ""
+    """
+    VLAN ID (VID) as a decimal string without leading zeros, ``"0"``-``"4095"``.
+    ECS types ``vlan.id`` as ``keyword``. ``int`` values are accepted and converted.
+    ``"0"`` means priority-tagged only (common for IEC 61850 GOOSE).
+
+    .. warning::
+       IEC 61850 SCL files store ``VLAN-ID`` as **hexadecimal** (``"064"`` is VLAN 100).
+       Use :meth:`Vlan.from_hex`.
+
+    Examples
+
+    - ``"1"``
+    - ``"100"``
+    """
+
+    name: constr(strip_whitespace=True) = ""
+    """
+    VLAN name, as configured on the device (ECS ``vlan.name``).
+
+    Examples
+
+    - ``scada``
+    - ``station_bus``
+    """
+
+    priority: conint(ge=0, le=7) | None = Field(default=None, elastic_type="byte")
+    """802.1Q Priority Code Point (PCP, 0-7) used when tagging, e.g. SCL ``VLAN-PRIORITY``."""
+
+    tagged: bool | None = None
+    """
+    ``True`` if frames are 802.1Q-tagged on this interface (trunk member, tagged
+    sub-interface, tagged GOOSE). ``False`` for untagged (access VLAN or native VLAN/PVID).
+    """
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("id", "name"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("id",))
+
+    @validator("id", pre=True, allow_reuse=True)
+    def _normalize_vlan_id(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return ""
+        vid = int(str(v).strip(), 10)  # raises ValueError on garbage
+        if not 0 <= vid <= 4095:
+            raise ValueError(f"VLAN ID out of range (0-4095): {v}")
+        return str(vid)
+
+    @classmethod
+    def from_hex(
+        cls, vlan_id_hex: str, priority: str | int | None = None, tagged: bool | None = True
+    ) -> Vlan:
+        """Build from a hexadecimal VLAN ID (IEC 61850 SCL ``<P type="VLAN-ID">``)."""
+        return cls(
+            id=str(int(str(vlan_id_hex).strip(), 16)),
+            priority=int(priority) if priority not in (None, "") else None,
+            tagged=tagged,
+        )
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        if dev is not None and self.id and self.id != "0":
+            dev.related.vlans.add(self.id)
+
+
+class NetworkTraffic(BaseModel):
+    """
+    Traffic counters for ONE direction, from the device's point of view
+    (``ingress`` = received/rx/in, ``egress`` = sent/tx/out). Cumulative
+    counters since :attr:`NetworkStatistics.since`. ``None`` = not reported.
+    """
+
+    bytes: conint(ge=0) | None = None
+    """Octets (IF-MIB ``ifHC{In,Out}Octets``, Linux ``rx/tx_bytes``, SEL ``ETH`` BYTES)."""
+
+    packets: conint(ge=0) | None = None
+    """Packets or frames, all casts (Linux ``rx/tx_packets``, SEL ``ETH`` PACKETS)."""
+
+    unicast_packets: conint(ge=0) | None = None
+    """Unicast packets (IF-MIB ``ifHC{In,Out}UcastPkts``)."""
+
+    multicast_packets: conint(ge=0) | None = None
+    """Multicast packets (IF-MIB ``ifHC{In,Out}MulticastPkts``)."""
+
+    broadcast_packets: conint(ge=0) | None = None
+    """Broadcast packets (IF-MIB ``ifHC{In,Out}BroadcastPkts``)."""
+
+    messages: conint(ge=0) | None = None
+    """
+    Application messages/PDUs, for protocols that count messages instead of packets
+    (Modbus messages, DNP3 link frames, GOOSE telegrams, ICMP messages).
+    """
+
+    errors: conint(ge=0) | None = None
+    """Errored packets/messages (IF-MIB ``if{In,Out}Errors``, SEL ``ETH`` ERRORS)."""
+
+    dropped: conint(ge=0) | None = None
+    """Discarded without error, e.g. buffer full (IF-MIB ``if{In,Out}Discards``)."""
+
+    crc_errors: conint(ge=0) | None = None
+    """Frames with a bad CRC/FCS (EtherLike ``dot3StatsFCSErrors``)."""
+
+    unknown_protocols: conint(ge=0) | None = None
+    """Received with an unknown/unsupported protocol (IF-MIB ``ifInUnknownProtos``)."""
+
+
+class ConnectionStatistics(BaseModel):
+    """
+    Connection/session counts. ``active``, ``max`` and ``listening`` are gauges
+    (point in time); the other fields are cumulative counters.
+    """
+
+    active: conint(ge=0) | None = None
+    """Currently open connections/sessions (gauge). TCP-MIB ``tcpCurrEstab``; logged-in users."""
+
+    max: conint(ge=0) | None = None
+    """Configured/supported maximum concurrent connections (gauge), e.g. M340 port 502."""
+
+    listening: conint(ge=0) | None = None
+    """Number of listening sockets (gauge)."""
+
+    total: conint(ge=0) | None = None
+    """Connections opened/accepted (counter). TCP-MIB ``tcpActiveOpens + tcpPassiveOpens``."""
+
+    failed: conint(ge=0) | None = None
+    """Failed or rejected connection attempts (counter). TCP-MIB ``tcpAttemptFails``."""
+
+    closed: conint(ge=0) | None = None
+    """Connections closed (counter)."""
+
+    resets: conint(ge=0) | None = None
+    """Established connections reset (counter). TCP-MIB ``tcpEstabResets``."""
+
+    timeouts: conint(ge=0) | None = None
+    """Connections that timed out (counter)."""
+
+    authentication_successes: conint(ge=0) | None = None
+    """Successful logins/authentications (counter), e.g. M340 web ``successful_attempts``."""
+
+    authentication_failures: conint(ge=0) | None = None
+    """
+    Failed logins/authentications (counter), e.g. M340 web ``failed_attempts``,
+    SNMPv2-MIB ``snmpInBadCommunityNames``.
+    """
+
+
+class NetworkStatistics(BaseModel):
+    """
+    Communication statistics (cumulative counters) for a device, interface,
+    service, protocol, or relationship (remote host).
+
+    Not ECS ``host.network.*`` (those are gauges "since the last metric
+    collection"). Uses ECS leaf vocabulary (``ingress``/``egress``, ``bytes``,
+    ``packets``) under PEAT-specific paths (``host.statistics``,
+    ``host.interface.statistics``, ``host.service.statistics``,
+    ``host.protocol_statistics``, ``relationship.statistics``).
+    """
+
+    timestamp: datetime | None = None
+    """
+    When the counters were read from the device (aware UTC, ``utils.utc_now()``).
+    **Modules MUST set it**: merges keep the newest complete sample (see
+    ``merge_models()``), and rates need it.
+    """
+
+    since: datetime | None = None
+    """
+    Start of the counting period: last counter clear/reset or discontinuity
+    (RFC 8343 ``discontinuity-time``; IF-MIB ``ifCounterDiscontinuityTime``, a
+    ``sysUpTime`` TimeStamp that modules convert to a datetime). Do NOT assume
+    device boot time unless the device documents it.
+    """
+
+    interface: constr(strip_whitespace=True) = ""
+    """
+    Interface name (:attr:`Interface.name`) the statistics are scoped to.
+    Only used in :attr:`DeviceData.protocol_statistics` entries.
+    """
+
+    type: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Network layer (ECS ``network.type``), only in ``protocol_statistics`` entries.
+    Use ``ipv4`` for IP counters of IPv4-only devices; leave empty if the IP
+    version is unknown (``ip`` is not an ECS value).
+
+    Examples
+
+    - ``ipv4``
+    - ``ipv6``
+    """
+
+    transport: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Transport (ECS ``network.transport``, IANA keyword), only in
+    ``protocol_statistics`` entries.
+
+    Examples
+
+    - ``tcp``
+    - ``udp``
+    - ``icmp``
+    - ``ipv6-icmp``
+    """
+
+    protocol: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Application protocol, same format as :attr:`Service.protocol`. Only in
+    ``protocol_statistics`` entries.
+
+    Examples
+
+    - ``modbus_tcp``
+    - ``cip``
+    - ``goose``
+    """
+
+    ingress: NetworkTraffic = NetworkTraffic()
+    """Received (rx/in) counters."""
+
+    egress: NetworkTraffic = NetworkTraffic()
+    """Sent (tx/out) counters."""
+
+    connections: ConnectionStatistics = ConnectionStatistics()
+    """Connection, session and login counts."""
+
+    collisions: conint(ge=0) | None = None
+    """Ethernet collisions (counter)."""
+
+    link_down_count: conint(ge=0) | None = None
+    """Times the link went down (counter), e.g. CIP Ethernet Link attr 15."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """
+    Vendor/protocol-specific counters with no field above (lowercase snake_case keys).
+    Counters the device reported as overflowed (e.g. SEL ``$$$$``) are listed in
+    ``extra["overflowed"]`` (e.g. ``["ingress.packets"]``) and the field is left ``None``.
+    """
+
+    _sort_by_fields: tuple[str] = PrivateAttr(
+        default=("interface", "type", "transport", "protocol")
+    )
+    _dedupe_key: tuple[str] = PrivateAttr(default=("interface", "type", "transport", "protocol"))
+    _newest_wins_field: str = PrivateAttr(default="timestamp")
+
+    _clean_protocol = validator("protocol", allow_reuse=True)(clean_protocol)
+
+    def has_counters(self) -> bool:
+        """True if any counter or gauge is set (``timestamp``/key fields/``extra`` ignored)."""
+        return any(
+            getattr(sub, name) is not None
+            for sub in (self.ingress, self.egress, self.connections)
+            for name in sub.__fields__
+        ) or any(getattr(self, name) is not None for name in ("collisions", "link_down_count"))
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        for attr in ("timestamp", "since"):
+            ts = getattr(self, attr)
+            if ts is not None and (ts.tzinfo is None or ts.utcoffset()):
+                setattr(self, attr, _utc(ts, _dev_tz(dev)))
+        # Elasticsearch "long" tops out at 2^63-1; a larger value rejects the whole doc.
+        # Check EVERY integer leaf (traffic, connections, collisions, link_down_count).
+        for prefix, model in (
+            ("", self),
+            ("ingress.", self.ingress),
+            ("egress.", self.egress),
+            ("connections.", self.connections),
+        ):
+            for name in model.__fields__:
+                value = getattr(model, name)
+                if isinstance(value, int) and not isinstance(value, bool) and value > MAX_ES_LONG:
+                    self.extra.setdefault("out_of_range", {})[f"{prefix}{name}"] = str(value)
+                    setattr(model, name, None)
+
+
+class ServiceSecurity(BaseModel):
+    """
+    Security posture of a :class:`Service`. Never store secrets (passwords,
+    community strings, keys) here or anywhere else in the data model.
+    """
+
+    authentication_required: bool | None = None
+    """``True`` if the service requires authentication for access."""
+
+    anonymous_access: bool | None = None
+    """``True`` if anonymous/guest access is enabled (e.g. anonymous FTP)."""
+
+    default_credentials: bool | None = None
+    """
+    ``True`` only if a login with a vendor **factory-default** credential
+    succeeded (``DeviceModule.is_factory_default_credential()``). ``False`` only
+    if the factory defaults were tried and rejected. ``None`` (default) if PEAT
+    did not test them (e.g. site credentials were configured). Anonymous logins
+    are ``anonymous_access``, not default credentials.
+    """
+
+    encrypted: bool | None = None
+    """
+    ``True`` if the service encrypts traffic (TLS, SSH, SNMPv3 priv, ...).
+    If unset, ``Service.annotate()`` derives it from the protocol
+    (``https``/``ssh``/... -> ``True``; ``telnet``/``ftp``/``http``/``modbus_tcp``/
+    ``dnp3``/``mms``/``goose``/... -> ``False``).
+    """
+
+    security_mode: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Protocol-specific security mode, lowercase.
+
+    Examples
+
+    - ``none`` / ``sign`` / ``sign_and_encrypt`` (OPC UA, IEC 61850 GOOSE)
+    - ``v1`` / ``v2c`` / ``v3_noauth`` / ``v3_auth`` / ``v3_authpriv`` (SNMP)
+    - ``sav5`` (DNP3 Secure Authentication)
+    """
+
+    authentication_methods: set[constr(strip_whitespace=True, to_lower=True)] = set()
+    """
+    Supported/enabled authentication methods, lowercase.
+
+    Examples
+
+    - ``password``
+    - ``certificate``
+    - ``public_key``
+    - ``radius``
+    - ``ldap``
+    """
+
+    tls_version: constr(strip_whitespace=True) = ""
+    """
+    TLS/SSL protocol version (ECS ``tls.version`` style).
+
+    Examples
+
+    - ``1.2``
+    - ``1.3``
+    """
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other security-relevant settings (no secrets!)."""
+
+
+class Redundancy(BaseModel):
+    """
+    Network redundancy / link aggregation state of an :class:`Interface`
+    (PRP/HSR IEC 62439-3, RSTP, MRP, DLR, LAG/bond, failover).
+    """
+
+    protocol: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Redundancy protocol, lowercase.
+
+    Allowed values (documented, not enforced)
+
+    - ``prp``, ``hsr`` (IEC 62439-3), ``rstp``, ``stp``, ``mstp``, ``mrp``, ``dlr``
+    - ``erps`` (ITU-T G.8032), ``hiper_ring``, ``ring`` (other/unknown ring protocol)
+    - ``lag`` (any link aggregation: LACP, static, Linux bond/team; the variant goes in ``mode``)
+    - ``failover`` (active/standby ports, e.g. SEL ``NETMODE=FAILOVER``)
+    - ``vrrp``, ``ha`` (gateway/device-pair redundancy, e.g. FortiGate FGCP)
+    """
+
+    mode: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Protocol-specific operating mode.
+
+    Examples
+
+    - ``switched`` / ``failover`` / ``prp`` / ``fixed`` (SEL ``NETMODE``)
+    - ``modeh`` (HSR)
+    - ``active_backup``, ``802.3ad`` (Linux bonding/LAG mode)
+    """
+
+    role: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Role of this interface/port.
+
+    Examples
+
+    - ``root`` / ``designated`` / ``alternate`` / ``backup`` (RSTP port role)
+    - ``primary`` / ``secondary`` / ``redbox``
+    """
+
+    state: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Current state.
+
+    Examples
+
+    - ``forwarding`` / ``discarding`` / ``learning`` (RSTP)
+    - ``active`` / ``standby``
+    - ``ring_closed`` / ``ring_open`` (MRP)
+    """
+
+    lan: Literal["A", "B", ""] = ""
+    """PRP/HSR LAN this port belongs to (``A`` or ``B``). Set on the port interfaces."""
+
+    members: list[constr(strip_whitespace=True)] = []
+    """
+    Names (:attr:`Interface.name`) of the member ports, set on the aggregate/IP
+    interface of a LAG, PRP pair or failover pair. This (not ``Interface.parent``)
+    expresses membership.
+    """
+
+    partner: constr(strip_whitespace=True) = ""
+    """Peer port, bridge ID or MAC on the other side (e.g. RSTP designated bridge)."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other redundancy counters/settings (e.g. PRP ``wrong_lan`` counts)."""
 
 
 class Service(BaseModel):
@@ -1219,6 +1918,16 @@ class Service(BaseModel):
     The operational role of the device for a given protocol.
     """
 
+    security: ServiceSecurity = ServiceSecurity()
+    """
+    Security posture of the service (authentication, encryption, defaults).
+    """
+
+    statistics: NetworkStatistics = NetworkStatistics()
+    """
+    Counters for this service (messages, errors, sessions, logins).
+    """
+
     status: Literal["open", "closed", "verified", ""] = ""
     """
     State of the service.
@@ -1252,6 +1961,10 @@ class Service(BaseModel):
         default=("port", "protocol", "transport", "status", "enabled")
     )
 
+    # Services with the same protocol AND port are the same service when
+    # deduplicating/merging lists (store() keeps its ["protocol", "port"] lookup)
+    _dedupe_key: tuple[str] = PrivateAttr(default=("protocol", "port"))
+
     # Validators
     _clean_protocol = validator("protocol", allow_reuse=True)(clean_protocol)
     _validate_ip = validator("listen_address", allow_reuse=True)(validate_ip)
@@ -1267,21 +1980,35 @@ class Service(BaseModel):
                 "modbus_tcp",
                 "postgres",
                 "smtp",
+                "mms",  # IEC 61850 MMS (ISO-TSAP over TCP 102)
             ]:
                 self.transport = "tcp"
             elif self.protocol in ["snmp", "sntp"]:
                 self.transport = "udp"
 
+        # One canonical name for Modbus TCP
+        if self.protocol == "modbus" and self.transport == "tcp":
+            self.protocol = "modbus_tcp"
+
+        # Derive "encrypted" from the protocol when the module did not set it
+        if self.security.encrypted is None and self.protocol:
+            if self.protocol in ENCRYPTED_PROTOCOLS:
+                self.security.encrypted = True
+            elif self.protocol in CLEARTEXT_PROTOCOLS:
+                self.security.encrypted = False
+
+        self.statistics.annotate(dev)
+
         if dev:
-            if self.port and (
-                self.enabled or self.status in ["open", "verified"] or not self.status
-            ):
+            active = self.enabled or self.status in ["open", "verified"] or not self.status
+            if self.port and active:
                 dev.related.ports.add(self.port)
 
-            if self.protocol and (
-                self.enabled or self.status in ["open", "verified"] or not self.status
-            ):
+            if self.protocol and active:
                 dev.related.protocols.add(self.protocol)
+
+            if self.process_name:
+                dev.related.process.add(self.process_name)
 
 
 class Interface(BaseModel):
@@ -1365,6 +2092,34 @@ class Interface(BaseModel):
     - ``F``
     """
 
+    parent: constr(strip_whitespace=True) = ""
+    """
+    Name of the single lower-layer interface of a VLAN sub-interface or alias
+    (RFC 8343 ``lower-layer-if``). Only lower-layer: physical ports of a LAG,
+    PRP pair or failover pair are listed in the aggregate's ``redundancy.members``
+    instead (do NOT set ``parent`` on member ports).
+
+    Examples
+
+    - ``port1`` (FortiGate VLAN interface ``vlan100`` on ``port1``)
+    - ``eth0`` (Linux ``eth0.100``)
+    """
+
+    vlan: Vlan = Vlan()
+    """
+    Access VLAN, PVID/native VLAN, or the VLAN of this VLAN sub-interface.
+    """
+
+    vlans: list[Vlan] = []
+    """
+    All VLAN memberships of a trunk/switch port (``tagged`` marks tagged membership).
+    """
+
+    redundancy: Redundancy = Redundancy()
+    """
+    Network redundancy (PRP/HSR/RSTP/MRP/LAG/failover) state of the interface.
+    """
+
     type: str = ""
     """
     The type of physical communication medium the communication
@@ -1440,6 +2195,11 @@ class Interface(BaseModel):
     as a :class:`~datetime.timedelta` instance.
 
     NOTE: normal integers can be assigned to this! (e.g. ``iface.uptime = 123``)
+    """
+
+    statistics: NetworkStatistics = NetworkStatistics()
+    """
+    Interface counters (IF-MIB, ``/proc/net/dev``, ``ifconfig``, SEL ``ETH``).
     """
 
     hardware_mac: str = ""
@@ -1571,13 +2331,17 @@ class Interface(BaseModel):
         default=("name", "type", "ip", "serial_port", "id", "application")
     )
 
+    # Interfaces with the same non-empty name are the same interface
+    # (store() already merges on name; this makes dedupe/merge agree with store())
+    _dedupe_key: tuple[str] = PrivateAttr(default=("name",))
+
     # Validators
+    # NOTE: "description" is a Description model, which strips quotes itself
     _clean_str = validator("application", "type", "parity", "flow_control", allow_reuse=True)(
         cleanstr
     )
     _validate_ip = validator("ip", "subnet_mask", "gateway", allow_reuse=True)(validate_ip)
     _validate_mac = validator("mac", "hardware_mac", allow_reuse=True)(validate_mac)
-    _strip_quotes = validator("description", allow_reuse=True)(strip_quotes)
 
     def annotate(self, dev: DeviceData | None = None):
         # Resolve host if not set OR if IP is changed and host is not
@@ -1617,6 +2381,13 @@ class Interface(BaseModel):
 
             if self.hostname and self.hostname not in dev.related.hosts:
                 dev.related.hosts.add(self.hostname)
+
+        self.vlan.annotate(dev)
+        for vlan in self.vlans:
+            vlan.annotate(dev)
+        self.statistics.annotate(dev)
+        for svc in self.services:  # services appended directly to the interface
+            svc.annotate(dev)
 
 
 class Register(BaseModel):
@@ -2208,6 +2979,17 @@ class Event(BaseModel):
     - ``web``
     """
 
+    code: constr(strip_whitespace=True) = ""
+    """
+    Identification code for this kind of event, if the source has one (ECS
+    ``event.code``). Not unique per occurrence (that is ``id``).
+
+    Examples
+
+    - ``0100032002`` (FortiGate ``logid``)
+    - ``4625``
+    """
+
     created: datetime | None = None
     """
     When the event occurred.
@@ -2256,8 +3038,9 @@ class Event(BaseModel):
     contents of the event. For example, values of this field
     distinguish alert events from metric events.
     `Further reading <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-kind>`__
-    This is a set of values, and is an array in Elasticsearch, which allows
-    for Kibana queries such as ``host.event.kind:event and host.event.type:deleted``.
+    A set in PEAT; the events index document carries the single most specific value
+    (ECS ``event.kind`` is single-valued: ``alert`` > ``pipeline_error`` > ``state`` >
+    ``metric`` > ``enrichment`` > ``asset`` > ``event``); the host document keeps the set.
 
     Allowed values
 
@@ -2268,7 +3051,22 @@ class Event(BaseModel):
     - ``metric``
     - ``state``
     - ``pipeline_error`` : Used for indicating there was an error processing the event
-    - ``signal`` : Reserved by ECS for Kibana alerting, PEAT modules should not use it
+
+    ``signal`` is reserved by ECS for Kibana alerting and is rejected.
+    """
+
+    log_level: constr(strip_whitespace=True) = ""
+    """
+    Original textual log level/severity as stored on the device. Exported as ECS
+    ``log.level`` at the root of ``ot-device-events`` documents (and as
+    ``host.event.log_level`` in host documents). Auto-filled from a
+    non-numeric ``severity`` by ``annotate()``.
+
+    Examples
+
+    - ``INFO``
+    - ``err``
+    - ``warning``
     """
 
     message: constr(strip_whitespace=True) = Field(default="", elastic_type=KEYWORD_AND_TEXT)
@@ -2304,6 +3102,18 @@ class Event(BaseModel):
     Source of the event. This is almost always the Device ID.
     """
 
+    reason: constr(strip_whitespace=True) = Field(default="", elastic_type=FREE_TEXT)
+    """
+    Why the event happened, according to the source (ECS ``event.reason``).
+    ``action`` says what happened; ``reason`` says why.
+
+    Examples
+
+    - ``passwd_invalid``
+    - ``MAX LOGIN FAILURES EXCEEDED``
+    - ``Trip; targets 51G``
+    """
+
     sequence: int | None = None
     """
     Sequence number of the event. The sequence number is a value
@@ -2315,10 +3125,14 @@ class Event(BaseModel):
     """
     Severity or log level of the event as stored on the device.
 
+    Numeric values are exported as ECS ``event.severity`` (a number).
+    Textual values (e.g. ``INFO``) are **deprecated** here; use ``log_level``.
+    They are exported as ``log.level`` (``host.event.log_level`` in host documents).
+
     Examples
 
-    - ``debug``
-    - ``ERR``
+    - ``3``
+    - ``debug`` (deprecated, use ``log_level``)
     """
 
     timezone: constr(strip_whitespace=True) = ""
@@ -2413,6 +3227,10 @@ class Event(BaseModel):
         elif self.kind and "event" not in self.kind:
             self.kind.add("event")
 
+        # Textual severities are log levels (Event.severity text is deprecated)
+        if self.severity and not self.log_level and numeric_severity(self.severity) is None:
+            self.log_level = self.severity
+
     def gen_elastic_content(self, dev: DeviceData | None = None) -> dict:
         self.annotate(dev)  # populate fields
         time_now = Elastic.time_now()
@@ -2444,6 +3262,24 @@ class Event(BaseModel):
                     dev.description.product,
                 ]
             )
+
+        ev = content["event"]
+        # ECS event.kind is single-valued. The model keeps its set (no change to
+        # JSON exports or host docs); the events index gets the most specific value.
+        kinds = ev.get("kind")
+        if isinstance(kinds, (list, set, tuple)):
+            ev["kind"] = next((k for k in EVENT_KIND_PRECEDENCE if k in kinds), "event")
+
+        # ECS event.severity is a number: numeric values only. Textual values
+        # (deprecated) and log_level are exported as ECS log.level.
+        raw_sev = ev.pop("severity", None)
+        num = numeric_severity(raw_sev)
+        if num is not None:
+            ev["severity"] = num
+        level = ev.pop("log_level", "") or (raw_sev if raw_sev and num is None else "")
+        if level:
+            content["log"] = {"level": level}
+
         return content
 
 
@@ -2689,6 +3525,1738 @@ class SSHKey(BaseModel):
                 dev.related.hosts.add(self.host)
 
 
+class Route(BaseModel):
+    """An entry in the device's IP routing table (static, connected or learned)."""
+
+    destination: constr(strip_whitespace=True) = ""
+    """
+    Destination network in CIDR notation (normalized). ``default`` is ``0.0.0.0/0``.
+
+    Examples
+
+    - ``0.0.0.0/0``
+    - ``192.0.2.0/24``
+    """
+
+    gateway: str = Field(default="", elastic_type="ip")
+    """
+    Next-hop IP address. Empty for directly connected routes. Non-IP gateways
+    never raise: a MAC (on-link host routes, GE UR) goes to ``extra["gateway_mac"]``,
+    anything else (BSD/VxWorks ``link#N``) to ``extra["gateway_raw"]``, and ``type``
+    defaults to ``connected``.
+    """
+
+    interface: constr(strip_whitespace=True) = ""
+    """Outgoing interface name (:attr:`Interface.name`)."""
+
+    metric: conint(ge=0) | None = None
+    """Route metric/cost/administrative distance as reported."""
+
+    type: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Route type, lowercase.
+
+    Examples
+
+    - ``static``
+    - ``connected``
+    - ``dynamic``
+    - ``local``
+    - ``blackhole``
+    """
+
+    protocol: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Source protocol of the route, lowercase.
+
+    Examples
+
+    - ``static``
+    - ``kernel``
+    - ``dhcp``
+    - ``ospf``
+    - ``rip``
+    """
+
+    flags: constr(strip_whitespace=True) = ""
+    """Raw route flags as reported (e.g. ``UG``)."""
+
+    enabled: bool | None = None
+    """``False`` if the route is configured but disabled/inactive."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Route description/comment."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other route attributes (e.g. ``action: drop`` on SEL-3620)."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(
+        default=("destination", "gateway", "interface", "metric")
+    )
+    _dedupe_key: tuple[str] = PrivateAttr(default=("destination", "gateway", "interface"))
+
+    @root_validator(pre=True, allow_reuse=True)
+    def _non_ip_gateway(cls, values):
+        """Move MAC / ``link#N`` gateways to ``extra`` instead of failing the model."""
+        gw = str(values.get("gateway") or "").strip()
+        if not gw or gw in ("*", "-", "0.0.0.0/0"):
+            return values
+        try:
+            ipaddress.ip_address(gw)
+            return values
+        except ValueError:
+            pass
+        extra = dict(values.get("extra") or {})
+        try:
+            extra["gateway_mac"] = validate_mac(gw)
+        except ValueError:
+            extra["gateway_raw"] = gw
+        values = {**values, "gateway": "", "extra": extra}
+        if not values.get("type"):
+            values["type"] = "connected"
+        return values
+
+    @validator("destination", pre=True, allow_reuse=True)
+    def _normalize_destination(cls, v):
+        v = " ".join(str(v or "").split())
+        if v.lower() in ("default", "0/0"):
+            return "0.0.0.0/0"
+        if " " in v:  # "addr mask" (FortiOS "set dst 192.0.2.0 255.255.255.0", CLX)
+            v = v.replace(" ", "/", 1)
+        try:
+            return str(ipaddress.ip_network(v, strict=False)) if v else ""
+        except ValueError:
+            return v  # keep unparsable values as reported
+
+    @validator("gateway", pre=True, allow_reuse=True)
+    def _normalize_gateway(cls, v):
+        v = str(v or "").strip()
+        return "" if v in ("*", "-", "0.0.0.0/0") else validate_ip(v)
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        if dev and self.gateway and self.gateway not in ("0.0.0.0", "::"):
+            dev.related.ip.add(self.gateway)
+        mac = self.extra.get("gateway_mac", "")
+        if dev and mac and _is_unicast_mac(mac):
+            dev.related.mac.add(mac)
+
+
+class TimeSource(BaseModel):
+    """A configured or active time synchronization source of the device."""
+
+    protocol: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Time protocol/source type, lowercase.
+
+    Allowed values (documented)
+
+    - ``ntp``, ``sntp``, ``ptp``, ``irig_b``, ``gps``, ``dcf77``
+    - ``dnp3``, ``iec61850``, ``iec104``, ``modbus``, ``manual``, ``internal``
+
+    Vendor names are normalized by modules: SEL ``IRIG``/``HIRIG`` (high-accuracy
+    IRIG) -> ``irig_b``, ``PTP`` -> ``ptp``.
+    """
+
+    address: constr(strip_whitespace=True) = ""
+    """IP address or hostname of a network time server, or the port name for IRIG-B/GPS inputs."""
+
+    port: conint(ge=1, le=65535) | None = None
+    """Network port of the time server, if not the protocol default."""
+
+    priority: conint(ge=0) | None = None
+    """Preference order as configured (1 = primary, 2 = backup, ...)."""
+
+    stratum: conint(ge=0, le=16) | None = None
+    """NTP stratum reported for the source."""
+
+    state: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    State of the source, lowercase.
+
+    Examples
+
+    - ``active``
+    - ``standby``
+    - ``unreachable``
+    - ``disabled``
+    """
+
+    enabled: bool | None = None
+    """``True`` if the source is enabled in the configuration."""
+
+    selected: bool | None = None
+    """``True`` if this is the source the clock is currently synchronized to."""
+
+    offset: float | None = Field(default=None, elastic_type="double")
+    """Offset of the device clock to this source, in seconds, as reported."""
+
+    last_sync: datetime | None = None
+    """Last successful synchronization with this source."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other source attributes (e.g. poll rate, timeout)."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("priority", "protocol", "address"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("protocol", "address", "port"))
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        self.last_sync = _utc(self.last_sync, _dev_tz(dev)) if self.last_sync else None
+        if dev and self.address:
+            if utils.is_ip(self.address):
+                dev.related.ip.add(self.address)
+            elif self.protocol in ("ntp", "sntp"):
+                dev.related.hosts.add(self.address)
+
+
+class Clock(BaseModel):
+    """Device clock and time synchronization configuration/state."""
+
+    time: datetime | None = None
+    """Current device time as reported by the device."""
+
+    observed: datetime | None = None
+    """PEAT's UTC time when ``time`` was read."""
+
+    offset: float | None = Field(default=None, elastic_type="double")
+    """
+    Device clock offset in seconds (``time - observed``; positive = device ahead).
+    Auto-computed by ``annotate()`` when both are timezone-aware.
+    """
+
+    utc_offset: constr(strip_whitespace=True) = ""
+    """
+    Configured UTC offset of the device clock.
+
+    Examples
+
+    - ``+00:00``
+    - ``-07:00``
+    """
+
+    synchronized: bool | None = None
+    """``True`` if the device reports its clock as synchronized to a source."""
+
+    source: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Protocol of the active time source (same values as :attr:`TimeSource.protocol`).
+
+    Examples
+
+    - ``irig_b``
+    - ``sntp``
+    - ``internal``
+    """
+
+    last_sync: datetime | None = None
+    """Last successful synchronization reported by the device."""
+
+    sources: list[TimeSource] = []
+    """Configured/active time sources."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other time settings (DST rules, poll rates, ...)."""
+
+    _newest_wins_field: str = PrivateAttr(default="observed")
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        # A naive device time with a known configured UTC offset becomes aware
+        if self.time is not None and self.time.tzinfo is None and self.utc_offset:
+            tz = _parse_utc_offset(self.utc_offset)
+            if tz is not None:
+                self.time = self.time.replace(tzinfo=tz)
+        if (
+            self.offset is None
+            and self.time is not None
+            and self.observed is not None
+            and (self.time.tzinfo is None) == (self.observed.tzinfo is None)
+        ):
+            self.offset = round((self.time - self.observed).total_seconds(), 6)
+        if not self.source:
+            selected = [s for s in self.sources if s.selected and s.protocol]
+            if selected:
+                self.source = selected[0].protocol
+        for src in self.sources:
+            src.annotate(dev)
+
+
+class RelationshipEndpoint(BaseModel):
+    """
+    One side of a :class:`Relationship`. Leaf names match ECS
+    ``source.*``/``destination.*`` where ECS has them.
+    """
+
+    address: constr(strip_whitespace=True) = ""
+    """
+    Raw address as the source reported it, when it is not just an IP
+    (ECS ``*.address``).
+
+    Examples
+
+    - ``tcp://192.0.2.5:20000``
+    - ``COM2``
+    """
+
+    ip: str = Field(default="", elastic_type="ip")
+    """IP address of the endpoint."""
+
+    mac: str = ""
+    """MAC address of the endpoint (uppercase, colon-separated)."""
+
+    port: conint(ge=0, le=65535) | None = None
+    """TCP/UDP port of the endpoint."""
+
+    hostname: constr(strip_whitespace=True) = ""
+    """DNS/NetBIOS hostname or FQDN of the endpoint (ECS ``*.domain`` in the index)."""
+
+    id: constr(strip_whitespace=True) = ""
+    """
+    PEAT device ID (:attr:`DeviceData.id`) of the endpoint, if known. For
+    ``local``: empty for the device itself; for relationships hoisted from a
+    module (:attr:`DeviceData.module`), the module's ``id``, else its
+    ``serial_number``, else ``slot:<slot>``.
+    """
+
+    name: constr(strip_whitespace=True) = ""
+    """
+    Name of the endpoint as the source names it.
+
+    Examples
+
+    - ``SEL_411L_E1`` (RTAC remote device)
+    - ``PROT1`` (IEC 61850 IED name)
+    """
+
+    interface: constr(strip_whitespace=True) = ""
+    """
+    Interface/port on this side. For ``local``, :attr:`Interface.name` (filled
+    from ``local.ip`` by ``annotate()`` if unset); for ``remote``, the peer's port
+    if known (LLDP ``lldpRemPortId``).
+    """
+
+    serial_port: constr(strip_whitespace=True) = ""
+    """Serial port on this side, for serial links."""
+
+    protocol_address: constr(strip_whitespace=True) = ""
+    """
+    Protocol-level address of this side.
+
+    Examples
+
+    - ``10`` (DNP3 link address, Modbus unit ID, IEC 104 CASDU)
+    - ``0x1000`` (IEC 61850 GOOSE/SV APPID, 4 uppercase hex digits)
+    """
+
+    role: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Role of this side, lowercase. Use the protocol's own terms:
+
+    - DNP3: ``master`` / ``outstation``
+    - Modbus (TCP and RTU): ``client`` / ``server``
+    - IEC 60870-5-104: ``controlling_station`` / ``controlled_station``
+    - IEC 61850: ``publisher`` / ``subscriber`` (GOOSE/SV), ``client`` / ``server`` (MMS)
+    - CIP: ``originator``/``target`` (connections), ``scanner``/``adapter`` (I/O)
+    - C37.118: ``pmu`` / ``pdc``
+    - other: ``client``, ``server``, ``peer``, ``gateway``, ``time_server``, ``log_server``,
+      ``auth_server``, ``dns_server``, ``snmp_manager``, ``parent``, ``child``,
+      ``engineering_access``
+    """
+
+    _validate_ip = validator("ip", allow_reuse=True)(validate_ip)
+    _validate_mac = validator("mac", allow_reuse=True)(validate_mac)
+
+
+class Relationship(BaseModel):
+    """
+    A configured or observed relationship between this device (``local``) and
+    another endpoint (``remote``): a communication peer, an ARP/LLDP neighbor,
+    a route next hop, a serial link, a GOOSE publication/subscription, etc.
+
+    One record aggregates every observation of the same edge (see :meth:`key`):
+    a configured DNP3 master and the netstat sessions from it are ONE record
+    with ``evidence={"config", "netstat"}``. Exported to its own index
+    (``ELASTIC_RELATIONSHIPS_INDEX``). Not included in the host document or the
+    summary export. Modules MUST aggregate high-volume observations (log lines,
+    connection logs) per peer before calling ``store()`` (one ``store()`` per edge,
+    with ``count``/``first_seen``/``last_seen``).
+    """
+
+    id: constr(strip_whitespace=True) = ""
+    """
+    Deterministic ID: first 16 hex characters of the SHA-256 of :meth:`key`.
+    **Derived and read-only**: ``annotate()`` always recomputes it. Used as the
+    ``store()``/dedupe key and as the long-lived Elasticsearch key.
+    """
+
+    type: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Nature of the relationship, read as "``local`` <type> ``remote``" (lowercase,
+    underscores). Defaults to ``communicates_with``.
+
+    Recommended values
+
+    - ``communicates_with`` (configured or observed protocol session; ``direction``
+      says who initiates; allow-listed masters/clients are ``communicates_with`` with
+      ``extra["allow_list"] = True``)
+    - ``allows_client`` (pure access-list entry with no protocol session, e.g. an IP
+      access-control table)
+    - ``neighbor_of`` (ARP/ND/LLDP/CDP/FDB neighbor), ``routes_via`` (next hop),
+      ``syncs_time_from`` (time server), ``logs_to`` (syslog/log collector)
+    - ``authenticates_with``, ``depends_on`` (DNS, OCSP, KDC, I/O provider, ...), ``tunnel``
+    - ``physical_link`` (serial/backplane/point-to-point link)
+    - ``publishes_to``, ``subscribes_to``, ``reports_to`` (IEC 61850)
+    """
+
+    protocol: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Application protocol, same string as :attr:`Service.protocol` for the same
+    protocol (canonical names, ``docs/data_model.rst``; ECS ``network.protocol``).
+    Inferred by ``annotate()`` from the server port when empty.
+    """
+
+    transport: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    IANA transport keyword (``tcp``, ``udp``). Empty for serial/L2 relationships.
+    Inferred by ``annotate()`` for protocols that only use one transport.
+    """
+
+    medium: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Physical medium. Copied from the local interface's ``type`` by ``annotate()``
+    if unset and the value is in this vocabulary (``wifi`` -> ``wireless``).
+
+    Allowed values (documented)
+
+    - ``ethernet``, ``serial`` (electrical standard unknown), ``rs_232``, ``rs_422``,
+      ``rs_485``, ``fiber_serial``, ``usb``, ``backplane``, ``wireless``, ``loopback``
+    """
+
+    direction: Literal["ingress", "egress", "unknown", ""] = ""
+    """
+    Who initiates, from the local device's view (ECS ``network.direction``, host
+    context): ``egress`` = the local device opens/polls/publishes; ``ingress`` =
+    the remote side does. ``annotate()`` infers it for tcp/udp records from the
+    device's listening services and well-known/ephemeral ports when empty.
+    Empty for neighbors and routes.
+    """
+
+    local: RelationshipEndpoint = RelationshipEndpoint()
+    """This device's side."""
+
+    remote: RelationshipEndpoint = RelationshipEndpoint()
+    """The other side."""
+
+    vlan: Vlan = Vlan()
+    """VLAN used by the relationship (ECS ``network.vlan.*``)."""
+
+    reference: constr(strip_whitespace=True) = ""
+    """
+    Identifier of the configured data stream or session that BOTH ends report,
+    used to join the two sides across devices.
+
+    Examples
+
+    - ``PROT1PRO/LLN0$GO$gcbTrip`` (IEC 61850 GOOSE control block, ``gocbRef``;
+      same value on the publisher's ``publishes_to`` and each subscriber's
+      ``subscribes_to``)
+    - ``MU1MU/LLN0$MS$svcb1`` (SV control block)
+    - ``PROT1PRO/LLN0$RP$urcbA`` (report control block)
+    """
+
+    state: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    State as reported by the source, lowercase.
+
+    Examples
+
+    - ``established``
+    - ``time_wait``
+    - ``reachable``
+    - ``stale``
+    """
+
+    enabled: bool | None = None
+    """``True`` if a configured relationship is enabled in the configuration."""
+
+    evidence: set[constr(strip_whitespace=True, to_lower=True)] = set()
+    """
+    How PEAT learned of the relationship (union over all observations).
+
+    Recommended values
+
+    - ``config``, ``scl``, ``arp``, ``nd``, ``lldp``, ``cdp``, ``fdb``
+    - ``routing_table``, ``netstat``, ``log``, ``conn_log``, ``pcap``, ``live``, ``user``
+    """
+
+    first_seen: datetime | None = None
+    """Earliest observation (ECS ``event.start`` in the relationships index)."""
+
+    last_seen: datetime | None = None
+    """Latest observation (ECS ``event.end`` in the relationships index)."""
+
+    count: conint(ge=0) | None = None
+    """Number of observations aggregated into this record (sessions, log lines, ...)."""
+
+    statistics: NetworkStatistics = NetworkStatistics()
+    """Traffic counters for this relationship (statistics "by host IP")."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Human-readable description of the relationship."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """
+    Other attributes, lowercase snake_case keys (e.g. ``control_operations_enabled``,
+    ``allow_list``, ``security``, ``scan_rate``, ``transport_scheme``).
+    """
+
+    _es_index_varname: str = PrivateAttr(default="ELASTIC_RELATIONSHIPS_INDEX")
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("type", "protocol", "transport", "id"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("id",))
+
+    _clean_protocol = validator("protocol", allow_reuse=True)(clean_protocol)
+
+    def server_port(self) -> int | None:
+        """Port of the side that accepts connections (the ephemeral client port is ignored)."""
+        if self.direction == "ingress":
+            return self.local.port
+        if self.direction == "egress":
+            return self.remote.port
+        ports = [p for p in (self.local.port, self.remote.port) if p is not None]
+        return min(ports) if ports else None  # unknown direction: lower port (heuristic)
+
+    def key(self) -> tuple:
+        """
+        Identity of the relationship = the EDGE, not how it was observed:
+        ``(type, server port, protocol if no port, remote identity, local sub-device id,
+        local serial port, protocol addresses and VLAN only for L2/serial edges, stream
+        reference)``. Attributes that only some sources know (``transport``,
+        ``protocol`` when a port is known, ``local.interface``, ``local.ip``, client
+        port, roles, ``direction``) are NOT part of the identity; they merge.
+        """
+        server_port = self.server_port()
+        no_ip_port = not self.remote.ip and server_port is None
+        remote_identity = (
+            self.remote.ip
+            or self.remote.mac
+            or self.remote.hostname.lower()
+            or self.remote.name
+            or self.remote.address
+        )
+        return (
+            self.type or "communicates_with",
+            server_port,
+            "" if server_port is not None else self.protocol,
+            remote_identity,
+            self.local.id,
+            self.local.serial_port,
+            self.local.protocol_address if no_ip_port else "",
+            self.remote.protocol_address if no_ip_port else "",
+            "" if self.remote.ip else self.vlan.id,
+            self.reference,
+        )
+
+    def _infer(self, dev: DeviceData | None) -> None:
+        """Fill direction/protocol/transport/ports/interface/medium when unset."""
+        if not self.transport and self.protocol in TCP_PROTOCOLS:
+            self.transport = "tcp"
+        elif not self.transport and self.protocol in UDP_PROTOCOLS:
+            self.transport = "udp"
+        listening: dict[int, tuple[str, str]] = {}  # port -> (protocol, transport)
+        if dev is not None:
+            for svc in [*dev.service, *(s for i in dev.interface for s in i.services)]:
+                if svc.port and svc.status not in ("closed",):
+                    listening.setdefault(svc.port, (svc.protocol, svc.transport))
+        lp, rp = self.local.port, self.remote.port
+        if not self.direction and (self.transport in ("tcp", "udp") or lp or rp):
+            if lp is not None and lp in listening:
+                self.direction = "ingress"
+            elif (
+                rp is not None
+                and (rp in WELL_KNOWN_PORTS or rp < EPHEMERAL_PORT_MIN)
+                and (lp is None or lp >= EPHEMERAL_PORT_MIN)
+            ):
+                self.direction = "egress"
+            elif (
+                lp is not None
+                and (lp in WELL_KNOWN_PORTS or lp < EPHEMERAL_PORT_MIN)
+                and (rp is None or rp >= EPHEMERAL_PORT_MIN)
+            ):
+                self.direction = "ingress"
+        # A log line names the service but not the port: use the device's own service
+        if self.direction == "ingress" and lp is None and self.protocol:
+            ports = sorted(p for p, (proto, _) in listening.items() if proto == self.protocol)
+            if ports:
+                self.local.port = ports[0]
+        port = self.server_port()
+        if self.direction == "ingress" and port in listening:  # the device's own service
+            proto, transport = listening[port]
+            if not self.protocol and proto:
+                self.protocol = proto
+            if not self.transport and transport:
+                self.transport = transport
+        if not self.protocol and port is not None and port in WELL_KNOWN_PORTS:
+            self.protocol = WELL_KNOWN_PORTS[port]
+        if dev is None:
+            return
+        if not self.local.interface and self.local.ip:
+            for iface in dev.interface:
+                if iface.ip == self.local.ip and iface.name:
+                    self.local.interface = iface.name
+                    break
+        if not self.medium and self.local.interface:
+            for iface in dev.interface:
+                if iface.name == self.local.interface and iface.type:
+                    medium = MEDIUM_ALIASES.get(iface.type, iface.type)
+                    if medium in MEDIUM_VALUES:
+                        self.medium = medium
+                    break
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        if not self.type:
+            self.type = "communicates_with"
+        if any(not isinstance(e, str) or e != e.strip().lower() for e in self.evidence):
+            self.evidence = {str(e).strip().lower() for e in self.evidence if str(e).strip()}
+        self._infer(dev)
+        # ALWAYS recompute: a copied/edited record must never keep a stale id
+        raw = "|".join("" if p is None else str(p) for p in self.key())
+        new_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+        if self.id != new_id:
+            self.id = new_id
+        tz = _dev_tz(dev)
+        if self.first_seen is not None:
+            self.first_seen = _utc(self.first_seen, tz)
+        if self.last_seen is not None:
+            self.last_seen = _utc(self.last_seen, tz)
+        self.statistics.annotate(dev)
+        if dev is None:
+            return
+        self.vlan.annotate(dev)
+        for ep in (self.local, self.remote):
+            if ep.ip:
+                dev.related.ip.add(ep.ip)
+        if self.remote.mac and _is_unicast_mac(self.remote.mac):
+            dev.related.mac.add(self.remote.mac)
+        for host in (self.remote.hostname, self.remote.name):
+            if host:
+                dev.related.hosts.add(host)
+        if self.protocol:
+            dev.related.protocols.add(self.protocol)
+        if self.direction == "egress" and self.remote.port:
+            dev.related.ports.add(self.remote.port)
+
+    def gen_elastic_content(self, dev: DeviceData | None = None) -> dict:
+        self.annotate(dev)
+        now = Elastic.time_now()
+        ip_based = self.transport in ("tcp", "udp") or bool(self.remote.ip)
+        local_ip = self.local.ip or (dev.ip if dev and ip_based else "")
+        local_mac = self.local.mac
+        if not local_mac and not ip_based and self.direction == "egress" and dev is not None:
+            # L2 publisher (GOOSE/SV): the device's own MAC is the frame source
+            iface = next((i for i in dev.interface if i.name == self.local.interface), None)
+            local_mac = (iface.mac if iface else "") or dev.mac
+        remote_mac_unicast = bool(self.remote.mac) and _is_unicast_mac(self.remote.mac)
+        directed = self.direction in ("ingress", "egress")
+        etype = "connection" if (directed and local_ip and self.remote.ip) else "info"
+        peer = (
+            self.remote.name
+            or self.remote.ip
+            or self.remote.hostname
+            or self.remote.mac
+            or self.remote.address
+        )
+        via = self.protocol or self.transport or self.medium
+        who = (dev.name or dev.get_id()) if dev else ""
+        role = f" ({self.local.role})" if self.local.role else ""
+        message = f"{who or 'device'}{role} {self.type} {peer}".strip()
+        if via:
+            message += f" ({via})"
+
+        network = {
+            "protocol": self.protocol,
+            "transport": self.transport,
+            "direction": self.direction,  # ingress | egress | unknown (ECS values)
+            "vlan": {"id": self.vlan.id, "name": self.vlan.name},
+        }
+        ing, egr = self.statistics.ingress, self.statistics.egress
+        if ing.bytes is not None and egr.bytes is not None:
+            network["bytes"] = ing.bytes + egr.bytes
+        if ing.packets is not None and egr.packets is not None:
+            network["packets"] = ing.packets + egr.packets
+
+        def endpoint(ep: RelationshipEndpoint, ip: str, mac: str) -> dict:
+            return {
+                "ip": ip,
+                "mac": mac,
+                "port": ep.port,
+                "domain": ep.hostname,
+                "address": ep.address or ip or ep.hostname,
+            }
+
+        local_ep = endpoint(self.local, local_ip, local_mac)
+        remote_ep = endpoint(self.remote, self.remote.ip, self.remote.mac)
+        content = {
+            "@timestamp": now,
+            "message": message,
+            "tags": ["relationship"],
+            "event": {
+                "kind": "state",
+                "category": ["network"],
+                "type": [etype],
+                "start": self.first_seen,
+                "end": self.last_seen,
+                "ingested": now,
+            },
+            "relationship": self.dict(exclude_defaults=True),
+            "network": network,
+            "related": {
+                "ip": sorted({x for x in (local_ip, self.remote.ip) if x}),
+                "mac": sorted(
+                    {x for x in (local_mac, self.remote.mac) if x and _is_unicast_mac(x)}
+                ),
+                "hosts": sorted({x for x in (self.remote.hostname, self.remote.name) if x}),
+            },
+        }
+        if not remote_mac_unicast and self.remote.mac:
+            # A group (multicast/broadcast) MAC is only ever a destination (ECS)
+            remote_ep["mac"] = ""
+            content["destination"] = {"mac": self.remote.mac}
+            if self.direction == "egress":
+                content["source"] = {**local_ep, "bytes": egr.bytes, "packets": egr.packets}
+                content["destination"].update(
+                    {"address": self.remote.address, "bytes": ing.bytes, "packets": ing.packets}
+                )
+        elif self.direction == "egress":
+            content["source"] = {**local_ep, "bytes": egr.bytes, "packets": egr.packets}
+            content["destination"] = {**remote_ep, "bytes": ing.bytes, "packets": ing.packets}
+        elif self.direction == "ingress":
+            content["source"] = {**remote_ep, "bytes": ing.bytes, "packets": ing.packets}
+            content["destination"] = {**local_ep, "bytes": egr.bytes, "packets": egr.packets}
+        if dev:
+            content["host"] = dev.gen_base_host_fields_content()
+            content["tags"].extend([dev.description.vendor.name, dev.description.product])
+            if dev._module:
+                content["event"]["module"] = dev._module.__name__
+        return strip_empty_and_private(content)
+
+
+class Indicator(BaseModel):
+    """
+    A status indicator: front-panel LED, text display, key/mode switch,
+    pushbutton, physical sensor (tamper contact/light/motion), alarm, or decoded
+    status flag (CIP identity bits, SEL ``STA`` self-test row).
+
+    Configured definitions (e.g. LED equations from settings) leave ``state`` and
+    ``timestamp`` unset. Live readings set ``state``/``value`` and ``timestamp``.
+    Both merge on (``type``, ``name``, ``interface``). In Elasticsearch, live
+    states are also summarized per device as ``host.indicator_states.<name>``
+    (one flattened field; object arrays do not keep name/state pairs together).
+    """
+
+    name: constr(strip_whitespace=True) = ""
+    """
+    Device identifier of the indicator.
+
+    Examples
+
+    - ``RUN``
+    - ``TLED12``
+    - ``key_switch``
+    """
+
+    label: str = Field(default="", elastic_type=FREE_TEXT)
+    """
+    Printed or configured label.
+
+    Examples
+
+    - ``TRIP``
+    - ``79 LOCKOUT``
+    """
+
+    type: Literal[
+        "led", "display", "switch", "pushbutton", "sensor", "alarm", "status_flag", ""
+    ] = ""
+    """Kind of indicator."""
+
+    category: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Functional category, lowercase.
+
+    Recommended values
+
+    - ``power``, ``run``, ``fault``, ``alarm``, ``comm``, ``link``, ``activity``
+    - ``target``, ``mode``, ``self_test``, ``security``, ``battery``, ``redundancy``, ``other``
+    """
+
+    state: Literal["on", "off", "blinking", ""] = ""
+    """
+    Visual/logical state. Empty = unknown or definition only. Synonyms are
+    normalized (``lit``/``true``/``1``/``asserted`` -> ``on``, ...); a color word
+    (``red``, ``green``, ...) becomes ``state="on"`` plus ``color``; any other
+    value (``unknown``, vendor text) becomes ``""`` and is kept in ``value``.
+    """
+
+    color: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Current or configured color, lowercase.
+
+    Examples
+
+    - ``green``
+    - ``red``
+    - ``amber``
+    """
+
+    blink_rate: confloat(ge=0) | None = Field(default=None, elastic_type="double")
+    """Blink frequency in Hz, if blinking."""
+
+    value: str = Field(default="", elastic_type=FREE_TEXT)
+    """
+    Raw reading.
+
+    Examples
+
+    - ``REMOTE RUN`` (key switch position)
+    - ``OK`` (self-test)
+    - ``Rev 33.11`` (display text)
+    """
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Meaning of the indicator or its current state."""
+
+    health: NE107_HEALTH = ""
+    """Meaning of the current state per NAMUR NE 107 (same values as :attr:`DeviceData.health`)."""
+
+    latched: bool | None = None
+    """``True`` if the indicator latches (stays on until reset)."""
+
+    equation: str = Field(default="", elastic_type=FREE_TEXT)
+    """Logic equation that drives the indicator (SELogic, FlexLogic)."""
+
+    interface: constr(strip_whitespace=True) = ""
+    """:attr:`Interface.name` for link/activity LEDs."""
+
+    position: constr(strip_whitespace=True) = ""
+    """
+    Position on the panel or in the status word.
+
+    Examples
+
+    - ``0.1`` (SEL ``TAR`` row.bit)
+    - ``led_0``
+    """
+
+    timestamp: datetime | None = None
+    """When the live ``state``/``value`` was read. Unset for configured definitions."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other indicator data (e.g. raw status word, SNMP OID index)."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("type", "interface", "position", "name"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("type", "name", "interface"))
+    _newest_wins_field: str = PrivateAttr(default="timestamp")
+
+    @root_validator(pre=True, allow_reuse=True)
+    def _normalize_state(cls, values):
+        raw = values.get("state")
+        s = str(raw if raw is not None else "").strip().lower()
+        if s in ("", "on", "off", "blinking"):
+            state = s
+        elif s in ("lit", "true", "1", "asserted", "active"):
+            state = "on"
+        elif s in ("unlit", "false", "0", "deasserted", "inactive", "dark"):
+            state = "off"
+        elif s in ("blink", "flash", "flashing"):
+            state = "blinking"
+        elif s in INDICATOR_COLORS:
+            state = "on"
+            values = {**values, "color": values.get("color") or s}
+        else:  # "unknown", vendor text: never fail the model (e.g. SEL-362X "unknown")
+            state = ""
+            if not values.get("value"):
+                values = {**values, "value": str(raw)}
+        return {**values, "state": state}
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        if self.timestamp is not None:
+            self.timestamp = _utc(self.timestamp, _dev_tz(dev))
+
+
+class ProcessParent(BaseModel):
+    """Parent of a :class:`HostProcess` (ECS ``process.parent.*`` subset)."""
+
+    pid: conint(ge=0) | None = None
+    """Parent process ID (ECS ``process.parent.pid``)."""
+
+    name: constr(strip_whitespace=True) = ""
+    """Parent process name (ECS ``process.parent.name``)."""
+
+
+class HostProcess(BaseModel):
+    """
+    An OS process, RTOS task or thread running on (or observed historically on)
+    the device. Uses ECS ``process.*`` names where ECS defines them. Exported
+    under ``host.processes``. PLC tasks are :class:`LogicTask`.
+    """
+
+    pid: conint(ge=0) | None = None
+    """Process ID (ECS ``process.pid``). VxWorks: ``int(task_id, 16)``."""
+
+    name: constr(strip_whitespace=True) = Field(default="", elastic_type=FREE_TEXT)
+    """
+    Process/task name (ECS ``process.name``).
+
+    Examples
+
+    - ``sshd``
+    - ``tNetTask``
+    """
+
+    title: constr(strip_whitespace=True) = Field(default="", elastic_type=FREE_TEXT)
+    """Process title (ECS ``process.title``)."""
+
+    executable: constr(strip_whitespace=True) = Field(default="", elastic_type=FREE_TEXT)
+    """Absolute path to the executable (ECS ``process.executable``)."""
+
+    args: list[str] = []
+    """Arguments, starting with the executable (ECS ``process.args``)."""
+
+    command_line: str = Field(default="", elastic_type=FREE_TEXT)
+    """Full command line (ECS ``process.command_line``)."""
+
+    working_directory: constr(strip_whitespace=True) = Field(default="", elastic_type=FREE_TEXT)
+    """Working directory (ECS ``process.working_directory``)."""
+
+    start: datetime | None = None
+    """When the process started (ECS ``process.start``)."""
+
+    uptime: timedelta | None = None
+    """How long the process has been running (ECS ``process.uptime``; ints are seconds)."""
+
+    exit_code: int | None = None
+    """Exit code, if the process ended (ECS ``process.exit_code``)."""
+
+    entity_id: constr(strip_whitespace=True) = ""
+    """Unique identifier that survives PID reuse (ECS ``process.entity_id``)."""
+
+    parent: ProcessParent = ProcessParent()
+    """Parent process (ECS ``process.parent.*``)."""
+
+    user: User = User()
+    """Effective user (ECS ``process.user.*``). Only ``name``/``id`` are typically set."""
+
+    hash: Hash = Hash()
+    """Hashes of the executable (ECS ``process.hash.*``)."""
+
+    type: Literal["process", "task", "thread", ""] = ""
+    """``process`` (OS process), ``task`` (RTOS task, e.g. VxWorks) or ``thread``."""
+
+    state: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Scheduler state, lowercase. Raw codes go in ``extra``.
+
+    Examples
+
+    - ``running``
+    - ``sleeping``
+    - ``pended``
+    - ``suspended``
+    """
+
+    priority: int | None = None
+    """Scheduler priority as reported (OS-specific scale)."""
+
+    threads_count: conint(ge=0) | None = None
+    """Number of threads."""
+
+    cpu_percent: confloat(ge=0) | None = Field(default=None, elastic_type="double")
+    """CPU usage in percent (0-100 per core; may exceed 100 on multi-core)."""
+
+    memory_bytes: conint(ge=0) | None = None
+    """Resident memory in bytes."""
+
+    memory_percent: confloat(ge=0, le=100) | None = Field(default=None, elastic_type="double")
+    """Memory usage in percent of total memory."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other data (e.g. ``task_id`` hex, VxWorks stack sizes, SELinux context)."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("type", "pid", "name"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("type", "pid", "name"))
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        if not self.name and self.executable:
+            self.name = self.executable.replace("\\", "/").rsplit("/", 1)[-1]
+        self.start = _utc(self.start, _dev_tz(dev)) if self.start else None
+        if dev:
+            if self.name:
+                dev.related.process.add(self.name)
+            if self.user.name:
+                dev.related.user.add(self.user.name)
+            if self.executable.startswith(("/", "\\")) or ":\\" in self.executable:
+                dev.related.files.add(self.executable)
+
+
+class Package(BaseModel):
+    """
+    An installed software component (ECS ``package.*``): OS packages, libraries,
+    runtimes, signature databases, PLC runtimes. The primary firmware/OS image
+    stays in :attr:`DeviceData.firmware`/:attr:`DeviceData.os`.
+    """
+
+    name: constr(strip_whitespace=True) = ""
+    """
+    Package name (ECS ``package.name``).
+
+    Examples
+
+    - ``OpenSSL``
+    - ``ISaGRAF``
+    """
+
+    version: constr(strip_whitespace=True) = ""
+    """Package version (ECS ``package.version``)."""
+
+    type: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Package file format, ECS meaning only (ECS ``package.type``).
+
+    Examples
+
+    - ``rpm``
+    - ``deb``
+    - ``ipk``
+    """
+
+    category: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    What kind of software component this is (PEAT-specific, lowercase).
+
+    Recommended values
+
+    - ``application``, ``library``, ``runtime``, ``plc_runtime``, ``firmware``
+    - ``driver``, ``os_component``, ``signatures``
+    """
+
+    architecture: constr(strip_whitespace=True) = ""
+    """Package architecture (ECS ``package.architecture``)."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Description (ECS ``package.description``)."""
+
+    installed: datetime | None = None
+    """Installation time (ECS ``package.installed``)."""
+
+    path: constr(strip_whitespace=True) = ""
+    """Installation path (ECS ``package.path``)."""
+
+    license: constr(strip_whitespace=True) = ""
+    """License (ECS ``package.license``)."""
+
+    reference: constr(strip_whitespace=True) = ""
+    """URL with more information (ECS ``package.reference``)."""
+
+    size: conint(ge=0) | None = None
+    """Size in bytes (ECS ``package.size``)."""
+
+    checksum: constr(strip_whitespace=True) = ""
+    """Checksum of the package (ECS ``package.checksum``)."""
+
+    build_version: constr(strip_whitespace=True) = ""
+    """Build version/commit (ECS ``package.build_version``)."""
+
+    vendor: constr(strip_whitespace=True) = ""
+    """Software vendor (PEAT-specific)."""
+
+    cpe: constr(strip_whitespace=True) = ""
+    """CPE 2.3 name, for vulnerability matching (PEAT-specific)."""
+
+    purl: constr(strip_whitespace=True) = ""
+    """Package URL (purl), for vulnerability matching (PEAT-specific)."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other package data."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("name", "version", "path"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("name", "version", "path"))
+
+
+class Asset(BaseModel):
+    """
+    Owner-supplied asset context, loaded from the ``asset`` block of the
+    matching ``hosts`` entry in the PEAT configuration file. Device modules
+    must NOT write this field. ``criticality`` uses Elastic Security's
+    ``host.asset.criticality`` values.
+    """
+
+    id: constr(strip_whitespace=True) = ""
+    """Organization asset number/tag."""
+
+    criticality: Literal["low_impact", "medium_impact", "high_impact", "extreme_impact", ""] = ""
+    """
+    Asset criticality: same field name and values as Elastic Security asset
+    criticality (``host.asset.criticality``). Elastic Security keeps criticality in
+    its own index; to use these values there, upload them with its asset
+    criticality CSV import/API. ``low``/``medium``/``high``/``extreme`` are accepted
+    and normalized.
+    """
+
+    owner: constr(strip_whitespace=True) = ""
+    """Owning person/team/department."""
+
+    business_unit: constr(strip_whitespace=True) = ""
+    """Business unit or organization."""
+
+    site: constr(strip_whitespace=True) = ""
+    """Site, plant or substation."""
+
+    location: constr(strip_whitespace=True) = ""
+    """Location within the site (building/room/panel/rack)."""
+
+    zone: constr(strip_whitespace=True) = ""
+    """IEC 62443 security zone."""
+
+    conduits: set[constr(strip_whitespace=True)] = set()
+    """IEC 62443 conduits the asset is part of."""
+
+    purdue_level: constr(strip_whitespace=True) = ""
+    """
+    Purdue model level.
+
+    Allowed values
+
+    - ``0``, ``1``, ``2``, ``3``, ``3.5``, ``4``, ``5``
+    """
+
+    safety: bool | None = None
+    """``True`` if the asset performs a safety function (SIS, protection)."""
+
+    tags: set[constr(strip_whitespace=True)] = set()
+    """
+    Arbitrary owner-assigned tags. Also exported as ECS ``host.tags`` (ECS 9.5.0:
+    tags assigned by the system that manages the host, e.g. a CMDB).
+    """
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Free-text description."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other owner-supplied key/value context."""
+
+    @validator("criticality", pre=True, allow_reuse=True)
+    def _normalize_criticality(cls, v):
+        s = str(v or "").strip().lower().replace(" ", "_")
+        return f"{s}_impact" if s in ("low", "medium", "high", "extreme") else s
+
+    @validator("purdue_level", pre=True, allow_reuse=True)
+    def _normalize_purdue(cls, v):
+        s = str(v if v is not None else "").strip().lower()
+        s = s.removeprefix("level").removeprefix("l").strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        if s not in ("0", "1", "2", "3", "3.5", "4", "5", ""):
+            raise ValueError(f"invalid Purdue level '{v}'")
+        return s
+
+
+# --------------------------------------------------------------------------- #
+# IEC 61850 (insert after Asset, before BaselineFinding/DeviceData)
+# --------------------------------------------------------------------------- #
+class IEC61850HistoryItem(BaseModel):
+    """One SCL ``Header/History/Hitem`` (configuration change history)."""
+
+    version: constr(strip_whitespace=True) = ""
+    """``Hitem@version``."""
+
+    revision: constr(strip_whitespace=True) = ""
+    """``Hitem@revision``."""
+
+    when: constr(strip_whitespace=True) = ""
+    """``Hitem@when`` (raw; SCL does not mandate a format)."""
+
+    who: constr(strip_whitespace=True) = ""
+    """``Hitem@who``."""
+
+    what: str = Field(default="", elastic_type=FREE_TEXT)
+    """``Hitem@what``."""
+
+    why: str = Field(default="", elastic_type=FREE_TEXT)
+    """``Hitem@why``."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("version", "revision", "when"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("version", "revision", "when"))
+
+
+class IEC61850Header(BaseModel):
+    """Identity of the SCL file the IEC 61850 data was read from."""
+
+    file_type: Literal["SSD", "SCD", "ICD", "IID", "CID", "SED", ""] = ""
+    """SCL file type (from the file extension or caller)."""
+
+    scl_version: constr(strip_whitespace=True) = ""
+    """SCL schema version + revision + release, e.g. ``2007B4``; ``2003`` for Edition 1."""
+
+    id: constr(strip_whitespace=True) = ""
+    """``Header@id``."""
+
+    version: constr(strip_whitespace=True) = ""
+    """``Header@version``."""
+
+    revision: constr(strip_whitespace=True) = ""
+    """``Header@revision``."""
+
+    tool_id: constr(strip_whitespace=True) = ""
+    """``Header@toolID`` (engineering tool that wrote the file)."""
+
+    name_structure: constr(strip_whitespace=True) = ""
+    """``Header@nameStructure`` (``IEDName`` or ``FuncName``)."""
+
+    history: list[IEC61850HistoryItem] = []
+    """``Header/History/Hitem`` entries."""
+
+
+class IEC61850Address(BaseModel):
+    """Layer 2 multicast address of a GOOSE/SV control block (``GSE|SMV/Address``)."""
+
+    mac: str = ""
+    """Destination MAC (``MAC-Address``), normalized uppercase colon-separated."""
+
+    appid: conint(ge=0, le=0xFFFF) | None = None
+    """APPID as an integer. SCL stores it as hex (``"1000"`` = 4096)."""
+
+    vlan: Vlan = Vlan()
+    """VLAN (``VLAN-ID`` is hex in SCL) and ``VLAN-PRIORITY``."""
+
+    _validate_mac = validator("mac", allow_reuse=True)(validate_mac)
+
+
+class IEC61850AccessPoint(BaseModel):
+    """An IED ``AccessPoint`` joined with its ``Communication/.../ConnectedAP`` address."""
+
+    name: constr(strip_whitespace=True) = ""
+    """``AccessPoint@name``."""
+
+    subnetwork: constr(strip_whitespace=True) = ""
+    """``SubNetwork@name``."""
+
+    subnetwork_type: constr(strip_whitespace=True) = ""
+    """``SubNetwork@type``, e.g. ``8-MMS``."""
+
+    ip: str = Field(default="", elastic_type="ip")
+    """``Address/P[@type="IP"]``."""
+
+    subnet_mask: str = Field(default="", elastic_type="ip")
+    """``Address/P[@type="IP-SUBNET"]``."""
+
+    gateway: str = Field(default="", elastic_type="ip")
+    """``Address/P[@type="IP-GATEWAY"]``."""
+
+    mms_port: conint(ge=1, le=65535) | None = None
+    """
+    MMS TCP port: ``Address/P[@type="MMS-Port"]`` (Edition 2) if present, else
+    ``102`` when the access point has a ``Server``.
+    """
+
+    server: bool | None = None
+    """``True`` if the access point has an MMS ``Server``."""
+
+    authentication: set[constr(strip_whitespace=True, to_lower=True)] = set()
+    """
+    Enabled ``Server/Authentication`` flags. An empty ``<Authentication/>`` (XSD
+    default) means ``none``.
+
+    Allowed values
+
+    - ``none``, ``password``, ``weak``, ``strong``, ``certificate``
+    """
+
+    redundancy: constr(strip_whitespace=True, to_lower=True) = ""
+    """``ConnectedAP@redProt`` (``none``, ``prp``, ``hsr``, ``rstp``)."""
+
+    physical_ports: list[constr(strip_whitespace=True)] = []
+    """``PhysConn/P[@type="Port"]`` values (physical port names)."""
+
+    router: bool | None = None
+    """``AccessPoint@router``."""
+
+    clock: bool | None = None
+    """``AccessPoint@clock`` (the AP is a time master)."""
+
+    osi: dict = Field(default={}, elastic_type="flattened")
+    """``OSI-*`` address parameters (``OSI-TSEL``, ``OSI-PSEL``, ...)."""
+
+    _validate_ip = validator("ip", "subnet_mask", "gateway", allow_reuse=True)(validate_ip)
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("name", "subnetwork"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("name",))
+
+
+class IEC61850LogicalDevice(BaseModel):
+    """A logical device and the names of its logical nodes."""
+
+    inst: constr(strip_whitespace=True) = ""
+    """``LDevice@inst``."""
+
+    name: constr(strip_whitespace=True) = ""
+    """Logical device name: ``LDevice@ldName`` or ``<IEDName><inst>``."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """``LDevice@desc``."""
+
+    access_point: constr(strip_whitespace=True) = ""
+    """Name of the access point whose server holds the LD."""
+
+    logical_nodes: list[constr(strip_whitespace=True)] = []
+    """Logical node names (prefix + lnClass + inst), e.g. ``["LLN0", "PTOC1", "XCBR1"]``."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("access_point", "inst"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("access_point", "inst"))
+
+
+class IEC61850Publication(BaseModel):
+    """A GOOSE/GSSE (``GSEControl``) or Sampled Values (``SampledValueControl``) control block."""
+
+    type: Literal["GOOSE", "GSSE", "SV", ""] = ""
+    """Control block type (``GSEControl@type`` defaults to ``GOOSE``)."""
+
+    name: constr(strip_whitespace=True) = ""
+    """Control block name (``@name``)."""
+
+    ld_inst: constr(strip_whitespace=True) = ""
+    """``LDevice@inst`` holding the control block."""
+
+    reference: constr(strip_whitespace=True) = ""
+    """
+    Control block reference as seen on the wire.
+
+    Examples
+
+    - ``PROT1LD0/LLN0$GO$gcbTrip`` (``goose.gocbRef``)
+    - ``MU1MU/LLN0$MS$svcb1``
+    """
+
+    id: constr(strip_whitespace=True) = ""
+    """GOOSE ``goID`` (``GSEControl@appID``) or SV ``svID`` (``SampledValueControl@smvID``)."""
+
+    dataset: constr(strip_whitespace=True) = ""
+    """Name of the ``DataSet`` sent by the control block (SCL control block attribute)."""
+
+    dataset_members_count: conint(ge=0) | None = None
+    """Number of ``FCDA`` members of the dataset (``numDatSetEntries`` on the wire)."""
+
+    conf_rev: conint(ge=0) | None = None
+    """``@confRev``."""
+
+    security: constr(strip_whitespace=True) = ""
+    """``@securityEnable``: ``None`` (XSD default), ``Signature``, ``SignatureAndEncryption``."""
+
+    address: IEC61850Address = IEC61850Address()
+    """Destination MAC/APPID/VLAN from the matching ``ConnectedAP/GSE|SMV``."""
+
+    min_time: conint(ge=0) | None = None
+    """GOOSE ``MinTime`` in ms (``tDurationInMilliSec``; decimals are rounded)."""
+
+    max_time: conint(ge=0) | None = None
+    """GOOSE ``MaxTime`` in ms (heartbeat; decimals are rounded)."""
+
+    smp_rate: conint(ge=0) | None = None
+    """SV ``@smpRate``."""
+
+    smp_mod: constr(strip_whitespace=True) = ""
+    """SV ``@smpMod`` (``SmpPerPeriod``, ``SmpPerSec``, ``SecPerSmp``)."""
+
+    nof_asdu: conint(ge=0) | None = None
+    """SV ``@nofASDU``."""
+
+    subscribers: list[constr(strip_whitespace=True)] = []
+    """IED names listed in ``IEDName`` children (configured subscribers)."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """``@desc``."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("type", "ld_inst", "name"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("type", "ld_inst", "name"))
+
+
+class IEC61850ReportControl(BaseModel):
+    """A buffered/unbuffered report control block (``ReportControl``)."""
+
+    name: constr(strip_whitespace=True) = ""
+    """``@name``."""
+
+    ld_inst: constr(strip_whitespace=True) = ""
+    """``LDevice@inst``."""
+
+    ln: constr(strip_whitespace=True) = ""
+    """Logical node holding the RCB, e.g. ``LLN0``."""
+
+    report_id: constr(strip_whitespace=True) = ""
+    """``@rptID``."""
+
+    dataset: constr(strip_whitespace=True) = ""
+    """Name of the ``DataSet`` reported by the control block (SCL control block attribute)."""
+
+    conf_rev: conint(ge=0) | None = None
+    """``@confRev``."""
+
+    buffered: bool | None = None
+    """``@buffered``."""
+
+    buffer_time: conint(ge=0) | None = None
+    """``@bufTime`` in ms."""
+
+    integrity_period: conint(ge=0) | None = None
+    """``@intgPd`` in ms (0 = off)."""
+
+    trigger_options: set[constr(strip_whitespace=True)] = set()
+    """
+    Enabled ``TrgOps`` (``dchg``, ``qchg``, ``dupd``, ``period``, ``gi``);
+    ``gi`` defaults to true.
+    """
+
+    max_clients: conint(ge=0) | None = None
+    """``RptEnabled@max`` (defaults to 1)."""
+
+    clients: list[constr(strip_whitespace=True)] = []
+    """``RptEnabled/ClientLN@iedName`` values (expected MMS clients)."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("ld_inst", "ln", "name"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("ld_inst", "ln", "name"))
+
+
+class IEC61850Subscription(BaseModel):
+    """``Inputs/ExtRef`` entries summarized per source control block (who this IED listens to)."""
+
+    service_type: constr(strip_whitespace=True) = ""
+    """``ExtRef@serviceType`` (``GOOSE``, ``SMV``, ``Report``, ``Poll``); empty for Edition 1."""
+
+    publisher_ied: constr(strip_whitespace=True) = ""
+    """``ExtRef@iedName``."""
+
+    publisher_ld_inst: constr(strip_whitespace=True) = ""
+    """``ExtRef@srcLDInst`` (or ``@ldInst``)."""
+
+    control_block: constr(strip_whitespace=True) = ""
+    """``ExtRef@srcCBName``; empty if not in the file (Edition 1)."""
+
+    reference: constr(strip_whitespace=True) = ""
+    """
+    Publisher control block reference, the join key to the publisher's
+    :attr:`IEC61850Publication.reference`. Taken from the publisher's control block
+    if it is in the same file (SCD), else built best effort from the ExtRef:
+    ``<iedName><srcLDInst>/<srcPrefix><srcLNClass|LLN0><srcLNInst>$GO|MS$<srcCBName>``
+    (a publisher ``LDevice@ldName`` override is not visible to the subscriber).
+    Empty for Edition 1 references without ``srcCBName``.
+    """
+
+    address: IEC61850Address = IEC61850Address()
+    """Publisher's MAC/APPID/VLAN if the publisher's address is in the same file."""
+
+    ext_ref_count: conint(ge=0) | None = None
+    """Number of ``ExtRef`` entries grouped into this record."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(
+        default=("service_type", "publisher_ied", "publisher_ld_inst", "control_block")
+    )
+    _dedupe_key: tuple[str] = PrivateAttr(
+        default=("service_type", "publisher_ied", "publisher_ld_inst", "control_block")
+    )
+
+
+class IEC61850(BaseModel):
+    """
+    IEC 61850 configuration summary of the device, read from SCL files
+    (CID/IID/ICD/SCD) and device queries. The SCL file itself is kept in
+    :attr:`DeviceData.files` (category ``iec61850``).
+    """
+
+    ied_name: constr(strip_whitespace=True) = ""
+    """``IED@name``."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """``IED@desc``."""
+
+    manufacturer: constr(strip_whitespace=True) = ""
+    """``IED@manufacturer``."""
+
+    ied_type: constr(strip_whitespace=True) = ""
+    """``IED@type``."""
+
+    config_version: constr(strip_whitespace=True) = ""
+    """``IED@configVersion`` (also SEL ``id`` ``configVersion``)."""
+
+    original_scl_version: constr(strip_whitespace=True) = ""
+    """``IED@originalSclVersion`` + ``originalSclRevision`` + ``originalSclRelease``."""
+
+    scl_file: constr(strip_whitespace=True) = ""
+    """Path or name of the SCL file the data came from (see :attr:`DeviceData.files`)."""
+
+    header: IEC61850Header = IEC61850Header()
+    """SCL header (file identity and change history)."""
+
+    access_points: list[IEC61850AccessPoint] = []
+    """Access points with addresses and authentication."""
+
+    logical_devices: list[IEC61850LogicalDevice] = []
+    """Logical devices and logical node names."""
+
+    publications: list[IEC61850Publication] = []
+    """GOOSE/GSSE/SV control blocks published by this IED."""
+
+    report_controls: list[IEC61850ReportControl] = []
+    """Report control blocks and their configured clients."""
+
+    subscriptions: list[IEC61850Subscription] = []
+    """Inputs (``ExtRef``) grouped per publisher control block."""
+
+    datasets_count: conint(ge=0) | None = None
+    """Number of ``DataSet`` definitions."""
+
+    setting_groups: conint(ge=0) | None = None
+    """``SettingControl@numOfSGs``."""
+
+    active_setting_group: conint(ge=0) | None = None
+    """``SettingControl@actSG``, or the live active group if read from the device."""
+
+    capabilities: dict = Field(default={}, elastic_type="flattened")
+    """``IED/Services`` summary: element name -> attributes (e.g. ``{"GOOSE": {"max": "5"}}``)."""
+
+    functional_locations: list[constr(strip_whitespace=True)] = []
+    """``Substation/VoltageLevel/Bay`` paths that reference this IED (``LNode@iedName``)."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """
+    Other IEC 61850 data (e.g. SEL ``lib61850_id``, ``goose_source_mac``).
+    ``invalid_addresses``: GSE/SMV/AP address values that failed validation
+    (raw value kept; the rest of the file is still parsed).
+    """
+
+    def annotate(self, dev: DeviceData | None = None) -> None:
+        if dev is None:
+            return
+        for ap in self.access_points:
+            for ip in (ap.ip, ap.gateway):
+                if ip and ip not in ("0.0.0.0", "::"):  # 0.0.0.0 = "no gateway" in SCL
+                    dev.related.ip.add(ip)
+        for pub in self.publications:
+            pub.address.vlan.annotate(dev)
+            for sub in pub.subscribers:
+                dev.related.hosts.add(sub)
+        for sub in self.subscriptions:
+            sub.address.vlan.annotate(dev)
+            if sub.publisher_ied:
+                dev.related.hosts.add(sub.publisher_ied)
+        for rcb in self.report_controls:
+            for client in rcb.clients:
+                dev.related.hosts.add(client)
+
+
+# --------------------------------------------------------------------------- #
+# Baselining: BaselineFinding BEFORE DeviceData; the rest AFTER DeviceData
+# --------------------------------------------------------------------------- #
+BaselineKind = Literal[
+    "factory_default",
+    "vendor_recommended",
+    "engineer_provided",
+    "first_observed",
+    "previous_observed",
+    "approved",
+    "",
+]
+FindingCategory = Literal[
+    "firmware",
+    "software",
+    "logic",
+    "ports_services",
+    "accounts",
+    "authentication",
+    "logging",
+    "settings",
+    "files",
+    "hardware",
+    "identity",
+    "network",
+    "health",
+    "other",
+    "",
+]
+Severity = Literal["info", "low", "medium", "high", "critical", ""]
+SEVERITY_NUMBER: dict[str, int] = {
+    "": 0,
+    "info": 1,
+    "low": 2,
+    "medium": 3,
+    "high": 4,
+    "critical": 5,
+}
+
+
+class BaselineFinding(BaseModel):
+    """
+    Result of checking one aspect of a device against one :class:`Baseline`:
+    one rule, or one differing value/list item of a snapshot comparison.
+    Exported to its own index (``ELASTIC_BASELINE_FINDINGS_INDEX``).
+    """
+
+    baseline_id: constr(strip_whitespace=True) = ""
+    """:attr:`Baseline.id`."""
+
+    baseline_name: constr(strip_whitespace=True) = ""
+    """:attr:`Baseline.name`."""
+
+    baseline_kind: BaselineKind = ""
+    """:attr:`Baseline.kind`."""
+
+    baseline_version: constr(strip_whitespace=True) = ""
+    """:attr:`Baseline.version`."""
+
+    rule_id: constr(strip_whitespace=True) = ""
+    """:attr:`BaselineRule.id` (empty for snapshot differences)."""
+
+    rule_name: constr(strip_whitespace=True) = ""
+    """:attr:`BaselineRule.name`."""
+
+    path: constr(strip_whitespace=True) = ""
+    """
+    Path of the checked value in the exported device data.
+
+    Examples
+
+    - ``service[protocol=ftp,port=21].enabled``
+    - ``firmware.version``
+    """
+
+    category: FindingCategory = ""
+    """What area the finding is about (maps to NERC CIP-010 / NIST CM categories)."""
+
+    result: Literal["pass", "fail", "unknown", "notapplicable", "error", ""] = ""
+    """XCCDF-style result of the check."""
+
+    difference: Literal["change", "missing", "unexpected", "mismatch", ""] = ""
+    """
+    Kind of deviation: ``change`` (value differs), ``missing`` (expected but
+    absent), ``unexpected`` (present but not expected), ``mismatch`` (rule violated).
+    """
+
+    operator: constr(strip_whitespace=True) = ""
+    """Rule operator (empty for snapshot differences)."""
+
+    expected: str = ""
+    """Expected value, JSON-encoded (max 4096 characters)."""
+
+    actual: str = ""
+    """Actual value, JSON-encoded (max 4096 characters)."""
+
+    severity: Severity = ""
+    """Severity of a failed check."""
+
+    alert: bool = False
+    """If ``True`` and ``result`` is ``fail``, exported with ECS ``event.kind: alert``."""
+
+    reason: str = Field(default="", elastic_type=FREE_TEXT)
+    """Why the finding exists (ECS ``event.reason``)."""
+
+    reference: constr(strip_whitespace=True) = ""
+    """URL/document with details (ECS ``rule.reference``)."""
+
+    standards: set[constr(strip_whitespace=True)] = set()
+    """Standards/requirements the check supports, e.g. ``NERC CIP-007-6 R5.4``."""
+
+    timestamp: datetime | None = None
+    """When the comparison was performed (UTC)."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other finding data."""
+
+    _es_index_varname: str = PrivateAttr(default="ELASTIC_BASELINE_FINDINGS_INDEX")
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("baseline_id", "result", "path", "rule_id"))
+    _dedupe_key: tuple[str] = PrivateAttr(default=("baseline_id", "rule_id", "path"))
+
+    @validator("expected", "actual", pre=True, allow_reuse=True)
+    def _to_json_str(cls, v):
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            v = json.dumps(v, default=str, sort_keys=True)
+        return v[:4096]
+
+    def gen_elastic_content(self, dev: DeviceData | None = None) -> dict:
+        now = Elastic.time_now()
+        failed = self.result == "fail"
+        # ECS: "state" = compliance state of a system (CSPM pattern: kind state,
+        # category configuration, type info); "alert" = detection to act on. Only drift
+        # against the PREVIOUS pull is a change that happened since the last run, so only
+        # those findings are kind "event" with type change/creation/deletion.
+        if failed and self.alert:
+            kind, etype = "alert", "info"
+        elif (
+            failed
+            and self.baseline_kind == "previous_observed"
+            and self.difference in ("change", "missing", "unexpected")
+        ):
+            kind = "event"
+            etype = {"change": "change", "missing": "deletion", "unexpected": "creation"}[
+                self.difference
+            ]
+        else:
+            kind, etype = "state", "info"
+        if not failed:
+            action = "baseline-check"
+        elif self.baseline_kind == "factory_default":
+            action = "baseline-changed-from-default"  # fail = no longer the factory value
+        else:
+            action = "baseline-deviation"
+        category = ["configuration"]
+        if self.category == "accounts":
+            category.append("iam")
+        elif self.category == "files":
+            category.append("file")
+        content = {
+            "@timestamp": self.timestamp or now,
+            "message": self.reason or f"{self.path}: {self.result}",
+            "tags": ["baseline", self.baseline_kind],
+            "event": {
+                "kind": kind,
+                "category": category,
+                "type": [etype],
+                "action": action,
+                "reason": self.reason,
+                # omitted (not 0) when there is no severity, e.g. passed checks
+                "severity": SEVERITY_NUMBER[self.severity] if self.severity else None,
+                "dataset": "peat.baseline",
+                "ingested": now,
+            },
+            "rule": {  # ECS rule.*: rule.version is NOT the baseline version
+                "id": self.rule_id,
+                "name": self.rule_name,
+                "ruleset": self.baseline_name,
+                "reference": self.reference,
+                "category": self.category,
+            },
+            "baseline": {
+                "id": self.baseline_id,
+                "name": self.baseline_name,
+                "kind": self.baseline_kind,
+                "version": self.baseline_version,
+                "finding": {
+                    "path": self.path,
+                    "category": self.category,
+                    "result": self.result,
+                    "difference": self.difference,
+                    "operator": self.operator,
+                    "expected": self.expected,
+                    "actual": self.actual,
+                    "severity": self.severity,
+                    "standards": sorted(self.standards),
+                },
+            },
+        }
+        if dev:
+            content["host"] = dev.gen_base_host_fields_content()
+            content["tags"].extend([dev.description.vendor.name, dev.description.product])
+            if dev._module:
+                content["event"]["module"] = dev._module.__name__
+        return strip_empty_and_private(content)
+
+
 class DeviceData(BaseModel):
     """
     Container and manager of all data about a device,
@@ -2872,6 +5440,8 @@ class DeviceData(BaseModel):
     of the device that sets PROG or RUN (program vs running). What this field means
     depends on the device, for instance a PLC's potential run modes will differ
     from a RTU's potential run modes.
+
+    See also ``key_switch`` and ``health``.
     """
 
     slot: constr(strip_whitespace=True) = ""
@@ -2889,6 +5459,37 @@ class DeviceData(BaseModel):
     status: constr(strip_whitespace=True) = ""
     """
     Status of the device. The meaning of this field is device-dependant.
+
+    See also ``key_switch`` and ``health``.
+    """
+
+    health: NE107_HEALTH = ""
+    """
+    Normalized device health (NAMUR NE 107 / OPC UA DI ``DeviceHealth``).
+    ``status`` keeps the raw vendor value. When several sources apply,
+    the most severe value wins.
+
+    Allowed values
+
+    - ``normal``: running without faults
+    - ``failure``: fault, failed self-test, disabled by a failure
+    - ``check_function``: program/test/maintenance mode, key switch in PROG
+    - ``out_of_specification``: measurement out of range, deviation from setpoint
+    - ``maintenance_required``: minor fault with valid outputs, battery low, wear
+    - ``""`` (unknown)
+    """
+
+    key_switch: constr(strip_whitespace=True, to_lower=True) = ""
+    """
+    Position of the physical mode/key switch, lowercase. ``run_mode`` keeps the
+    raw operating mode.
+
+    Examples
+
+    - ``run``
+    - ``program``
+    - ``remote``
+    - ``stop``
     """
 
     uptime: timedelta | None = None
@@ -2912,9 +5513,28 @@ class DeviceData(BaseModel):
     location and configured timezone.
     """
 
+    asset: Asset = Asset()
+    """
+    Owner-supplied asset context from the ``asset`` block of the matching
+    ``hosts`` entry in the PEAT configuration file.
+
+    This field is automatically set by PEAT, and device modules
+    shouldn't write to this field.
+    """
+
+    clock: Clock = Clock()
+    """
+    Device clock and time synchronization.
+    """
+
     logic: Logic = Logic()
     """
     What the device has been programmed to do, aka the "process logic".
+    """
+
+    iec61850: IEC61850 = IEC61850()
+    """
+    IEC 61850 configuration summary (from SCL files and device queries).
     """
 
     files: list[File] = []
@@ -2933,9 +5553,50 @@ class DeviceData(BaseModel):
     All communication services configured or running on the device.
     """
 
+    statistics: NetworkStatistics = NetworkStatistics()
+    """
+    Device-wide communication totals as reported by the device (not summed by PEAT).
+    """
+
+    protocol_statistics: list[NetworkStatistics] = []
+    """
+    Device-wide statistics per protocol layer (ipv4/ipv6, tcp, udp, icmp, cip,
+    goose, ...), keyed by ``interface``/``type``/``transport``/``protocol``.
+    """
+
+    routes: list[Route] = []
+    """
+    IP routing table. Gateways are also added as ``routes_via`` relationships.
+    """
+
+    relationships: list[Relationship] = []
+    """
+    Configured and observed relationships with other endpoints (communication
+    peers, neighbors, route next hops, time servers, serial links, IEC 61850
+    publications/subscriptions).
+
+    Exported to ``ELASTIC_RELATIONSHIPS_INDEX``; not included in the host
+    document in Elasticsearch or in the summary export.
+    """
+
     ssh_keys: list[SSHKey] = []
     """
     Any SSH keys found on the device or associated with the device.
+    """
+
+    processes: list[HostProcess] = []
+    """
+    Running (or historically observed) OS processes, RTOS tasks and threads.
+    """
+
+    software: list[Package] = []
+    """
+    Installed software components (ECS ``package.*``).
+    """
+
+    indicators: list[Indicator] = []
+    """
+    Front-panel LEDs, displays, switches and decoded status flags.
     """
 
     related: Related = Related()
@@ -3005,6 +5666,14 @@ class DeviceData(BaseModel):
     uefi_hashes: list[UEFIHash] = []
     """
     uefi_hashes holds all the hashes for a file that is linked to a device.
+    """
+
+    baseline_findings: list[BaselineFinding] = []
+    """
+    Results of comparing this device against baselines.
+
+    Exported to ``ELASTIC_BASELINE_FINDINGS_INDEX``; not included in the host
+    document in Elasticsearch or in the summary export.
     """
 
     # NOTE: trying out "flattened" to prevent type mapping explosion
@@ -3229,6 +5898,13 @@ class DeviceData(BaseModel):
                         self.label = host["label"]
                         if host.get("comment"):
                             self.comment = host["comment"]
+                        if host.get("asset") and self.is_default("asset"):
+                            try:
+                                self.asset = Asset.parse_obj(host["asset"])
+                            except Exception as ex:
+                                log.warning(
+                                    f"Invalid 'asset' for host '{host['label']}' in config: {ex}"
+                                )
 
     @property
     def address(self) -> str:
@@ -3417,7 +6093,7 @@ class DeviceData(BaseModel):
         results = self.dict(exclude=to_exclude, include=to_include, exclude_defaults=True)
 
         if not include_original:  # Note: parsed logic is stored in "parsed"
-            results = strip_key(results, "original")
+            results = strip_key(results, "original", recurse_lists=("files", "module"))
 
         results = consts.convert(results)  # Normalize to JSON-friendly values
         results = strip_empty_and_private(results)
@@ -3456,7 +6132,18 @@ class DeviceData(BaseModel):
                 del summary_data[original_key]["original"]
 
         # Exclude fields from the summary
-        for exclude_key in ["memory", "registers", "tag", "io", "event", "files"]:
+        # NOTE: relationships and baseline findings are analysis output
+        # with their own Elasticsearch indices, and may be large.
+        for exclude_key in [
+            "memory",
+            "registers",
+            "tag",
+            "io",
+            "event",
+            "files",
+            "relationships",
+            "baseline_findings",
+        ]:
             if summary_data.get(exclude_key):
                 del summary_data[exclude_key]
 
@@ -3624,7 +6311,13 @@ class DeviceData(BaseModel):
         # will handle the conversions instead.
         results = strip_empty_and_private(self.dict(exclude_defaults=True))
         if not config.ELASTIC_SAVE_BLOBS:
-            results = strip_key(results, "original")
+            results = strip_key(results, "original", recurse_lists=("files", "module"))
+
+        # Remove lists with their own indices, make event severities ES-safe,
+        # and add derived fields ("tags", "indicator_states")
+        _finalize_host_doc(results)
+        for mod in results.get("module", []):
+            _finalize_host_doc(mod)
 
         # minor hack to apply IP sorting to the list of IPs in related.ip
         # this is because parse_api calls dev.elastic() instead of dev.export()
@@ -3664,6 +6357,11 @@ class DeviceData(BaseModel):
             if not content["host"]["logic"]["formats"]:
                 del content["host"]["logic"]["formats"]
 
+        # ECS asset inventory categorization of host documents
+        content["event"] = {"kind": "asset", "category": ["host"], "type": ["info"]}
+        if self._module:
+            content["event"]["module"] = self._module.__name__
+
         return content
 
     def gen_base_host_fields_content(self) -> dict:
@@ -3684,12 +6382,15 @@ class DeviceData(BaseModel):
             "slot",
             "description",
             "geo",
+            "asset",
         ]:
             if not self.is_default(key) and getattr(self, key):
                 value = getattr(self, key)
                 if isinstance(value, BaseModel):
                     value = value.dict(exclude_defaults=True, exclude_none=True)
                 content[key] = value
+        if self.asset.tags:
+            content["tags"] = sorted(self.asset.tags)  # ECS 9.5.0 "host.tags"
         return content
 
     def write_file(
@@ -3770,7 +6471,14 @@ class DeviceData(BaseModel):
         Populate new values by extrapolating from other existing values.
 
         .. note::
-           This method also removes duplicate services and interfaces
+           This method also removes duplicate services and interfaces, and
+           deduplicates nested lists of models (e.g. ``Interface.services``).
+
+        Unless ``network_only`` is set, this also annotates every
+        :class:`~peat.data.models.Relationship` (computing its ``id``), moves
+        relationships stored on modules to this device, derives relationships
+        from time sources (``syncs_time_from``) and route gateways (``routes_via``),
+        and fills ``Service.process_name`` from processes with the same PID.
 
         Example: if the device object only has a ``mac`` field populated,
         this will resolve and update the ``ip`` and ``hostname`` fields,
@@ -3808,9 +6516,7 @@ class DeviceData(BaseModel):
         else:
             for iface in self.interface:
                 iface.annotate(self)
-                if iface.services:
-                    iface.services = dedupe_model_list(iface.services)
-                    sort_model_list(iface.services)
+                dedupe_nested_lists(iface)  # services, vlans (recursively)
 
         # Add to Related fields
         if self.ip and self.ip not in self.related.ip:
@@ -3859,6 +6565,30 @@ class DeviceData(BaseModel):
                     # Run process_file on all modules with "File" type field
                     file_obj.annotate(self)
                     process_file(file_obj)
+
+        # Relationships, processes and nested lists of models
+        self._hoist_module_relationships()
+        # Relationships added with list.append() get their id (and inferred fields)
+        # here, BEFORE purge_duplicates() runs in export()/elastic()/export_to_files()
+        for rel in self.relationships:
+            rel.annotate(self)
+        self._derive_relationships()
+        self._link_service_processes()
+        for attr in self.get_attr_names(BaseModel):
+            dedupe_nested_lists(getattr(self, attr))
+        for attr in self.get_attr_names(list):
+            items = getattr(self, attr)
+            if attr in ("interface", "module") or not items:
+                continue
+            if has_nested_lists(type(items[0])):
+                for item in items:
+                    dedupe_nested_lists(item)
+        # Values added with related.vlans.add() bypass validation
+        if self.related.vlans and any(
+            not isinstance(v, str) or not v.isdigit() or v != str(int(v))
+            for v in self.related.vlans
+        ):
+            self.related.vlans = _normalize_vlan_ids(self.related.vlans)
 
         # Generate the product string
         if not self.description.product and self.description.brand:
@@ -3992,9 +6722,16 @@ class DeviceData(BaseModel):
             "uefi_image",
             "uefi_hashes",
             "files",
+            "protocol_statistics",
+            "relationships",
+            "indicators",
+            "processes",
+            "routes",
+            "software",
+            "baseline_findings",
         ],
         value: BaseModel,
-        lookup: str | list | dict | None = None,
+        lookup: str | list | tuple | dict | None = None,
         interface_lookup: dict | None = None,
         append: bool = False,
     ) -> None:
@@ -4018,17 +6755,22 @@ class DeviceData(BaseModel):
            {'interface': [{'type': 'ethernet', 'ip': '192.0.2.20'}]}
 
            # Add a HTTP service to the interface with an IP of 192.0.2.20
+           # NOTE: "security.encrypted" is derived from the protocol
            >>> dev.store(
                "service",
                Service(protocol="http", port=80),
                # Lookup the interface for the service to be associated with
                interface_lookup={"ip": "192.0.2.20"})
-           >>> dev.export(only_fields="service")
-           {'service': [{'port': 80, 'protocol': 'http', 'transport': 'tcp'}]}
+           >>> pprint(dev.export(only_fields="service"))
+           {'service': [{'port': 80,
+                         'protocol': 'http',
+                         'security': {'encrypted': False},
+                         'transport': 'tcp'}]}
            >>> pprint(dev.export(only_fields="interface"))
            {'interface': [{'ip': '192.0.2.20',
                            'services': [{'port': 80,
                                          'protocol': 'http',
+                                         'security': {'encrypted': False},
                                          'transport': 'tcp'}],
                            'type': 'ethernet'}]}
 
@@ -4092,8 +6834,12 @@ class DeviceData(BaseModel):
 
                 .. note::
                    If :obj:`None`, then ``lookup`` will fallback to hardcoded
-                   search defaults if the type is :class:`~peat.data.models.Service`
-                   or :class:`~peat.data.models.Interface`.
+                   search defaults if the type is :class:`~peat.data.models.Service`,
+                   :class:`~peat.data.models.Interface` or :class:`~peat.data.models.File`.
+                   For other models that define identity fields (``_dedupe_key``,
+                   e.g. ``Relationship.id``, ``Route`` destination/gateway/interface,
+                   ``HostProcess`` type/pid/name, ``Indicator`` type/name/interface),
+                   the default lookup is an exact match on ALL of those fields.
 
                 The lookup value can be one of the following:
 
@@ -4107,6 +6853,9 @@ class DeviceData(BaseModel):
                 - a dict of values to lookup, with key being attribute name
                     and value the value to compare. ALL values MUST match for a
                     lookup to be successful!
+                - a tuple of attribute names: the values of ALL of these
+                    attributes must equal those of ``value`` (exact match), e.g.
+                    ``("destination", "gateway", "interface")``.
 
                 .. code-block:: python
                    :caption: Examples of different lookup argument data types
@@ -4118,12 +6867,12 @@ class DeviceData(BaseModel):
                    # Specify name of a service to update
                    >>> dev.store("service", Service(protocol="telnet"))
                    >>> dev.export(only_fields="service")
-                   {'service': [{'protocol': 'telnet', 'transport': 'tcp'}]}
+                   {'service': [{'protocol': 'telnet', 'security': {'encrypted': False}, 'transport': 'tcp'}]}
                    >>> dev.store("service",
                        value=Service(status="open"),
                        lookup={"protocol": "telnet"})
                    >>> dev.export(only_fields="service")
-                   {'service': [{'protocol': 'telnet', 'status': 'open', 'transport': 'tcp'}]}
+                   {'service': [{'protocol': 'telnet', 'security': {'encrypted': False}, 'status': 'open', 'transport': 'tcp'}]}
 
                    # Lookup using a key
                    >>> dev.store("memory", Memory(address="0000FFAB"))
@@ -4163,10 +6912,10 @@ class DeviceData(BaseModel):
                 f"Invalid value type '{value.__class__.__name__}', "
                 f"expected BaseModel (value={value})"
             )
-        if lookup and not isinstance(lookup, (dict, str, list)):
+        if lookup and not isinstance(lookup, (dict, str, list, tuple)):
             raise PeatError(
                 f"Invalid type '{lookup.__class__.__name__}' for 'lookup' argument "
-                f"to store(), expected dict, str, or list (lookup={lookup})"
+                f"to store(), expected dict, str, list, or tuple (lookup={lookup})"
             )
 
         # Check the destination list attribute name is valid
@@ -4198,6 +6947,9 @@ class DeviceData(BaseModel):
                     lookup = "path"
                 else:
                     lookup = "name"
+            # Models with identity fields: exact match on all of them
+            elif getattr(value, "_dedupe_key", ()):
+                lookup = tuple(value._dedupe_key)
 
         # Add the value to the container, and merge with any existing values
         # if they match the lookup
@@ -4230,7 +6982,7 @@ class DeviceData(BaseModel):
         self,
         container: list[BaseModel],
         value: BaseModel,
-        lookup: str | list | dict | None,
+        lookup: str | list | tuple | dict | None,
     ) -> BaseModel:
         """
         Handle adding objects to lists.
@@ -4264,10 +7016,13 @@ class DeviceData(BaseModel):
             # {"ip": "192.0.2.123", "type": "Ethernet"}
             # NOTE: ALL values must match for lookup to succeed
             position = match_all(container, lookup)
+        elif isinstance(lookup, tuple):
+            # Exact match on ALL key fields (models with _dedupe_key)
+            position = lookup_by_key(container, value, lookup)
         else:
             raise PeatError(
                 f"Invalid type '{lookup.__class__.__name__}' for 'lookup' argument "
-                f"to store(), expected str, list, or dict (lookup={lookup})"
+                f"to store(), expected str, list, tuple, or dict (lookup={lookup})"
             )
 
         # If the lookup was successful, then copy the values from
@@ -4341,12 +7096,80 @@ class DeviceData(BaseModel):
             #   to an hour to dedupe!
             #   Need to refactor how models are stored and how deduplication
             #   occurs.
-            if val and len(val) < 5000:
+            # Lists of models with a complete identity key (_dedupe_key) are
+            # deduplicated in linear time, so the size limit doesn't apply.
+            if val and (len(val) < 5000 or dedupe_is_linear(val)):
                 deduped = dedupe_model_list(val)
                 sort_model_list(deduped)
                 setattr(self, list_attr, deduped)
 
         self._is_deduplicated = True
+
+    def _hoist_module_relationships(self) -> None:
+        """
+        Relationships stored on modules (sub-devices) move to the parent device.
+        The module's identity is kept on the local side so that a chassis
+        with several communication modules keeps one edge per module.
+        """
+        for mod in self.module:
+            if mod.relationships:
+                mod_id = mod.id or mod.serial_number or (f"slot:{mod.slot}" if mod.slot else "")
+                for rel in mod.relationships:
+                    if not rel.local.id:
+                        rel.local.id = mod_id
+                    if not rel.local.ip and mod.ip:
+                        rel.local.ip = mod.ip
+                    if not rel.local.name and mod.name:
+                        rel.local.name = mod.name
+                    self.store("relationships", rel)  # annotate() recomputes the id
+                mod.relationships.clear()
+
+    def _derive_relationships(self) -> None:
+        """Relationships implied by time sources and route next hops (idempotent)."""
+        for src in self.clock.sources:
+            is_ip = utils.is_ip(src.address)
+            if not src.address or not (is_ip or src.protocol in ("ntp", "sntp")):
+                continue
+            net = src.protocol in ("ntp", "sntp")
+            # SNTP/NTP broadcast/multicast mode: the server sends unsolicited (ingress)
+            broadcast = str(src.extra.get("mode", "")).lower() in ("broadcast", "multicast")
+            self.store(
+                "relationships",
+                Relationship(
+                    type="syncs_time_from",
+                    protocol=src.protocol,
+                    transport="udp" if net else "",
+                    direction=("ingress" if broadcast else "egress") if net else "",
+                    remote=RelationshipEndpoint(
+                        ip=src.address if is_ip else "",
+                        hostname="" if is_ip else src.address,
+                        port=src.port,
+                        role="time_server",
+                    ),
+                    enabled=src.enabled,
+                    evidence={"config"},
+                ),
+            )
+        for route in self.routes:
+            if route.gateway and route.gateway not in ("0.0.0.0", "::"):
+                self.store(
+                    "relationships",
+                    Relationship(
+                        type="routes_via",
+                        local=RelationshipEndpoint(interface=route.interface),
+                        remote=RelationshipEndpoint(ip=route.gateway, role="gateway"),
+                        evidence={"routing_table"},
+                    ),
+                )
+
+    def _link_service_processes(self) -> None:
+        """Fill Service.process_name from HostProcess with the same PID."""
+        names = {p.pid: p.name for p in self.processes if p.pid is not None and p.name}
+        if not names:
+            return
+        for svc in [*self.service, *(s for i in self.interface for s in i.services)]:
+            if svc.process_pid in names and not svc.process_name:
+                svc.process_name = names[svc.process_pid]
 
     def get_attr_names(self, typ: type) -> list[str]:
         """
@@ -4366,6 +7189,247 @@ class DeviceData(BaseModel):
 DeviceData.update_forward_refs()
 
 
+def _finalize_host_doc(host: dict) -> None:
+    """
+    Host document (``DeviceData.elastic()``) post-processing:
+
+    - remove lists that have their own index (relationships, baseline findings);
+    - make ``event[*].severity`` ES-safe (int or absent; text -> ``log_level``);
+    - add derived fields: ECS ``tags`` (= ``asset.tags``) and
+      ``indicator_states`` (``{indicator name: state or value}`` for live readings;
+      one flattened field so "RUN is off" is a single-term query).
+    """
+    host.pop("relationships", None)
+    host.pop("baseline_findings", None)
+    tags = host.get("asset", {}).get("tags")
+    if tags:
+        host["tags"] = sorted(tags)
+    states = {}
+    for ind in host.get("indicators", []):
+        reading = ind.get("state") or (ind.get("value") if ind.get("timestamp") else "")
+        if ind.get("name") and reading:
+            name = f"{ind['interface']}:{ind['name']}" if ind.get("interface") else ind["name"]
+            states[name] = str(reading)
+    if states:
+        host["indicator_states"] = states
+    for ev in host.get("event", []):
+        sev = ev.get("severity")
+        if sev is None:
+            continue
+        num = numeric_severity(sev)
+        if num is None:
+            ev.pop("severity")
+            ev.setdefault("log_level", sev)
+        else:
+            ev["severity"] = num
+
+
+class BaselineSelector(BaseModel):
+    """
+    Which devices a :class:`Baseline` applies to. Empty fields match anything.
+    Values are case-insensitive :mod:`fnmatch` globs (e.g. ``firmware_version="R5*"``).
+    """
+
+    peat_module: constr(strip_whitespace=True) = ""
+    """PEAT module name (``dev._module.__name__``), e.g. ``SELRelay``."""
+
+    vendor_id: constr(strip_whitespace=True) = ""
+    """:attr:`Description.vendor` ``.id``, e.g. ``SEL``."""
+
+    model: constr(strip_whitespace=True) = ""
+    """:attr:`Description.model`, e.g. ``351S``."""
+
+    product: constr(strip_whitespace=True) = ""
+    """:attr:`Description.product`."""
+
+    part_number: constr(strip_whitespace=True) = ""
+    """:attr:`DeviceData.part_number`."""
+
+    device_type: constr(strip_whitespace=True) = ""
+    """:attr:`DeviceData.type`, e.g. ``Relay``."""
+
+    firmware_version: constr(strip_whitespace=True) = ""
+    """:attr:`Firmware.version`."""
+
+    device_id: constr(strip_whitespace=True) = ""
+    """:attr:`DeviceData.id` (device-scoped baselines)."""
+
+    serial_number: constr(strip_whitespace=True) = ""
+    """:attr:`DeviceData.serial_number`."""
+
+    def is_default_selector(self) -> bool:
+        """True if no field is set (matches every device)."""
+        return not self.dict(exclude_defaults=True)
+
+    def matches(self, dev: DeviceData) -> bool:
+        """True if every non-empty field matches ``dev`` (case-insensitive globs)."""
+        pairs = [
+            (self.peat_module, dev._module.__name__ if dev._module else ""),
+            (self.vendor_id, dev.description.vendor.id),
+            (self.model, dev.description.model),
+            (self.product, dev.description.product),
+            (self.part_number, dev.part_number),
+            (self.device_type, dev.type),
+            (self.firmware_version, dev.firmware.version),
+            (self.device_id, dev.id),
+            (self.serial_number, dev.serial_number),
+        ]
+        return all(
+            not want or fnmatch.fnmatchcase(str(have).lower(), want.lower())
+            for want, have in pairs
+        )
+
+
+class BaselineProvenance(BaseModel):
+    """Where a :class:`Baseline` came from, who made/approved it, and when."""
+
+    created: datetime | None = None
+    """When the baseline record was created."""
+
+    author: constr(strip_whitespace=True) = ""
+    """Person, organization or PEAT module that produced the baseline."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Free-text description of the source of the expected values."""
+
+    reference: constr(strip_whitespace=True) = ""
+    """URL/document reference (vendor manual section, hardening guide, ticket)."""
+
+    source_file: constr(strip_whitespace=True) = ""
+    """File the baseline was derived from (e.g. ``device-data-full.json``, ``SET_ALL.TXT``)."""
+
+    source_hash: constr(strip_whitespace=True) = ""
+    """SHA-256 of ``source_file``."""
+
+    device_id: constr(strip_whitespace=True) = ""
+    """For observed baselines, ID of the source device."""
+
+    observed: datetime | None = None
+    """When the source device state was observed (the pull/parse time)."""
+
+    run_id: constr(strip_whitespace=True) = ""
+    """PEAT run ID that produced the source data."""
+
+    peat_version: constr(strip_whitespace=True) = ""
+    """PEAT version that created the baseline."""
+
+    approved_by: constr(strip_whitespace=True) = ""
+    """Who approved the baseline (NERC CIP-010 R1.2)."""
+
+    approved: datetime | None = None
+    """When the baseline was approved."""
+
+    change_ticket: constr(strip_whitespace=True) = ""
+    """Change-management record for this baseline version."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other provenance data."""
+
+
+class BaselineRule(BaseModel):
+    """
+    One expectation about a device's state that a snapshot cannot express
+    (negation, absence, membership, pattern, range). ``path`` uses the
+    baseline path syntax (``peat.data.baseline``), e.g. ``service[protocol=ftp].enabled``.
+    """
+
+    id: constr(strip_whitespace=True) = ""
+    """Stable rule ID (ECS ``rule.id``), e.g. ``sel.service.ftp.disabled``."""
+
+    name: constr(strip_whitespace=True) = ""
+    """Short rule name (ECS ``rule.name``)."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Rule description."""
+
+    path: constr(strip_whitespace=True)
+    """Path of the value(s) to check. Required."""
+
+    operator: Literal[
+        "equals", "not_equals", "in", "not_in", "present", "absent", "regex", "min", "max"
+    ] = "equals"
+    """Comparison operator."""
+
+    value: Any = None
+    """Expected value (a list for ``in``/``not_in``; a pattern for ``regex``)."""
+
+    category: FindingCategory = ""
+    """Finding category."""
+
+    severity: Severity = "medium"
+    """Severity of a failure."""
+
+    alert: bool = False
+    """Emit failures as ECS ``event.kind: alert``."""
+
+    reason: str = ""
+    """``event.reason`` on failure; ``{expected}``, ``{actual}`` and ``{path}`` are substituted."""
+
+    reference: constr(strip_whitespace=True) = ""
+    """URL/document with details."""
+
+    standards: set[constr(strip_whitespace=True)] = set()
+    """Standards/requirements this rule supports."""
+
+    enabled: bool = True
+    """Disabled rules are skipped."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other rule data."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("id", "path"))
+
+
+class Baseline(BaseModel):
+    """
+    Expected ("known-good" or "known-default") state of one device or of every
+    device of a type. Expectations are given as a :class:`DeviceData` snapshot
+    (``expected``), as :class:`BaselineRule` constraints (``rules``), or both.
+    """
+
+    id: constr(strip_whitespace=True) = ""
+    """Stable baseline ID, e.g. ``sel-relay-factory-defaults``."""
+
+    name: constr(strip_whitespace=True) = ""
+    """Human-readable name."""
+
+    description: str = Field(default="", elastic_type=FREE_TEXT)
+    """Description."""
+
+    version: constr(strip_whitespace=True) = ""
+    """Version of this baseline."""
+
+    kind: BaselineKind = ""
+    """Provenance class of the expected values."""
+
+    scope: Literal["device", "device_type", ""] = ""
+    """``device`` (one device) or ``device_type`` (a device profile)."""
+
+    selector: BaselineSelector = BaselineSelector()
+    """Which devices the baseline applies to."""
+
+    provenance: BaselineProvenance = BaselineProvenance()
+    """Source/author/approval metadata."""
+
+    expected: DeviceData | None = None
+    """Expected device state snapshot (optional)."""
+
+    rules: list[BaselineRule] = []
+    """Explicit rules (optional)."""
+
+    ignore: list[constr(strip_whitespace=True)] = []
+    """Extra path globs to ignore in snapshot comparison (added to the defaults)."""
+
+    extra: dict = Field(default={}, elastic_type="flattened")
+    """Other baseline data."""
+
+    _sort_by_fields: tuple[str] = PrivateAttr(default=("kind", "id"))
+
+
+# Baseline.expected is a DeviceData (forward reference)
+Baseline.update_forward_refs()
+
+
 def process_file(file: dict | File) -> File:
     """
     Transform a :class:`dict` into a :class:`~peat.data.models.File` object
@@ -4383,42 +7447,50 @@ def process_file(file: dict | File) -> File:
     if file.local_path and file.local_path.exists():
         file.local_path = file.local_path.resolve()
 
+    # Local stat() metadata only describes the artifact if the local file IS the artifact
+    # (e.g. "peat parse" input). For files pulled from a device it would report the
+    # download time and the local user, not the values of the file on the device.
+    local_is_artifact = file.local_path is not None and (
+        file.path is None or PurePath(file.path) == PurePath(file.local_path)
+    )
+
     # If path isn't set, then set it to the local path
     if not file.path and file.local_path:
         file.path = PurePath(file.local_path)
 
     # Use local file metadata to fill out fields, e.g. size, modification time, etc.
     if file.local_path and file.local_path.is_file():
-        try:
-            if not file.mtime:
-                mtime = file.local_path.stat().st_mtime
-                file.mtime = datetime.fromtimestamp(mtime)
+        if local_is_artifact:
+            try:
+                if not file.mtime:
+                    mtime = file.local_path.stat().st_mtime
+                    file.mtime = datetime.fromtimestamp(mtime)
 
-            if not file.created:
-                ctime = file.local_path.stat().st_ctime
-                file.created = datetime.fromtimestamp(ctime)
+                if not file.created:
+                    ctime = file.local_path.stat().st_ctime
+                    file.created = datetime.fromtimestamp(ctime)
 
-            # .owner() and .group() don't work on Windows
-            # WINDOWS: NotImplementedError: Path.group() is unsupported on this system
-            if not WINDOWS:
-                if not file.group:
-                    file.group = file.local_path.group()
-                if not file.owner:
-                    file.owner = file.local_path.owner()
-        except (NotImplementedError, OSError, KeyError) as err:
-            msg = (
-                f"Failed to get ownership info and/or timestamps "
-                f"for file '{file.local_path.name}'. This can occur if "
-                f"you're running PEAT in a container environment "
-                f"(e.g. Docker or podman). Error that occurred: {err}"
-            )
-            # KeyError: 'getgrgid(): gid not found: 89040'
-            # If in a docker container it's not important, so log as debug
-            # This shouldn't happen outside of a container, so log that as a warning
-            if SYSINFO.get("containerized"):
-                log.debug(msg)
-            else:
-                log.warning(msg)
+                # .owner() and .group() don't work on Windows
+                # WINDOWS: NotImplementedError: Path.group() is unsupported on this system
+                if not WINDOWS:
+                    if not file.group:
+                        file.group = file.local_path.group()
+                    if not file.owner:
+                        file.owner = file.local_path.owner()
+            except (NotImplementedError, OSError, KeyError) as err:
+                msg = (
+                    f"Failed to get ownership info and/or timestamps "
+                    f"for file '{file.local_path.name}'. This can occur if "
+                    f"you're running PEAT in a container environment "
+                    f"(e.g. Docker or podman). Error that occurred: {err}"
+                )
+                # KeyError: 'getgrgid(): gid not found: 89040'
+                # If in a docker container it's not important, so log as debug
+                # This shouldn't happen outside of a container, so log that as a warning
+                if SYSINFO.get("containerized"):
+                    log.debug(msg)
+                else:
+                    log.warning(msg)
 
         if not file.size:
             file.size = file.local_path.stat().st_size
@@ -4671,10 +7743,19 @@ def resolve_es_instance(elastic: Elastic | None, dev_id: str) -> Elastic | None:
 
 
 __all__ = [
+    "IEC61850",
     "IO",
     "OS",
     "X509",
+    "Asset",
+    "Baseline",
+    "BaselineFinding",
+    "BaselineProvenance",
+    "BaselineRule",
+    "BaselineSelector",
     "CertEntity",
+    "Clock",
+    "ConnectionStatistics",
     "Description",
     "DeviceData",
     "Event",
@@ -4683,17 +7764,41 @@ __all__ = [
     "Geo",
     "Hardware",
     "Hash",
+    "HostProcess",
+    "IEC61850AccessPoint",
+    "IEC61850Address",
+    "IEC61850Header",
+    "IEC61850HistoryItem",
+    "IEC61850LogicalDevice",
+    "IEC61850Publication",
+    "IEC61850ReportControl",
+    "IEC61850Subscription",
+    "Indicator",
     "Interface",
     "LatLon",
     "Logic",
+    "LogicTask",
     "Memory",
+    "NetworkStatistics",
+    "NetworkTraffic",
+    "Package",
+    "ProcessParent",
+    "Redundancy",
     "Register",
     "Related",
+    "Relationship",
+    "RelationshipEndpoint",
+    "Route",
     "SSHKey",
     "Service",
+    "ServiceSecurity",
     "Tag",
+    "TimeSource",
+    "UEFIFile",
+    "UEFIHash",
     "User",
     "Vendor",
+    "Vlan",
     "export_models_to_elastic",
     "process_file",
 ]

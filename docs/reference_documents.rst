@@ -40,6 +40,10 @@ PEAT Elasticsearch indices reference
    "``ot-device-io``", "Information about I/O (Input/Output) available and/or configured on a device, as extracted from device configuration information.", ":attr:`ELASTIC_IO_INDEX <peat.settings.Configuration.ELASTIC_IO_INDEX>`"
    "``ot-device-events``", "Logging and other event history as extracted from devices. Examples include access logs, system logs, or protection history.", ":attr:`ELASTIC_EVENTS_INDEX <peat.settings.Configuration.ELASTIC_EVENTS_INDEX>`"
    "``ot-device-memory``", "Memory reads from devices, including address in memory, the value read, and information about where it came from and when the read occurred.", ":attr:`ELASTIC_MEMORY_INDEX <peat.settings.Configuration.ELASTIC_MEMORY_INDEX>`"
+   "``ot-device-relationships``", "Configured and observed relationships between devices and other endpoints, such as communication peers (e.g. DNP3 masters), ARP neighbors, route next hops, time servers, serial links, and IEC 61850 GOOSE/SV publications and subscriptions. One document per relationship per PEAT run.", ":attr:`ELASTIC_RELATIONSHIPS_INDEX <peat.settings.Configuration.ELASTIC_RELATIONSHIPS_INDEX>`"
+   "``ot-device-baseline-findings``", "Results (findings) of comparing devices against baselines, such as factory defaults, vendor hardening recommendations, the first observed state of a device, or an engineer-provided configuration. One document per finding.", ":attr:`ELASTIC_BASELINE_FINDINGS_INDEX <peat.settings.Configuration.ELASTIC_BASELINE_FINDINGS_INDEX>`"
+   "``uefi-files``", "Files from UEFI firmware images (SPI dumps), with their CRC32 and paths.", ":attr:`ELASTIC_UEFI_FILES_INDEX <peat.settings.Configuration.ELASTIC_UEFI_FILES_INDEX>`"
+   "``uefi-hashes``", "Hashes of files from UEFI systems.", ":attr:`ELASTIC_UEFI_HASHES_INDEX <peat.settings.Configuration.ELASTIC_UEFI_HASHES_INDEX>`"
 
 PEAT configuration reference
 ============================

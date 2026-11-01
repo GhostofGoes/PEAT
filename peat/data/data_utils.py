@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import copy
+import functools
 from collections import ChainMap
 from collections.abc import Callable
+from datetime import UTC, datetime
 from operator import attrgetter
 from typing import Any
+
+from pydantic.fields import SHAPE_LIST, SHAPE_SINGLETON
 
 from peat import PeatError, config, log, utils
 
@@ -179,21 +183,34 @@ def _is_private(key: Any) -> bool:
     return bool(isinstance(key, str) and key.startswith("_"))
 
 
-def strip_key(obj: dict, bad_key: str) -> dict:
+def strip_key(obj: dict, bad_key: str, recurse_lists: tuple[str, ...] = ()) -> dict:
     """
     Recursively removes all matching keys from a :class:`dict`.
 
     .. warning::
-       This will NOT strip values out of a :class:`list` of :class:`dict`!
+       Values inside a :class:`list` of :class:`dict` are only stripped
+       for the keys listed in ``recurse_lists``!
+
+    Args:
+        obj: dict to strip
+        bad_key: key to remove at any depth of nested dicts
+        recurse_lists: names of keys whose values are lists of dicts that
+            should also be stripped (e.g. ``("files", "module")``). Other lists
+            are left untouched (e.g. ``event[*].original`` is kept).
     """
     new = {}
 
     for key, value in obj.items():
-        if key != bad_key:
-            if isinstance(value, dict):
-                new[key] = strip_key(value, bad_key)
-            else:
-                new[key] = value
+        if key == bad_key:
+            continue
+        if isinstance(value, dict):
+            new[key] = strip_key(value, bad_key, recurse_lists)
+        elif isinstance(value, list) and key in recurse_lists:
+            new[key] = [
+                strip_key(v, bad_key, recurse_lists) if isinstance(v, dict) else v for v in value
+            ]
+        else:
+            new[key] = value
 
     return new
 
@@ -226,16 +243,152 @@ def compare_dicts(d1: dict | None, d2: dict | None, keys: list[str]) -> bool:
     return True
 
 
+def model_key(model: BaseModel, fields: tuple[str, ...]) -> tuple:
+    """Values of ``fields`` on ``model`` (the model's identity key, see ``_dedupe_key``)."""
+    return tuple(getattr(model, f, None) for f in fields)
+
+
+def _key_is_set(key: tuple) -> bool:
+    return any(v not in (None, "") for v in key)
+
+
+def _key_is_complete(key: tuple) -> bool:
+    return all(v not in (None, "") for v in key)
+
+
+def lookup_by_key(
+    container: list[BaseModel], value: BaseModel, fields: tuple[str, ...]
+) -> int | None:
+    """
+    Position of the first item whose values for ALL ``fields`` equal those of
+    ``value``. Used by :meth:`~peat.data.models.DeviceData.store` for models
+    that define ``_dedupe_key``.
+
+    Returns:
+        Index of the matching item, or :obj:`None` if there is no match or
+        if the key of ``value`` is entirely empty.
+    """
+    key = model_key(value, fields)
+    if not _key_is_set(key):
+        return None
+    for index, item in enumerate(container):
+        if model_key(item, fields) == key:
+            return index
+    return None
+
+
+def as_utc(ts: datetime) -> datetime:
+    """
+    Timezone-safe comparison helper: naive datetimes are assumed to be UTC.
+    Aware datetimes are returned unchanged (they compare correctly).
+    """
+    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+
+
+def _is_newer(src_ts: datetime | None, dst_ts: datetime | None) -> bool:
+    return bool(src_ts and dst_ts and as_utc(src_ts) > as_utc(dst_ts))
+
+
+@functools.cache
+def nested_list_fields(cls: type) -> tuple[str, ...]:
+    """Names of fields of ``cls`` that are ``list[<model>]`` (excluding DeviceData)."""
+    names = []
+    for name, field in getattr(cls, "__fields__", {}).items():
+        if (
+            field.shape == SHAPE_LIST
+            and isinstance(field.type_, type)
+            and issubclass(field.type_, BaseModel)
+            and field.type_.__name__ != "DeviceData"
+        ):
+            names.append(name)
+    return tuple(names)
+
+
+@functools.cache
+def submodel_fields(cls: type) -> tuple[str, ...]:
+    """Names of fields of ``cls`` that are a single sub-model (excluding DeviceData)."""
+    names = []
+    for name, field in getattr(cls, "__fields__", {}).items():
+        if (
+            field.shape == SHAPE_SINGLETON
+            and isinstance(field.type_, type)
+            and issubclass(field.type_, BaseModel)
+            and field.type_.__name__ != "DeviceData"
+        ):
+            names.append(name)
+    return tuple(names)
+
+
+@functools.cache
+def has_nested_lists(cls: type) -> bool:
+    """True if ``cls`` (or any of its sub-models, recursively) has a list-of-models field."""
+    return _has_nested_lists(cls, frozenset())
+
+
+def _has_nested_lists(cls: type, seen: frozenset) -> bool:
+    if cls in seen:  # self-referencing models (cycle guard)
+        return False
+    if nested_list_fields(cls):
+        return True
+    seen = seen | {cls}
+    return any(
+        _has_nested_lists(cls.__fields__[name].type_, seen) for name in submodel_fields(cls)
+    )
+
+
+def dedupe_nested_lists(model: BaseModel | None) -> None:
+    """
+    Recursively dedupe and sort every nested ``list[BaseModel]`` inside
+    ``model`` (in place, without re-validation), e.g. ``Interface.services``,
+    ``Interface.vlans``, ``Clock.sources`` or ``IEC61850.publications``.
+    Lists of :class:`~peat.data.models.DeviceData` are skipped.
+    """
+    if model is None or not isinstance(model, BaseModel):
+        return
+    cls = type(model)
+    if not has_nested_lists(cls):
+        return
+    for name in nested_list_fields(cls):
+        items = getattr(model, name)
+        if len(items) > 1:
+            deduped = dedupe_model_list(items)
+            sort_model_list(deduped)
+            items[:] = deduped
+        for item in items:
+            dedupe_nested_lists(item)
+    for name in submodel_fields(cls):
+        dedupe_nested_lists(getattr(model, name))
+
+
+def dedupe_is_linear(items: list[BaseModel]) -> bool:
+    """
+    True if ``dedupe_model_list(items)`` runs in linear time: the model has a
+    ``_dedupe_key`` and every item's key is complete (no empty field).
+    :meth:`~peat.data.models.DeviceData.purge_duplicates` uses this to dedupe
+    such lists even when they have 5000+ items.
+    """
+    key_fields = tuple(getattr(items[0], "_dedupe_key", ()) or ()) if items else ()
+    return bool(key_fields) and all(
+        _key_is_complete(model_key(item, key_fields)) for item in items
+    )
+
+
 def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
     """
     Deduplicates a :class:`list` of :class:`~peat.data.base_model.BaseModel`
     objects while preserving the original order.
 
+    Models that define an identity key (``_dedupe_key``) are first grouped
+    by that key: items with the same non-empty key are ONE item, the earliest
+    item survives and later items are merged into it (same as
+    :meth:`~peat.data.models.DeviceData.store`). This pass is linear.
+
     Models that are a subset of another (contains some keys and values)
     will be merged together and their values combined.
 
     .. warning::
-       This function is expensive to call, ~O(n^2 log n) algorithm (in)efficiency.
+       The subset pass is expensive, ~O(n^2 log n) algorithm (in)efficiency.
+       It is skipped for items with a complete identity key.
        Do not call more than absolutely needed!
 
     Args:
@@ -291,11 +444,45 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
 
     # hack to prevent recursive imports (data_utils.py/models.py)
     model_type = current[0].__repr_name__()  # type: str
+    key_fields = tuple(getattr(current[0], "_dedupe_key", ()) or ())
 
+    # Pass 1 (O(n)): items with the same non-empty identity key are ONE item.
+    # The EARLIEST item survives and later items are merged into it, exactly
+    # like store() ("first stored wins"). Newest-wins and Relationship rules
+    # are applied by merge_models() and do not depend on order.
+    survivors = []  # type: list[BaseModel]
+    complete = set()  # type: set[int]  # ids of survivors whose key has no empty field
+    if key_fields:
+        first_by_key = {}  # type: dict[tuple, BaseModel]
+        for item in current:
+            key = model_key(item, key_fields)
+            if not _key_is_set(key):
+                survivors.append(item)
+                continue
+            first = first_by_key.get(key)
+            if first is None:
+                first_by_key[key] = item
+                survivors.append(item)
+                if _key_is_complete(key):
+                    complete.add(id(item))
+            else:
+                merge_models(first, item)
+    else:
+        survivors = list(current)
+
+    # Pass 2: equality/subset/Service rules. An item whose key is complete
+    # cannot be a subset of an item with a different key, so it is only a
+    # possible merge TARGET (O(n * incomplete) instead of O(n^2)).
     duplicates = set()  # type: set[int]
-    model_cache = {id(m): m for m in current}  # type: dict[int, BaseModel]
-    outer_dicts = {id(m): m.dict(exclude_defaults=True, exclude_none=True) for m in current}  # type: dict[int, dict]
-    inner_dicts = copy.deepcopy(outer_dicts)  # type: dict[int, dict]
+    model_cache = {id(m): m for m in survivors}  # type: dict[int, BaseModel]
+    outer_dicts = {
+        id(m): m.dict(exclude_defaults=True, exclude_none=True)
+        for m in survivors
+        if id(m) not in complete
+    }  # type: dict[int, dict]
+    inner_dicts = {
+        mid: m.dict(exclude_defaults=True, exclude_none=True) for mid, m in model_cache.items()
+    }  # type: dict[int, dict]
 
     for item_id, item_dict in outer_dicts.items():
         if item_id in duplicates:
@@ -340,9 +527,9 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
     # by excluding those that were marked as duplicate
     deduped = [model for model_id, model in model_cache.items() if model_id not in duplicates]  # type: list[BaseModel]
 
-    if duplicates and config.DEBUG:
+    if len(deduped) != len(current) and config.DEBUG:
         log.trace(
-            f"Removed {len(duplicates)} duplicates from list of {len(current)} "
+            f"Removed {len(current) - len(deduped)} duplicates from list of {len(current)} "
             f"{model_type} items ({len(deduped)} items remaining in list)"
         )
 
@@ -351,8 +538,9 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
 
 def none_aware_attrgetter(attrs: tuple[str]) -> Callable:
     """
-    Variant of ``operator.attrgetter()`` that
-    handles values that may be :obj:`None`.
+    Variant of ``operator.attrgetter()`` that handles values that may be
+    :obj:`None`, and compares datetimes timezone-safely (naive = UTC), so
+    lists with both naive and aware datetimes (e.g. ``Event.created``) can be sorted.
     """
 
     def g(obj) -> tuple:
@@ -360,6 +548,8 @@ def none_aware_attrgetter(attrs: tuple[str]) -> Callable:
 
         for attr in attrs:
             value = getattr(obj, attr)
+            if isinstance(value, datetime):
+                value = as_utc(value)
             pairs.append(value is None)
             pairs.append(value)
 
@@ -400,6 +590,17 @@ def sort_model_list(model_list: list[BaseModel]) -> None:
 def merge_models(dest: BaseModel, source: BaseModel) -> None:
     """
     Copy values from one model to another.
+
+    Existing (non-default) values in ``dest`` are kept ("first wins"), except:
+
+    - Models with a ``_newest_wins_field`` (e.g. ``Indicator.timestamp``,
+      ``Clock.observed``): if the source's value of that field is newer, the
+      source's non-default values overwrite the destination's.
+    - ``NetworkStatistics`` samples are never mixed: a newer sample replaces
+      the destination wholesale, an empty destination takes the source
+      wholesale, otherwise the source is ignored.
+    - ``Relationship``: ``first_seen`` is the minimum, ``last_seen`` the
+      maximum (with its ``state``), ``count`` the maximum and ``evidence`` the union.
     """
     if not dest or not source:
         return
@@ -412,6 +613,25 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
 
     if dst_type != src_type:
         raise PeatError(f"merge_models: '{dst_type}' != '{src_type}'")
+
+    # "Newest wins" for models that define _newest_wins_field
+    newest_field = getattr(dest, "_newest_wins_field", "") or ""
+    newer = bool(newest_field) and _is_newer(
+        getattr(source, newest_field), getattr(dest, newest_field)
+    )
+
+    if dst_type == "NetworkStatistics":
+        # Counters from different samples are NEVER mixed:
+        # - newer source sample -> replaces the destination wholesale
+        # - destination already holds a sample -> source ignored (first complete
+        #   sample wins when a timestamp is missing or equal)
+        # - empty destination -> source copied wholesale
+        if newer or (
+            not dest.has_counters() and (source.has_counters() or dest.timestamp is None)
+        ):
+            for name in dest.__fields__:
+                setattr(dest, name, copy.deepcopy(getattr(source, name)))
+        return
 
     # TODO: hack to make DeviceData merging work
     if dst_type == "DeviceData":
@@ -438,7 +658,7 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
     # source.dict(...) will convert all sub-models to dicts, which is no bueno.
     source_dict = dict(source)
 
-    overwrite = False
+    overwrite = newer
 
     if dst_type == "Service" and (
         source_dict.get("status") == "verified"
@@ -485,7 +705,7 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
             if current_value and new_value:
                 if isinstance(current_value[0], BaseModel):
                     current_value.extend(new_value)
-                    dedupe_model_list(current_value)
+                    current_value[:] = dedupe_model_list(current_value)
                     sort_model_list(current_value)
                 else:
                     for new_item in new_value:
@@ -505,7 +725,8 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
                 f"Changed existing value for field '{attr}' with "
                 f"'{new_value}' (old value: '{current_value}')"
             )
-            if attr == "status":
+            # newest-wins overwrites are expected, not a warning
+            if attr == "status" or newer:
                 log.debug(msg)
             else:
                 log.warning(msg)
@@ -518,3 +739,18 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
                 f"'{dest.__class__.__name__}' model (new_value={new_value} "
                 f"current_value={current_value})"
             )
+
+    # Relationship aggregation rules (evidence is unioned by the set branch above)
+    if dst_type == "Relationship":
+        if source.first_seen and (
+            not dest.first_seen or as_utc(source.first_seen) < as_utc(dest.first_seen)
+        ):
+            dest.first_seen = source.first_seen
+        if source.last_seen and (
+            not dest.last_seen or as_utc(source.last_seen) > as_utc(dest.last_seen)
+        ):
+            dest.last_seen = source.last_seen
+            if source.state:
+                dest.state = source.state
+        if source.count is not None and (dest.count is None or source.count > dest.count):
+            dest.count = source.count

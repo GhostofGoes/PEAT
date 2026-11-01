@@ -358,6 +358,8 @@ class Elastic:
                 config.ELASTIC_MEMORY_INDEX: "ot-device-memory",
                 config.ELASTIC_UEFI_FILES_INDEX: "uefi-files",
                 config.ELASTIC_UEFI_HASHES_INDEX: "uefi-hashes",
+                config.ELASTIC_RELATIONSHIPS_INDEX: "ot-device-relationships",
+                config.ELASTIC_BASELINE_FINDINGS_INDEX: "ot-device-baseline-findings",
             }
             remapped_name = index_remap.get(index_name, index_name)
 
@@ -723,6 +725,7 @@ class Elastic:
             and config.ELASTIC_EVENTS_INDEX not in index
             and config.ELASTIC_MEMORY_INDEX not in index
             and config.ELASTIC_FILES_INDEX not in index
+            and config.ELASTIC_RELATIONSHIPS_INDEX not in index
         ):
             doc = {
                 "_index": index,

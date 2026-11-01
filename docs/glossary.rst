@@ -29,6 +29,9 @@ Glossary
    BAS
       Building Automation System
 
+   Baseline
+      Expected ("known-good" or "known-default") state of a device or of every device of a type, e.g. factory defaults, vendor hardening recommendations, the first observed state of a device, or an engineer-provided configuration. PEAT compares devices against baselines and records the differences as baseline findings.
+
    CASCII
       :term:`SEL` Compressed :term:`ASCII` protocol. :term:`SEL` proprietary protocol for communicating to devices.
 
@@ -125,11 +128,17 @@ Glossary
    Golden Image
       General term for a known-good ("golden") device configuration or firmware image. Derives from the :term:`IT` term for a :term:`VM` base-image that is used to create many instances of the same virtual machine.
 
+   GOOSE
+      Generic Object Oriented Substation Event. :term:`IEC 61850` publish/subscribe messaging over Ethernet multicast (Layer 2), used for fast protection signals between :term:`IED` devices.
+
    HEAT
       High-fidelity Extraction of Artifacts from Traffic. Name of the PEAT capability for extracting and parsing artifacts from network captures (e.g. PCAP file). Refer to :ref:`heat-usage` for more details.
 
    HMI
       Human-Machine Interface
+
+   HSR
+      High-availability Seamless Redundancy (IEC 62439-3). Network redundancy protocol for rings, related to :term:`PRP`.
 
    HTML
       Hyper-Text Markup Language. Format used to render data in a browser.
@@ -145,6 +154,9 @@ Glossary
 
    IDS
       Intrusion Detection System. In the context of PEAT this usually refers to a network-based IDS.
+
+   IEC 61850
+      International standard for communication networks and systems in substations (power utility automation). Defines the data model, :term:`MMS`, :term:`GOOSE`, :term:`SV`, and the :term:`SCL` configuration language.
 
    IED
       Intelligent Electronic Device
@@ -182,8 +194,14 @@ Glossary
    MIB
       Management Information Base. :term:`SNMP` flat-file, nonrelational database that describes devices being monitored.
 
+   MMS
+      Manufacturing Message Specification (ISO 9506). Client/server protocol used by :term:`IEC 61850` (TCP port 102) for reads, writes, control and reports.
+
    MTU
       Maximum Transfer Unit
+
+   NE 107
+      NAMUR recommendation NE 107, "Self-Monitoring and Diagnosis of Field Devices". Defines the device health categories ``normal``, ``failure``, ``check_function``, ``out_of_specification`` and ``maintenance_required`` used by ``DeviceData.health``.
 
    NIC
       Network Interface Card. Often used to refer generally to network interfaces on a host, both physical and virtual.
@@ -230,6 +248,12 @@ Glossary
    PLCOpen
       Graphical editor for process logic and a standards body
 
+   PRP
+      Parallel Redundancy Protocol (IEC 62439-3). Network redundancy where a device sends every frame over two independent networks (LAN A and LAN B).
+
+   Purdue model
+      Purdue Enterprise Reference Architecture. Hierarchical model of industrial control system levels, from the physical process (level 0) and basic control (level 1) up to the enterprise network (levels 4 and 5).
+
    Pillager
       :term:`PEAT` capability to collect artifacts (e.g. device configs or project files) from engineering workstation disk images or live machines. Refer to :ref:`pillage` for details.
 
@@ -272,6 +296,9 @@ Glossary
    SCADA
       Supervisory Control and Data Acquisition
 
+   SCL
+      Substation Configuration Language (IEC 61850-6). :term:`XML` files that describe :term:`IEC 61850` devices and substations: ``.ssd``, ``.scd``, ``.icd``, ``.iid``, ``.cid``, ``.sed``.
+
    SCEPTRE
       SCEPTRE is a comprehensive :term:`OT` modeling and simulation platform developed by :term:`SNL`. Further reading: `phenix documentation <https://phenix.sceptre.dev/>`__
 
@@ -311,6 +338,9 @@ Glossary
    str
       :term:`Python` string
 
+   SV
+      Sampled Values (IEC 61850-9-2). :term:`IEC 61850` publish/subscribe streaming of measurement samples (e.g. from merging units) over Ethernet multicast.
+
    TC6
       TC6 XML. :term:`XML`-based standard for storing graphical representations of process logic in a portable and implementation-independent manner
 
@@ -343,6 +373,9 @@ Glossary
 
    VM
       Virtual Machine
+
+   VLAN
+      Virtual Local Area Network (IEEE 802.1Q). VLAN IDs are 0-4095; ID 0 means priority-tagged frames without a VLAN (common for :term:`GOOSE`).
 
    VPN
       Virtual Private Network

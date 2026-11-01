@@ -475,6 +475,23 @@ class Configuration(SettingsManager):
     """
     Base name of elasticsearch index to use for :class:`peat.data.models.UEFIHash`
     """
+    ELASTIC_RELATIONSHIPS_INDEX: str = "ot-device-relationships"
+    """
+    Base name of Elasticsearch index to use for :class:`~peat.data.models.Relationship`
+    data from devices.
+
+    Configured and observed relationships between devices and other endpoints
+    (communication peers, neighbors, route next hops, serial links, GOOSE
+    publications/subscriptions). One document per relationship per PEAT run.
+    """
+    ELASTIC_BASELINE_FINDINGS_INDEX: str = "ot-device-baseline-findings"
+    """
+    Base name of Elasticsearch index to use for
+    :class:`~peat.data.models.BaselineFinding` data.
+
+    Results of comparing devices against baselines (factory defaults, first
+    observed state, engineer-provided configurations).
+    """
     HEAT_ELASTIC_SERVER: str | None = None
     """
     Elasticsearch server to pull :term:`HEAT` data from.

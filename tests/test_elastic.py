@@ -5,10 +5,60 @@ from datetime import datetime
 import pytest
 
 from peat import Elastic, config
+from peat.es_mappings import PEAT_INDICES
 
 
 def test_init():
     assert Elastic()
+
+
+def test_ecs_version():
+    assert Elastic.ECS_VERSION == "9.5.0"
+
+
+@pytest.mark.parametrize(
+    ("index", "mapping_name"),
+    [
+        ("ot-device-relationships-2026.10.30", "ot-device-relationships"),
+        ("ot-device-relationships", "ot-device-relationships"),
+        ("ot-device-baseline-findings-2026.10.30", "ot-device-baseline-findings"),
+        ("ot-device-hosts-timeseries-2026.10.30", "ot-device-hosts-timeseries"),
+        ("uefi-hashes-2026.10.30", "uefi-hashes"),
+    ],
+)
+def test_create_index_uses_peat_mappings(mocker, index, mapping_name):
+    mocker.patch.dict(config["CONFIG"], {"ELASTIC_DIR": None})
+    es = Elastic()
+    client = mocker.MagicMock()
+    client.indices.exists.return_value = False
+    es.es = client
+
+    assert es.create_index(index)
+    body = client.indices.create.call_args.kwargs["body"]
+    assert body["mappings"] is PEAT_INDICES[mapping_name]
+    assert body["settings"]["index.mapping.total_fields.limit"] == 20000
+
+
+def test_create_index_custom_index_names(mocker):
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "ELASTIC_DIR": None,
+            "ELASTIC_RELATIONSHIPS_INDEX": "custom-relationships",
+            "ELASTIC_BASELINE_FINDINGS_INDEX": "custom-findings",
+        },
+    )
+    for index, mapping_name in (
+        ("custom-relationships-2026.10.30", "ot-device-relationships"),
+        ("custom-findings-2026.10.30", "ot-device-baseline-findings"),
+    ):
+        es = Elastic()
+        client = mocker.MagicMock()
+        client.indices.exists.return_value = False
+        es.es = client
+        assert es.create_index(index)
+        body = client.indices.create.call_args.kwargs["body"]
+        assert body["mappings"] is PEAT_INDICES[mapping_name]
 
 
 def test_url():

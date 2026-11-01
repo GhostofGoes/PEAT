@@ -9,7 +9,7 @@ process.args_count, long, 3, Length of the process.args array.
 process.command_line, keyword, "peat parse --help", Full command line that started the process\, including the absolute path to the executable\, and all arguments. Some arguments may be filtered to protect sensitive information.
 process.executable, keyword, "/venv/bin/python", Absolute path to the process executable.
 process.pid, long, "357", "Process ID (PID) of the process the log event originated from."
-process.parent.process.pid, long, "444", "Process ID (PID) of the parent process."
+process.parent.pid, long, "444", "Process ID (PID) of the parent process."
 process.name, keyword, "MainProcess", "Name of the process the log event originated from."
 process.start, date, 2016-05-23T08:05:34.853Z, The time the process started.
 process.working_directory, keyword, /home/ubuntu/peat/, The working directory of the process.
