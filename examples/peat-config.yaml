@@ -504,7 +504,34 @@ device_options:
     never_download_dirs: []  # Example: ["EVENTS", "HMI"]
 
     # If the relay should be restarted (rebooted) after pushing updated configs ("peat push").
+    # The restart uses the STA C command via Telnet, which interrupts protection
+    # while the relay restarts and clears its self-test status.
     restart_after_push: false
+
+    # After a restart, wait for the relay to come back (Telnet: its port closes
+    # and opens again; serial: it shows its prompt) and check its FID.
+    restart_verify: true
+
+    # Maximum number of seconds to wait for the relay to come back after a restart.
+    restart_timeout: 300.0
+
+    # Use fixed delays after each SEL ASCII command (Telnet and serial), and read
+    # what arrived, as PEAT did before it waited for the relay's prompt. Only
+    # enable this if commands time out on a device. Logins and the restart
+    # dialog always wait for the prompts.
+    legacy_ascii_timing: false
+
+    # Seconds without any output from the relay after which PEAT stops waiting
+    # for the end of a command with a lot of output (e.g. "ser" or "fil show").
+    # Increase this for slow connections.
+    ascii_idle_timeout: 30.0
+
+    # On SEL-400 series relays, also try "CLARKE" as the Level C (CAL) password,
+    # after the documented default "Sel-1" (on another connection). This isn't
+    # documented for the 400 series, and each failed password counts towards
+    # the relay's lockout. Only programs that use the PEAT API elevate to level C:
+    # PEAT's pull, push, and restart don't.
+    cal_clarke_fallback: false
 
     # Alternate method of FTP pulls that may work on older devices.
     # Only enable this if debugging issues with FTP downloads.
@@ -518,30 +545,35 @@ device_options:
     # This applies to Telnet, Serial, and HTTP communication methods,
     # and also applies to FTP in many cases (but not all).
     #
-    # NOTE: these are available in SEL's documentation for each relay model,
-    # For further information about featured available at each level,
-    # consult the SEL documentation for the relay model of interest.
-    creds:
-      # Access level 1 ("acc"). Provides access to status and listing commands,
-      # including "fil show" and "fil dir" commands for reading
-      # files and directories.
-      acc: "OTTER"
-      # Access level 2 ("2ac"). Provides access to more commands,
-      # including the ability to reboot the relay.
-      2ac: "TAIL"
-      # bac: "BREAKER" access level (present on 351S and others)
-      #
-      # "bac" isn't currently used by PEAT, but is left here
-      # for future compatibility and documentation/reference.
-      bac: "EDITH"
-      # cal: "CALIBRATION" access level. This provides access to advanced
-      # commands intended for use by SEL employees, such as the ability
-      # to read and write arbitrary memory and many other functions.
-      #
-      # PEAT uses cal when performing memory reads.
-      #
-      # SEL-451 "cal" default: "Sel-1"
-      cal: "CLARKE"
+    # If a level isn't set here, PEAT uses the factory default password for the
+    # relay's model family, from the public SEL instruction manuals (refer to
+    # "Default credentials" in the SEL documentation):
+    #
+    #   300 series (e.g. 351S): acc OTTER, bac EDITH, 2ac TAIL, cal CLARKE
+    #   400 series (e.g. 451):  acc OTTER, bac EDITH, 2ac TAIL, cal Sel-1
+    #                           (also pac AMPERE, aac VOLTA, oac WATT)
+    #   700 series (e.g. 751):  acc OTTER, 2ac TAIL, cal CLARKE (no bac)
+    #   2030/2032:              acc OTTER, 2ac TAIL, cal CLARKE
+    #   Other models:           acc OTTER, bac EDITH, 2ac TAIL, cal CLARKE
+    #
+    # A password that's set here is always used instead of the default. PEAT
+    # tries each level once per connection, since wrong passwords cause alarms
+    # (BADPASS) and lock out access. A value can be a list of passwords, one of
+    # which is tried per connection, in order. PEAT's pull and restart use one
+    # connection, so they only use the first one; the others are for programs
+    # that use the PEAT API and log in again on a new connection.
+    #
+    # Access level 1 ("acc") provides access to status and listing commands,
+    # including "fil show" and "fil dir" commands for reading files and directories.
+    # Access level 2 ("2ac") provides access to more commands, including the ability
+    # to reboot the relay. "bac" is the breaker access level, which PEAT doesn't use.
+    # "cal" (calibration) is for SEL factory functions, PEAT doesn't elevate to it.
+    #
+    # Example:
+    #   creds:
+    #     acc: "my-level-1-password"
+    #     2ac: "my-level-2-password"
+    creds: {}
 
     # SELRTAC: If the pull should collect data via HTTP
     pull_http: true
@@ -659,13 +691,13 @@ device_options:
 
   # Combination of HTTP and HTTPS configurations into a single option
   #
-  # "web" is used by the following modules: ControlLogix, SELRelay, SELRTAC
+  # "web" is used by the following modules: ControlLogix, SELRelay, SELRTAC, SEL3620
   web:
     user: ""
     pass: ""
     timeout: 30.0  # Used by Sage
-    users: []  # Used by SELRTAC
-    passwords: []  # Used by SELRTAC
+    users: []  # Used by SELRTAC and SEL3620
+    passwords: []  # Used by SELRTAC and SEL3620
 
   # File Transfer Protocol (FTP)
   #

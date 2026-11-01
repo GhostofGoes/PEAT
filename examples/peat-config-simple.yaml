@@ -154,13 +154,15 @@ device_options:
     never_download_files: []
     never_download_dirs: []
     restart_after_push: false
+    restart_verify: true
+    restart_timeout: 300.0
+    legacy_ascii_timing: false
+    ascii_idle_timeout: 30.0
+    cal_clarke_fallback: false
     old_ftp: false
     handle_download_errors: true
-    creds:
-      acc: "OTTER"
-      2ac: "TAIL"
-      bac: "EDITH"
-      cal: "CLARKE"
+    # Unset levels use the defaults for the relay's model, e.g. {acc: "OTTER", 2ac: "TAIL"}
+    creds: {}
     pull_http: true
     pull_postgres: true
     rtac_monitor_enable: false

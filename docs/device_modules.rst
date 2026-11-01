@@ -252,6 +252,11 @@ Compressed ASCII
 .. automodule:: peat.modules.sel.sel_cascii
    :members:
 
+Default credentials
+^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_default_creds
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse

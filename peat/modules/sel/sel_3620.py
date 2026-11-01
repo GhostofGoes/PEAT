@@ -32,6 +32,9 @@ class SEL3620(DeviceModule):
                 "Admin",
                 "administrator",
             ],
+            # Before, these came from the SELRTAC defaults, since this module had none.
+            # They're guesses, not defaults documented by SEL.
+            "passwords": ["admin", "rtac"],
         }
     }
 

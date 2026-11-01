@@ -77,6 +77,11 @@ Telnet
    :members:
    :private-members:
 
+Expect (waiting for patterns)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.protocols.expect
+   :members:
+
 HTTP
 ^^^^
 .. automodule:: peat.protocols.http
