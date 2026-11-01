@@ -1,0 +1,1 @@
+Added a "Using vendor SNMP MIBs" section to the module developer guide, with how to compile a vendor MIB with ``pysmi`` (without its texts), record its provenance and include it in the PyInstaller builds, and documented the M340 SNMP data collection.

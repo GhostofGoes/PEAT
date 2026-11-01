@@ -138,6 +138,11 @@ M340 pulling
 .. automodule:: peat.modules.schneider.m340.m340_pull
    :members:
 
+M340 SNMP
+^^^^^^^^^
+.. automodule:: peat.modules.schneider.m340.m340_snmp
+   :members:
+
 UMAS protocol
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.schneider.m340.umas_packets

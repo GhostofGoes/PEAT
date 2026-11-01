@@ -12,56 +12,215 @@ Authors
 
 import binascii
 import socket
+from collections.abc import Iterable
+from typing import Any, Final
 
 from peat import CommError, utils
 from peat import log as peat_logger
 from peat.protocols import FTP, SNMP
 
+from . import m340_snmp
 from .umas_packets import UMASResponse, send_umas_packet
 
-# TODO: use Schneider MIB and proper object names instead of raw OIDs
-# The MIB just needs to be compiled like we did for the SIPROTEC MIBs
-# misc/m340/SchneiderTFE-V01-04.mib
+# NOTE: the OIDs below are only used by the raw-OID SNMP fallback,
+# _get_snmp_metadata(). The primary SNMP method uses the Schneider
+# TFE private MIB, refer to m340_snmp.py.
+# Format: "info_returned": ("OID under 1.3.6.1.", type)
+
+#: OIDs for information specific to the module running the SNMP server.
+SNMP_MODULE_OIDS: Final[dict[str, tuple[str, type]]] = {
+    # Slot of the CPU
+    "slot": ("4.1.3833.1.7.10.0", int),
+    # Full name and version of hardware
+    "model_name": ("4.1.3833.1.7.1.0", str),
+    "module_description": ("2.1.1.1.0", str),
+    # Status of module (1=nok, 2=ok)
+    "module_status": ("4.1.3833.1.7.4.0", int),
+    "mac_address": ("4.1.3833.1.7.18.0", bytes),
+    "configured_ipv4_address": ("4.1.3833.1.7.15.0", str),
+    "configured_ipv4_netmask": ("4.1.3833.1.7.16.0", str),
+    "configured_ipv4_gateway": ("4.1.3833.1.7.17.0", str),
+    # local(1), dhcpServed(2)
+    "ip_config_mode": ("4.1.3833.1.7.5.0", int),
+    # Number of network interfaces present in the module, regardless of state
+    "num_network_interfaces": ("2.1.2.1.0", int),
+    "bandwidth_management": ("4.1.3833.1.7.7.0", int),
+    "communication_services": ("4.1.3833.1.7.3.0", int),
+}
+
+#: OIDs with SMTP email server configuration and status information
+#: (first row of emailTable, emailIndex 0)
+SNMP_SMTP_OIDS: Final[dict[str, tuple[str, type]]] = {
+    "service_status": ("4.1.3833.1.9.1.1.1.2.0", int),
+    "ipv4_address": ("4.1.3833.1.9.1.1.1.3.0", str),
+    "mail_sent_count": ("4.1.3833.1.9.1.1.1.4.0", int),
+    "error_count": ("4.1.3833.1.9.1.1.1.5.0", int),
+    "last_error": ("4.1.3833.1.9.1.1.1.6.0", int),
+    "last_mail_elapsed_time": ("4.1.3833.1.9.1.1.1.7.0", int),
+    # 1 = nok (unreachable), 2 = ok (reachable)
+    "link_service_status": ("4.1.3833.1.9.1.1.1.8.0", int),
+    # The number of time that the link to the SMTP server has been detected down.
+    "server_check_fail_count": ("4.1.3833.1.9.1.1.1.9.0", int),
+}
+
+#: OIDs with Port 502 service configuration and status information
+SNMP_PORT_502_OIDS: Final[dict[str, tuple[str, type]]] = {
+    # The protocols supported by the Port502 Messaging service:
+    # modbusThroughGateway(1)         -- MODBUS protocol through UNITE Gateway
+    # modbusDirect (2)                -- MODBUS direct
+    # unite(4)                        -- UNITE protocol only
+    # modbusThroughGatewayAndUnite(5) -- MODBUS through Gateway and UNITE protocol
+    # modbusDirectAndUnite(6)         -- MODBUS direct and UNITE protocol
+    "supported_protocol": ("4.1.3833.1.2.2.0", int),
+    # idle(1), operationnal(2)
+    "service_status": ("4.1.3833.1.2.1.0", int),
+    # 1=disabled, 2=enabled
+    "port_security": ("4.1.3833.1.2.3.0", int),
+    "max_connections": ("4.1.3833.1.2.4.0", int),
+    "total_messages_received": ("4.1.3833.1.2.9.0", int),
+    "total_messages_sent": ("4.1.3833.1.2.10.0", int),
+    "total_errors_sent": ("4.1.3833.1.2.11.0", int),
+}
+
+#: OIDs with Web server configuration and status information
+SNMP_WEB_OIDS: Final[dict[str, tuple[str, type]]] = {
+    # idle(1), operationnal(2)
+    "service_status": ("4.1.3833.1.5.1.0", int),
+    # 1=disabled, 2=enabled
+    "password_status": ("4.1.3833.1.5.2.0", int),
+    "successful_attempts": ("4.1.3833.1.5.3.0", int),
+    "failed_attempts": ("4.1.3833.1.5.4.0", int),
+}
+
+#: OIDs with system-wide information
+SNMP_SYSTEM_OIDS: Final[dict[str, tuple[str, type]]] = {
+    # profileCPUType
+    "full_model": ("4.1.3833.1.7.11.0", str),
+    # SNMPv2-MIB::sysUpTime (hundredths of a second)
+    "system_uptime": ("2.1.1.3.0", int),
+    "implementation_class": ("4.1.3833.1.7.19.0", str),
+    "firmware_version": ("4.1.3833.1.7.2.0", str),
+}
+
+#: Columns of profileLedDisplayTable (ledName, ledDescr, ledState)
+SNMP_LED_OIDS: Final[dict[str, tuple[str, type]]] = {
+    "name": ("4.1.3833.1.7.9.1.2", str),
+    "description": ("4.1.3833.1.7.9.1.3", str),
+    # on(1), off(2), blinking(3)
+    "state": ("4.1.3833.1.7.9.1.4", int),
+}
+
+
+#: Network services used to pull additional configuration information,
+#: as named in the ``m340.pull_methods`` device option, and the order they're used in
+NETWORK_PULL_METHODS: Final[dict[str, str]] = {
+    "ftp": "FTP",
+    "snmp": "SNMP",
+    "modbus_tcp": "Modbus/TCP",
+}
 
 
 # TODO: what parts of this are status, and what are config?
-def pull_network_config(ip: str, timeout: float = 1.0, snmp_community: str = "public") -> dict:
+def pull_network_config(
+    ip: str,
+    timeout: float = 1.0,
+    snmp_community: str = "public",
+    *,
+    snmp_port: int = 161,
+    snmp_timeout: float | None = None,
+    methods: Iterable[str] = tuple(NETWORK_PULL_METHODS),
+    snmp_max_varbinds: int = m340_snmp.DEFAULT_MAX_VARBINDS,
+) -> dict:
     """
     Pull configuration information using SNMP, FTP, and Modbus/TCP.
+
+    SNMP data is pulled using the Schneider TFE private MIB
+    (refer to :func:`~peat.modules.schneider.m340.m340_snmp.pull_snmp`).
+    If the MIB can't be loaded (or pulling with it fails unexpectedly), a limited
+    set of raw OIDs is queried instead.
 
     Args:
         ip: IP address of the device
         timeout: Time to wait for a service to respond, in seconds
         snmp_community: SNMPv1 Community String to use
+        snmp_port: UDP port of the SNMP agent
+        snmp_timeout: SNMP timeout, in seconds (if :obj:`None`, ``timeout`` is used)
+        methods: Services to use, from :data:`NETWORK_PULL_METHODS`
+            (the ``m340.pull_methods`` device option). They're always used in the
+            order of :data:`NETWORK_PULL_METHODS`, regardless of the order given.
+        snmp_max_varbinds: Maximum number of SNMP GetNext requests per walked subtree
 
     Returns:
-        The device configuration information
+        The device configuration information. The structured SNMP data
+        is in the ``snmp`` key.
     """
     log = peat_logger.bind(target=ip)
     log.debug(f"Pulling configuration using network services for Schneider device {ip}...")
     device_info = {}
+    snmp_timeout = snmp_timeout if snmp_timeout else timeout
+
+    methods = list(methods)
+    for method in methods:
+        if method not in list(NETWORK_PULL_METHODS):
+            log.error(
+                f"Ignoring invalid 'm340.pull_methods' method '{method}' for {ip}, "
+                f"it must be one of {list(NETWORK_PULL_METHODS)}"
+            )
+
+    services = []
+    for method, service in NETWORK_PULL_METHODS.items():
+        if method in methods:
+            services.append(service)
+        else:
+            log.warning(
+                f"Skipping method '{method}' for pull from {ip}: "
+                f"'{method}' not listed in 'm340.pull_methods' option"
+            )
 
     # Get configuration information from network sources
-    # TODO: verified_services
-    for service in device_info.get("verified_services", ["FTP", "SNMP", "Modbus/TCP"]):
-        # TODO: snmp "verification" may "fail" due to a incorrect community string
-        #   We can get a correct one from the project file config
-        #   and re-verify using updated string if we find it in the config
+    for service in services:
         if service == "SNMP":
             try:
-                # Pull data from service and add to info
-                snmp_module, system = _get_snmp_metadata(
-                    ip, community=snmp_community, timeout=timeout
+                snmp_data = m340_snmp.pull_snmp(
+                    ip,
+                    port=snmp_port,
+                    timeout=snmp_timeout,
+                    community=snmp_community,
+                    max_varbinds=snmp_max_varbinds,
                 )
+                snmp_module, system = m340_snmp.to_legacy(snmp_data)
+                device_info["snmp"] = snmp_data
+            except CommError as err:  # e.g. SNMP is disabled or wrong community
+                log.warning(f"Could not pull SNMP metadata: {err}")
+                continue
             except Exception as err:
-                log.exception(f"Could not pull SNMP metadata: {err}")
-                continue  # Skip to next service if there is an error
+                if isinstance(err, m340_snmp.TfeMibUnavailableError):
+                    log.warning(f"{err}. Falling back to raw-OID SNMP queries")
+                else:
+                    log.exception(
+                        f"Failed to pull SNMP data using {m340_snmp.TFE_MIB}, "
+                        f"falling back to raw-OID SNMP queries: {err}"
+                    )
+                try:
+                    snmp_module, system = _get_snmp_metadata(
+                        ip, community=snmp_community, timeout=snmp_timeout, port=snmp_port
+                    )
+                except CommError as fallback_err:
+                    log.warning(f"Could not pull SNMP metadata: {fallback_err}")
+                    continue
+                except Exception as fallback_err:
+                    log.exception(f"Could not pull SNMP metadata: {fallback_err}")
+                    continue  # Skip to next service if there is an error
 
             # Add the overall system info straight into the device info
             device_info.update(system)
 
             # Add the information for each module to its corresponding dict
-            module_name = "module_" + str(snmp_module["slot"])  # module_<slot #>
+            if "slot" in snmp_module:
+                module_name = f"module_{snmp_module['slot']}"  # module_<slot #>
+            else:
+                log.warning("SNMP agent didn't report the module slot, using 'module_snmp'")
+                module_name = "module_snmp"
             if module_name in device_info:
                 # If module exists, add the info
                 device_info[module_name].update(snmp_module)
@@ -126,181 +285,107 @@ def pull_network_config(ip: str, timeout: float = 1.0, snmp_community: str = "pu
 
 
 def _get_snmp_metadata(
-    ip: str, community: str = "public", timeout: float = 0.5, max_failures: int = 7
+    ip: str,
+    community: str = "public",
+    timeout: float = 0.5,
+    max_failures: int = 7,
+    port: int = 161,
 ) -> tuple[dict, dict]:
     """
-    Gets as much device metadata as possible over SNMP.
+    Gets device metadata over SNMP by querying raw OIDs.
+
+    .. note::
+       This is a fallback for when the Schneider TFE private MIB can't be loaded.
+       The MIB-based method,
+       :func:`~peat.modules.schneider.m340.m340_snmp.pull_snmp`, gets much more data.
 
     Args:
         ip: IPv4 address of the device
         community: SNMP Community string to use
         timeout: SNMP protocol timeout, in seconds
         max_failures: max number of failed requests before raising an exception
+        port: UDP port of the SNMP agent
 
     Returns:
-        Info for the module hosting SNMP and the overall system, respectfully
+        Info for the module hosting SNMP and the overall system, respectively
     """
     log = peat_logger.bind(target=ip)
-    log.info(f"Pulling configuration information for device {ip} over SNMP...")
-    module_info = {}
-    system_info = {}
+    log.info(f"Pulling configuration information for device {ip} over SNMP (raw OIDs)...")
+    module_info: dict[str, Any] = {}
+    system_info: dict[str, Any] = {}
 
-    # TODO: make these dicts module-level global constants, mark as typing.Final
-    # SNMP OIDs to pull from device.
-    # Format: "info_returned": "fully-qualified_oid"
-    # Refer to the .MIB file for details on each OID.
-    #
-    # Since these OIDs are non-mandatory, the requests to make
-    # depend on communicationServices results.
-    #
-    # OIDs for information specific to the module running the SNMP server.
-    # First key in tuple is OID, second is type.
-    module_oids = {
-        # Slot of the CPU
-        "slot": ("4.1.3833.1.7.10.0", int),
-        # Full name and version of hardware
-        "model_name": ("4.1.3833.1.7.1.0", str),
-        "module_description": ("2.1.1.1.0", str),
-        # Status of module (1=bad, 2=good)
-        "module_status": ("4.1.3833.1.7.4.0", int),
-        "mac_address": ("4.1.3833.1.7.18.0", str),
-        "configured_ipv4_address": ("4.1.3833.1.7.15.0", str),
-        "configured_ipv4_netmask": ("4.1.3833.1.7.16.0", str),
-        "configured_ipv4_gateway": ("4.1.3833.1.7.17.0", str),
-        # Static or DHCP
-        "ip_config_mode": ("4.1.3833.1.7.5.0", str),
-        # Number of network interfaces present in the module, regardless of state
-        "num_network_interfaces": ("2.1.2.1.0", int),
-        "bandwidth_management": ("4.1.3833.1.7.7.0", int),
-        "communication_services": ("4.1.3833.1.7.3.0", int),
-    }
-
-    # OIDs with SMTP email server configuration and status information
-    smtp_oids = {
-        "service_status": ("4.1.3833.1.9.1.1.1.2.0", int),
-        "ipv4_address": ("4.1.3833.1.9.1.1.1.3.0", str),
-        "mail_sent_count": ("4.1.3833.1.9.1.1.1.4.0", int),
-        "error_count": ("4.1.3833.1.9.1.1.1.5.0", int),
-        "last_error": ("4.1.3833.1.9.1.1.1.6.0", int),
-        "last_mail_elapsed_time": ("4.1.3833.1.9.1.1.1.7.0", int),
-        "link_service_status": ("4.1.3833.1.9.1.1.1.8.0", str),
-        # The number of time that the link to the SMTP server has been detected down.
-        "server_check_fail_count": ("4.1.3833.1.9.1.1.1.9.0", int),
-    }
-
-    # OIDs with Port 502 service configuration and status information
-    port_502_oids = {
-        # The protocols supported by the Port502 Messaging service:
-        # modbusThroughGateway(1)         -- MODBUS protocol through UNITE Gateway
-        # modbusDirect (2)                -- MODBUS direct
-        # unite(4)                        -- UNITE protocol only
-        # modbusThroughGatewayAndUnite(5) -- MODBUS through Gateway and UNITE protocol
-        # modbusDirectAndUnite(6)         -- MODBUS direct and UNITE protocol
-        "supported_protocol": ("4.1.3833.1.2.2.0", int),
-        "service_status": ("4.1.3833.1.2.1.0", str),
-        # 1=disabled, 2=enabled
-        "port_security": ("4.1.3833.1.2.3.0", int),
-        "max_connections": ("4.1.3833.1.2.4.0", int),
-        "total_messages_received": ("4.1.3833.1.2.9.0", int),
-        "total_messages_sent": ("4.1.3833.1.2.10.0", int),
-        "total_errors_sent": ("4.1.3833.1.2.11.0", int),
-        # TODO: enumerate through all entries in IPSecurityTable (4.1.3833.1.2.7)
-        #   Basically, the offending IP address, and how many attempts they made
-    }
-
-    # OIDs with Web server configuration and status information
-    web_oids = {
-        "service_status": ("4.1.3833.1.5.1.0", int),
-        # 1=disabled, 2=enabled
-        "password_status": ("4.1.3833.1.5.2.0", int),
-        "successful_attempts": ("4.1.3833.1.5.3.0", int),
-        "failed_attempts": ("4.1.3833.1.5.4.0", int),
-    }
-
-    # OIDs with system-wide information
-    system_oids = {
-        # profileCPUType
-        "full_model": ("4.1.3833.1.7.11.0", str),
-        "system_uptime": ("2.1.31.1.5.0", int),
-        "implementation_class": ("4.1.3833.1.7.19.0", str),
-        "firmware_version": ("4.1.3833.1.7.2.0", str),
-    }
+    def _query(oid_pair: tuple[str, type]) -> Any:
+        response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
+        if not response:
+            return None
+        try:
+            if oid_pair[1] is str:
+                return str(response[0]["value_string"]).strip()
+            # NOTE: "value_encoded" is the raw int or bytes value
+            return oid_pair[1](response[0]["value_encoded"])
+        except (TypeError, ValueError) as ex:
+            log.debug(f"Bad SNMP value for OID {oid_pair[0]}: {ex}")
+            return None
 
     # Create SNMP object to use for pulling data
-    snmp = SNMP(ip=ip, timeout=timeout, community=community)
+    snmp = SNMP(ip=ip, port=port, timeout=timeout, community=community)
     num_failures = 0
 
     # Pull information for the module running the SNMP server
-    # TODO: threading would help a lot here
     log.debug("Pulling SNMP device modules info...")
-    for name, oid_pair in module_oids.items():
-        response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
+    for name, oid_pair in SNMP_MODULE_OIDS.items():
+        data = _query(oid_pair)
+        if data is None:
             num_failures += 1
             if num_failures >= max_failures:
                 raise CommError(
                     f"Number of failed SNMP query attempts exceeded max of {max_failures}"
                 )
-
             continue
 
-        data = oid_pair[1](response[0]["value_string"])  # Convert data
-        if data != "":
-            if name == "mac_address":
-                # Handle MAC address being represented as
-                # raw bytes and not text characters.
-                mac = binascii.b2a_hex(bytes(data, "utf-8")).decode().upper()
-                module_info["mac_address"] = ":".join(
-                    a + b for a, b in zip(mac[::2], mac[1::2], strict=False)
+        if data in ("", b""):
+            continue
+        if name == "mac_address":
+            # PhysAddress, raw bytes
+            if len(data) == 6:
+                module_info[name] = ":".join(f"{b:02X}" for b in data)
+        elif name == "module_status":
+            module_info[name] = "ok" if data == 2 else "nok"
+        elif name == "ip_config_mode":
+            module_info[name] = {1: "local", 2: "dhcpServed"}.get(data, data)
+        elif name == "bandwidth_management":
+            module_info[name] = "enabled" if data == 2 else "disabled"
+        elif name == "communication_services":
+            # b0 (least significant bit) = Port502Messaging, ..., b6 = email
+            module_info[name] = {
+                "port_502_messaging" if k == "port502_messaging" else k: (
+                    "supported" if supported else "unsupported"
                 )
-            elif "ipv4" in name:
-                # snmp.get() will generate a IP string
-                module_info[name] = data
-            elif name == "module_status":
-                module_info[name] = "ok" if data == 2 else "nok"
-            elif name == "bandwidth_management":
-                module_info[name] = "enabled" if data == 2 else "disabled"
-            elif name == "communication_services":
-                srvcs = {}
-                bits = [int(x) for x in f"{int(data):07b}"]
-                srvcs["port_502_messaging"] = "supported" if bits[0] == 1 else "unsupported"
-                srvcs["io_scanning"] = "supported" if bits[1] == 1 else "unsupported"
-                srvcs["global_data"] = "supported" if bits[2] == 1 else "unsupported"
-                srvcs["web"] = "supported" if bits[3] == 1 else "unsupported"
-                srvcs["address_server"] = "supported" if bits[4] == 1 else "unsupported"
-                srvcs["time_management"] = "supported" if bits[5] == 1 else "unsupported"
-                srvcs["email"] = "supported" if bits[6] == 1 else "unsupported"
-                module_info[name] = srvcs
-            else:
-                module_info[name] = data
+                for k, supported in m340_snmp.decode_comm_services(data).items()
+            }
+        else:
+            module_info[name] = data
 
     # Pull SMTP email server information for the module
-    smtp_info = {}
+    smtp_info: dict[str, Any] = {}
     log.debug("Pulling SNMP email server info...")
-    for name, oid_pair in smtp_oids.items():
-        response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
+    for name, oid_pair in SNMP_SMTP_OIDS.items():
+        data = _query(oid_pair)
+        if data is None or data == "":
             continue
-
-        data = oid_pair[1](response[0]["value_string"])  # Convert data
-        if data != "":
-            if "ipv4" in name:
-                # snmp.get() will generate a IP string
-                smtp_info[name] = data
-            elif name == "link_service_status":
-                # 1 = nok, SMTP server is unreachable
-                # 2 = ok, SMTP server can be reached
-                smtp_info[name] = "reachable" if data == 2 else "unreachable"
-            elif name == "service_status":
-                if data == 1:
-                    smtp_info[name] = "no configuration"
-                elif data == 2:
-                    smtp_info[name] = "operational and running"
-                else:
-                    smtp_info[name] = "stopped"
+        if name == "link_service_status":
+            smtp_info[name] = "reachable" if data == 2 else "unreachable"
+        elif name == "service_status":
+            if data == 1:
+                smtp_info[name] = "no configuration"
+            elif data == 2:
+                smtp_info[name] = "operational and running"
             else:
-                smtp_info[name] = data
-    module_info["smtp_server"] = smtp_info
+                smtp_info[name] = "stopped"
+        else:
+            smtp_info[name] = data
+    if smtp_info:
+        module_info["smtp_server"] = smtp_info
 
     # Pull Port 502 service information for the module
     supp_protos = {
@@ -311,84 +396,63 @@ def _get_snmp_metadata(
         5: "modbusThroughGatewayAndUnite",
         6: "modbusDirectAndUnite",
     }
-    port_502_info = {}
+    port_502_info: dict[str, Any] = {}
     log.debug("Pulling SNMP Port502 info...")
-    for name, oid_pair in port_502_oids.items():
-        response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
+    for name, oid_pair in SNMP_PORT_502_OIDS.items():
+        data = _query(oid_pair)
+        if data is None:
             continue
-
-        # Convert data
-        data = oid_pair[1](response[0]["value_string"])
-        if data != "":
-            if name == "port_security":
-                port_502_info[name] = "enabled" if data == 2 else "disabled"
-            elif name == "supported_protocol":
-                port_502_info[name] = supp_protos[data]
-            elif name == "service_status":
-                port_502_info[name] = "operational" if data == 2 else "no configuration"
-            else:
-                port_502_info[name] = data
-    module_info["port_502"] = port_502_info
+        if name == "port_security":
+            port_502_info[name] = "enabled" if data == 2 else "disabled"
+        elif name == "supported_protocol":
+            port_502_info[name] = supp_protos.get(data, data)
+        elif name == "service_status":
+            port_502_info[name] = "operational" if data == 2 else "no configuration"
+        else:
+            port_502_info[name] = data
+    if port_502_info:
+        module_info["port_502"] = port_502_info
 
     # Pull Web server info
-    web_info = {}
+    web_info: dict[str, Any] = {}
     log.debug("Pulling SNMP web server info...")
-    for name, oid_pair in web_oids.items():
-        response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
+    for name, oid_pair in SNMP_WEB_OIDS.items():
+        data = _query(oid_pair)
+        if data is None:
             continue
+        if name == "password_status":
+            web_info[name] = "enabled" if data == 2 else "disabled"
+        elif name == "service_status":
+            web_info[name] = "operational" if data == 2 else "no configuration"
+        else:
+            web_info[name] = data
+    if web_info:
+        module_info["web_server"] = web_info
 
-        # Convert dataQ
-        data = oid_pair[1](response[0]["value_string"])
-        if data != "":
-            if name == "password_status":
-                web_info[name] = "enabled" if data == 2 else "disabled"
-            elif name == "service_status":
-                web_info[name] = "operational" if data == 2 else "no configuration"
-            else:
-                web_info[name] = data
-    module_info["web_server"] = web_info
-
-    # Get information on LEDs on the module and their state
-    # TODO: make more generic by dynamically determining
-    # how many LEDs there are at runtime.
-    led_oids = {
-        "name": ("4.1.3833.1.7.9.1.2", str),
-        "description": ("4.1.3833.1.7.9.1.3", str),
-        "state": ("4.1.3833.1.7.9.1.4", int),
-    }
-    led_info = {}
+    # Get information on LEDs on the module and their state,
+    # by walking each column of profileLedDisplayTable.
+    led_info: dict[str, list] = {}
     log.debug("Pulling SNMP LED info...")
-    for name, oid_pair in led_oids.items():
-        # Pull information on each LED over SNMP
-        responses = snmp.get(
-            identity=f"1.3.6.1.{oid_pair[0]}",
-            single_query=False,
-            # TODO: manual limit as workaround until MIB import is added
-            # Assume there are 5 LEDs
-            query_limit=5,
-        )
-        if not responses:
-            continue
-
-        led_info[name] = [oid_pair[1](x["value_encoded"]) for x in responses]
-    for i in range(5):
-        # Convert from the lists of values per OID to dict of info per LED
-        info = {}
-        for k in led_oids.keys():
-            info[k] = led_info[k][i]
-        module_info["led_" + str(i)] = info
+    for name, oid_pair in SNMP_LED_OIDS.items():
+        responses = snmp.walk(f"1.3.6.1.{oid_pair[0]}", max_varbinds=64)
+        if oid_pair[1] is str:
+            led_info[name] = [str(x["value_string"]).strip() for x in responses]
+        else:
+            led_info[name] = [x["value_encoded"] for x in responses]
+    for i, (led_name, led_descr, led_state) in enumerate(
+        zip(led_info["name"], led_info["description"], led_info["state"], strict=False)
+    ):
+        module_info[f"led_{i}"] = {
+            "name": led_name,
+            "description": led_descr,
+            "state": led_state,
+        }
 
     # Pull information for the overall system
     log.debug("Pulling SNMP overall system info...")
-    for name, oid_pair in system_oids.items():
-        response = snmp.get(f"1.3.6.1.{oid_pair[0]}")
-        if not response:
-            continue
-
-        data = oid_pair[1](response[0]["value_string"])
-        if data != "":
+    for name, oid_pair in SNMP_SYSTEM_OIDS.items():
+        data = _query(oid_pair)
+        if data is not None and data != "":
             system_info[name] = data
 
     return module_info, system_info

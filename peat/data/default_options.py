@@ -31,6 +31,8 @@ DEFAULT_OPTIONS: dict[str, dict[str, ConfigVal] | ConfigVal] = {
         "timeout": config.DEFAULT_TIMEOUT,
         "community": "public",
         "communities": ["public", "private"],
+        # Maximum number of GetNext requests per walked MIB subtree
+        "max_varbinds": 1000,
     },
     "serial": {
         "baudrate": 0,

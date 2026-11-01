@@ -18,6 +18,18 @@ Services
 
 Reliable services for scanning: FTP, HTTP/S, SNMP, Modbus/TCP
 
+SNMP data is pulled using the standard MIBs and Schneider's Transparent
+Factory Ethernet private MIB (``TFPRIVATE-MIB``), refer to
+:mod:`~peat.modules.schneider.m340.m340_snmp` for details. The
+``m340.pull_methods`` option selects the network services used to pull
+additional information after the project file (``ftp``, ``snmp`` and
+``modbus_tcp``). Remove ``snmp`` from it to not use SNMP with M340 devices
+(this disables the SNMP identification method and the SNMP pull). A scan,
+including the one ``peat pull`` runs first, can still send a ``sysDescr`` Get to
+check if the SNMP port is open; use ``peat pull --skip-scan`` to avoid that. The
+``snmp.max_varbinds`` option limits the number of SNMP requests per walked
+MIB subtree.
+
 Authors
 
 - Christopher Goes
@@ -29,7 +41,6 @@ import binascii
 import re
 import socket
 import traceback
-from copy import copy
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from pprint import pformat
@@ -42,7 +53,6 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
-    Service,
     config,
     datastore,
     utils,
@@ -51,7 +61,7 @@ from peat.file_signature import FileSignature
 from peat.parsing.tc6 import TC6
 from peat.protocols import FTP, SNMP
 
-from . import m340_parse, m340_pull
+from . import m340_parse, m340_pull, m340_snmp
 from .umas_packets import (
     Modbus,
     UMASConnectionResponse,
@@ -94,7 +104,11 @@ class M340(DeviceModule):
     ]
     default_options = {
         "ftp": {"creds": [["loader", "fwdownload"]]},
-        "m340": {"use_network_for_config": True, "generate_openplc_project": None},
+        "m340": {
+            "use_network_for_config": True,
+            "generate_openplc_project": None,
+            "pull_methods": list(m340_pull.NETWORK_PULL_METHODS),
+        },
     }
     annotate_fields = {
         "os.name": "VxWorks",
@@ -173,7 +187,16 @@ class M340(DeviceModule):
         Check if a device is a M340 by querying SNMP for OID
         ``1.3.6.1.2.1.1.1.0`` (``sysDescr``) and comparing it
         against specific strings.
+
+        No SNMP requests are sent if ``snmp`` isn't listed in the
+        ``m340.pull_methods`` option.
         """
+        if "snmp" not in (dev.options.get("m340", {}).get("pull_methods") or []):
+            cls.log.debug(
+                f"Not verifying {dev.ip} via SNMP: 'snmp' not listed in 'm340.pull_methods' option"
+            )
+            return False
+
         port = dev.options["snmp"]["port"]
         timeout = dev.options["snmp"]["timeout"]
 
@@ -184,6 +207,8 @@ class M340(DeviceModule):
         for community in dev.options["snmp"]["communities"]:
             snmp = SNMP(dev.ip, port, timeout, community=community)
             if snmp.verify("1.3.6.1.2.1.1.1.0", to_find=to_find):
+                # Save the community that worked, for use when pulling
+                dev._cache["snmp_community"] = community
                 return True
 
         return False
@@ -237,6 +262,16 @@ class M340(DeviceModule):
 
     @classmethod
     def _pull(cls, dev: DeviceData) -> bool:
+        # Sanity check in case users messed up config (since there isn't config validation yet)
+        valid_methods = list(m340_pull.NETWORK_PULL_METHODS)
+        for method in dev.options["m340"].get("pull_methods") or []:
+            if method not in valid_methods:
+                cls.log.error(
+                    f"Invalid 'm340.pull_methods' method '{method}' for {dev.ip}, it must "
+                    f"be one of {valid_methods}"
+                )
+                return False
+
         # NOTE: _pull will *always* pull the full project, there is no caching!!!
         project_blob = cls.pull_apx_file(dev.ip)
         pulled_config = cls._pull_config(dev, project_blob)
@@ -270,38 +305,61 @@ class M340(DeviceModule):
         # TODO: this is duplicating work also being done in _parse_blob()
         device_info = m340_parse.parse_config_to_dict(project_blob)
 
-        # Extract SNMP community string, if configured
-        snmp_community = "public"
-        try:
-            if "network_configurations" in device_info:
-                for value in device_info["network_configurations"].values():
-                    # Match the configured network address
-                    # with the address we're pulling from
-                    if (
-                        value["ip_config"].get("IPNetwork") == dev.ip
-                        and value.get("snmp_config", {})["get"] != "public"
-                    ):
-                        snmp_community = str(value["snmp_config"]["get"])
-        except KeyError:
-            cls.log.debug("Failed to parse out SNMP info from network_configurations")
-        # TODO: update dev with snmp info
-
         # Pull configuration information from the network
         if dev.options["m340"]["use_network_for_config"]:
-            # TODO: update dev in pull_network_config (pass the dev object?)
+            snmp_opts = dev.options["snmp"]
             net_config = m340_pull.pull_network_config(
-                ip=dev.ip, timeout=timeout, snmp_community=snmp_community
+                ip=dev.ip,
+                timeout=timeout,
+                snmp_community=cls._get_snmp_community(dev, device_info),
+                snmp_port=snmp_opts["port"],
+                snmp_timeout=snmp_opts["timeout"],
+                methods=dev.options["m340"].get("pull_methods") or [],
+                snmp_max_varbinds=int(
+                    snmp_opts.get("max_varbinds") or m340_snmp.DEFAULT_MAX_VARBINDS
+                ),
             )
             device_info.update(net_config)
             # TODO: full parsing of modules and other information from data
-            #   pulled via network protocols (SNMP, FTP, Modbus)
+            #   pulled via network protocols (FTP, Modbus)
             dev.extra.update(net_config)
+
+            if net_config.get("snmp"):
+                try:
+                    m340_snmp.apply_to_dev(dev, net_config["snmp"])
+                except Exception:
+                    cls.log.exception(f"Failed to process SNMP data from {dev.ip}")
 
         if device_info.get("firmware_version"):
             dev.firmware.version = device_info.pop("firmware_version")
 
         cls.log.debug(f"Finished pulling configuration from {dev.ip}")
         return device_info
+
+    @classmethod
+    def _get_snmp_community(cls, dev: DeviceData, device_info: dict) -> str:
+        """
+        Get the SNMP community string to use for pulling.
+
+        In order of preference: the community that worked when verifying the
+        device, the read ("get") community configured in the project file
+        for the device's IP address, and the ``snmp.community`` option.
+        """
+        if dev._cache.get("snmp_community"):
+            return str(dev._cache["snmp_community"])
+
+        try:
+            for value in device_info.get("network_configurations", {}).values():
+                # Match the configured network address
+                # with the address we're pulling from
+                if value["ip_config"].get("IPNetwork") == dev.ip and value.get(
+                    "snmp_config", {}
+                ).get("get"):
+                    return str(value["snmp_config"]["get"])
+        except (KeyError, AttributeError, TypeError):
+            cls.log.debug("Failed to parse out SNMP info from network_configurations")
+
+        return str(dev.options["snmp"]["community"])
 
     @classmethod
     def pull_apx_file(cls, ip: str) -> bytes:
@@ -476,62 +534,6 @@ class M340(DeviceModule):
                     subnet_mask=mod.get("configured_ipv4_netmask", ""),
                 )
                 dev.store("interface", iface, lookup="ip")
-
-                def _proto_enabled(data):
-                    """If status is "no configuration", service isn't enabled."""
-                    if not data.get("service_status"):
-                        return False
-                    if data["service_status"].lower() == "no configuration":
-                        return False
-                    return True
-
-                if mod.get("port_502"):
-                    svc = Service(
-                        protocol="modbus_tcp",
-                        port=502,
-                        transport="tcp",
-                        enabled=_proto_enabled(mod["port_502"]),
-                        extra=copy.deepcopy(mod["port_502"]),
-                    )
-
-                    if svc.port:
-                        dev.related.ports.add(svc.port)
-                    if svc.protocol:
-                        dev.related.protocols.add(svc.protocol)
-
-                    dev.store("service", svc)
-
-                if mod.get("smtp_server"):
-                    svc = Service(
-                        protocol="smtp",
-                        port=25,  # TODO: don't hardcode port for smtp
-                        transport="tcp",
-                        enabled=_proto_enabled(mod["smtp_server"]),
-                        extra=copy.deepcopy(mod["smtp_server"]),
-                    )
-
-                    if svc.port:
-                        dev.related.ports.add(svc.port)
-                    if svc.protocol:
-                        dev.related.protocols.add(svc.protocol)
-
-                    dev.store("service", svc, lookup="protocol")
-
-                if mod.get("web_server"):
-                    svc = Service(
-                        protocol="http",
-                        port=80,  # TODO: don't hardcode port for web
-                        transport="tcp",
-                        enabled=_proto_enabled(mod["web_server"]),
-                        extra=copy.deepcopy(mod["web_server"]),
-                    )
-
-                    if svc.port:
-                        dev.related.ports.add(svc.port)
-                    if svc.protocol:
-                        dev.related.protocols.add(svc.protocol)
-
-                    dev.store("service", svc, lookup="protocol")
 
         dev.populate_fields(network_only=True)
 

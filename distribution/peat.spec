@@ -26,6 +26,15 @@ data_files.extend([
     (os.path.join(siemens_mibs_src, 'SipOptical.py'), siemens_mibs_dst),
 ])
 
+# Schneider Electric Transparent Factory Ethernet private MIB (M340), compiled with pysmi.
+# NOTE: these are loaded from the directory at runtime (m340_snmp.SCHNEIDER_MIBS_DIR),
+# so they must be included as data files at the same path relative to the package.
+schneider_mibs_src = os.path.join('..', 'peat', 'modules', 'schneider', 'mibs')
+schneider_mibs_dst = 'peat/modules/schneider/mibs'
+data_files.extend([
+    (os.path.join(schneider_mibs_src, 'TFPRIVATE-MIB.py'), schneider_mibs_dst),
+])
+
 # NOTE(cegoes, 04/06/22): some MIBs are no longer included with pysnmp (for unknown reasons)
 # If you need a MIB that's missing, build it using "mibdump.py" (which is included with pysmi)
 # Output will go to ~/.pysnmp/mibs/

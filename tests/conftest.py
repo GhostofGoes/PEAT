@@ -527,3 +527,104 @@ def mock_encrypted_peat_results(mock_peat_results, tmp_path) -> Path:
     encrypted_zip_path = tmp_path / "encrypted_mock_peat_results.zip"
     results_crypto.zip_encrypt_results(mock_peat_results, tmp_path, "testpass")
     return encrypted_zip_path
+
+
+@pytest.fixture
+def fake_snmp_cls() -> type:
+    """
+    Offline stand-in for :class:`peat.protocols.snmp.SNMP`.
+
+    Only the network I/O (``SNMP._query``) is replaced: the fake agent yields raw
+    ``(ObjectName, value)`` responses, like PySNMP with ``lookupMib=False``, which
+    :class:`~peat.protocols.snmp.SNMP` resolves with PySNMP's real ``unmakeVarBinds()``
+    using the MIBs loaded into the instance's engine, so MIB loading, response
+    conversion and walk handling are all exercised.
+
+    Entries are ``(oid, type, value)`` triples, where type is one of ``Integer32``,
+    ``Counter32``, ``Gauge32``, ``TimeTicks``, ``OctetString`` (text), ``Hex``
+    (hex-encoded OCTET STRING), ``IpAddress`` or ``OID``.
+    """
+    from pysnmp.error import PySnmpError
+    from pysnmp.proto import errind, rfc1902
+
+    from peat.protocols.snmp import SNMP
+
+    value_types = {
+        "Integer32": rfc1902.Integer32,
+        "Counter32": rfc1902.Counter32,
+        "Gauge32": rfc1902.Gauge32,
+        "TimeTicks": rfc1902.TimeTicks,
+        "OctetString": lambda v: rfc1902.OctetString(v.encode("utf-8")),
+        "Hex": lambda v: rfc1902.OctetString(hexValue=v),
+        "IpAddress": rfc1902.IpAddress,
+        "OID": rfc1902.ObjectName,
+    }
+
+    def _oid(oid: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in oid.strip(".").split("."))
+
+    class FakeSNMP(SNMP):
+        def __init__(
+            self,
+            *args,
+            entries=(),
+            timeout_after: int | None = None,
+            raise_after: int | None = None,
+            v1_end_echo: bool = False,
+            **kwargs,
+        ) -> None:
+            """
+            Args:
+                entries: the fake agent's MIB view
+                timeout_after: number of responses after which the agent stops responding
+                raise_after: number of responses after which PySNMP raises an error
+                    (e.g. a response it can't decode)
+                v1_end_echo: emulate PySNMP re-yielding the last response when a
+                    SNMPv1 walk reaches the end of the agent's MIB view (noSuchName)
+            """
+            super().__init__(*args, **kwargs)
+            self.entries = sorted((_oid(o), value_types[t](v)) for o, t, v in entries)
+            self.timeout_after = timeout_after
+            self.raise_after = raise_after
+            self.v1_end_echo = v1_end_echo
+            self.queries: list[tuple[str, bool]] = []
+            self.responses = 0
+
+        @staticmethod
+        def _raw(pairs: list) -> list:
+            return [(rfc1902.ObjectName(o), v) for o, v in pairs]
+
+        def _timed_out(self) -> bool:
+            if self.raise_after is not None and self.responses >= self.raise_after:
+                raise PySnmpError("fake PySNMP error")
+            return self.timeout_after is not None and self.responses >= self.timeout_after
+
+        def _query(self, identity, single_query, walk_whole_mib):  # noqa: ARG002
+            oid = _oid(str(identity[0]))
+            self.queries.append((str(identity[0]), single_query))
+
+            if single_query:
+                if self._timed_out():
+                    yield errind.requestTimedOut, 0, 0, []
+                    return
+                self.responses += 1
+                match = [e for e in self.entries if e[0] == oid]
+                if match:
+                    yield None, 0, 0, self._raw(match)
+                else:  # SNMPv1 noSuchName
+                    yield None, rfc1902.Integer(2), rfc1902.Integer(1), [(oid, None)]
+                return
+
+            last = None
+            for entry in [e for e in self.entries if e[0][: len(oid)] == oid]:
+                if self._timed_out():
+                    yield errind.requestTimedOut, 0, 0, []
+                    return
+                self.responses += 1
+                last = self._raw([entry])
+                yield None, 0, 0, last
+
+            if last is not None and self.v1_end_echo:
+                yield None, rfc1902.Integer(0), rfc1902.Integer(0), last
+
+    return FakeSNMP
