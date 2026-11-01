@@ -19,6 +19,9 @@ Changes made to the original code:
 - Removed set_debuglevel(), debuglevel, and msg()
 - Code formatting changes
 - Comments
+- Added the ``keep_nulls`` attribute (off by default): if it's set, NUL (0x00) and
+  XON (0x11) bytes are kept in the data, instead of being removed, so binary data
+  (e.g. SEL Fast messages) can be read. IAC doubling is still undone.
 
 ===== END FORK NOTES =====
 
@@ -236,6 +239,9 @@ class Telnet:
         self.sb = 0 # flag for SB and SE sequence.
         self.sbdataq = b''
         self.option_callback = None
+        # PEAT: keep NUL and XON bytes in the data (for binary data). Off by
+        # default, so the behavior is the same as CPython's telnetlib.
+        self.keep_nulls = False
 
         # NOTE: these messages are written to logs/telnet.log
         # This sink is configured in log_utils.setup_logging()
@@ -440,9 +446,9 @@ class Telnet:
             while self.rawq:
                 c = self.rawq_getchar()
                 if not self.iacseq:
-                    if c == theNULL:
+                    if c == theNULL and not self.keep_nulls:
                         continue
-                    if c == b"\021":
+                    if c == b"\021" and not self.keep_nulls:
                         continue
                     if c != IAC:
                         buf[self.sb] = buf[self.sb] + c

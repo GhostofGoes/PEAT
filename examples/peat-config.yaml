@@ -461,6 +461,14 @@ device_options:
   sel:
     # Select what protocols PEAT is allowed to use
     # for pulling data from SEL relays.
+    #
+    # "fast" (not enabled by default) also collects data with the read-only
+    # SEL Fast protocols on a Telnet session (or on the serial port, for serial
+    # pulls): the relay definition, Fast Meter channels and one sample, the Fast
+    # Operate configuration (only read), and on relays that support Fast Message
+    # reads (e.g. SEL-400 series), the identification, self-test status, breaker
+    # monitor, and the last events. Relay settings aren't available with these
+    # protocols. Refer to "SEL Fast protocols" in the SEL documentation.
     pull_methods:
       - http
       - ftp
@@ -532,6 +540,16 @@ device_options:
     # the relay's lockout. Only programs that use the PEAT API elevate to level C:
     # PEAT's pull, push, and restart don't.
     cal_clarke_fallback: false
+
+    # With the "fast" pull method, also collect unsolicited Fast SER messages (the
+    # SER records the relay has stored for the port, and new ones, for up to 30
+    # seconds). This changes the state of the relay's port: enabling Fast SER sets
+    # the FSERx Relay Word bit, and acknowledging the messages marks the records as
+    # delivered on that port. PEAT disables Fast SER again when it's done. Any
+    # acknowledge also clears the Fast Meter STSET bit (settings changed), so PEAT
+    # doesn't enable Fast SER if STSET is set, or if its state isn't known. Don't
+    # enable this on a port that a SCADA master or RTAC uses for Fast SER.
+    fast_ser: false
 
     # Alternate method of FTP pulls that may work on older devices.
     # Only enable this if debugging issues with FTP downloads.

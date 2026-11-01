@@ -23,6 +23,7 @@ from .sel_default_creds import (
     normalize_model,
     resolve_level_passwords,
 )
+from .sel_fast import FastLink, check_outgoing, describe_frame
 
 # Prompts of each access level, longest first, so "=>>" isn't read as "=>".
 #
@@ -245,6 +246,15 @@ class SELAscii(ABC):
     If ``legacy_timing`` is set, PEAT instead sleeps for a fixed time after each
     command and reads what arrived, as PEAT did before. Logins and the restart
     dialog always wait for the prompts.
+
+    With ``binary``, the session also carries binary SEL Fast messages
+    (:mod:`peat.modules.sel.sel_fast`): every byte the relay sends is kept, the
+    frames are taken out of the data (the ASCII commands see the rest), and they're
+    sent and received with :meth:`write_fast` and :meth:`read_fast_frame`.
+
+    Every write is checked with :func:`~peat.modules.sel.sel_fast.check_outgoing`:
+    data with a ``0xA5`` byte (the start of a binary message) is only sent if it's
+    exactly one of the allowed, read-only SEL Fast requests.
     """
 
     DATA_REGEX = re.compile(r"\x02([^\x03]*)\x03", re.ASCII)
@@ -287,6 +297,7 @@ class SELAscii(ABC):
         timeout: int | float = 5.0,
         legacy_timing: bool = False,
         idle_timeout: float = 30.0,
+        binary: bool = False,
     ) -> None:
         """
         Args:
@@ -297,11 +308,24 @@ class SELAscii(ABC):
                 (refer to the class docstring)
             idle_timeout: Seconds without any output from the relay after which
                 PEAT stops waiting for the end of a command with a lot of output
+            binary: The session also carries binary SEL Fast messages (refer to
+                the class docstring). This can't be used with ``legacy_timing``.
         """
+        if binary and legacy_timing:
+            raise ValueError("binary SEL Fast sessions can't use legacy_timing")
+
         self.address: str = address
         self.timeout: int | float = timeout
         self.legacy_timing: bool = legacy_timing
         self.idle_timeout: float = idle_timeout
+        #: The session carries binary SEL Fast messages (refer to the class docstring)
+        self.binary: bool = binary
+        #: Allow the requests that collect Fast SER, which change the state of the
+        #: port (:data:`~peat.modules.sel.sel_fast.FAST_SER_REQUESTS`). Only
+        #: :class:`~peat.modules.sel.sel_fast.SELFast` sets this, while it collects Fast SER.
+        self.fast_ser_allowed: bool = False
+        # Splits the data into ASCII data and binary frames (binary sessions only)
+        self._fast_link: FastLink | None = None
 
         self.log = log.bind(classname=self.__class__.__name__, target=self.address)
 
@@ -596,6 +620,10 @@ class SELAscii(ABC):
             # Append the line terminator (encode here to ensure proper encoding)
             command += self.LINE_TERMINATOR.encode(self.ENCODING)
 
+        # Refuse binary SEL Fast messages, unless it's an allowed request (it can't
+        # be, after a line terminator). The message never includes the data.
+        check_outgoing(command, allow_fast_ser=self.fast_ser_allowed)
+
         if sensitive:
             self.all_writes.append(REDACTED_WRITE + (b"\r\n" if terminator else b""))
         else:
@@ -609,6 +637,56 @@ class SELAscii(ABC):
 
         if self.legacy_timing and self.POST_WRITE_SLEEP:
             sleep(self.POST_WRITE_SLEEP)
+
+    # ---------------------------------------------------------------------
+    # Binary SEL Fast messages (binary sessions only)
+    # ---------------------------------------------------------------------
+
+    def _fast_link_ready(self) -> FastLink:
+        """
+        The :class:`~peat.modules.sel.sel_fast.FastLink` of the session, created
+        with the transport's reader (connects if needed). Transports that support
+        binary sessions implement this.
+        """
+        raise NotImplementedError(f"{self.__class__.__name__} doesn't support binary sessions")
+
+    def write_fast(self, frame: bytes) -> None:
+        """
+        Send a binary SEL Fast request, as it is (without a line terminator).
+        It must be exactly one allowed request (refer to
+        :func:`~peat.modules.sel.sel_fast.check_request`).
+
+        Raises:
+            FastRequestRefused: It isn't an allowed request
+            SELSessionHalted: Nothing may be sent on this connection (:attr:`halted`)
+        """
+        self._check_halted()
+        if not self.binary:
+            raise CommError(f"Not a binary session, can't send SEL Fast messages to {self}")
+        frame = bytes(frame)
+        description = check_outgoing(frame, allow_fast_ser=self.fast_ser_allowed)
+        if description is None:
+            raise CommError("write_fast() only sends SEL Fast requests")
+        self._fast_link_ready()
+        self.log.trace2(f"Sending {describe_frame(frame)}: {frame.hex()}")
+        self.all_writes.append(f"<SEL Fast {frame.hex()}>".encode("ascii"))
+        self._write_raw(frame)
+
+    def read_fast_frame(self, timeout: float) -> bytes | None:
+        """
+        Wait up to ``timeout`` seconds for the next binary SEL Fast frame from the
+        device (its CRC or checksum was checked). ASCII data that arrives meanwhile
+        is kept for the ASCII commands.
+
+        Returns:
+            The frame, or :obj:`None` if none arrived
+        """
+        if not self.binary:
+            raise CommError(f"Not a binary session, can't read SEL Fast messages from {self}")
+        frame = self._fast_link_ready().read_frame(timeout)
+        if frame is not None:
+            self.log.trace2(f"Received {describe_frame(frame)}: {frame.hex()}")
+        return frame
 
     def _flush(self) -> str:
         """

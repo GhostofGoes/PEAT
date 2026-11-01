@@ -3,9 +3,10 @@ from time import sleep
 
 from peat import datastore
 from peat.protocols import Telnet
-from peat.protocols.expect import ExpectResult, PatternLike
+from peat.protocols.expect import ExpectResult, PatternLike, ReadChunk
 
 from .sel_ascii import SELAscii
+from .sel_fast import FastLink
 
 
 class SELTelnet(SELAscii):
@@ -35,9 +36,24 @@ class SELTelnet(SELAscii):
         timeout: float = 5.0,
         legacy_timing: bool = False,
         idle_timeout: float = 30.0,
+        binary: bool = False,
     ) -> None:
+        """
+        Args:
+            ip: IP address of the relay
+            port: Telnet port
+            timeout: Seconds to wait for the connection, and for a response
+                to a command with little output
+            legacy_timing: Use fixed delays instead of waiting for prompts
+            idle_timeout: Refer to :class:`~peat.modules.sel.sel_ascii.SELAscii`
+            binary: Binary session, for SEL Fast messages: the Telnet ``BINARY``
+                option is negotiated, as SEL's own masters do, and every byte
+                is kept (refer to :class:`~peat.protocols.telnet.BinaryNegotiation`)
+        """
         # Initialize SELAscii
-        super().__init__(ip, timeout, legacy_timing=legacy_timing, idle_timeout=idle_timeout)
+        super().__init__(
+            ip, timeout, legacy_timing=legacy_timing, idle_timeout=idle_timeout, binary=binary
+        )
 
         self.ip: str = ip  # hack to allow agnostic use between SELTelnet and FTP
         self.port: int = port
@@ -49,7 +65,9 @@ class SELTelnet(SELAscii):
     @property
     def comm(self) -> Telnet:
         if not self._comm:
-            self._comm = Telnet(self.address, self.port, self.timeout)
+            self._comm = Telnet(self.address, self.port, self.timeout, binary=self.binary)
+            if self.binary:
+                self._comm.stream_filter = self._attach_fast_link
             # TODO: hack to copy attributes since Telnet isn't a superclass
             self._comm.ENCODING = self.ENCODING
             self._comm.PRE_WRITE_SLEEP = self.PRE_WRITE_SLEEP
@@ -62,6 +80,26 @@ class SELTelnet(SELAscii):
     @comm.setter
     def comm(self, obj: Telnet) -> None:
         self._comm = obj
+
+    def _attach_fast_link(self, reader: ReadChunk) -> ReadChunk:
+        # Called when the Telnet expecter is created: frames are taken out of
+        # the data, and the expecter reads the ASCII data
+        self._fast_link = FastLink(reader)
+        return self._fast_link.read_ascii
+
+    def _fast_link_ready(self) -> FastLink:
+        self.comm.expecter  # noqa: B018 (creates the link, and connects if needed)
+        return self._fast_link
+
+    @property
+    def binary_negotiated(self) -> bool | None:
+        """
+        If the Telnet ``BINARY`` option was agreed in both directions
+        (:obj:`None` if this isn't a binary session, or it isn't connected).
+        """
+        if not self.binary or not self._comm or not self._comm.negotiation:
+            return None
+        return self._comm.negotiation.binary
 
     def register_secret(self, secret: str) -> None:
         super().register_secret(secret)
@@ -151,6 +189,7 @@ class SELTelnet(SELAscii):
 
             self._comm.disconnect()
             self._comm = None
+            self._fast_link = None
 
         self.priv_level = 0
         self.access_level = ""

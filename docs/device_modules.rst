@@ -257,6 +257,11 @@ Default credentials
 .. automodule:: peat.modules.sel.sel_default_creds
    :members:
 
+SEL Fast protocols
+^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_fast
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse
