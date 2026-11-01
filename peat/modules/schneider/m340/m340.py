@@ -20,9 +20,15 @@ Reliable services for scanning: FTP, HTTP/S, SNMP, Modbus/TCP
 
 SNMP data is pulled using the standard MIBs and Schneider's Transparent
 Factory Ethernet private MIB (``TFPRIVATE-MIB``), refer to
-:mod:`~peat.modules.schneider.m340.m340_snmp` for details. Set the
-``m340.use_snmp`` option to ``false`` to not send any SNMP requests to M340
-devices (this disables the SNMP identification method and the SNMP pull).
+:mod:`~peat.modules.schneider.m340.m340_snmp` for details. The
+``m340.pull_methods`` option selects the network services used to pull
+additional information after the project file (``ftp``, ``snmp`` and
+``modbus_tcp``). Remove ``snmp`` from it to not use SNMP with M340 devices
+(this disables the SNMP identification method and the SNMP pull). A scan,
+including the one ``peat pull`` runs first, can still send a ``sysDescr`` Get to
+check if the SNMP port is open; use ``peat pull --skip-scan`` to avoid that. The
+``snmp.max_varbinds`` option limits the number of SNMP requests per walked
+MIB subtree.
 
 Authors
 
@@ -101,8 +107,7 @@ class M340(DeviceModule):
         "m340": {
             "use_network_for_config": True,
             "generate_openplc_project": None,
-            "use_snmp": True,
-            "snmp_max_varbinds": m340_snmp.DEFAULT_MAX_VARBINDS,
+            "pull_methods": list(m340_pull.NETWORK_PULL_METHODS),
         },
     }
     annotate_fields = {
@@ -183,10 +188,13 @@ class M340(DeviceModule):
         ``1.3.6.1.2.1.1.1.0`` (``sysDescr``) and comparing it
         against specific strings.
 
-        No SNMP requests are sent if the ``m340.use_snmp`` option is false.
+        No SNMP requests are sent if ``snmp`` isn't listed in the
+        ``m340.pull_methods`` option.
         """
-        if not dev.options.get("m340", {}).get("use_snmp", True):
-            cls.log.debug(f"Not verifying {dev.ip} via SNMP ('m340.use_snmp' is false)")
+        if "snmp" not in (dev.options.get("m340", {}).get("pull_methods") or []):
+            cls.log.debug(
+                f"Not verifying {dev.ip} via SNMP: 'snmp' not listed in 'm340.pull_methods' option"
+            )
             return False
 
         port = dev.options["snmp"]["port"]
@@ -254,6 +262,16 @@ class M340(DeviceModule):
 
     @classmethod
     def _pull(cls, dev: DeviceData) -> bool:
+        # Sanity check in case users messed up config (since there isn't config validation yet)
+        valid_methods = list(m340_pull.NETWORK_PULL_METHODS)
+        for method in dev.options["m340"].get("pull_methods") or []:
+            if method not in valid_methods:
+                cls.log.error(
+                    f"Invalid 'm340.pull_methods' method '{method}' for {dev.ip}, it must "
+                    f"be one of {valid_methods}"
+                )
+                return False
+
         # NOTE: _pull will *always* pull the full project, there is no caching!!!
         project_blob = cls.pull_apx_file(dev.ip)
         pulled_config = cls._pull_config(dev, project_blob)
@@ -296,9 +314,9 @@ class M340(DeviceModule):
                 snmp_community=cls._get_snmp_community(dev, device_info),
                 snmp_port=snmp_opts["port"],
                 snmp_timeout=snmp_opts["timeout"],
-                use_snmp=bool(dev.options["m340"].get("use_snmp", True)),
+                methods=dev.options["m340"].get("pull_methods") or [],
                 snmp_max_varbinds=int(
-                    dev.options["m340"].get("snmp_max_varbinds") or m340_snmp.DEFAULT_MAX_VARBINDS
+                    snmp_opts.get("max_varbinds") or m340_snmp.DEFAULT_MAX_VARBINDS
                 ),
             )
             device_info.update(net_config)

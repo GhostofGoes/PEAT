@@ -169,8 +169,10 @@ device_options:
   m340:
     use_network_for_config: true
     generate_openplc_project: null
-    use_snmp: true
-    snmp_max_varbinds: 1000
+    pull_methods:
+      - ftp
+      - snmp
+      - modbus_tcp
   ge:
     menu_sleep_seconds: 5.0
   rockwell:
@@ -250,6 +252,7 @@ device_options:
     communities:
       - public
       - private
+    max_varbinds: 1000
   serial:
     baudrate: 0
     timeout: 5.0

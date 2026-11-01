@@ -412,13 +412,45 @@ def test_pull_network_config_no_snmp_response(install_fake_agent, no_ftp_or_modb
     assert m340_pull.pull_network_config(DEV_IP) == {}
 
 
-def test_pull_network_config_use_snmp_false(monkeypatch, no_ftp_or_modbus):  # noqa: ARG001
+def test_pull_network_config_without_snmp(monkeypatch, no_ftp_or_modbus):  # noqa: ARG001
     def _fail(*_args, **_kwargs):
         raise AssertionError("SNMP must not be used")
 
     monkeypatch.setattr(m340_snmp, "pull_snmp", _fail)
     monkeypatch.setattr(m340_pull, "_get_snmp_metadata", _fail)
-    assert m340_pull.pull_network_config(DEV_IP, use_snmp=False) == {}
+    assert m340_pull.pull_network_config(DEV_IP, methods=["ftp", "modbus_tcp"]) == {}
+    assert m340_pull.pull_network_config(DEV_IP, methods=[]) == {}
+
+
+def test_pull_network_config_methods(monkeypatch):
+    used = []
+
+    def _ftp(*_args, **_kwargs):
+        used.append("ftp")
+        return {"free_space_sd_card": 1024}
+
+    def _modbus(*_args, **_kwargs):
+        used.append("modbus_tcp")
+        return {"memory_card_model": "BMXRMS008MP"}
+
+    def _snmp(*_args, **_kwargs):
+        raise AssertionError("SNMP must not be used")
+
+    monkeypatch.setattr(m340_pull, "_get_ftp_metadata", _ftp)
+    monkeypatch.setattr(m340_pull, "_get_modbus_metadata", _modbus)
+    monkeypatch.setattr(m340_snmp, "pull_snmp", _snmp)
+    monkeypatch.setattr(m340_pull, "_get_snmp_metadata", _snmp)
+
+    # Services are used in a fixed order, unknown methods are ignored
+    info = m340_pull.pull_network_config(DEV_IP, methods=["modbus_tcp", "bogus", "ftp"])
+    assert used == ["ftp", "modbus_tcp"]
+    assert info == {"free_space_sd_card": 1024, "memory_card_model": "BMXRMS008MP"}
+
+    used.clear()
+    assert m340_pull.pull_network_config(DEV_IP, methods=["modbus_tcp"]) == {
+        "memory_card_model": "BMXRMS008MP"
+    }
+    assert used == ["modbus_tcp"]
 
 
 def test_fallback_raw_oid_path(install_fake_agent, monkeypatch, tmp_path, no_ftp_or_modbus):  # noqa: ARG001
@@ -497,14 +529,14 @@ def test_pull_config_passes_options_and_applies(monkeypatch, snmp_data):
     monkeypatch.setattr(m340_pull, "pull_network_config", _pull_network_config)
 
     dev = DeviceData(ip=DEV_IP)
-    dev._runtime_options["snmp"] = {"port": 1161, "timeout": 2.5}
-    dev._runtime_options["m340"] = {"use_snmp": False, "snmp_max_varbinds": 50}
+    dev._runtime_options["snmp"] = {"port": 1161, "timeout": 2.5, "max_varbinds": 50}
+    dev._runtime_options["m340"] = {"pull_methods": ["ftp", "modbus_tcp"]}
     dev._cache["snmp_community"] = "verified"
 
     M340._pull_config(dev, b"")
     assert calls["snmp_port"] == 1161
     assert calls["snmp_timeout"] == 2.5
-    assert calls["use_snmp"] is False
+    assert calls["methods"] == ["ftp", "modbus_tcp"]
     assert calls["snmp_max_varbinds"] == 50
     assert calls["snmp_community"] == "verified"
     assert dev.module[0].description.product == "BMX P34 2020"
@@ -620,11 +652,73 @@ def test_apply_to_dev_keeps_interfaces_sharing_mac_or_name():
     assert len(dev.interface) == 2
 
 
-def test_verify_snmp_disabled_by_use_snmp(monkeypatch):
+@pytest.mark.parametrize("pull_methods", [["ftp", "modbus_tcp"], [], None])
+def test_verify_snmp_disabled_by_pull_methods(monkeypatch, pull_methods):
     def _fail(*_args, **_kwargs):
         raise AssertionError("SNMP must not be used")
 
     monkeypatch.setattr(m340, "SNMP", _fail)
     dev = DeviceData(ip=DEV_IP)
-    dev._runtime_options["m340"] = {"use_snmp": False}
+    dev._runtime_options["m340"] = {"pull_methods": pull_methods}
     assert M340._verify_snmp(dev) is False
+
+
+def test_pull_config_default_options(monkeypatch):
+    calls = {}
+
+    def _pull_network_config(**kwargs):
+        calls.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(m340.m340_parse, "parse_config_to_dict", lambda _blob: {})
+    monkeypatch.setattr(m340_pull, "pull_network_config", _pull_network_config)
+
+    dev = DeviceData(ip=DEV_IP)
+    M340._pull_config(dev, b"")
+    assert calls["methods"] == ["ftp", "snmp", "modbus_tcp"]
+    assert calls["snmp_max_varbinds"] == m340_snmp.DEFAULT_MAX_VARBINDS
+    assert M340.default_options["m340"]["pull_methods"] == list(m340_pull.NETWORK_PULL_METHODS)
+    assert DeviceData().options["snmp"]["max_varbinds"] == m340_snmp.DEFAULT_MAX_VARBINDS
+
+
+@pytest.mark.parametrize("pull_methods", [["snmp", "telnet"], [{"ftp": None}]])
+def test_pull_invalid_pull_method(monkeypatch, pull_methods):
+    def _fail(*_args, **_kwargs):
+        raise AssertionError("must not contact the device")
+
+    monkeypatch.setattr(M340, "pull_apx_file", _fail)
+    dev = DeviceData(ip=DEV_IP)
+    # [{"ftp": None}] is what YAML gives for a stray ":" ("- ftp:")
+    dev._runtime_options["m340"] = {"pull_methods": pull_methods}
+    assert M340._pull(dev) is False
+
+
+def test_pull_without_snmp_sends_no_snmp(monkeypatch, tmp_path):
+    # What "peat pull --skip-scan -d m340" does with "snmp" removed from pull_methods.
+    # The SNMP code paths catch exceptions, so record the calls instead of raising.
+    snmp_calls = []
+
+    def _snmp(*args, **kwargs):
+        snmp_calls.append((args, kwargs))
+        raise CommError("SNMP must not be used")
+
+    monkeypatch.setattr(m340, "SNMP", _snmp)
+    monkeypatch.setattr(m340_pull, "SNMP", _snmp)
+    monkeypatch.setattr(m340_snmp, "SNMP", _snmp)
+    monkeypatch.setattr(m340_snmp, "pull_snmp", _snmp)
+    monkeypatch.setattr(m340_pull, "_get_snmp_metadata", _snmp)
+    monkeypatch.setattr(m340_pull, "_get_ftp_metadata", lambda *_a, **_kw: {"ftp": 1})
+    monkeypatch.setattr(m340_pull, "_get_modbus_metadata", lambda *_a, **_kw: {"modbus": 2})
+    monkeypatch.setattr(M340, "pull_apx_file", lambda _ip: b"")
+    monkeypatch.setattr(M340, "_parse_blob", lambda **_kwargs: None)
+    monkeypatch.setattr(m340.m340_parse, "parse_config_to_dict", lambda _blob: {})
+
+    dev = DeviceData(ip=DEV_IP)
+    dev._out_dir = tmp_path
+    dev._runtime_options["m340"] = {"pull_methods": ["ftp", "modbus_tcp"]}
+    dev._is_active = True
+    dev._is_verified = True
+    assert M340._pull(dev) is True
+    assert dev.extra["ftp"] == 1
+    assert dev.extra["modbus"] == 2
+    assert not snmp_calls

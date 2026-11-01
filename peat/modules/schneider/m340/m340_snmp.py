@@ -64,12 +64,14 @@ moved out of the MIB in release 03.00, those values are in :data:`TF_PRODUCTS`.
    modules is affected by CVE-2022-0222 (SEVD-2022-102-02), a denial of
    service of the Ethernet interface triggered by a specific SNMP request.
    PEAT only sends standard read-only Get/GetNext requests, but walking the
-   MIBs sends a few hundred requests. Set the ``m340.use_snmp`` device option to
-   ``false`` to not send any SNMP requests to M340 devices (neither the SNMP
-   identification method of scans nor the SNMP pull), and
-   ``m340.snmp_max_varbinds`` to limit the number of requests per walked
-   subtree. If the agent stops responding part way through, the remaining
-   subtrees aren't walked.
+   MIBs sends a few hundred requests. Remove ``snmp`` from the
+   ``m340.pull_methods`` device option to not use SNMP with M340 devices
+   (neither the SNMP identification method of scans nor the SNMP pull), and
+   set the ``snmp.max_varbinds`` device option to limit the number of requests
+   per walked subtree. A scan, including the one ``peat pull`` runs first, can
+   still send a ``sysDescr`` Get to check if the SNMP port is open; use
+   ``peat pull --skip-scan`` to avoid that. If the agent stops responding part
+   way through, the remaining subtrees aren't walked.
 
 .. note::
    ``profileTrapTable.trapCommunityName`` is a SNMP community string (a

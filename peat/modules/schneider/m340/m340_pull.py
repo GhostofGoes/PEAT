@@ -12,6 +12,7 @@ Authors
 
 import binascii
 import socket
+from collections.abc import Iterable
 from typing import Any, Final
 
 from peat import CommError, utils
@@ -110,6 +111,15 @@ SNMP_LED_OIDS: Final[dict[str, tuple[str, type]]] = {
 }
 
 
+#: Network services used to pull additional configuration information,
+#: as named in the ``m340.pull_methods`` device option, and the order they're used in
+NETWORK_PULL_METHODS: Final[dict[str, str]] = {
+    "ftp": "FTP",
+    "snmp": "SNMP",
+    "modbus_tcp": "Modbus/TCP",
+}
+
+
 # TODO: what parts of this are status, and what are config?
 def pull_network_config(
     ip: str,
@@ -118,7 +128,7 @@ def pull_network_config(
     *,
     snmp_port: int = 161,
     snmp_timeout: float | None = None,
-    use_snmp: bool = True,
+    methods: Iterable[str] = tuple(NETWORK_PULL_METHODS),
     snmp_max_varbinds: int = m340_snmp.DEFAULT_MAX_VARBINDS,
 ) -> dict:
     """
@@ -135,7 +145,9 @@ def pull_network_config(
         snmp_community: SNMPv1 Community String to use
         snmp_port: UDP port of the SNMP agent
         snmp_timeout: SNMP timeout, in seconds (if :obj:`None`, ``timeout`` is used)
-        use_snmp: If SNMP should be used
+        methods: Services to use, from :data:`NETWORK_PULL_METHODS`
+            (the ``m340.pull_methods`` device option). They're always used in the
+            order of :data:`NETWORK_PULL_METHODS`, regardless of the order given.
         snmp_max_varbinds: Maximum number of SNMP GetNext requests per walked subtree
 
     Returns:
@@ -147,9 +159,23 @@ def pull_network_config(
     device_info = {}
     snmp_timeout = snmp_timeout if snmp_timeout else timeout
 
-    services = ["FTP", "SNMP", "Modbus/TCP"] if use_snmp else ["FTP", "Modbus/TCP"]
-    if not use_snmp:
-        log.info("Skipping SNMP (the 'm340.use_snmp' option is false)")
+    methods = list(methods)
+    for method in methods:
+        if method not in list(NETWORK_PULL_METHODS):
+            log.error(
+                f"Ignoring invalid 'm340.pull_methods' method '{method}' for {ip}, "
+                f"it must be one of {list(NETWORK_PULL_METHODS)}"
+            )
+
+    services = []
+    for method, service in NETWORK_PULL_METHODS.items():
+        if method in methods:
+            services.append(service)
+        else:
+            log.warning(
+                f"Skipping method '{method}' for pull from {ip}: "
+                f"'{method}' not listed in 'm340.pull_methods' option"
+            )
 
     # Get configuration information from network sources
     for service in services:

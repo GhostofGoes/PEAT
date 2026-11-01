@@ -574,18 +574,25 @@ device_options:
     # output directory.
     generate_openplc_project: null
 
-    # Use SNMP to identify M340 devices and to pull data, using Schneider's
-    # Transparent Factory Ethernet private MIB (TFPRIVATE-MIB), SNMPv2-MIB,
-    # IF-MIB and RFC1213-MIB. The "snmp" options (port, timeout, communities)
-    # are used for the SNMP queries. Set to false to not send any SNMP requests
-    # to M340 devices (neither the SNMP identification method nor the SNMP pull),
-    # e.g. for M340 CPUs with firmware older than V3.40 and BMX NOE modules
-    # affected by CVE-2022-0222 (SNMP denial of service).
-    use_snmp: true
-
-    # Maximum number of SNMP GetNext requests per walked MIB subtree,
-    # to limit the traffic sent to devices with large tables.
-    snmp_max_varbinds: 1000
+    # Network services used to pull additional information after the
+    # project file, if "use_network_for_config" is true. The project file
+    # is always pulled, using UMAS over Modbus/TCP.
+    #
+    # - ftp: module information and the SD card's free space, from the FTP server
+    # - snmp: data from Schneider's Transparent Factory Ethernet private MIB
+    #   (TFPRIVATE-MIB), SNMPv2-MIB, IF-MIB and RFC1213-MIB. The "snmp"
+    #   options (port, timeout, communities, max_varbinds) are used for the
+    #   SNMP queries. Remove "snmp" to not use SNMP with M340 devices (neither
+    #   the SNMP identification method nor the SNMP pull), e.g. for M340 CPUs
+    #   with firmware older than V3.40 and BMX NOE modules affected by
+    #   CVE-2022-0222 (SNMP denial of service). A scan, including the one
+    #   "peat pull" runs first, can still send a sysDescr Get to check if the
+    #   SNMP port is open. Use "peat pull --skip-scan" to avoid that.
+    # - modbus_tcp: the memory card model, using UMAS
+    pull_methods:
+      - ftp
+      - snmp
+      - modbus_tcp
 
   # Configuration specific to the GE modules (GERTU and GERelay)
   ge:
@@ -748,6 +755,10 @@ device_options:
     communities:
       - public
       - private
+    # Maximum number of SNMP GetNext requests per walked MIB subtree,
+    # to limit the traffic sent to devices with large tables. 0 or null
+    # uses the default (1000). This is only used by the M340 module.
+    max_varbinds: 1000
 
   # Serial connection options (RS-232, etc.)
   #
