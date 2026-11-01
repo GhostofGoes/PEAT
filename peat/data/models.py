@@ -930,7 +930,7 @@ class CertEntity(BaseModel):
     """
     Issuer or Subject in a x509 certificate.
 
-    `ECS documentation: x509 Certificate Fields <https://www.elastic.co/guide/en/ecs/current/ecs-x509.html>`__
+    `ECS documentation: x509 Certificate Fields <https://www.elastic.co/docs/reference/ecs/ecs-x509>`__
     """
 
     common_name: constr(strip_whitespace=True) = ""
@@ -959,7 +959,7 @@ class X509(BaseModel):
     """
     x509 certificate.
 
-    `ECS documentation: x509 Certificate Fields <https://www.elastic.co/guide/en/ecs/current/ecs-x509.html>`__
+    `ECS documentation: x509 Certificate Fields <https://www.elastic.co/docs/reference/ecs/ecs-x509>`__
     """
 
     alternative_names: list[constr(strip_whitespace=True)] = []
@@ -2180,26 +2180,31 @@ class Event(BaseModel):
     category: set[str] = set()
     """
     :term:`ECS` category of the event, out of the
-    `allowed values defined by ECS <https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-category.html>`__.
+    `allowed values defined by ECS <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-category>`__.
     This is a set of values, and is an array in Elasticsearch, which allows
     for Kibana queries such as ``host.event.type:alert and host.event.category:authentication``.
 
     Allowed values
 
+    - ``api``
     - ``authentication``
     - ``configuration``
     - ``database``
     - ``driver``
+    - ``email``
     - ``file``
     - ``host``
     - ``iam``
     - ``intrusion_detection``
+    - ``library``
     - ``malware``
     - ``network``
     - ``package``
     - ``process``
     - ``registry``
     - ``session``
+    - ``threat``
+    - ``vulnerability``
     - ``web``
     """
 
@@ -2250,17 +2255,20 @@ class Event(BaseModel):
     information the event contains, without being specific to the
     contents of the event. For example, values of this field
     distinguish alert events from metric events.
-    `Further reading <https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-kind.html>`__
+    `Further reading <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-kind>`__
     This is a set of values, and is an array in Elasticsearch, which allows
     for Kibana queries such as ``host.event.kind:event and host.event.type:deleted``.
 
     Allowed values
 
     - ``alert``
+    - ``asset``
+    - ``enrichment``
     - ``event``
     - ``metric``
     - ``state``
     - ``pipeline_error`` : Used for indicating there was an error processing the event
+    - ``signal`` : Reserved by ECS for Kibana alerting, PEAT modules should not use it
     """
 
     message: constr(strip_whitespace=True) = Field(default="", elastic_type=KEYWORD_AND_TEXT)
@@ -2282,7 +2290,7 @@ class Event(BaseModel):
     outcome: constr(strip_whitespace=True) = ""
     """
     Outcome of the event.
-    `Further reading <https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-outcome.html>`__
+    `Further reading <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-outcome>`__
 
     Allowed values
 
@@ -2341,11 +2349,11 @@ class Event(BaseModel):
     """
     List of event category "sub-buckets" the event falls under. The
     valid values depend on the value for ``category``, refer to the
-    `ECS documentation for <https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-category.html>`__ details.
+    `ECS documentation for <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-category>`__ details.
     This is a set of values, and is an array in Elasticsearch, which allows
     for Kibana queries such as ``host.event.type:user and host.event.type:deleted``.
 
-    Allowed values (refer to the `ECS documentation <https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-type.html>`__)
+    Allowed values (refer to the `ECS documentation <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-type>`__)
 
     - ``access``
     - ``admin``
@@ -2355,9 +2363,11 @@ class Event(BaseModel):
     - ``creation``
     - ``deletion``
     - ``denied``
+    - ``device``
     - ``end``
     - ``error``
     - ``group``
+    - ``indicator``
     - ``info``
     - ``installation``
     - ``protocol``

@@ -122,13 +122,12 @@ def generate_log_dict(record: loguru.Record) -> dict[str, dict | str | None]:
             "executable": consts.SYSINFO["python_exe"],
             "name": record["process"].name,
             "parent": {
-                "process": {
-                    # NOTE: pid may not be accurate if the log message
-                    # came from a sub-process, but in most cases it's
-                    # correct, and useful for associating when looking
-                    # at data in top/htop or from Metricbeat.
-                    "pid": consts.SYSINFO["ppid"]
-                }
+                # ECS: process.parent.pid
+                # NOTE: pid may not be accurate if the log message
+                # came from a sub-process, but in most cases it's
+                # correct, and useful for associating when looking
+                # at data in top/htop or from Metricbeat.
+                "pid": consts.SYSINFO["ppid"]
             },
             "pid": record["process"].id,
             "start": Elastic.convert_tstamp(consts.START_TIME_UTC),

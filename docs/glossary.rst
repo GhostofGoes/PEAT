@@ -87,7 +87,7 @@ Glossary
       Docker is a system for building and running containers. Docker is a set of platform as a service products that use OS-level virtualization to deliver software in packages called containers. Containers are isolated from one another and bundle their own software, libraries and configuration files. Similar to :term:`Podman`. Further reading: `Docker documentation <https://docs.docker.com/>`__
 
    ECS
-      Elastic Common Schema. ECS defines a common set of fields to be used when storing event data in :term:`Elasticsearch`. Refer to the `ECS documentation <https://www.elastic.co/guide/en/ecs/current/index.html>`__ for further details.
+      Elastic Common Schema. ECS defines a common set of fields to be used when storing event data in :term:`Elasticsearch`. Refer to the `ECS documentation <https://www.elastic.co/docs/reference/ecs/ecs-field-reference>`__ for further details.
 
    ES
       Elasticsearch

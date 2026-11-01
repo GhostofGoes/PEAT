@@ -5,7 +5,7 @@ Database Schema
 ***************
 This section details the Elasticsearch database schema for PEAT. The objective with this schema is to establish common data structures that can be used to build visualizations and dashboards in Kibana.
 
-Elastic Common Schema (`ECS <https://www.elastic.co/guide/en/ecs/current/index.html>`__) version: ``8.10.0``
+Elastic Common Schema (`ECS <https://www.elastic.co/docs/reference/ecs/ecs-field-reference>`__) version: ``9.5.0``
 
 
 Notes
@@ -16,7 +16,7 @@ Notes
 - Fields listed as ``required`` must be included in any docs that contain the parent field. If the field is at the root level, it is required for any docs in that index.
 - Fields listed as ``optional`` do not have to be included in a doc push. However, any data that matches that field must use that field and not a custom field.
 - Additional fields beyond those defined here are permitted, provided they're internally consistent (e.g. always the same for a version of a tool).
-- These schemas follow the Elastic Common Schema (`ECS <https://www.elastic.co/guide/en/ecs/current/index.html>`__). Changes must adhere to the ECS, when possible.
+- These schemas follow the Elastic Common Schema (`ECS <https://www.elastic.co/docs/reference/ecs/ecs-field-reference>`__). Changes must adhere to the ECS, when possible.
 
 
 Indices
@@ -59,7 +59,7 @@ Base Fields
 
 Agent Fields
 ------------
-Information about the tool that generated the event (PEAT). ECS reference: `Agent Fields <https://www.elastic.co/guide/en/ecs/current/ecs-agent.html>`__
+Information about the tool that generated the event (PEAT). ECS reference: `Agent Fields <https://www.elastic.co/docs/reference/ecs/ecs-agent>`__
 
 .. csv-table:: Agent Fields
    :escape: \
@@ -83,7 +83,7 @@ Notes
 
 Fields
 ------
-ECS reference: `Log Fields <https://www.elastic.co/guide/en/ecs/current/ecs-log.html>`__
+ECS reference: `Log Fields <https://www.elastic.co/docs/reference/ecs/ecs-log>`__
 
 .. csv-table:: Log Fields
    :escape: \
@@ -179,9 +179,9 @@ Fields
 
 References
 ==========
-- `ECS Reference <https://www.elastic.co/guide/en/ecs/current/index.html>`__
-- `ECS Conventions <https://www.elastic.co/guide/en/ecs/current/ecs-conventions.html>`__
-- `ECS Guidelines <https://www.elastic.co/guide/en/ecs/current/ecs-guidelines.html>`__
+- `ECS Reference <https://www.elastic.co/docs/reference/ecs/ecs-field-reference>`__
+- `ECS Conventions <https://www.elastic.co/docs/reference/ecs/ecs-conventions>`__
+- `ECS Guidelines <https://www.elastic.co/docs/reference/ecs/ecs-guidelines>`__
 - `ECS Changelog <https://github.com/elastic/ecs/blob/master/CHANGELOG.md>`__
 - `Field Datatypes <https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-types.html>`__
 - `Multi-Fields <https://www.elastic.co/guide/en/elasticsearch/reference/current/multi-fields.html>`__

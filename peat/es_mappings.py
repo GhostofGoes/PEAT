@@ -466,7 +466,6 @@ PROCESS_FIELDS: Final[NestedMappingType] = {
     "executable": KEYWORD_AND_TEXT,
     "name": KEYWORD_AND_TEXT,
     "parent": {"properties": {"pid": LONG}},
-    "pgid": LONG,
     "pid": LONG,
     "start": DATE,
     "thread": {"properties": {"id": LONG, "name": KEYWORD}},

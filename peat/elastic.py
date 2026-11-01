@@ -91,7 +91,7 @@ class Elastic:
     Wrapper for interacting with an Elasticsearch or OpenSearch database.
     """
 
-    ECS_VERSION = "8.10.0"
+    ECS_VERSION = "9.5.0"
     """
     Version of :term:`ECS` PEAT currently follows.
     """

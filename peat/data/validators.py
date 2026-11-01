@@ -8,10 +8,11 @@ from peat.protocols.addresses import clean_ipv4, clean_mac
 
 MAC_REGEX_UPPER = re.compile(r"([0-9A-F]{2}(?::[0-9A-F]{2}){5})", flags=re.ASCII)
 
-# NOTE: last updated for ECS 8.1.0 on April 28 2022
+# NOTE: last updated for ECS 9.5.0 (released 2026-08-04) on 2026-10-31.
+# Source: https://github.com/elastic/ecs/blob/v9.5.0/schemas/event.yml
 # Fields: category, kind, outcome, type
 ECS_EVENT_VALUES: dict[str, set[str]] = {
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-category.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-category
     "category": {
         "api",  # Added in ECS 8.7.0
         "authentication",
@@ -34,24 +35,24 @@ ECS_EVENT_VALUES: dict[str, set[str]] = {
         "vulnerability",  # Added in ECS 8.6.0
         "web",
     },
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-kind.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-kind
     "kind": {
         "alert",
-        "asset",  # Added in ECS 8.8.0
+        "asset",  # Added in ECS 8.8.0 (beta), GA in ECS 9.0.0
         "enrichment",
         "event",
         "metric",
         "state",
         "pipeline_error",
-        "signal",
+        "signal",  # Reserved by ECS for Kibana alerting; data sources should not set it
     },
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-outcome.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-outcome
     "outcome": {
         "failure",
         "success",
         "unknown",
     },
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-type.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-type
     "type": {
         "access",
         "admin",
@@ -61,6 +62,7 @@ ECS_EVENT_VALUES: dict[str, set[str]] = {
         "creation",
         "deletion",
         "denied",
+        "device",  # Added in ECS 9.2.0
         "end",
         "error",
         "group",
