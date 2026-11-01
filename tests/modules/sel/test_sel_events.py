@@ -32,6 +32,7 @@ from peat.modules.sel.relay_parse import (
     process_events,
     split_lines,
 )
+from peat.modules.sel.sel_ascii import SELResponse
 from peat.modules.sel.sel_cascii import format_record
 from peat.modules.sel.sel_http import SELHTTP
 from peat.modules.sel.sel_telnet import SELTelnet
@@ -1127,6 +1128,13 @@ def test_pull_more_commands_his_and_ser(mocker):
     # The Telnet "his" path used to fail on 351-format output
     mocker.patch.object(tn, "show_his", return_value=split_lines(HIS_351S))
     mocker.patch.object(tn, "show_ser", return_value=split_lines(SER_351S))
+    # The commands that were added later (ID, HELP, CAS, VER, ...) aren't known by this relay
+    mocker.patch.object(tn, "get_id", return_value={})
+    mocker.patch.object(
+        tn,
+        "run_read_command",
+        side_effect=lambda command, **_: SELResponse(command, error="Invalid Command"),
+    )
     dev = _dev("192.0.2.62")
 
     assert SELRelay.pull_more_commands(dev, tn) is True

@@ -2,7 +2,8 @@ import json
 import re
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from time import monotonic, sleep
@@ -11,11 +12,18 @@ from typing import Any, ClassVar, Final
 from dateutil.parser import parse as date_parse
 
 from peat import CommError, DeviceError, config, consts, exit_handler, log, state, utils
-from peat.protocols.common import MAC_RE_DASH
 from peat.protocols.expect import ExpectResult, PatternLike
 
+from .relay_command_parse import parse_mac_output
 from .relay_parse import parse_status_output
 from .sel_cascii import parse_id_output
+from .sel_commands import (
+    SELCommandRefused,
+    check_command,
+    command_refusal,
+    normalize_command,
+    ser_command,
+)
 from .sel_default_creds import (
     GENERIC_PASSWORDS,
     LEVEL_COMMANDS,
@@ -159,6 +167,16 @@ def clean_lines(text: str) -> list[str]:
     return lines
 
 
+def mac_result_key(label: str) -> str:
+    """
+    Key for a MAC address from :func:`~peat.modules.sel.relay_command_parse.parse_mac_output`
+    in the result of :meth:`SELAscii.show_mac`, e.g. ``"IP"`` => ``"ip_mac"``,
+    ``"Port 1"`` => ``"port_1_mac"``, ``"MAC"`` => ``"mac"``.
+    """
+    key = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return key if key.startswith("mac") else f"{key}_mac"
+
+
 @dataclass
 class SELResponse:
     """
@@ -183,6 +201,9 @@ class SELResponse:
     eof: bool = False
     #: Error message in the output, e.g. ``"Invalid Command"``
     error: str = ""
+    #: The command wasn't sent, since the device answered "Invalid Command"
+    #: to it before (refer to :meth:`SELAscii.run_read_command`)
+    skipped: bool = False
 
     @property
     def complete(self) -> bool:
@@ -281,6 +302,12 @@ class SELAscii(ABC):
     _failed_passwords: ClassVar[dict[tuple[str, str], set[str]]] = {}
     _good_passwords: ClassVar[dict[tuple[str, str], str]] = {}
 
+    # Commands that devices answered with "Invalid Command", keyed by the
+    # address and the FID (or model, if the FID isn't known) of the device,
+    # shared by the connections to the device. SELRelay forgets them at the
+    # start of each pull and restart (refer to forget_unsupported_commands()).
+    _unsupported_commands: ClassVar[dict[tuple[str, str], set[str]]] = {}
+
     def __init__(
         self,
         address: str,
@@ -331,6 +358,20 @@ class SELAscii(ABC):
         # for devices where we're pretty confident in the
         # commands available.
         self.model: str = ""
+        #: Firmware ID (FID) of the device, if it's known (e.g. from ``ID``).
+        #: Commands that aren't supported are remembered for the FID.
+        self.fid: str = ""
+
+        #: Responses to the commands sent with :meth:`run_command`, in order
+        self.responses: list[SELResponse] = []
+        #: Commands the device answered with "Invalid Command" on this connection
+        #: (normalized, refer to :func:`~peat.modules.sel.sel_commands.normalize_command`)
+        self.unsupported_commands: set[str] = set()
+        # Why commands that change the state of the device may be sent now
+        # (refer to _allow_state_changes()), or an empty string
+        self._state_change_reason: str = ""
+        # A password is being sent in answer to a password prompt (refer to _send_password())
+        self._answering_password: bool = False
 
         # friendly name of the communication method, either Telnet or Serial
         self.type = self.__class__.__name__.partition("SEL")[2].capitalize()
@@ -567,13 +608,82 @@ class SELAscii(ABC):
         """
         Send a command to the device.
 
+        Commands that may change the state of the device (e.g. ``SER C`` or
+        ``STA C``) are refused, refer to :mod:`peat.modules.sel.sel_commands`.
+
         Args:
             command: Command to send (this will be automatically encoded,
                 and the line terminator is added)
-            sensitive: The command is a secret, e.g. a password. It's recorded
-                as ``<redacted>`` in ``all_writes`` and isn't logged.
+            sensitive: The command is a secret. It's recorded as ``<redacted>``
+                in ``all_writes`` and isn't logged. It's still checked (only the
+                answer to a password prompt during :meth:`elevate` isn't).
+
+        Raises:
+            SELCommandRefused: The command may change the state of the device
+            SELSessionHalted: Nothing may be sent on this connection (:attr:`halted`)
         """
         self._send(command, sensitive=sensitive)
+
+    @contextmanager
+    def _allow_state_changes(self, reason: str) -> Iterator[None]:
+        """
+        Allow commands that change the state of the device (e.g. ``STA C``, or
+        ``Y`` to confirm a question) while in this context. Only the code paths
+        that are meant to change the device use this, and only when the user asks
+        for them: restarts, pushes, active group changes, and logins to level C.
+
+        Args:
+            reason: What the commands are for, e.g. ``"restart (STA C)"``
+        """
+        previous = self._state_change_reason
+        self._state_change_reason = reason
+        self.log.debug(f"Commands that change the state of {self.address} allowed: {reason}")
+        try:
+            yield
+        finally:
+            self._state_change_reason = previous
+
+    def _check_command(self, command: bytes, terminator: bool, sensitive: bool = False) -> None:
+        """
+        Refuse to send a command that may change the state of the device
+        (:func:`~peat.modules.sel.sel_commands.check_command`), unless that's
+        allowed now (:meth:`_allow_state_changes`). If ``sensitive``, the
+        command isn't in the error.
+        """
+        if self._state_change_reason:
+            return
+
+        text = command.decode("latin-1")
+        try:
+            if not terminator:
+                # Only CAN is sent without a line terminator
+                if command != CAN:
+                    raise SELCommandRefused(
+                        f"PEAT won't send {'<redacted>' if sensitive else repr(text)} "
+                        f"without a line terminator to {self.address}"
+                    )
+                return
+            reason = command_refusal(text)
+            if reason:
+                raise SELCommandRefused(
+                    f"PEAT won't send {'<redacted>' if sensitive else repr(text)} "
+                    f"to {self.address}: {reason}"
+                )
+        except SELCommandRefused as ex:
+            self.log.error(str(ex))
+            raise
+
+    def _send_password(self, password: str) -> None:
+        """
+        Answer the device's password prompt during a login (:meth:`elevate`).
+        A password isn't a command, so it isn't checked (refer to :meth:`_send`),
+        and it isn't recorded or logged.
+        """
+        self._answering_password = True
+        try:
+            self._send(password, sensitive=True)
+        finally:
+            self._answering_password = False
 
     def _send(
         self,
@@ -591,6 +701,11 @@ class SELAscii(ABC):
         # If it's a string, encode to bytes with the device's encoding
         if isinstance(command, str):
             command = command.encode(self.ENCODING)
+
+        # The answer to a password prompt isn't a command. Other secrets are
+        # checked, but not logged.
+        if not (sensitive and self._answering_password):
+            self._check_command(command, terminator, sensitive=sensitive)
 
         if terminator:
             # Append the line terminator (encode here to ensure proper encoding)
@@ -788,10 +903,13 @@ class SELAscii(ABC):
             The output. If the prompt wasn't seen, ``timed_out`` or ``eof`` is set.
 
         Raises:
+            SELCommandRefused: The command may change the state of the device
+                (refer to :mod:`peat.modules.sel.sel_commands`)
             SELSessionHalted: Nothing may be sent on this connection (:attr:`halted`)
         """
         # Before reading, which could open the connection again
         self._check_halted()
+        self._check_command(command.encode("latin-1", errors="replace"), terminator=True)
 
         if self.legacy_timing:
             response = self._legacy_run_command(command, legacy_delay)
@@ -840,8 +958,89 @@ class SELAscii(ABC):
             elif response.eof:
                 self.log.warning(f"Connection to {self.address} closed after '{command}'")
 
+        if response.error.lower().startswith("invalid command"):
+            self._mark_unsupported(command)
+
         self.last_response = response
+        self.responses.append(response)
         return response
+
+    def _device_key(self) -> tuple[str, str] | None:
+        # Commands that aren't supported are remembered for this device: its
+        # address, and its firmware (FID), or its model if the FID isn't known.
+        # Not for other devices with the same firmware: one garbled command
+        # (e.g. on a noisy serial line) would stop it from being sent to all of them.
+        firmware = self.fid or normalize_model(self.model)
+        return (self.address, firmware) if firmware else None
+
+    def _mark_unsupported(self, command: str) -> None:
+        normalized = normalize_command(command)
+        self.unsupported_commands.add(normalized)
+        key = self._device_key()
+        if key:
+            SELAscii._unsupported_commands.setdefault(key, set()).add(normalized)
+
+    def is_unsupported(self, command: str) -> bool:
+        """
+        If the device answered "Invalid Command" to a command before, on this
+        connection, or on an earlier connection to the device (the same address,
+        and the same FID, or the same model if the FID isn't known) since
+        :meth:`forget_unsupported_commands`.
+        """
+        normalized = normalize_command(command)
+        if normalized in self.unsupported_commands:
+            return True
+        key = self._device_key()
+        return key is not None and normalized in SELAscii._unsupported_commands.get(key, set())
+
+    @classmethod
+    def forget_unsupported_commands(cls, address: str | None = None) -> None:
+        """
+        Forget which commands devices answered with "Invalid Command"
+        (refer to :meth:`run_read_command`), so they're sent again.
+        :class:`~peat.modules.sel.sel_relay.SELRelay` calls this at the start
+        of each pull and restart.
+
+        Args:
+            address: Address of the device (IP address or serial port), or
+                :obj:`None` for all devices
+        """
+        for key in [k for k in cls._unsupported_commands if address is None or k[0] == address]:
+            del cls._unsupported_commands[key]
+
+    def run_read_command(
+        self,
+        command: str,
+        long: bool = False,
+        legacy_delay: float | None = 2.0,
+    ) -> SELResponse:
+        """
+        Run a read-only command, e.g. ``VER`` or ``TIM Q``, and wait for the prompt
+        (refer to :meth:`run_command`).
+
+        The command must be one of the read-only commands PEAT uses
+        (:data:`~peat.modules.sel.sel_commands.ALLOWED_COMMANDS`). If the device
+        answered "Invalid Command" to it before (on this connection, or on an
+        earlier connection to the device, refer to :meth:`is_unsupported`), it isn't
+        sent again, and the response has ``skipped`` set.
+
+        Args:
+            command: The command
+            long: The command may have a lot of output (refer to :meth:`run_command`)
+            legacy_delay: With ``legacy_timing``, sleep this many seconds before
+                reading the output
+
+        Raises:
+            SELCommandRefused: The command isn't one of the read-only commands PEAT uses
+            SELSessionHalted: Nothing may be sent on this connection (:attr:`halted`)
+        """
+        check_command(command, strict=True)
+
+        if self.is_unsupported(command):
+            self.log.debug(f"Not sending '{command}' to {self.address}: it isn't supported")
+            return SELResponse(command=command, error="Invalid Command", skipped=True)
+
+        return self.run_command(command, long=long, legacy_delay=legacy_delay)
 
     def _legacy_run_command(self, command: str, delay: float | None) -> SELResponse:
         self.read()  # Flush any output from previous operations
@@ -920,9 +1119,12 @@ class SELAscii(ABC):
             wasn't seen before the timeout (``timed_out``).
 
         Raises:
+            SELCommandRefused: The command may change the state of the device
+                (refer to :mod:`peat.modules.sel.sel_commands`)
             SELSessionHalted: Nothing may be sent on this connection (:attr:`halted`)
         """
         self._check_halted()
+        self._check_command(command.encode("latin-1", errors="replace"), terminator=True)
 
         if self.legacy_timing:
             self.read()  # Flush any output from previous operations
@@ -1122,7 +1324,12 @@ class SELAscii(ABC):
 
         self.log.debug(f"Elevating to level {target} ({command})")
         self._flush()
-        self._send(command)
+        if level == "cal":
+            # Level C allows calibration commands, so the login is only allowed here
+            with self._allow_state_changes("login to access level C (CAL)"):
+                self._send(command)
+        else:
+            self._send(command)
         first = self._expect(
             [PASSWORD_RE], timeout=self.COMMAND_TIMEOUT, idle_timeout=self.timeout
         )
@@ -1144,7 +1351,7 @@ class SELAscii(ABC):
                 self.register_secret(cred.password)
 
             self.log.debug(f"Sending {command} password {cred}")
-            self._send(cred.password, sensitive=True)
+            self._send_password(cred.password)
             second = self._expect(
                 [PASSWORD_RE], timeout=self.COMMAND_TIMEOUT, idle_timeout=self.timeout
             )
@@ -1362,15 +1569,16 @@ class SELAscii(ABC):
 
         self.log.info(f"Changing active group from '{current_group}' to '{new_group}'")
 
-        if self.legacy_timing:
-            self.write(f"gro {new_group}")
-            sleep(self.POST_WRITE_SLEEP)
-            self.write("y")  # answer yes to prompt
-        else:
-            confirmed, transcript = self._confirm_dialog(f"gro {new_group}")
-            if not confirmed:
-                self.log.error(f"Active group change was not confirmed: {transcript}")
-                return
+        with self._allow_state_changes(f"change the active settings group to {new_group}"):
+            if self.legacy_timing:
+                self.write(f"gro {new_group}")
+                sleep(self.POST_WRITE_SLEEP)
+                self.write("y")  # answer yes to prompt
+            else:
+                confirmed, transcript = self._confirm_dialog(f"gro {new_group}")
+                if not confirmed:
+                    self.log.error(f"Active group change was not confirmed: {transcript}")
+                    return
 
         self.log.info(f"Active group changed to '{new_group}'")
 
@@ -1438,7 +1646,8 @@ class SELAscii(ABC):
                 self.log.debug(f"Failed to read the time before the restart: {ex}")
 
             self._flush()
-            self._send("STA C")
+            with self._allow_state_changes("restart (STA C)"):
+                self._send("STA C")
             confirm = self._expect([CONFIRM_RE], timeout=confirm_timeout)
             text = self._decode(confirm.data)
             result.transcript.append(text)
@@ -1471,7 +1680,8 @@ class SELAscii(ABC):
 
             result.initiated_at = utils.utc_now()
             try:
-                self._send("Y")
+                with self._allow_state_changes("confirm the restart (STA C)"):
+                    self._send("Y")
                 after = self._expect([REBOOTING_RE], timeout=reboot_timeout)
                 result.transcript.append(self._decode(after.data))
             except (OSError, EOFError) as ex:  # e.g. ConnectionResetError
@@ -1580,6 +1790,8 @@ class SELAscii(ABC):
         # The model determines the default passwords
         if not self.model and info.get("FID"):
             self.model = normalize_model(str(info["FID"]))
+        if info.get("FID"):
+            self.fid = str(info["FID"])
 
         self.log.trace2(f"** get_id() => 'info' **\n{info}")
         return info
@@ -1743,26 +1955,22 @@ class SELAscii(ABC):
 
     def show_mac(self) -> dict[str, str]:
         """
-        ``mac`` command.
+        ``mac`` command: the MAC addresses of the Ethernet ports.
+
+        Both formats are read (refer to
+        :func:`~peat.modules.sel.relay_command_parse.parse_mac_output`):
+        ``Port 1 MAC Address: 00-30-A7-00-00-00`` (in the SEL-351S and SEL-751A
+        manuals) and ``(IP) MAC`` / ``(GOOSE) MAC`` (seen on a SEL-351S).
+
+        Returns:
+            MAC addresses (uppercase, colon-separated), keyed by ``ip_mac`` and
+            ``goose_mac`` (the second format, as before), ``port_<n>_mac``
+            (e.g. ``port_1_mac``), or ``mac``
         """
         self._ensure_priv("show_mac", level=1)
 
         output = self.exec_read("mac", return_lines=False, read_until_prompt=True)
-        data = self.extract(output)
-
-        # TODO: SEL-451 and SEL-351 (and 351S and 700G??)
-
-        # SEL-351S has this format
-        regex = r".*\(IP\) MAC.*" + MAC_RE_DASH + r".*\(GOOSE\) MAC.*" + MAC_RE_DASH
-        match = re.match(regex, data, re.ASCII | re.DOTALL)
-
-        if not match:
-            return {}
-
-        return {
-            "ip_mac": match.groups()[0].replace("-", ":").upper(),
-            "goose_mac": match.groups()[1].replace("-", ":").upper(),
-        }
+        return {mac_result_key(label): mac for label, mac in parse_mac_output(output).items()}
 
     def show_eth(self) -> list[str]:
         """
@@ -1853,19 +2061,43 @@ class SELAscii(ABC):
         """
         ``ser`` command. Sequential Event Recorder (SER).
 
+        The command depends on the model (refer to
+        :func:`~peat.modules.sel.sel_commands.ser_command`): ``SER 1000`` on
+        SEL-400 series relays, where ``SER`` returns only the 20 newest records
+        (if the relay rejects ``SER 1000``, ``SER`` is used), ``SER GLOBAL 100``
+        on the SEL-2032, which keeps a SER for each port, and ``SER`` on other
+        relays, which returns all of the records.
+
         NOTE: this can take a while if the SER has a lot of entries.
         PEAT waits until the relay stops sending (refer to ``idle_timeout``).
         """
-        # On the SEL-2032, this requires an argument.
-        # SEL-2032 RTU has per-port SER logs. Maybe we could
-        # be smarter about this in the future, and issue multiple
-        # queries for each port's log?
-        if normalize_model(self.model) == "2032":
-            result = self.exec_read("ser GLOBAL 100", added_delay=5.0)
-        else:
-            result = self.exec_read("ser", read_until_prompt=True, added_delay=10.0)
+        command = ser_command(self.model)
 
-        return result
+        if normalize_model(self.model) in ("2030", "2032"):
+            return self.exec_read(command, added_delay=5.0)
+
+        if command.upper() != "SER":
+            # e.g. "SER 1000" on 400 series relays
+            if not self.is_unsupported(command):
+                start = len(self.responses)
+                result = self.exec_read(command, read_until_prompt=True, added_delay=10.0)
+                responses = self.responses[start:]
+                if responses:
+                    error = responses[-1].error
+                else:
+                    # With legacy_timing, exec_read() doesn't record a response
+                    # (and last_response is from an earlier command), so the
+                    # error is read from the output
+                    lines = result if isinstance(result, list) else clean_lines(result)
+                    error = self._error_message(lines)
+                    if error.lower().startswith("invalid command"):
+                        self._mark_unsupported(command)
+                if not error:
+                    return result
+                self.log.warning(f"{self.address} answered '{error}' to '{command}', using 'SER'")
+            command = "SER"
+
+        return self.exec_read(command, read_until_prompt=True, added_delay=10.0)
 
     def show_sum(self) -> list[str]:
         """
@@ -1885,4 +2117,12 @@ class SELAscii(ABC):
         return self.exec_read("eve", added_delay=2.0)
 
 
-__all__ = ["RestartResult", "SELAscii", "SELResponse", "SELSessionHalted", "clean_lines"]
+__all__ = [
+    "RestartResult",
+    "SELAscii",
+    "SELCommandRefused",
+    "SELResponse",
+    "SELSessionHalted",
+    "clean_lines",
+    "mac_result_key",
+]

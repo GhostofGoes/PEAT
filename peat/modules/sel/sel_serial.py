@@ -492,7 +492,8 @@ class SELSerial(SELAscii):
             sleep(1.5)
 
             self.log.debug(f"Transferring config {conf_file}")
-            self.write(f"file write {conf_file}")
+            with self._allow_state_changes(f"push (FILE WRITE {conf_file})"):
+                self.write(f"file write {conf_file}")
             sleep(1.5)
 
             proc = subprocess.run(

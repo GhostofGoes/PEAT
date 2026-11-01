@@ -257,6 +257,16 @@ Default credentials
 .. automodule:: peat.modules.sel.sel_default_creds
    :members:
 
+Read-only commands
+^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_commands
+   :members:
+
+Additional commands
+^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_more_commands
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse
