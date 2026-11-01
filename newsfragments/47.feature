@@ -1,0 +1,1 @@
+Upgraded the Elastic Common Schema (ECS) version PEAT follows from 8.10.0 to 9.5.0. The ECS ``event.type`` value ``device`` (added in ECS 9.2.0) is now accepted, ``process.pgid`` was removed from the ``peat-logs`` mapping (removed in ECS 9.0.0), and log records now use the ECS field ``process.parent.pid`` instead of ``process.parent.process.pid``.
