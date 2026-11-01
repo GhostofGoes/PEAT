@@ -5,9 +5,26 @@ Commandline argument parsing and help. Used by cli_main.py.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 from pathvalidate.argparse import validate_filepath_arg
+
+#: Format of the --rtac-tunnel argument (checked in detail when it's used, refer to
+#: peat.modules.sel.sel_tunnel.RTACTunnel.from_spec)
+_RTAC_TUNNEL_RE = re.compile(
+    r"(?:\[[0-9A-Fa-f:.]+\]|[^:\s\[\]]+):[0-9]{1,5}(?::[A-Za-z0-9_]*){0,4}"
+)
+
+
+def _rtac_tunnel_arg(value: str) -> str:
+    if not _RTAC_TUNNEL_RE.fullmatch(value.strip()):
+        raise argparse.ArgumentTypeError(
+            f"invalid tunnel '{value}', expected "
+            "RTAC_IP:TCP_PORT[:SEL_PORT][:TRANSPORT][:ROUTE][:login]"
+        )
+    return value.strip()
+
 
 help_str = """
 To get help for a command, run "peat <command> --help" (example: "peat scan --help").
@@ -237,6 +254,10 @@ peat pull -d clx -i 192.0.2.0/24 -c peat-config.yaml
 # Useful for verifying configuration options before pulling the
 # metaphorical trigger on a pull.
 peat pull --dry-run -d clx -i 192.0.2.0/24
+
+# Pull the SEL relay on PORT 1 of the SEL server of a SEL RTAC (TCP port 3254),
+# through the RTAC's engineering access tunnel (no scan of the RTAC)
+peat pull -d selrelay --rtac-tunnel 192.0.2.10:3254:1
 
 # Skip the scan phase and pull directly from hosts defined in a config file.
 # Hosts must have a peat_module specified in the config. The -i argument is
@@ -922,6 +943,24 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         help="Skip scanning and verification of hosts before pulling, "
         "and assume all hosts are online and valid devices. NOTE: "
         "this requires a single device type to be specified.",
+    )
+    pull_parser.add_argument(
+        "--rtac-tunnel",
+        type=_rtac_tunnel_arg,
+        metavar="TUNNEL",
+        nargs="+",
+        default=None,
+        dest="rtac_tunnels",
+        help="Pull SEL relays behind a SEL RTAC through the RTAC's engineering access "
+        "tunnels (one session at a time, read-only). Format: "
+        "RTAC_IP:TCP_PORT[:SEL_PORT][:TRANSPORT][:ROUTE][:login], e.g. "
+        '"192.0.2.10:3254:1" (PORT 1 of the RTAC\'s SEL server on TCP port 3254, '
+        'via Telnet) or "192.0.2.10:51001:raw:interleaved" (an access point to a '
+        "_TAP). TRANSPORT is telnet (default), raw, tls, or ssh. Access points with "
+        "a direct or unknown ROUTE are only used if sel.allow_direct_tunnels is "
+        'enabled. "login" means the RTAC asks for a RTAC user\'s login '
+        "(sel.rtac_tunnel_creds). This adds to the sel.rtac_tunnels option, which is "
+        "only used if the selrelay module is selected (-d). Hosts (-i) are optional.",
     )
 
     # !! NOTE !!

@@ -3,7 +3,7 @@ from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import Final
 
-from peat import DeviceData, DeviceError, config, consts, log, utils
+from peat import DeviceData, DeviceError, PeatError, config, consts, log, utils
 from peat.protocols import FTP
 
 from .sel_files import SOURCE_DOWNLOAD, record_downloaded_file
@@ -32,9 +32,23 @@ def clean_filenames(filenames: list[bytes | str]) -> list[str]:
     return clean
 
 
+def device_label(dev: DeviceData) -> str:
+    """
+    The device's address (``dev.address``) for messages, or its ID if it
+    doesn't have an address (e.g. a relay behind a RTAC, refer to
+    :mod:`peat.modules.sel.sel_gateway`).
+    """
+    try:
+        return dev.address
+    except PeatError:
+        return dev.get_id(["id", "name"])
+
+
 def _method_name(comms: FTP | SELTelnet | SELSerial) -> str:
     if isinstance(comms, FTP):
         return "FTP"
+    elif getattr(comms, "transport_name", "") == "rtac_tunnel":
+        return "RTAC tunnel"
     elif isinstance(comms, SELTelnet):
         return "Telnet"
     elif isinstance(comms, SELSerial):
@@ -60,7 +74,11 @@ def _transfer_info(comms: FTP | SELTelnet | SELSerial) -> dict[str, str]:
             return {"transport": "serial", "file_transfer": "ymodem"}
         return {"transport": "serial", "file_transfer": "file_show"}
 
-    return {"transport": "telnet", "file_transfer": "file_show"}
+    # "rtac_tunnel" for a relay behind a RTAC (refer to sel_tunnel.py)
+    return {
+        "transport": getattr(comms, "transport_name", "") or "telnet",
+        "file_transfer": "file_show",
+    }
 
 
 def download_files(
@@ -333,7 +351,7 @@ def pull_files(
     method = _method_name(comms)
     start_time = timeit.default_timer()
 
-    log.info(f"Pulling relay config files from {dev.address} via {method}")
+    log.info(f"Pulling relay config files from {device_label(dev)} via {method}")
 
     # Directory to save raw files to
     # Format: peat_results/<run-dir>/devices/{address}/relay_files_{timestamp}/*
@@ -352,7 +370,7 @@ def pull_files(
         never=dev.options["sel"]["never_download_dirs"],
     )
 
-    log.info(f"Directories to download from {dev.address} via {method}: {to_download}")
+    log.info(f"Directories to download from {device_label(dev)} via {method}: {to_download}")
 
     # Raw and file paths contents of all files downloaded, keyed by device path
     files_by_path = {}  # type: dict[str, dict]
@@ -368,7 +386,7 @@ def pull_files(
 
         if not filenames:
             log.warning(
-                f"Skipping directory {dirname} on {dev.address}, "
+                f"Skipping directory {dirname} on {device_label(dev)}, "
                 f"it's either empty or there are no files that "
                 f"weren't filtered by the 'only_download_files' or "
                 f"'never_download_files' options"
@@ -416,17 +434,18 @@ def pull_files(
                 comms.cd("..")
         except Exception as ex:
             log.warning(
-                f"Failed to retrieve files from {dirname} on {dev.address} via {method}: {ex}"
+                f"Failed to retrieve files from {dirname} on {device_label(dev)} "
+                f"via {method}: {ex}"
             )
 
     duration = timeit.default_timer() - start_time
     log.info(
-        f"Pulled {len(files_by_path)} files from {dev.address} via {method} "
+        f"Pulled {len(files_by_path)} files from {device_label(dev)} via {method} "
         f"(duration: {utils.fmt_duration(duration)})"
     )
-    log.debug(f"Files pulled from {dev.address} via {method}: {', '.join(files_by_path)}")
+    log.debug(f"Files pulled from {device_label(dev)} via {method}: {', '.join(files_by_path)}")
 
-    all_files = _files_by_name(files_by_path, dev.address)
+    all_files = _files_by_name(files_by_path, device_label(dev))
 
     # NOTE: if SET_ALL.TXT isn't in the files, it's reconstructed from the
     # individual settings files (SET_*.TXT) in SELRelay.pull_configs()
@@ -455,7 +474,8 @@ def populate_file_listing(dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -
         else:
             dev.extra["settings_root_directory"] = "/"
         log.debug(
-            f"Settings root directory for {dev.address}: '{dev.extra['settings_root_directory']}'"
+            f"Settings root directory for {device_label(dev)}: "
+            f"'{dev.extra['settings_root_directory']}'"
         )
 
     root_files = []
@@ -481,7 +501,7 @@ def populate_file_listing(dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -
                 comms.cd("..")
                 dev.extra["sel_old_ftp"] = True
 
-            log.trace(f"Files in '{file}' from {dev.address}: {listing}")
+            log.trace(f"Files in '{file}' from {device_label(dev)}: {listing}")
             files_on_dev.update(listing)
             dirs_on_dev.add(file)
 

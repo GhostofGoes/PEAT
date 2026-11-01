@@ -159,6 +159,14 @@ device_options:
     legacy_ascii_timing: false
     ascii_idle_timeout: 30.0
     cal_clarke_fallback: false
+    rtac_tunnels: []
+    rtac_pull_downstream: false
+    allow_direct_tunnels: false
+    tunnel_file_transfer: false
+    rtac_tunnel_creds:
+      user: ""
+      pass: ""
+      acc: ""
     old_ftp: false
     handle_download_errors: true
     # Unset levels use the defaults for the relay's model, e.g. {acc: "OTTER", 2ac: "TAIL"}

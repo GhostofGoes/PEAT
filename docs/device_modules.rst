@@ -267,6 +267,16 @@ Additional commands
 .. automodule:: peat.modules.sel.sel_more_commands
    :members:
 
+RTAC engineering tunnels
+^^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_tunnel
+   :members:
+
+Relays behind RTACs (gateway pull)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_gateway
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse

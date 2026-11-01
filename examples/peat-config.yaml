@@ -546,6 +546,61 @@ device_options:
     # PEAT's pull, push, and restart don't.
     cal_clarke_fallback: false
 
+    # Relays behind SEL RTACs, through the RTAC's engineering access tunnels
+    # (refer to "RTAC engineering tunnels" in the SEL docs). All of these are off
+    # by default. PEAT connects through one path at a time, only runs read-only
+    # commands (at access level 1, unless attempt_more_commands is enabled),
+    # and doesn't use FTP or HTTP through the RTAC. The RTAC may log the sessions.
+    #
+    # Paths to the relays. They're only pulled if the selrelay module is selected
+    # (-d, all modules by default). Each is a string in the format of the
+    # --rtac-tunnel argument, "RTAC_IP:TCP_PORT[:SEL_PORT][:TRANSPORT][:ROUTE][:login]"
+    # ("login": the RTAC asks for a RTAC user's login), or a dict with these keys
+    # (only rtac_ip and tcp_port are required; in a host's options, rtac_ip is
+    # the host's IP address by default):
+    #   rtac_ip: "192.0.2.10"     # The RTAC
+    #   tcp_port: 3254            # TCP port of the access point or SEL server
+    #   transport: "telnet"       # telnet (default), raw, tls, or ssh
+    #   kind: "sel_server"        # sel_server (with sel_port) or access_point
+    #   sel_port: 1               # SEL server: the PORT number of the relay
+    #                             # (if it isn't set, all relays that WHO lists)
+    #   route: "interleaved"      # Access point: interleaved (to <Device>_SEL_TAP)
+    #                             # or direct (to <Device>_SEL_AP)
+    #   device_name: "Feeder_1"   # Name of the relay in the RTAC (optional)
+    #   needs_rtac_login: false   # The RTAC asks for a RTAC user's login (always for SSH)
+    #   termination_string: "^D"  # SEL server termination string (default Ctrl+D)
+    #   pre_term_s: 1.0           # SEL server Pre-Termination Timeout, in seconds
+    #   creds: {acc: "...", 2ac: "..."}  # The relay's passwords, if not sel.creds
+    #
+    # Examples:
+    #   rtac_tunnels:
+    #     - "192.0.2.10:3254:1"
+    #     - {rtac_ip: "192.0.2.10", tcp_port: 51001, transport: raw, route: interleaved}
+    rtac_tunnels: []
+
+    # Also pull the relays behind each RTAC that's pulled, through the paths found
+    # in the RTAC's configuration (the "downstream_targets" of the RTAC).
+    rtac_pull_downstream: false
+
+    # Allow access points whose route is direct (<Device>_SEL_AP), or isn't known.
+    # WARNING: a direct route stops the RTAC's polling of the relay (SCADA has no
+    # data from it) while PEAT is connected.
+    allow_direct_tunnels: false
+
+    # Download files (FILE SHOW) through RTAC tunnels. The RTAC's File Transfer
+    # Monitor switches an interleaved connection to direct during a file transfer.
+    tunnel_file_transfer: false
+
+    # Name and password of a RTAC user, if the RTAC asks for them (always for SSH),
+    # and the password of ACC on the RTAC's SEL server, if it asks for one. They're
+    # never guessed, and a login the RTAC rejects isn't sent to it again in the
+    # pull (other paths to that RTAC are skipped). If user and pass aren't set,
+    # web.user and web.pass in the RTAC's host options are used.
+    rtac_tunnel_creds:
+      user: ""
+      pass: ""
+      acc: ""
+
     # Alternate method of FTP pulls that may work on older devices.
     # Only enable this if debugging issues with FTP downloads.
     old_ftp: false

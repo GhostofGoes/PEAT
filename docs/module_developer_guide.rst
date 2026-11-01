@@ -39,6 +39,15 @@ Using the API, it is possible to lookup a module at runtime using a wide variety
 
 The API also supports the runtime import of additional external "3rd-party" device modules that implement the :class:`~peat.device.DeviceModule` class. They can be imported as a folder containing the module or as a Python class object. This enables scenarios such as customer-created modules, as well as making PEAT more extensible in general.
 
+Devices behind gateways
+-----------------------
+Some devices are only reached through another device, a "gateway", e.g. SEL relays behind the engineering access tunnels of a SEL RTAC (refer to "RTAC engineering tunnels" in :doc:`sel`). After a pull, :func:`peat.api.pull_api.pull_downstream` calls two optional class methods, which it finds with ``getattr()``:
+
+- ``downstream_targets(dev)``, on the module of each device that was pulled: how to reach the devices behind it, as a list of :class:`dict` (:meth:`~peat.device.DeviceModule.downstream_targets` returns an empty list by default). The format of the dicts is defined by the gateway's module.
+- ``pull_downstream(gateway_targets, selected)``, on the modules that pull devices through gateways (e.g. :meth:`~peat.modules.sel.sel_relay.SELRelay.pull_downstream`): it gets the devices that were pulled with their targets, pulls the ones the user allowed (pulling through a gateway is opt-in), adds the devices to the datastore, and returns them. They're added to the pull summary. ``selected`` says if the module was selected for the pull (``-d``): targets that are configured for the module itself (e.g. ``sel.rtac_tunnels``) should only be pulled if it was, while the gateways' targets are governed by the gateways' options. The method is called once per implementation (not again for a subclass that inherits it).
+
+A device behind a gateway doesn't have the gateway's IP address, so it isn't merged with the gateway, and it has an ID of its own without ``:`` (it's the name of its output directory).
+
 .. note::
    The bundled "executable" version of PEAT needs to know what Python libraries are being used by your module. If you are using a library module (e.g. ``import csv``) that isn't already used elsewhere in PEAT you will need to tell PyInstaller about it. Edit ``distribution/peat.spec`` and add the module name(s) to the ``hidden_imports`` list. This is the cause of the error ``"Failed to import mypackage.mymodule: No module named 'csv'``.
 

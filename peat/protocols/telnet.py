@@ -46,6 +46,10 @@ class Telnet:
         )
 
         self.connected: bool = False
+        #: Device the raw output is saved to when disconnecting. If it isn't
+        #: set, it's the device with the IP address of the connection (e.g. not
+        #: for a device behind a gateway, refer to peat.modules.sel.sel_tunnel).
+        self.output_dev: peat.data.DeviceData | None = None
 
         self.all_output: list[str] = []
         self.raw_output: list[bytes] = []
@@ -120,7 +124,9 @@ class Telnet:
             if self.all_output:
                 # Save the raw output to disk as an artifact
                 try:
-                    dev = peat.data.datastore.get(self.ip)
+                    dev = self.output_dev
+                    if dev is None:
+                        dev = peat.data.datastore.get(self.ip)
                     dev.write_file(self.all_output, "raw-telnet-output.json", merge_existing=True)
                 except Exception as ex:
                     self.log.warning(f"Failed to write raw output to file: {ex}")
