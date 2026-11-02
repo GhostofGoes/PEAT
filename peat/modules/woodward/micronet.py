@@ -155,7 +155,7 @@ class MicroNet(DeviceModule):
                     if cls.is_file(filename, ftp):  # if file, download and save locally
                         try:
                             ftp.download_binary(filename, dev.get_out_dir() / path / filename)
-                            # get file hashes and store in dev.extra
+                            # get file hashes and metadata and store in dev.files
                             timestamp = ftp.cmd(f"MDTM {filename}").split()[1]
                             date_time = parser.parse(timestamp)
                             parse_micronet.create_artifact(
@@ -219,13 +219,13 @@ class MicroNet(DeviceModule):
             if "Loading" in event.message and "gap" in event.message:
                 filename = event.message.split(" ")[1]
                 break  # only get most recent event for gap file load
+        else:
+            return  # no GAP file load in the logs
 
-        # get GAP file info from log file (or just dev.event?)
-        for artifact in dev.extra.get("file_artifacts"):
-            if artifact["filename"] == filename:
-                parse_micronet.get_gap_info(
-                    dev, filename, artifact["filepath"], artifact["timestamp"]
-                )
+        # get GAP file info from the pulled files
+        for file_obj in dev.files:
+            if file_obj.name == filename and file_obj.local_path:
+                parse_micronet.get_gap_info(dev, filename, file_obj.local_path, file_obj.mtime)
                 break
 
 

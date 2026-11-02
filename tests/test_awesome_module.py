@@ -1,9 +1,10 @@
 import filecmp
 import json
+import sys
 
 import pytest
 
-from peat import config, datastore, module_api
+from peat import DeviceData, config, datastore, module_api
 
 
 def test_awesome_module_load_and_parse(mocker, tmp_path, example_module_file):
@@ -37,6 +38,57 @@ def test_awesome_module_load_and_parse(mocker, tmp_path, example_module_file):
         example_module_file("awesome_output_expected_device-data-full.json").read_text()
     )
     assert parsed_device.export() == expected
+
+
+def test_awesome_module_verify_relationships(mocker, tmp_path, example_module_file):
+    """
+    The example's HTTP verification stores the connected hosts as relationships.
+    """
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path / "devices"})
+    mocker.patch.object(module_api, "modules", {})
+    mocker.patch.object(module_api, "module_aliases", {})
+    mocker.patch.object(module_api, "runtime_imports", set())
+    mocker.patch.object(module_api, "runtime_paths", set())
+    assert module_api.import_module(example_module_file("awesome_module.py")) is True
+    awesome = module_api.modules["awesometool"]
+
+    page = json.loads(example_module_file("example_device_page.html").read_text())
+
+    class FakeResponse:
+        def json(self):
+            return dict(page)
+
+    class FakeHTTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, page_name):
+            assert page_name == "example_device_page.html"
+            return FakeResponse()
+
+    mocker.patch.object(sys.modules[awesome.__module__], "HTTP", FakeHTTP)
+
+    dev = DeviceData(ip="192.0.2.20")
+    assert awesome._verify_http_unicast(dev) is True
+
+    assert dev.name == "example-device-name"
+    assert "connectedIps" not in dev.extra
+    assert [r.remote.ip for r in dev.relationships] == ["192.0.2.2", "192.0.2.5"]
+    for rel in dev.relationships:
+        assert rel.evidence == {"live"}
+        assert rel.type == "communicates_with"
+        assert rel.id
+    assert {"192.0.2.2", "192.0.2.5"} <= dev.related.ip
+
+    # Relationships are not in the summary, but are in the full export
+    assert "relationships" not in dev.export_summary()
+    assert len(dev.export()["relationships"]) == 2
 
 
 @pytest.mark.slow

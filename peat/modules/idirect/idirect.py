@@ -23,7 +23,9 @@ from peat.parsing.command_parsers import (
     EtcPasswdParser,
     HostnameParser,
     IfconfigParser,
+    IpRouteParser,
     LsRecursiveParser,
+    NetstatLinuxParser,
     NixParserBase,
     ProcCmdlineParser,
     ProcCpuinfoParser,
@@ -56,6 +58,10 @@ IDIRECT_PARSERS: list[type[NixParserBase]] = [
     HostnameParser,
     ProcNetDevParser,
     LsRecursiveParser,
+    # Listening services and the programs owning them
+    NetstatLinuxParser,
+    # Routing table
+    IpRouteParser,
 ]
 
 
@@ -229,10 +235,10 @@ class Idirect(DeviceModule):
         # ** Telnet/SSH pulling **
         for pull_type in ["ssh"]:
             pull_type_cap = pull_type.capitalize()
-            if pull_type not in dev.options["sage"]["pull_methods"]:
+            if pull_type not in dev.options["idirect"]["pull_methods"]:
                 cls.log.warning(
                     f"Skipping method '{pull_type_cap}' for pull from {dev.ip}: "
-                    f"'{pull_type_cap}' not listed in 'sage.pull_methods' option"
+                    f"'{pull_type_cap}' not listed in 'idirect.pull_methods' option"
                 )
             elif (
                 dev.service_status({"protocol": pull_type, "port": dev.options[pull_type]["port"]})
@@ -337,22 +343,16 @@ class Idirect(DeviceModule):
         #   cache location once it's found.
         # !! TODO: find all .opt files to get ones with different names
 
-        # TODO: netstat parsing, grab ports
-
         # TODO: files
         #   add host.files
         #   add file hashes from find command to file objects
         #   add file.original for the files that do get pulled
 
-        # TODO: fix ifconfig, ensure interfaces getting into data model
-
-        # TODO: ip route
-        #   host.routes
-        #   host.connections
-
         # exit with error if important files fail to pull or parse
         allowed_failures = [
             FalconOptParser,
+            NetstatLinuxParser,
+            IpRouteParser,
         ]
         successful = True
 
@@ -431,12 +431,11 @@ class Idirect(DeviceModule):
                 cls.log.warning(f"Failed to read file {filepath}: {ex}")
 
         # Additional commands that don't have parsers yet
+        # NOTE: "netstat -tulnp" and "ip route" are run by
+        # NetstatLinuxParser and IpRouteParser (IDIRECT_PARSERS)
         extra_commands = [
-            # Shows all active network connections
-            "netstat -tulnp",
             "uname -a",
             "ip addr",
-            "ip route",
             "df",
             "fdisk -l",
             "id",
@@ -478,10 +477,8 @@ class Idirect(DeviceModule):
                     )
 
                     if command in [
-                        "netstat -tulnp",
                         "uname -a",
                         "ip addr",
-                        "ip route",
                         "id",
                     ]:
                         dev.extra[command] = cmd_result

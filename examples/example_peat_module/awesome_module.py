@@ -20,6 +20,8 @@ from peat import (
     DeviceModule,
     Interface,
     IPMethod,
+    Relationship,
+    RelationshipEndpoint,
     Service,
     datastore,
     utils,
@@ -259,7 +261,22 @@ class AwesomeTool(DeviceModule):
                 dev.name = data.pop("deviceName")
                 dev.description.model = data.pop("deviceModel")
                 dev.geo.timezone = data.pop("timezone")
-                dev.related.ip.update(data.pop("connectedIps"))
+
+                # Hosts currently connected to the device. Each one is a
+                # "Relationship" between this device ("local") and another
+                # endpoint ("remote"). Set what the source knows: here only
+                # the remote IP. "evidence" says how PEAT learned of it
+                # ("live": observed on the running device). PEAT computes the
+                # relationship's ID and adds the IP to "related.ip" when it's
+                # stored. Relationships are exported to their own Elasticsearch
+                # index. Refer to the data model documentation for the other
+                # fields (type, protocol, roles, ...).
+                for connected_ip in data.pop("connectedIps"):
+                    relationship = Relationship(
+                        evidence={"live"},
+                        remote=RelationshipEndpoint(ip=connected_ip),
+                    )
+                    dev.store("relationships", relationship)
 
                 # Times in PEAT are datetime objects normalized to UTC timezone
                 # Note that PEAT provides a robust set of well-tested utilities

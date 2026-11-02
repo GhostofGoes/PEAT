@@ -8,11 +8,128 @@ Authors
 """
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from peat import DeviceData, DeviceModule, Interface, Service, datastore
+from peat import DeviceData, DeviceModule, Interface, Service, datastore, utils
+from peat.data.models import File, Hash, HostProcess, Relationship, RelationshipEndpoint
+from peat.parsing.command_parsers import store_relationships
 from peat.protocols.enip import VENDOR_NAMES
 from peat.protocols.enip.enip_packets import PRODUCT_TYPES
+
+# Possible key names in the pillage results (first one present is used)
+_PID_KEYS = ("PID", "Process ID", "ProcessID", "pid")
+_EXECUTABLE_KEYS = ("Executable", "Path", "Process Path", "Image Path")
+_LOCAL_IP_KEYS = ("Local Address", "Local IP", "local_address")
+_REMOTE_IP_KEYS = ("Remote Address", "Remote IP", "Foreign Address", "remote_address")
+_REMOTE_PORT_KEYS = ("Remote Port", "Foreign Port", "remote_port")
+
+
+def _first(data: dict, keys: tuple[str, ...]) -> object:
+    for key in keys:
+        if data.get(key) not in (None, ""):
+            return data[key]
+    return None
+
+
+def _to_port(value: object) -> int | None:
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return port if 0 <= port <= 65535 else None
+
+
+def process_from_pillage(proc_info: dict) -> HostProcess | None:
+    """
+    Convert a ``process_list`` entry of the pillage results
+    (``{"Process Name": ..., "modules": [{"Module Name": ...}, ...], ...}``)
+    to a :class:`~peat.data.models.HostProcess`. The loaded modules (DLLs)
+    and other keys are kept in ``extra``.
+    """
+    name = str(proc_info.get("Process Name") or "").strip()
+    pid = _first(proc_info, _PID_KEYS)
+    executable = _first(proc_info, _EXECUTABLE_KEYS)
+    if not name and pid is None and not executable:
+        return None
+
+    proc = HostProcess(type="process", name=name)
+
+    try:
+        if pid is not None:
+            proc.pid = int(str(pid), 0)
+    except ValueError:
+        proc.extra["pid_raw"] = str(pid)
+
+    if executable:
+        proc.executable = str(executable)
+
+    used_keys = {"Process Name", *_PID_KEYS, *_EXECUTABLE_KEYS}
+    for key, value in proc_info.items():
+        if key not in used_keys and value not in (None, "", []):
+            proc.extra[utils.convert_to_snake_case(key)] = value
+
+    return proc
+
+
+def file_from_pillage(file_info: dict, device_id: str = "") -> File | None:
+    """
+    Convert a ``file_list`` entry of the pillage results
+    (``{"Name": "\\Windows\\app.exe", "Type": "File", "SHA256": ...}``)
+    to a :class:`~peat.data.models.File`.
+    """
+    raw_name = str(file_info.get("Name") or "").strip()
+    if not raw_name:
+        return None
+
+    path = PureWindowsPath(raw_name)
+    raw_type = str(file_info.get("Type") or "").strip().lower()
+    f_type = "dir" if raw_type in ("directory", "dir", "folder") else "file"
+
+    file_obj = File(
+        device=device_id,
+        path=path,
+        name=path.name or raw_name,
+        directory=str(path.parent) if path.name else "",
+        type=f_type,
+    )
+    if f_type == "file" and path.suffix:
+        file_obj.extension = path.suffix.lstrip(".")
+
+    sha256 = str(file_info.get("SHA256") or "").strip()
+    if len(sha256) == 64:
+        file_obj.hash = Hash(sha256=sha256)
+
+    for key, value in file_info.items():
+        if key not in ("Name", "Type", "SHA256") and value not in (None, ""):
+            file_obj.extra[utils.convert_to_snake_case(key)] = value
+
+    return file_obj
+
+
+def connection_from_socket(socket: dict, transport: str) -> Relationship | None:
+    """
+    A non-listening socket of the pillage results -> :class:`~peat.data.models.Relationship`
+    (``evidence={"netstat"}``). Only keys present in the data are used; the
+    direction and protocol are inferred by ``Relationship.annotate()``.
+    """
+    remote_ip = str(_first(socket, _REMOTE_IP_KEYS) or "").strip()
+    if not utils.is_ip(remote_ip) or remote_ip in ("0.0.0.0", "::"):
+        return None
+
+    local_ip = str(_first(socket, _LOCAL_IP_KEYS) or "").strip()
+    return Relationship(
+        transport=transport,
+        local=RelationshipEndpoint(
+            ip=local_ip if utils.is_ip(local_ip) and local_ip not in ("0.0.0.0", "::") else "",
+            port=_to_port(socket.get("Local Port")),
+        ),
+        remote=RelationshipEndpoint(
+            ip=remote_ip,
+            port=_to_port(_first(socket, _REMOTE_PORT_KEYS)),
+        ),
+        state=str(socket.get("state") or "").strip().lower(),
+        evidence={"netstat"},
+    )
 
 
 class WindowsCE(DeviceModule):
@@ -86,14 +203,16 @@ class WindowsCE(DeviceModule):
 
         # Populate information about files
         if "file_list" in data:
-            dev.extra["file_list"] = data["file_list"]
-
             for file_info in data["file_list"]:
                 if file_info.get("SHA256") and len(file_info["SHA256"]) == 64:
                     dev.related.hash.add(file_info["SHA256"])
 
                 if file_info.get("Type", "") == "File" and file_info.get("Name"):
                     dev.related.files.add(file_info["Name"])
+
+                file_obj = file_from_pillage(file_info, dev.get_comm_id())
+                if file_obj:
+                    dev.store("files", file_obj)
 
         # Populate information about network sockets
         if "network_sockets" in data:
@@ -110,20 +229,27 @@ class WindowsCE(DeviceModule):
                 44818: "cip",
             }
 
-            # TCP sockets. Only pull information from sockets in LISTEN state.
+            # TCP sockets. Sockets in LISTEN state are services, other
+            # sockets (connections) are relationships.
+            connections = []  # type: list[Relationship]
             for t_skt in data["network_sockets"].get("TCP Sockets", []):
-                if t_skt.get("state") == "LISTEN":
-                    t_port = t_skt["Local Port"]  # type: int
-                    dev.related.ports.add(t_port)
+                if t_skt.get("state") != "LISTEN":
+                    rel = connection_from_socket(t_skt, "tcp")
+                    if rel:
+                        connections.append(rel)
+                    continue
 
-                    svc = Service(
-                        port=t_port,
-                        protocol=_protocol_lookups.get(t_port, ""),
-                        transport="tcp",
-                        status="open",
-                    )
+                t_port = t_skt["Local Port"]  # type: int
+                dev.related.ports.add(t_port)
 
-                    dev.store("service", svc, lookup="port")
+                svc = Service(
+                    port=t_port,
+                    protocol=_protocol_lookups.get(t_port, ""),
+                    transport="tcp",
+                    status="open",
+                )
+
+                dev.store("service", svc, lookup="port")
 
             # UDP sockets. Save all ports to related, but only
             # save low ports as services (port < 10000).
@@ -143,10 +269,11 @@ class WindowsCE(DeviceModule):
 
                         dev.store("service", svc, lookup="port")
 
+            # After the services, so the direction is inferred from listening ports
+            store_relationships(dev, connections)
+
         # Populate information about processes
         if "process_list" in data:
-            dev.extra["process_list"] = data["process_list"]
-
             for proc_info in data["process_list"]:
                 # Add process name to related.process
                 if proc_info.get("Process Name"):
@@ -156,6 +283,10 @@ class WindowsCE(DeviceModule):
                 for mod_info in proc_info.get("modules", []):
                     if "." in mod_info.get("Module Name", ""):
                         dev.related.files.add(mod_info["Module Name"])
+
+                proc = process_from_pillage(proc_info)
+                if proc:
+                    dev.store("processes", proc)
 
         # Populate information about Windows Registry keys
         # HKEY_LOCAL_MACHINE is the most interesting of these.
@@ -284,8 +415,8 @@ class WindowsCE(DeviceModule):
             dev.extra["HKEY_CURRENT_USER"] = data["HKEY_CURRENT_USER"]
         if "HKEY_CLASSES_ROOT" in data:
             dev.extra["HKEY_CLASSES_ROOT"] = data["HKEY_CLASSES_ROOT"]
-        if "HKEY_CLASSES_ROOT" in data:
-            dev.extra["HKEY_CLASSES_ROOT"] = data["HKEY_CLASSES_ROOT"]
+        if "HKEY_USERS" in data:
+            dev.extra["HKEY_USERS"] = data["HKEY_USERS"]
 
         # Populate information about system info
         if "system_info" in data:

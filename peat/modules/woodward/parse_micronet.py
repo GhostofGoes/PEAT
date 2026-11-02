@@ -6,7 +6,7 @@ from elftools.common.utils import bytes2str
 from elftools.elf.elffile import ELFFile
 
 from peat import DeviceData, log, utils
-from peat.data.models import Event
+from peat.data.models import Event, File, Hash
 
 
 def get_info_firmware(
@@ -144,7 +144,7 @@ def get_info_bootrom(dev: DeviceData, filepath: Path, timestamp: datetime | None
     dev.boot_firmware.file.type = "file"
     dev.boot_firmware.file.name = filepath.name
     dev.boot_firmware.file.mtime = timestamp
-    dev.boot_firmware.file.local_path = dev.get_out_dir() / remote_path
+    dev.boot_firmware.file.local_path = filepath
 
     return True
 
@@ -282,7 +282,7 @@ def get_gap_info(dev: DeviceData, filename: str, path: Path, timestamp: datetime
     dev.logic.file.path = remote_path
     dev.logic.file.directory = remote_path.parent.as_posix()
     dev.logic.file.name = filename
-    dev.logic.file.local_path = dev.get_out_dir() / remote_path
+    dev.logic.file.local_path = filepath
     dev.logic.file.size = file_size
     dev.logic.file.type = "file"
     dev.logic.file.extension = "out"
@@ -295,26 +295,35 @@ def get_gap_info(dev: DeviceData, filename: str, path: Path, timestamp: datetime
     return True
 
 
-def create_artifact(dev: DeviceData, filepath: Path, timestamp: str) -> None:
+def create_artifact(dev: DeviceData, filepath: Path, timestamp: str | datetime) -> File | None:
     """
-    Get hashes of each file pulled and store each as dict
-    with fields ``filename``, ``md5``, ``sha256``.
+    Add a file pulled from the device to ``dev.files``, with its path on the
+    device, the local path of the downloaded copy, hashes, size and the
+    modification time reported by the device (FTP ``MDTM``).
 
-    Each of these is stored in ``dev.extra["file_artifacts"]``.
+    Returns:
+        The :class:`~peat.data.models.File` that was stored, or :obj:`None`
+        if the downloaded file doesn't exist
     """
+    # Path on the device: the local path relative to the device's output directory
     remote_path = filepath.as_posix().replace(dev.get_out_dir().as_posix(), "")
-    try:
-        new_artifact = {
-            "filename": filepath.name,
-            **utils.gen_hashes(filepath),
-            "filepath": filepath,
-            "timestamp": timestamp,
-            "path": PurePosixPath(remote_path, filepath.name),
-            "local_path": filepath.as_posix(),
-        }
+    remote_path = PurePosixPath("/", remote_path.lstrip("/"))
 
-        if not dev.extra.get("file_artifacts"):
-            dev.extra["file_artifacts"] = []
-        dev.extra["file_artifacts"].append(new_artifact)
+    try:
+        file_obj = File(
+            name=filepath.name,
+            path=remote_path,
+            directory=remote_path.parent.as_posix(),
+            local_path=filepath,
+            mtime=timestamp,
+            size=filepath.stat().st_size,
+            hash=Hash.parse_obj(utils.gen_hashes(filepath)),
+            type="file",
+            peat_module="MicroNet",
+        )
     except FileNotFoundError as fnf:
         log.warning(f"Error generating file artifact: {fnf}")
+        return None
+
+    dev.store("files", file_obj)
+    return file_obj

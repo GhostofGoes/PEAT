@@ -1,3 +1,5 @@
+import copy
+import re
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import PurePath
@@ -5,8 +7,37 @@ from pathlib import PurePath
 from bs4 import BeautifulSoup
 
 from peat import DeviceData, config, consts, log, utils
-from peat.data import Interface, Register, Service, SSHKey, User
+from peat.data import (
+    Interface,
+    Register,
+    Relationship,
+    RelationshipEndpoint,
+    Service,
+    SSHKey,
+    TimeSource,
+    User,
+)
+from peat.data.data_utils import merge_models
 from peat.protocols import HTTP, clean_mac
+
+# Keys of JSON API data with secret values (Wi-Fi password, VPN credentials, ...).
+# Their values are never stored in the data model or written to files.
+SECRET_KEY_RE = re.compile(r"pass(word|phrase)?$|psk|secret|private_?key", re.IGNORECASE)
+
+# API data that is not copied to dev.extra (fully processed into the data
+# model elsewhere, or it holds secrets: "wifihotspot" has the Wi-Fi password)
+EXCLUDED_FROM_EXTRA = ["ssh_keys", "users", "roles", "wifihotspot"]
+
+# ntpq "tally code" (first character of the "remote" column) -> TimeSource.state
+NTP_TALLY_STATES = {
+    "*": "active",  # system peer (selected)
+    "o": "active",  # selected, PPS
+    "+": "candidate",
+    "#": "standby",  # backup
+    "-": "outlier",
+    "x": "falseticker",
+    ".": "excess",
+}
 
 
 class TotusHTTP(HTTP):
@@ -178,12 +209,12 @@ class TotusHTTP(HTTP):
                 else:
                     parsed_data = response.json()
                     # Only add some data to host.extra
-                    if label not in ["ssh_keys", "users", "roles"]:
-                        dev.extra[label] = parsed_data
+                    if label not in EXCLUDED_FROM_EXTRA:
+                        dev.extra[label] = redact_secrets(parsed_data)
 
                 if config.DEVICE_DIR:
                     dev.write_file(
-                        data=parsed_data,
+                        data=redact_secrets(parsed_data),
                         filename=f"{label}.json",
                         out_dir=dev.get_sub_dir("http_json_data"),
                     )
@@ -236,34 +267,52 @@ class TotusHTTP(HTTP):
     def process_timedate(dev: DeviceData, time_info: dict) -> None:
         dev.geo.timezone = time_info["timezone"]
 
-        if dev.uptime:
+        curr_time = utils.parse_date(time_info["time"]) if time_info.get("time") else None
+        if curr_time:
+            # Device clock, and when PEAT read it
+            dev.clock.time = curr_time
+            dev.clock.observed = utils.utc_now()
+
+        if dev.uptime and curr_time:
             # Calculate start_time from device's timestamp - uptime
-            curr_time = utils.parse_date(time_info["time"])
-            if curr_time:
-                dev.start_time = curr_time - timedelta(seconds=dev.uptime.total_seconds())
+            dev.start_time = curr_time - timedelta(seconds=dev.uptime.total_seconds())
 
     @staticmethod
     def process_ntp_config(dev: DeviceData, ntp_config: dict) -> None:
         """
-        Add GPS/NTP remotes to set of "related" hosts and IPs.
+        Configured GPS/NTP servers -> ``dev.clock.sources``
+        (also added to the "related" hosts and IPs).
         """
         for time_source in ntp_config:
+            if not isinstance(time_source, str) or not time_source.strip():
+                continue
+
             if utils.is_ip(time_source):
                 dev.related.ip.add(time_source)
             else:
                 dev.related.hosts.add(time_source)
 
+            store_time_source(
+                dev, TimeSource(protocol="ntp", address=time_source.strip(), enabled=True)
+            )
+
     @staticmethod
     def process_ntp_status(dev: DeviceData, ntp_status: dict) -> None:
         """
-        Add GPS/NTP peers to set of "related" hosts and IPs.
+        GPS/NTP peers (``ntpq -p`` style) -> ``dev.clock.sources``
+        (also added to the "related" hosts and IPs).
         """
         for peer in ntp_status.get("status", {}).get("peers", []):
-            if peer.get("remote"):
-                if utils.is_ip(peer["remote"]):
-                    dev.related.ip.add(peer["remote"])
-                else:
-                    dev.related.hosts.add(peer["remote"])
+            source = ntp_peer_to_time_source(peer)
+            if not source:
+                continue
+
+            if utils.is_ip(source.address):
+                dev.related.ip.add(source.address)
+            else:
+                dev.related.hosts.add(source.address)
+
+            store_time_source(dev, source)
 
     @staticmethod
     def __process_if_dict(dev: DeviceData, iface: Interface, if_dict: dict) -> None:
@@ -564,6 +613,9 @@ class TotusHTTP(HTTP):
     def process_openvpn(dev: DeviceData, openvpn: dict) -> None:
         """
         Extract hostnames and/or IPs from OpenVPN configs.
+
+        Each configured remote (VPN server) becomes a
+        ``Relationship(type="tunnel", protocol="openvpn")``.
         """
         for ov_profile in openvpn.get("profiles", []):
             # Add any IPs found in "address" to remote.ip
@@ -577,10 +629,15 @@ class TotusHTTP(HTTP):
                 if not remote.get("host"):
                     continue
 
-                if utils.is_ip(remote["host"]):
-                    dev.related.ip.add(remote["host"])
+                host = str(remote["host"]).strip()
+                if utils.is_ip(host):
+                    dev.related.ip.add(host)
                 else:
-                    dev.related.hosts.add(remote["host"])
+                    dev.related.hosts.add(host)
+
+                rel = openvpn_remote_relationship(ov_profile, remote)
+                if rel:
+                    dev.store("relationships", rel)
 
     @staticmethod
     def process_wifihotspot(dev: DeviceData, wifihotspot: dict) -> None:
@@ -594,9 +651,10 @@ class TotusHTTP(HTTP):
             f"Wi-Fi Hotspot with an SSID of {wifihotspot.get('ssid', '')}"
         )
 
-        iface.extra.update(wifihotspot)
-        if iface.extra.get("password"):
-            del iface.extra["password"]
+        # NOTE: never store the Wi-Fi password
+        iface.extra.update(
+            {k: v for k, v in wifihotspot.items() if not SECRET_KEY_RE.search(str(k))}
+        )
 
         dev.store("interface", iface, lookup="name")
 
@@ -634,6 +692,9 @@ class TotusHTTP(HTTP):
     def process_dnp3_channels(dev: DeviceData, dnp3_channels: dict) -> None:
         """
         DNP3 configuration.
+
+        Each channel is a DNP3 outstation ``Service``, and a relationship
+        to the configured DNP3 master (``remoteAddress``).
         """
         for dnp3_ch in dnp3_channels:
             svc = Service(
@@ -653,8 +714,6 @@ class TotusHTTP(HTTP):
                 svc.extra["channel"] = dnp3_ch["channel"]
             if dnp3_ch.get("bufferSize") is not None:
                 svc.extra["buffer_size"] = int(dnp3_ch["bufferSize"])
-            if dnp3_ch.get("remoteAddress") is not None:
-                svc.extra["remote_address"] = int(dnp3_ch["remoteAddress"])
             if dnp3_ch.get("keepaliveTimeout") is not None:
                 svc.extra["keepalive_timeout"] = int(dnp3_ch["keepaliveTimeout"])
 
@@ -664,6 +723,30 @@ class TotusHTTP(HTTP):
                 dev.related.protocols.add(svc.protocol)
 
             dev.store("service", svc, interface_lookup={"ip": dev.ip})
+
+            # The configured DNP3 master (its IP isn't in the configuration).
+            # Stored after the service, so the direction (master connects to
+            # the outstation's port) is inferred from the listening service.
+            if dnp3_ch.get("remoteAddress") is not None:
+                dev.store(
+                    "relationships",
+                    Relationship(
+                        protocol="dnp3",
+                        transport=svc.transport,
+                        local=RelationshipEndpoint(
+                            port=svc.port,
+                            protocol_address=svc.protocol_id,
+                            role="outstation",
+                        ),
+                        remote=RelationshipEndpoint(
+                            protocol_address=str(dnp3_ch["remoteAddress"]),
+                            role="master",
+                        ),
+                        enabled=True,
+                        evidence={"config"},
+                        description=str(dnp3_ch.get("name", "")),
+                    ),
+                )
 
     @staticmethod
     def parse_modbus_map(modbus_map_html: str) -> list[dict]:
@@ -807,3 +890,132 @@ class TotusHTTP(HTTP):
 
 
 __all__ = ["TotusHTTP"]
+
+
+def redact_secrets(data):
+    """
+    Copy of JSON API data with the values of secret keys (passwords,
+    pre-shared keys, ...) replaced by ``"<redacted>"`` (see :data:`SECRET_KEY_RE`).
+    """
+    if isinstance(data, dict):
+        return {
+            k: (
+                "<redacted>"
+                if SECRET_KEY_RE.search(str(k)) and isinstance(v, str) and v
+                else redact_secrets(v)
+            )
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [redact_secrets(v) for v in data]
+    return copy.copy(data)
+
+
+def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
+    """
+    Convert a NTP peer from the Totus NTP status (``ntpq -p`` columns:
+    ``remote``, ``refid``, ``st``, ``when``, ``poll``, ``reach``, ``delay``,
+    ``offset``, ``jitter``) to a :class:`~peat.data.models.TimeSource`.
+
+    The tally code that ``ntpq`` puts before the remote (``*`` = selected
+    peer, ``+`` = candidate, ...) sets ``state``/``selected``. ``ntpq`` reports
+    ``offset`` in milliseconds; :attr:`TimeSource.offset` is in seconds.
+    """
+    if not isinstance(peer, dict):
+        return None
+
+    remote = str(peer.get("remote") or "").strip()
+    tally = str(peer.get("tally") or "").strip()
+    if remote and remote[0] in NTP_TALLY_STATES:
+        tally, remote = remote[0], remote[1:].strip()
+    if not remote:
+        return None
+
+    source = TimeSource(protocol="ntp", address=remote)
+
+    if tally in NTP_TALLY_STATES:
+        source.state = NTP_TALLY_STATES[tally]
+        source.selected = tally in ("*", "o")
+
+    stratum = _to_int(peer.get("stratum", peer.get("st")))
+    if stratum is not None and 0 <= stratum <= 16:
+        source.stratum = stratum
+
+    reach = peer.get("reach")
+    if not source.state and reach is not None and str(reach).strip() in ("0", "000"):
+        source.state = "unreachable"
+
+    try:
+        if peer.get("offset") not in (None, ""):
+            source.offset = round(float(peer["offset"]) / 1000.0, 9)
+    except (TypeError, ValueError):
+        source.extra["offset_raw"] = str(peer["offset"])
+
+    for key in ("refid", "t", "when", "poll", "reach", "delay", "jitter"):
+        if peer.get(key) not in (None, ""):
+            source.extra[key] = peer[key]
+
+    return source
+
+
+def store_time_source(dev: DeviceData, source: TimeSource) -> None:
+    """Add a time source to ``dev.clock.sources``, merged with an existing one."""
+    for existing in dev.clock.sources:
+        if (existing.protocol, existing.address, existing.port) == (
+            source.protocol,
+            source.address,
+            source.port,
+        ):
+            merge_models(existing, source)
+            return
+    dev.clock.sources.append(source)
+
+
+def openvpn_remote_relationship(profile: dict, remote: dict) -> Relationship | None:
+    """
+    ``Relationship(type="tunnel", protocol="openvpn")`` to an OpenVPN server
+    configured as a ``remote`` of an OpenVPN (client) profile.
+    """
+    host = str(remote.get("host") or "").strip()
+    if not host:
+        return None
+
+    endpoint = RelationshipEndpoint(role="server")
+    if utils.is_ip(host):
+        endpoint.ip = host
+    else:
+        endpoint.hostname = host
+
+    port = _to_int(remote.get("port"))
+    if port is not None and 0 < port <= 65535:
+        endpoint.port = port
+
+    transport = str(remote.get("proto") or remote.get("protocol") or "").lower()
+    transport = {"tcp-client": "tcp", "udp4": "udp", "tcp4-client": "tcp"}.get(
+        transport, transport
+    )
+
+    rel = Relationship(
+        type="tunnel",
+        protocol="openvpn",
+        transport=transport if transport in ("tcp", "udp") else "",
+        direction="egress",  # the device connects to its configured remotes
+        local=RelationshipEndpoint(role="client"),
+        remote=endpoint,
+        evidence={"config"},
+    )
+
+    name = profile.get("name") or profile.get("id")
+    if name not in (None, ""):
+        rel.extra["profile"] = str(name)
+    if profile.get("enabled") is not None:
+        rel.enabled = bool(profile["enabled"])
+
+    return rel
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
