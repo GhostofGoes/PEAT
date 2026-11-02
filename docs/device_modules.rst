@@ -43,6 +43,14 @@ Rockwell Parsing
 .. automodule:: peat.modules.rockwell.clx_string_logic_parser
    :members:
 
+.. automodule:: peat.modules.rockwell.clx_identity
+   :members:
+
+Rockwell known defaults
+^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.rockwell.clx_defaults
+   :members:
+
 Studio5000/RSLogix 5000 L5X file parsing
 ----------------------------------------
 .. automodule:: peat.modules.rockwell.logic_l5x
@@ -194,6 +202,11 @@ UMAS protocol
 .. automodule:: peat.modules.schneider.m340.umas_codes
    :members:
 
+M340 known defaults
+^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.schneider.m340.m340_defaults
+   :members:
+
 .. ION power meter
 .. ---------------
 .. .. automodule:: peat.modules.schneider.ion.ion
@@ -239,6 +252,11 @@ Sage SSH
 Sage commands
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.schneider.sage.sage_commands
+   :members:
+
+Sage known defaults
+^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.schneider.sage.sage_defaults
    :members:
 
 Schweitzer Engineering Laboratories (SEL)
@@ -298,6 +316,11 @@ Relay Parsing
 RTAC Parsing
 ^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.rtac_parse
+   :members:
+
+SEL known defaults
+^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_defaults
    :members:
 
 Siemens
