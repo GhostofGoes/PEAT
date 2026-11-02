@@ -531,6 +531,45 @@ eq(values(later_pass("OTTER\r\n", 7), "selascii.password"), "*****", "fallback b
 eq(values(later_pass("TTER\r\n", 8), "selascii.command"), "", "fallback masks the password")
 eq(values(later_pass("TTER\r\n", 8), "selascii.password"), "****", "fallback password")
 
+-- Passwords typed ahead of their prompts: for an access command that is not the
+-- oldest pending command, for PAS (old, new and confirmed password), and a second
+-- guess for an access command. A command typed ahead stays a command.
+frames = run_tcp({
+  { false, "\2\r\n=\3" },
+  { true, "ACC\r\nOTTER\r\n2AC\r\nTAIL\r\n" },
+  { false, "ACC\r\n\2\r\nPassword: ?\3" },
+  { false, "\r\n\2\r\nLevel 1\r\n=>\3" },
+  { false, "2AC\r\n\2\r\nPassword: ?\3" },
+  { false, "\r\n\2\r\nLevel 2\r\n=>>\3" },
+  { true, "PAS 1\r\n" },
+  { false, "PAS 1\r\n\2\r\nOld Password: ?\3" },
+  { true, "OTTER\r\nID\r\nID\r\n" },
+  { false, "\r\n\2\r\nNew Password: ?\3" },
+  { false, "\r\n\2\r\nConfirm New Password: ?\3" },
+  { false, "\r\n\2\r\nPassword Changed\r\n=>>\3" },
+  { true, "QUI\r\nACC\r\notter\r\nOTTER\r\nSHO\r\n" },
+  { false, "QUI\r\n\2\r\n=\3ACC\r\n\2\r\nPassword: ?\3" },
+  { false, "\r\n\2\r\nPassword: ?\3" },
+  { false, "\r\n\2\r\nLevel 1\r\n=>\3" },
+  { false, "SHO\r\n\2\r\nGroup 1\r\n=>\3" },
+}, 23)
+for pass = 1, 2 do
+  local fr = frames[pass]
+  local p = " (typed ahead, pass " .. pass .. ")"
+  eq(values(fr[2], "selascii.command"), "ACC;2AC", "pipelined access commands" .. p)
+  eq(values(fr[2], "selascii.password"), "*****;****", "pipelined passwords masked" .. p)
+  eq(values(fr[2], "selascii.response_to"), "ACC;2AC", "pipelined password pairing" .. p)
+  eq(values(fr[2], "selascii.password.factory_default"),
+    "Factory-default password;Factory-default password", "pipelined defaults" .. p)
+  eq(values(fr[6], "selascii.response_to"), "2AC", "2AC level prompt pairing" .. p)
+  eq(values(fr[9], "selascii.password"), "*****;**;**", "PAS passwords masked" .. p)
+  eq(values(fr[9], "selascii.command"), "", "PAS passwords are not commands" .. p)
+  eq(values(fr[12], "selascii.response_to"), "PAS 1", "PAS level prompt pairing" .. p)
+  eq(values(fr[13], "selascii.command"), "QUI;ACC;SHO", "commands around a retry" .. p)
+  eq(values(fr[13], "selascii.password"), "*****;*****", "typed-ahead retry masked" .. p)
+  eq(values(fr[17], "selascii.response_to"), "SHO", "SHO pairing after the retry" .. p)
+end
+
 -- A message that ends at the end of deferred data, followed by the start of a
 -- message that needs more data: decoded once, in the frame that completes both
 frames = run_tcp({

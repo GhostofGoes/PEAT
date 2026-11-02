@@ -824,6 +824,51 @@ def test_random_segmentation_gives_the_same_result_on_both_passes(tshark, tmp_pa
         assert passwords[stream] == 2, stream
 
 
+def test_passwords_typed_ahead_are_masked(tshark, tmp_path):
+    """Passwords sent before their prompts are masked, and commands stay commands."""
+    pcap = PcapWriter(LINKTYPE_ETHERNET)
+    tcp = TcpSession(pcap, 23, telnet=True)
+    tcp.handshake()  # 1-3
+    tcp.server(prompt(b"="))  # 4
+    tcp.client(b"ACC\r\nOTTER\r\n2AC\r\nTAIL\r\n")  # 5 2AC is not the oldest command
+    tcp.server(b"ACC\r\n\x02\r\nPassword: ?\x03")  # 6
+    tcp.server(b"\r\n\x02\r\nLevel 1\r\n=>\x03")  # 7
+    tcp.server(b"2AC\r\n\x02\r\nPassword: ?\x03")  # 8
+    tcp.server(b"\r\n\x02\r\nLevel 2\r\n=>>\x03")  # 9
+    tcp.client(b"PAS 1\r\n")  # 10
+    tcp.server(b"PAS 1\r\n\x02\r\nOld Password: ?\x03")  # 11
+    tcp.client(b"OTTER\r\nMET123\r\nMET123\r\n")  # 12 old, new and confirmed password
+    tcp.server(b"\r\n\x02\r\nNew Password: ?\x03")  # 13
+    tcp.server(b"\r\n\x02\r\nConfirm New Password: ?\x03")  # 14
+    tcp.server(b"\r\n\x02\r\nPassword Changed\r\n=>>\x03")  # 15
+    tcp.client(b"QUI\r\nACC\r\notter\r\nOTTER\r\nID\r\n")  # 16 a second guess, then ID
+    tcp.server(b"QUI\r\n" + prompt(b"=") + b"ACC\r\n\x02\r\nPassword: ?\x03")  # 17
+    tcp.server(b"\r\n\x02\r\nPassword: ?\x03")  # 18
+    tcp.server(b"\r\n\x02\r\nLevel 1\r\n=>\x03")  # 19
+    tcp.server(ID_RESPONSE + prompt(b"=>"))  # 20
+    path = pcap.write(tmp_path / "typed_ahead.pcap")
+    fields = [
+        "frame.number",
+        "selascii.password",
+        "selascii.command",
+        "selascii.response_to",
+        "selascii.password.factory_default",
+        "_ws.col.Info",
+    ]
+    one, two = (tshark(path, two_pass=two_pass, fields=fields) for two_pass in (False, True))
+    assert one == two
+    rows = {line.split("|")[0]: line.split("|")[1:] for line in one.splitlines()}
+    assert rows["5"][:3] == ["*****;****", "ACC;2AC", "ACC;2AC"]
+    assert rows["5"][3] == "1;1"  # both factory-default passwords
+    assert rows["9"][2] == "2AC"
+    assert rows["12"][:3] == ["*****;******;******", "", "PAS 1;PAS 1;PAS 1"]
+    assert rows["15"][2] == "PAS 1"
+    assert rows["16"][:3] == ["*****;*****", "QUI;ACC;ID", "ACC;ACC"]
+    assert rows["20"][2] == "ID;ID"
+    for secret in (b"OTTER", b"TAIL", b"MET123", b"otter"):
+        assert secret.decode() not in one
+
+
 def _random_payload(rng: random.Random) -> bytes:
     pieces = [
         b"\x02",

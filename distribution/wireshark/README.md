@@ -192,10 +192,14 @@ that could not be decoded, and Telnet subnegotiation not terminated.
 - The dissector has been tested with synthetic captures modeled on public SEL
   documentation. Echo and framing details may vary by device family; reports and
   sample captures from real devices are welcome.
-- A question is recognized by its last line ending in `?`. Access level and
-  `PAS` commands take one password per password prompt (the first one may be
-  typed ahead of its prompt). Request lines sent while a settings, control or
-  maintenance command waits for its level prompt are treated as answers.
+- A question is recognized by its last line ending in `?`. Access level
+  commands take one password per password prompt and `PAS` up to three (old,
+  new and confirmation); these may be typed ahead of their prompts, also after
+  other pipelined commands. A further line typed ahead of the level prompt, for
+  example a second guess at a password, is masked unless it starts with an SEL
+  command mnemonic, in which case it is shown as a command. Request lines sent
+  while a settings, control or maintenance command waits for its level prompt
+  are treated as answers.
 - A Telnet subnegotiation (`IAC SB`) without `IAC SE` is waited for over one more
   segment at most; after that it is shown as unterminated and the rest of the
   segment is decoded.

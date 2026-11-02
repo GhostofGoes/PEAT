@@ -857,6 +857,22 @@ local function mask(text)
   return string.rep("*", #text)
 end
 
+-- The access command or PAS that a request line is a password for. Each takes one
+-- password per password prompt, and passwords may be typed ahead of their prompts
+-- (entry.ahead), so this is the oldest one with a password still to come. A line
+-- that is not an SEL command, typed ahead of the level prompt right after an access
+-- command or PAS (for example a second guess), is masked as a password as well.
+local function password_owner(st, line)
+  for _, e in ipairs(st.pending) do
+    if e.password_input and e.answers < math.max(e.password_prompts, e.ahead) then return e end
+  end
+  local last = st.pending[#st.pending]
+  if last and last.password_input and line ~= "" and not COMMANDS[classify(line) or ""] then
+    return last
+  end
+  return nil
+end
+
 local function first_pass_request(pinfo, st, note, line, unterminated)
   local head = st.pending[1]
   note.level = st.level
@@ -865,20 +881,19 @@ local function first_pass_request(pinfo, st, note, line, unterminated)
     note.kind, note.parent = "YMODEM start", head
     return
   end
-  -- Access commands and PAS take one password per password prompt (the first
-  -- one may be typed ahead of its prompt). Other interactive commands (SET,
-  -- STA C, PUL ...) take any number of answers until their level prompt.
-  local password_due = head ~= nil and head.password_input
-      and head.answers < math.max(head.password_prompts, head.first_password)
-  local input = password_due or (head ~= nil and head.interactive and not head.password_input)
+  -- A password (see password_owner), or an answer: other interactive commands
+  -- (SET, STA C, PUL ...) take any number of answers until their level prompt.
+  local owner = password_owner(st, line)
+  local input = owner ~= nil or (head ~= nil and head.interactive and not head.password_input)
       or st.expect_input or st.expect_password or (line == "" and head ~= nil)
   if input then
-    note.parent = head
-    note.secret = password_due or st.expect_password
+    note.parent = owner or head
+    note.secret = owner ~= nil or st.expect_password
         or (st.question ~= nil and is_password_prompt(st.question))
-    if password_due then head.answers = head.answers + 1 end
+    if owner then owner.answers = owner.answers + 1 end
     if note.secret then
-      note.factory_default = is_factory_password(head and ACCESS_TARGET[head.mnem], line)
+      local target = note.parent and ACCESS_TARGET[note.parent.mnem]
+      note.factory_default = is_factory_password(target, line)
     end
     note.kind = note.secret and "Password" or "Input"
     st.expect_input, st.expect_password, st.question = false, false, nil
@@ -890,8 +905,11 @@ local function first_pass_request(pinfo, st, note, line, unterminated)
   entry.interactive = mnem ~= nil and is_interactive(mnem, cat)
   entry.password_input = mnem ~= nil and (ACCESS_TARGET[mnem] ~= nil or mnem == "PAS")
   if entry.password_input then
-    -- "PAS <level> <password>" (older relays) has the password on the line
-    entry.first_password = (mnem == "PAS" and args:find("^%S+%s+%S")) and 0 or 1
+    -- Passwords that may be typed ahead of their prompts: one for an access
+    -- command, the old, new and confirmed one for PAS, and none for
+    -- "PAS <level> <password>" (older relays), which has it on the line
+    entry.ahead = 1
+    if mnem == "PAS" then entry.ahead = args:find("^%S+%s+%S") and 0 or 3 end
     entry.password_prompts, entry.answers = 0, 0
   end
   if #st.pending >= MAX_PENDING then table.remove(st.pending, 1) end
