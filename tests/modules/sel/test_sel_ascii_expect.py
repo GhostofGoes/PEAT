@@ -414,6 +414,9 @@ def test_unframed_prompts(relay_server, mocker):
 
 def test_legacy_timing_uses_fixed_delays(relay_server, mocker):
     sleep = mocker.patch.object(sel_ascii, "sleep")
+    # The fixed delays are skipped, so give the relay time to answer before the
+    # read (slow CI runners take longer than the 0.15 s default)
+    mocker.patch.object(Telnet, "READ_DELAY", 1.0)
     server = relay_server(lambda: FakeSELRelay(level="1"))
     tn = _telnet(server, legacy_timing=True)
     info = tn.get_id()
@@ -513,8 +516,9 @@ def test_nothing_is_sent_after_can_is_ignored(relay_server):
         lambda: FakeSELRelay(passwords={"acc": "OTTER", "2ac": "Other-2"}, ignore_can=True)
     )
     tn = _telnet(server)
-    tn.timeout = 0.3
     assert tn.elevate(1) is True
+    # Only the wait for the prompt after CAN should time out
+    tn.timeout = 1.0
     assert tn.elevate(2) is False
     assert "CAN" in tn.halted
     relay = server.relays[0]
@@ -545,8 +549,9 @@ def test_pull_more_commands_stops_when_halted(relay_server):
     )
     dev = datastore.get("127.0.0.1", "ip")
     dev.description.model = "351S"
+    # The default 2 s timeout, so the ACC login succeeds on slow CI runners and
+    # only the wait for the prompt after CAN times out
     tn = _telnet(server)
-    tn.timeout = 0.3
 
     assert SELRelay.pull_more_commands(dev, tn) is False
     assert tn.halted
