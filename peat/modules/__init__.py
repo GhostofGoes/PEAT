@@ -4,6 +4,7 @@ from peat.modules.camlin import Totus
 from peat.modules.fortinet import Fortigate
 from peat.modules.ge import GERTU, GERelay
 from peat.modules.idirect import Idirect
+from peat.modules.iec61850 import IEC61850SCL
 from peat.modules.openplc import OpenPLCv4
 from peat.modules.rockwell import L5X, ControlLogix
 from peat.modules.sandia import SCEPTRE

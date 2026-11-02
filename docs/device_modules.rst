@@ -92,6 +92,54 @@ GE Relays
    :members:
    :no-undoc-members:
 
+IEC 61850 (vendor-neutral)
+==========================
+
+IEC 61850 SCL files
+-------------------
+The :class:`~peat.modules.iec61850.iec61850_scl.IEC61850SCL` module parses
+IEC 61850-6 System Configuration description Language (SCL) files exported by
+substation engineering tools: ``SCD``, ``ICD``, ``IID``, ``CID`` (plain XML),
+``SED`` and ``SSD``. It produces one device per IED in the file, with:
+
+- :attr:`~peat.data.models.DeviceData.iec61850`: SCL header and change history,
+  IED identity (``manufacturer``, ``type``, ``configVersion``), access points
+  (IP addresses, MMS port, authentication, PRP/HSR redundancy, physical ports),
+  logical devices and nodes, GOOSE/SV/report control blocks with their MAC
+  address, APPID and VLAN, and subscriptions (``ExtRef`` inputs)
+- network interfaces, services (``mms`` server, ``goose``/``sv`` publisher, with
+  their security settings) and relationships (``publishes_to``,
+  ``subscribes_to``, ``reports_to``). The ``reference`` of a relationship
+  (e.g. ``PROT1PRO/LLN0$GO$gcbTrip``) is the same on the publisher and on each
+  subscriber, which joins both ends across devices
+- ``scl-validation`` alert events for duplicate or out-of-range GOOSE/SV APPIDs
+  (within an IED and across the IEDs of one file on the same VLAN) and for
+  invalid address values
+
+Notes:
+
+- ``APPID`` and ``VLAN-ID`` are hexadecimal in SCL (``064`` is VLAN 100).
+- Files are not validated against the IEC XSD schemas, which are not
+  distributed with PEAT. Elements are matched by name, with or without the
+  SCL namespace.
+- Every address value is validated on its own. An invalid value (e.g. a
+  ``VLAN-ID`` above 4095 or a malformed MAC address) is left unset, recorded in
+  ``iec61850.extra.invalid_addresses`` and reported as an alert. The rest of
+  the file is still parsed.
+- IPv6 addresses, data type templates, ``DOI``/``DAI`` values and ``Private``
+  elements are not modeled. An ``SSD`` without IEDs produces no device.
+- zlib-compressed SEL ``SET_61850.CID`` files are handled by
+  :class:`~peat.modules.sel.sel_relay.SELRelay`, which uses the same SCL parser.
+
+.. automodule:: peat.modules.iec61850.iec61850_scl
+   :members:
+   :no-undoc-members:
+
+SCL parsing
+^^^^^^^^^^^
+.. automodule:: peat.parsing.scl
+   :members:
+
 iDirect
 =======
 
