@@ -116,3 +116,10 @@ from .api.crypto_api import (
     encrypt_results_api,
     decrypt_results_api,
 )
+from .api.baseline_api import (
+    compare_to_baseline,
+    compare_to_known_defaults,
+    create_baseline,
+    load_baselines,
+    save_baselines,
+)

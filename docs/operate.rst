@@ -14,6 +14,9 @@ PEAT's primary interface is a command-line program with sub-commands for each fu
 - ``decrypt-config``: decrypt an encrypted PEAT configuration file
 - ``encrypt-results``: encrypt a PEAT results directory into a password-protected zip archive
 - ``decrypt-results``: decrypt a PEAT encrypted results archive into a results directory
+- ``baseline-create``: create a baseline (expected device state) from PEAT device data, see :doc:`baselines`
+- ``baseline-compare``: compare PEAT device data against baselines and module known defaults, see :doc:`baselines`
+- ``baseline-show``: print baselines from files and module known defaults, see :doc:`baselines`
 
 Basics
 ======
@@ -35,6 +38,9 @@ Basics
    peat pillage -h
    peat encrypt-results --help
    peat decrypt-results -h
+   peat baseline-create --help
+   peat baseline-compare -h
+   peat baseline-show -h
 
    # Examples
    peat scan --examples
@@ -43,6 +49,9 @@ Basics
    peat push --examples
    peat pillage --examples
    peat heat --examples
+   peat baseline-create --examples
+   peat baseline-compare --examples
+   peat baseline-show --examples
 
    # The standard PEAT Linux install has a man page available
    man peat
@@ -123,6 +132,7 @@ Directory structure
 -------------------
 The location and names of directories are configurable, refer to the :doc:`configure` section for details on how to do this.
 
+- ``baselines/`` : Baselines created with ``peat baseline-create`` without ``-w`` (``baseline-<device-id>.json``), see :doc:`baselines`
 - ``devices/`` : All output for devices, with subdirectories for each device by device ID. The device ID is typically the :term:`IP` address in the case of pulls, but can be other identifying information if the IP isn't known, such as name, serial port, name of source file, or other identifiers.
 - ``elastic_data/`` : Copies of documents pushed to Elasticsearch. These can be used to rebuild the Elasticsearch data if you only have the files or don't have a Elasticsearch server available when running PEAT. This is only created if Elasticsearch is in use (the ``-e`` argument).
    - ``mappings/`` : Elasticsearch type mappings for the PEAT indices
@@ -147,10 +157,13 @@ The output directory structure generally looks like this:
    ./peat_results/
       README.md
       <command>_<config-name>_<timestamp>_<run_id>/
+         baselines/
+               baseline-<device-id>.json
          devices/
                <device-id>/
                   device-data-summary.json
                   device-data-full.json
+                  baseline-findings.json
                   ...
          elastic_data/
                mappings/
@@ -175,6 +188,7 @@ The output directory structure generally looks like this:
                scan-summary.json
                pull-summary.json
                parse-summary.json
+               baseline-summary.json
          temp/
                ...
 
@@ -386,6 +400,16 @@ Push
    :language: python
    :start-after: push_examples = """
    :end-before: """  # End push examples
+
+Baselines
+---------
+See :doc:`baselines` for details.
+
+.. literalinclude:: ../peat/cli_args.py
+   :name: Baseline compare usage examples
+   :language: python
+   :start-after: baseline_compare_examples = """
+   :end-before: """  # End baseline-compare examples
 
 
 Summaries

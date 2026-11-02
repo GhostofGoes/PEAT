@@ -1,0 +1,283 @@
+*********
+Baselines
+*********
+A *baseline* is the expected state of a device: its factory defaults, a vendor hardening recommendation, an approved ("golden") configuration, or the state PEAT observed at an earlier pull. PEAT compares device data against baselines and reports every deviation as a *finding*. Typical uses:
+
+- detect configuration drift between two pulls of the same device (change management, NERC CIP-010 R2);
+- check devices against an approved configuration, or against a "typical device" profile of their type;
+- flag devices that still use factory defaults or ignore vendor hardening guidance (open Telnet/FTP, factory-default passwords, key switch not in RUN).
+
+Comparisons work on PEAT output (``device-data-full.json`` files, parse summaries), so they never query a device. They do no DNS or ARP lookups.
+
+.. seealso::
+
+   :class:`~peat.data.models.Baseline`, :class:`~peat.data.models.BaselineRule`, :class:`~peat.data.models.BaselineFinding` (:doc:`data_model`)
+
+   :mod:`peat.api.baseline_api` and :mod:`peat.data.baseline` (:doc:`general_apis`)
+
+   The baseline findings index (``ot-device-baseline-findings``): :doc:`database_schema`
+
+   Declaring known defaults in a PEAT module: :ref:`declaring-known-defaults`
+
+
+Concepts
+========
+
+Baseline
+--------
+A :class:`~peat.data.models.Baseline` has:
+
+- ``id``, ``name``, ``description`` and ``version``;
+- ``kind``: who or what produced the expected values (see below);
+- ``scope``: ``device`` (one device) or ``device_type`` (every device of a type, a "device profile");
+- ``selector``: which devices it applies to (:class:`~peat.data.models.BaselineSelector`). All non-empty selector fields must match the device, as case-insensitive :mod:`fnmatch` globs (e.g. ``firmware_version: "R5*"``). Fields: ``peat_module``, ``vendor_id``, ``model``, ``product``, ``part_number``, ``device_type``, ``firmware_version``, ``device_id``, ``serial_number``. A baseline whose selector does not match a device produces no findings for it;
+- ``provenance``: where the expected values came from (:class:`~peat.data.models.BaselineProvenance`): creation time, author, source file and its SHA-256, source device, observation time, PEAT run ID and version, and approval (``approved_by``, ``approved``, ``change_ticket``);
+- the expectations, as an ``expected`` :class:`~peat.data.models.DeviceData` snapshot, as ``rules``, or both;
+- ``ignore``: extra path patterns to skip in snapshot comparisons.
+
+Kinds
+-----
+.. csv-table::
+   :header: "Kind", "Expected values", "Typical source"
+
+   "``factory_default``", "Vendor out-of-box VALUES (e.g. Telnet listens on 23, relay ID is ``FEEDER 1``). A failed rule means *changed from the factory default* (severity ``info``).", "PEAT module known defaults"
+   "``vendor_recommended``", "Vendor hardening guidance (e.g. Telnet absent, no factory default password accepted). A failed rule is a deviation from the recommendation.", "PEAT module known defaults"
+   "``engineer_provided``", "An approved or golden configuration provided by an engineer.", "``peat parse`` of approved settings or project files"
+   "``first_observed``", "The state when PEAT first saw the device (trust on first use).", "First PEAT pull or parse"
+   "``previous_observed``", "The state at the previous pull (drift detection).", "Previous PEAT pull"
+   "``approved``", "A reviewed baseline (NERC CIP-010 R1), typically an approved copy of another kind.", "Review of another baseline"
+
+Snapshots and rules
+-------------------
+**Snapshot** (``expected``): the exported device data the device is expected to have. Each difference is one finding with ``result: fail`` and ``difference``:
+
+- ``change``: the value differs;
+- ``missing``: an expected value or list item (e.g. a service) is absent;
+- ``unexpected``: a list item (e.g. a new service or user) is present but not expected. For ``first_observed`` and ``previous_observed`` baselines, which captured the complete device state, new values (e.g. a new ``os.version``) are also ``unexpected``. Other kinds only check the values they specify, so a partial "golden" snapshot can hold just the settings that matter.
+
+List items are aligned by their identity, e.g. services by protocol and port, users by name, files by path (``LIST_KEYS`` in :mod:`peat.data.baseline`), so the order of items never matters.
+
+**Rules** (``rules``, :class:`~peat.data.models.BaselineRule`): constraints a snapshot cannot express, such as absence, negation, membership, patterns or ranges. Every enabled rule produces one finding with ``result`` ``pass``, ``fail``, ``unknown`` (no value to check) or ``error`` (e.g. a non-numeric value for ``min``), and ``difference: mismatch`` when it fails. A rule has a ``path``, an ``operator`` and a ``value``, plus ``id``, ``name``, ``category``, ``severity`` (default ``medium``), ``alert``, ``reason``, ``reference`` and ``standards``. ``reason`` may use ``{expected}``, ``{actual}`` and ``{path}``.
+
+Paths
+-----
+Paths address the exported device data (the same structure as ``device-data-full.json``): ``segment(.segment)*``, where a segment is ``name``, ``name[key=value,...]`` (the list items whose fields have these values) or ``name[*]`` (all items of a list).
+
+.. code-block:: text
+
+   firmware.version
+   extra.terminal_id
+   service[protocol=ftp].enabled
+   service[*].security.default_credentials
+   users[name=ACC]
+   iec61850.publications[type=GOOSE].security
+   clock.utc_offset
+
+Finding paths of snapshot differences use the identity of list items, e.g. ``service[protocol=http,port=80]`` or ``files[path=/SETTINGS/SET_1.TXT].hash.sha256``.
+
+Rule operators
+--------------
+.. csv-table::
+   :header: "Operator", "``value``", "Passes when (for every value found at the path)", "No value found"
+
+   "``equals``", "scalar", "every value equals ``value``", "``unknown``"
+   "``not_equals``", "scalar", "no value equals ``value``", "``pass``"
+   "``in``", "list", "every value is in the list", "``unknown``"
+   "``not_in``", "list", "no value is in the list", "``pass``"
+   "``present``", "", "at least one value exists", "``fail``"
+   "``absent``", "", "no value exists", "``pass``"
+   "``regex``", "pattern", "the pattern matches every value (Python :func:`re.search`)", "``unknown``"
+   "``min``", "number", "every value is >= ``value``", "``unknown``"
+   "``max``", "number", "every value is <= ``value``", "``unknown``"
+
+Values are equal if they are equal or have the same text (JSON ``23`` equals ``"23"``; case-sensitive). The finding's ``actual`` holds the values that violated the rule.
+
+Example rule:
+
+.. code-block:: json
+
+   {
+       "id": "site.service.ftp.disabled",
+       "name": "FTP disabled",
+       "path": "service[protocol=ftp].enabled",
+       "operator": "not_equals",
+       "value": true,
+       "category": "ports_services",
+       "severity": "medium",
+       "reason": "FTP (21/tcp, cleartext) is enabled",
+       "standards": ["NERC CIP-007-6 R1.1"]
+   }
+
+Ignored values
+--------------
+Snapshot comparisons never compare values that are set by PEAT or the user instead of the device, that are stored in their own indices, or that change on every pull. The full list is ``DEFAULT_IGNORE`` in :mod:`peat.data.baseline`, including:
+
+- ``label``, ``comment``, ``asset``, ``id``, ``related``, ``successful_pulls``, MAC vendors;
+- ``extra`` (unstructured), ``event``, ``memory``, UEFI data, ``baseline_findings``, raw ``original`` data and ``logic.formats``;
+- volatile values: uptimes, ``start_time``, all ``statistics``, live clock values (``clock.time``, ``clock.offset``, ...), live indicator states, process IDs and resource usage, relationship counters and times, PLC task scan times, file times, ``interface.connected`` and ``service.status``.
+
+``Baseline.ignore`` adds patterns (:mod:`fnmatch` syntax on paths without selectors; a pattern also matches everything below it), e.g. ``["firmware.version", "interface.description", "users.*"]``.
+
+To reduce noise:
+
+- files in the categories ``log``, ``event_record``, ``diagnostic`` and ``report`` change on every pull: only their disappearance is reported;
+- relationships learned only from ARP, socket tables or logs come and go: a missing relationship is only reported if it was configured (``evidence`` ``config``, ``scl`` or ``user``). A *new* peer is always reported;
+- a change of ``key_switch`` or ``run_mode`` has severity ``high`` (a strong tampering indicator).
+
+Device type profiles
+--------------------
+A ``device_type`` baseline ("typical SEL-2032") describes every device of a type. It is built from one or more devices of ONE vendor and model, without per-unit identity (``DEVICE_TYPE_IGNORE`` in :mod:`peat.data.baseline`: addresses, names, serial numbers, file hashes, certificates, relationships, routes, IEC 61850 addressing, ...). With several devices, the profile keeps only what all of them share, and the values that differ between them are added to ``ignore``. Its selector matches the vendor ID and model. Comparisons remove the same identity values from both sides.
+
+Severity and categories
+-----------------------
+Rule findings use the rule's ``severity`` and ``category``. Snapshot differences use the category and severity of the area of the path, e.g. ``firmware``/``logic``/``serial_number`` ``high``, ``service``/``users``/``files``/``software``/``iec61850`` ``medium``, ``interface``/``routes``/``relationships``/``name`` ``low``. Severities are ``info``, ``low``, ``medium``, ``high`` and ``critical`` (``event.severity`` 1 to 5).
+
+Findings
+--------
+:class:`~peat.data.models.BaselineFinding` records hold the baseline (``baseline_id``, ``baseline_name``, ``baseline_kind``, ``baseline_version``), the rule (``rule_id``, ``rule_name``, ``operator``), the ``path``, ``result``, ``difference``, ``expected`` and ``actual`` values (as JSON text, at most 4096 characters), ``severity``, ``category``, ``reason``, ``reference``, ``standards`` and the ``timestamp`` of the comparison. Comparing a device against a baseline again REPLACES the findings of that baseline.
+
+
+Module known defaults
+=====================
+PEAT modules declare the factory defaults and vendor hardening recommendations of the devices they support (:attr:`DeviceModule.known_defaults <peat.device.DeviceModule.known_defaults>`): at most a ``<module>-factory-defaults`` baseline (``factory_default``, factory values) and a ``<module>-vendor-recommended`` baseline (``vendor_recommended``, hardening checks), each with rules only. ``--known-defaults`` uses the known defaults of the device's module, of the modules of the device's vendor, or of the modules given with ``-d``.
+
+.. csv-table::
+   :header: "Module", "Baselines", "Checks"
+
+   ":class:`~peat.modules.sel.sel_relay.SELRelay`", "``sel-relay-factory-defaults``, ``sel-relay-vendor-recommended``", "Factory Telnet/FTP ports, relay ID (RID) and terminal ID (TID); FTP disabled, Telnet absent, no factory default password accepted, RID/TID changed from the factory values, GOOSE signed (``info``)"
+   ":class:`~peat.modules.sel.sel_rtac.SELRTAC`", "vendor recommended", "No factory default password accepted"
+   ":class:`~peat.modules.schneider.sage.sage.Sage`", "vendor recommended", "Telnet, FTP and HTTP absent, no factory default password accepted, no RTU setup placeholders"
+   ":class:`~peat.modules.schneider.m340.m340.M340`", "vendor recommended", "No factory default FTP password accepted, web server requires a password"
+   ":class:`~peat.modules.rockwell.controllogix.ControlLogix`", "vendor recommended", "Key switch in RUN, no factory default password accepted"
+
+Print the current rules with ``peat baseline-show --known-defaults`` (all modules) or ``peat baseline-show --known-defaults -d <module>``. Module developers: see :ref:`declaring-known-defaults`.
+
+
+Command line
+============
+Three commands work with baselines. Inputs are PEAT device data: ``device-data-full.json`` (or ``device-data-summary.json``) files, parse summaries (``parse-summary.json``), directories containing them (searched recursively, e.g. a run directory or ``peat_results/``), or ``-`` (JSON from standard input). The inputs can be given before or after the options, but not on both sides.
+
+``peat baseline-create``
+------------------------
+Creates baselines from device data. With ``--scope device`` (default), one baseline per device; with ``--scope device_type``, one profile of all the given devices (which must have the same vendor and model). Options: ``--kind`` (default ``first_observed``), ``--baseline-id``, ``--baseline-name``, ``--baseline-version`` (default ``1``), ``--author`` (default: the OS user name) and ``--description``. The baselines are written to ``-w/--write-file`` (a JSON list if there are several), or to ``<run dir>/baselines/baseline-<device id>.json``. ``-E`` also prints them.
+
+Default IDs are ``<device id>@<observation time>`` (e.g. ``192.0.2.10@20261030T120000Z``) and ``<vendor>-<model>-typical``. A device baseline applies to the device with the same ``id`` (normally its IP address, else its host name, name or MAC address); edit the ``selector`` to match on other fields, e.g. the serial number.
+
+``peat baseline-compare``
+-------------------------
+Compares device data against baseline files (``-b/--baseline``, repeatable) and/or the known defaults of PEAT modules (``--known-defaults``, limited to modules with ``-d``). ``--no-passed`` omits the findings of passed rules.
+
+Output:
+
+- a table of the findings that did not pass, per device, and a summary line (or, with ``-E``, JSON: ``{"devices": [{"device_id", "source", "baselines", "summary", "findings"}]}``);
+- ``<run dir>/devices/<device id>/baseline-findings.json`` (the findings of each device) and ``<run dir>/summaries/baseline-summary.json``;
+- the ``ot-device-baseline-findings`` index, if Elasticsearch or OpenSearch is configured (``-e``). Host documents are not pushed again.
+
+Example output:
+
+.. code-block:: text
+
+   Device 192.0.2.10 (baselines: 192.0.2.10@20261030T120000Z)
+   SEVERITY  RESULT   DIFFERENCE  PATH                            REASON
+   high      fail     change      firmware.version                firmware.version changed compared to baseline '192.0.2.10 first_observed'
+   medium    fail     missing     service[protocol=ftp,port=21]   service[protocol=ftp,port=21] missing compared to baseline '192.0.2.10 first_observed'
+   medium    fail     unexpected  service[protocol=http,port=80]  service[protocol=http,port=80] unexpected compared to baseline '192.0.2.10 first_observed'
+   192.0.2.10: 3 findings, 3 failed, 0 passed (max severity: high)
+
+Exit codes:
+
+- ``0``: success, even if there are findings;
+- ``1``: error (bad arguments, unreadable inputs or baseline files, no device data, no baseline applies to any device, failed Elasticsearch export);
+- ``3``: ``--fail-on SEVERITY`` was given and a failed finding has that severity or higher (for scripts, CI jobs and scheduled checks).
+
+``peat baseline-show``
+----------------------
+Prints baselines as JSON: from files (``-b``) and/or the known defaults of PEAT modules (``--known-defaults``, limited to modules with ``-d``).
+
+Examples
+--------
+.. literalinclude:: ../peat/cli_args.py
+   :name: Baseline create examples
+   :language: python
+   :start-after: baseline_create_examples = """
+   :end-before: """  # End baseline-create examples
+
+.. literalinclude:: ../peat/cli_args.py
+   :name: Baseline compare examples
+   :language: python
+   :start-after: baseline_compare_examples = """
+   :end-before: """  # End baseline-compare examples
+
+.. literalinclude:: ../peat/cli_args.py
+   :name: Baseline show examples
+   :language: python
+   :start-after: baseline_show_examples = """
+   :end-before: """  # End baseline-show examples
+
+
+Change management workflow (NERC CIP-010)
+=========================================
+#. Pull the device and create a ``first_observed`` baseline:
+
+   .. code-block:: bash
+
+      peat pull -i 192.0.2.10 -R relay-1-initial
+      peat baseline-create -w relay-1-first.json peat_results/relay-1-initial/devices/
+
+#. Review the baseline. Remove values that should not be enforced (or add them to ``ignore``), and add rules for requirements, e.g. ports and services that must stay disabled.
+#. Save an approved copy: set ``kind`` to ``approved``, a new ``id`` and ``version``, and ``provenance.approved_by``, ``provenance.approved`` and ``provenance.change_ticket``. Keep the file under version control.
+#. Compare every new pull against it (e.g. monthly, CIP-010 R2.1), and fail the job on relevant deviations:
+
+   .. code-block:: bash
+
+      peat pull -i 192.0.2.10
+      peat baseline-compare -b relay-1-approved.json --known-defaults --fail-on medium -e http://localhost:9200 peat_results/<run>/
+
+#. After an approved change, create a new baseline version from the pull that reflects the change.
+
+
+Elasticsearch
+=============
+Findings are stored in ``ot-device-baseline-findings-<date>`` (one document per finding, see :doc:`database_schema`). The ECS fields follow the posture-management pattern: ``event.kind`` is ``alert`` for failed rules with ``alert: true``, ``event`` (with ``event.type`` ``change``, ``creation`` or ``deletion``) for drift against a ``previous_observed`` baseline, and ``state`` otherwise. ``event.action`` is ``baseline-check`` (passed), ``baseline-deviation`` (failed) or ``baseline-changed-from-default`` (failed ``factory_default`` check). ``rule.*`` describes the rule, ``baseline.*`` the baseline and the finding, and ``host.*`` the device.
+
+Example KQL queries:
+
+.. code-block:: text
+
+   # Devices accepting factory default passwords
+   rule.id : *default-credentials and baseline.finding.result : fail
+
+   # High and critical deviations
+   baseline.finding.result : fail and event.severity >= 4
+
+   # Configuration drift since the previous pull
+   baseline.kind : previous_observed and event.kind : event
+
+   # Services that appeared or disappeared, on critical assets
+   baseline.finding.path : service* and baseline.finding.difference : (missing or unexpected) and host.asset.criticality : (high_impact or extreme_impact)
+
+   # Settings changed from the factory default
+   event.action : baseline-changed-from-default
+
+
+Python API
+==========
+The same functionality is available from Python (:mod:`peat.api.baseline_api`):
+
+.. code-block:: python
+
+   from peat import compare_to_baseline, create_baseline, load_baselines, save_baselines
+   from peat.api.baseline_api import load_device_data, summarize_findings
+
+   (dev,) = load_device_data("peat_results/run1/devices/192.0.2.10/device-data-full.json")
+   baseline = create_baseline(dev, "first_observed", author="J. Engineer")
+   save_baselines(baseline, "relay-1.json")
+
+   (current,) = load_device_data("peat_results/run2/devices/192.0.2.10/")
+   findings = compare_to_baseline(current, load_baselines("relay-1.json"))
+   print(summarize_findings(findings))
+
+:func:`~peat.api.baseline_api.compare_to_known_defaults` compares a device against the known defaults of its module. Findings are stored in ``dev.baseline_findings`` and exported to ``device-data-baseline_findings.jsonl`` and the findings index with the rest of the device data.
+
+.. note::
+   Do not call :meth:`~peat.data.models.DeviceData.populate_fields` (or ``export()``) on ``Baseline.expected``: it would derive and merge values and change the snapshot. Use :func:`peat.data.baseline.device_to_doc` to read it.

@@ -43,3 +43,29 @@ def test_pull_skip_scan_default_none(mocker):
     mocker.patch("sys.argv", ["peat", "pull", "-i", "192.168.0.1"])
     result = cli_args.parse_peat_arguments()
     assert not result.pull_skip_scan
+
+
+def test_baseline_commands_args(mocker):
+    mocker.patch(
+        "sys.argv",
+        ["peat", "baseline-compare", "dir1/", "dir2/", "-b", "b.json", "--fail-on", "high"],
+    )
+    result = cli_args.parse_peat_arguments()
+    assert result.func == "baseline_compare"
+    assert result.input_source == ["dir1/", "dir2/"]
+    assert result.baseline_files == ["b.json"]
+    assert result.fail_on == "high"
+    assert not result.known_defaults
+
+    mocker.patch("sys.argv", ["peat", "baseline-create", "--kind", "approved", "x.json"])
+    result = cli_args.parse_peat_arguments()
+    assert result.func == "baseline_create"
+    assert (result.baseline_kind, result.baseline_scope) == ("approved", "device")
+
+    mocker.patch("sys.argv", ["peat", "baseline-show", "--known-defaults"])
+    result = cli_args.parse_peat_arguments()
+    assert result.func == "baseline_show"
+    assert result.known_defaults is True
+
+    for func in ("baseline_create", "baseline_compare", "baseline_show"):
+        assert "peat baseline-" in cli_args.ALL_EXAMPLES[func]
