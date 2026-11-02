@@ -78,7 +78,7 @@ These files are recorded:
 - Pages saved from a relay's web interface (``http_files/``, with the web session ID in the path replaced by ``session``) and the logic settings from those pages (``http_commands/raw_logic_group_<n>.txt``), the RTAC Sequence of Events log (``http_files/soe.csv``), and the X.509 certificates exported from a SEL-3620.
 - The output of the additional Telnet and serial commands (``additional-command-outputs.json``), if ``sel.attempt_more_commands`` is enabled.
 - Files PEAT creates: ``combined_SET_ALL.txt``, ``extracted_SET_ALL.txt``, and the decompressed contents of ``.CID`` files.
-- When parsing (``peat parse``): the files that are parsed, and each stream for the relay in a RDB file. Streams that are outside every relay in a RDB file that has relays are not recorded. The ``path`` of a stream is its path in the RDB file, e.g. ``Relays/<relay name>/set_1.txt``.
+- When parsing (``peat parse``): the files that are parsed, and every stream in a RDB file. Each relay's streams are recorded for that relay. Streams that aren't for a relay with settings (e.g. streams outside every relay's storage) are recorded for every relay in the file, like the RDB file itself. The ``path`` of a stream is its path in the RDB file, e.g. ``Relays/<relay name>/set_1.txt``.
 
 Each file's ``extra`` has:
 

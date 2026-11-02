@@ -17,8 +17,8 @@ import pytest
 from requests import Response
 
 from peat import DeviceData, SELRelay, config, datastore, utils
-from peat.modules.sel import sel_comms, sel_files
-from peat.modules.sel.relay_parse import read_rdb_streams
+from peat.modules.sel import sel_comms, sel_files, sel_relay
+from peat.modules.sel.relay_parse import parse_rdb_relays, read_rdb_streams
 from peat.modules.sel.sel_files import record_downloaded_file, write_and_record_file
 from peat.modules.sel.sel_http import SELHTTP
 from peat.modules.sel.sel_serial import SELSerial
@@ -658,6 +658,55 @@ def test_parse_rdb_without_device_dir():
     assert extracted.local_path is None
     assert extracted.size > 0
     assert len([f for f in dev.files if f.extra["source"] == "rdb_stream"]) > 10
+
+
+def test_parse_rdb_streams_outside_relays(monkeypatch):
+    # Two relays with the SEL-710 settings, and a stream outside the "Relays" storage
+    rdb_path = RELAY_DIR / "sel-710_Relay710.rdb"
+    rdb_data = rdb_path.read_bytes()
+    streams = read_rdb_streams(rdb_data)["New Settings 2"]
+    set_all = parse_rdb_relays(rdb_data)["New Settings 2"]
+    rdb_streams = {"A": streams, "B": streams, "": {"Project.txt": b"project"}}
+    monkeypatch.setattr(sel_relay, "read_rdb_streams", lambda _data: rdb_streams)
+    monkeypatch.setattr(sel_relay, "parse_rdb_relays", lambda _data: {"A": set_all, "B": set_all})
+
+    dev_a = SELRelay.parse(rdb_path)
+    dev_b = next(d for d in datastore.objects if d.extra.get("rdb_relay_name") == "B")
+
+    # Each relay's streams are recorded for that relay, and the stream that
+    # isn't in a relay's storage is recorded for both relays
+    for dev, name in ((dev_a, "A"), (dev_b, "B")):
+        recorded = [f for f in dev.files if f.extra["source"] == "rdb_stream"]
+        assert {str(f.path) for f in recorded} == {
+            *(f"Relays/{name}/{path}" for path in streams),
+            "Project.txt",
+        }
+        project = next(f for f in recorded if f.name == "Project.txt")
+        _assert_recorded(project, b"project", dev)
+        assert project.extra == {
+            "source": "rdb_stream",
+            "rdb_stream": "Project.txt",
+            "derived_from": ["sel-710_Relay710.rdb"],
+        }
+
+
+def test_parse_rdb_without_relay_layout(monkeypatch):
+    # No relay in the file has settings, so the settings are from every stream
+    rdb_path = RELAY_DIR / "sel-710_Relay710.rdb"
+    rdb_data = rdb_path.read_bytes()
+    streams = read_rdb_streams(rdb_data)["New Settings 2"]
+    set_all = parse_rdb_relays(rdb_data)["New Settings 2"]
+    monkeypatch.setattr(sel_relay, "parse_rdb_relays", lambda _data: {"": set_all})
+
+    dev = SELRelay.parse(rdb_path)
+
+    recorded = [f for f in dev.files if f.extra["source"] == "rdb_stream"]
+    assert len(recorded) == len(streams)
+    for stream_path, data in streams.items():
+        stream = next(f for f in recorded if f.extra["rdb_stream"] == stream_path)
+        _assert_recorded(stream, data, dev)
+        assert stream.path == PurePosixPath(f"Relays/New Settings 2/{stream_path}")
+        assert stream.extra["rdb_relay_name"] == "New Settings 2"
 
 
 def test_parse_relay_files_dir(tmp_path):

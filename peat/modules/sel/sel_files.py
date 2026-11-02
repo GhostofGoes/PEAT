@@ -121,11 +121,11 @@ def record_downloaded_file(
     decoding (:class:`str` is encoded as UTF-8). This works when device file
     output is disabled.
 
-    Recording the same file again (same local path, or the same name, device
-    path, and hashes if there's no local path) updates the existing entry
-    instead of adding a new one. Files with the same name but different
-    contents (e.g. ``EVENTS/HISTORY.TXT`` and ``REPORTS/HISTORY.TXT``)
-    are separate entries.
+    Recording the same file again (same local path, or if there's no local
+    path, the same name, device path, hashes, source, transport, and file
+    transfer type) updates the existing entry instead of adding a new one.
+    Files with the same name but different contents (e.g.
+    ``EVENTS/HISTORY.TXT`` and ``REPORTS/HISTORY.TXT``) are separate entries.
 
     Args:
         dev: Device the file is from
@@ -191,7 +191,8 @@ def record_downloaded_file(
 def _find_recorded(dev: DeviceData, file_obj: File) -> File | None:
     """
     Find a recorded file that's the same as ``file_obj``: the same local path,
-    or if there isn't a local path, the same name, path, and hashes.
+    or if there isn't a local path, the same name, path, hashes, and
+    ``extra`` ``source``, ``transport``, and ``file_transfer``.
 
     .. note::
        This compares attributes directly instead of using the ``lookup``

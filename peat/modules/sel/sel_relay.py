@@ -1683,7 +1683,9 @@ class SELRelay(DeviceModule):
             if relay_name:
                 relay_dev.extra["rdb_relay_name"] = relay_name
 
-            cls._record_rdb_files(relay_dev, file, raw_data, relay_name, set_all, rdb_streams)
+            cls._record_rdb_files(
+                relay_dev, file, raw_data, relay_name, set_all, rdb_streams, set(relays)
+            )
             relay_dev.write_file(raw_data, "raw-rdb-config.rdb")
             relay_dev.logic.file.local_path = file
 
@@ -1705,10 +1707,17 @@ class SELRelay(DeviceModule):
         relay_name: str,
         set_all: str,
         rdb_streams: dict[str, dict[str, bytes]],
+        relay_names: set[str],
     ) -> None:
         """
         Hash and record the RDB file, the streams for the relay in it,
         and the ``SET_ALL`` extracted from the streams.
+
+        Streams that aren't for one of the relays in ``relay_names`` (the
+        relays in the file that have settings) are recorded for every relay,
+        like the RDB file itself. These are the streams outside every relay's
+        storage, the streams of relays without settings, and, if the file
+        doesn't have the usual layout (``relay_name`` is empty), every stream.
         """
         cls._record_parse_input(dev, file, raw_data)
 
@@ -1718,20 +1727,28 @@ class SELRelay(DeviceModule):
 
         # Streams that aren't in a relay's storage are keyed by an empty relay name,
         # which is also the "relay name" used for RDBs without the usual layout.
-        for stream_path, stream_data in rdb_streams.get(relay_name, {}).items():
-            # Path of the stream in the RDB, e.g. "Relays/<relay name>/Misc/Cfg.txt"
-            rdb_path = f"Relays/{relay_name}/{stream_path}" if relay_name else stream_path
+        for stream_relay, streams in rdb_streams.items():
+            if stream_relay != relay_name and stream_relay in relay_names:
+                continue  # Recorded for that relay
 
-            record_downloaded_file(
-                dev=dev,
-                data=stream_data,
-                name=rdb_path.rsplit("/", maxsplit=1)[-1],
-                device_path=rdb_path,
-                source=SOURCE_RDB_STREAM,
-                peat_module=cls.__name__,
-                description=f"Stream in {file.name}",
-                extra={"rdb_stream": stream_path, **rdb_extra},
-            )
+            stream_extra = {"derived_from": [file.name]}
+            if stream_relay:
+                stream_extra["rdb_relay_name"] = stream_relay
+
+            for stream_path, stream_data in streams.items():
+                # Path of the stream in the RDB, e.g. "Relays/<relay name>/Misc/Cfg.txt"
+                rdb_path = f"Relays/{stream_relay}/{stream_path}" if stream_relay else stream_path
+
+                record_downloaded_file(
+                    dev=dev,
+                    data=stream_data,
+                    name=rdb_path.rsplit("/", maxsplit=1)[-1],
+                    device_path=rdb_path,
+                    source=SOURCE_RDB_STREAM,
+                    peat_module=cls.__name__,
+                    description=f"Stream in {file.name}",
+                    extra={"rdb_stream": stream_path, **stream_extra},
+                )
 
         write_and_record_file(
             dev=dev,
