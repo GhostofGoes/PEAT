@@ -252,6 +252,16 @@ SELOGIC classification
 .. automodule:: peat.modules.sel.sel_logic
    :members:
 
+Setting annotations
+^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_setting_info
+   :members:
+
+Protection element names
+^^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_elements
+   :members:
+
 RTAC Parsing
 ^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.rtac_parse

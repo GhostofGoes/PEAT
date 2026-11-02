@@ -138,6 +138,7 @@ from .relay_parse import (
 from .sel_comms import populate_file_listing, pull_files
 from .sel_http import SELHTTP
 from .sel_serial import SELSerial
+from .sel_setting_info import format_annotated_equations
 from .sel_telnet import SELTelnet
 
 #: Names of files on relays, parsed by SELRelay._parse_relay_files().
@@ -326,6 +327,7 @@ class SELRelay(DeviceModule):
             "restart_after_push": False,
             "old_ftp": False,
             "handle_download_errors": True,
+            "setting_descriptions_file": "",
             "creds": {
                 "acc": "OTTER",
                 # bac: "BREAKER" access level (present on 351S and others)
@@ -1847,8 +1849,17 @@ class SELRelay(DeviceModule):
         dev.logic.original = set_all
         dev.logic.parsed = formatted_logic
 
+        # The same logic, then the equations with their descriptions (only in the file)
+        logic_text = formatted_logic
+        annotated_equations = format_annotated_equations(records)
+        if annotated_equations:
+            logic_text += (
+                "\n\n# SELOGIC control equations, with descriptions from the settings or PEAT\n"
+                + annotated_equations
+            )
+
         dev.write_file(raw_logic, "raw-logic.json")
-        dev.write_file(formatted_logic, "formatted-logic.txt")
+        dev.write_file(logic_text, "formatted-logic.txt")
         dev.write_file(set_all, "raw-setall-config.txt")
 
         return dev
