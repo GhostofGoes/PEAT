@@ -252,6 +252,11 @@ Compressed ASCII
 .. automodule:: peat.modules.sel.sel_cascii
    :members:
 
+IEC 61850 CID files
+^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_scl
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse

@@ -1,0 +1,1 @@
+SEL: fixed the name of the decompressed CID file in the documentation (``<name>_decompressed.xml``) and documented IEC 61850 CID parsing and the ``extra.iec61850`` fields.

@@ -1,7 +1,6 @@
 import copy
 import csv
 import re
-import zlib
 from datetime import datetime, timedelta
 from pathlib import PurePath, PurePosixPath
 from typing import Any, Final, Literal
@@ -29,7 +28,7 @@ from peat import config as peat_config
 from peat.data.data_utils import merge_models
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
-from . import sel_cascii
+from . import sel_cascii, sel_scl
 from .sel_consts import ANSI_CODES, LOGIC_KEYS
 from .sel_files import SOURCE_DERIVED, write_and_record_file
 
@@ -1032,6 +1031,9 @@ def process_info_into_dev(info: dict, dev: DeviceData) -> None:
 
     if info.get("PARTNO"):
         dev.part_number = info.pop("PARTNO")
+
+    # IEC 61850 values from the "id" command (iedName, type, configVersion, LIB61850ID)
+    sel_scl.process_id_info(info, dev)
 
     # This comes from parsing status output and exit info
     if info.get("serial_number"):
@@ -3309,26 +3311,50 @@ def apply_uptime(dev: DeviceData, device_now: datetime | None = None) -> timedel
     return uptime
 
 
-def extract_cid_content(data: bytes) -> str:
+def extract_cid_content(data: bytes | str) -> str:
+    """
+    Decompress the contents of a CID file (e.g. ``SET_61850.CID``) and decode
+    it to text. Refer to :func:`~peat.modules.sel.sel_scl.decompress_cid`
+    for the formats that are accepted and the limit on the decompressed size.
+
+    Raises:
+        ValueError: The data isn't compressed or XML, or it's too large
+        zlib.error: The compressed data is invalid
+    """
     if not data:
         return ""
 
-    decompressed = zlib.decompress(data)
-
-    # NOTE utf-8-sig is required to remove the
-    # Byte Order Mark (BOM) that gets prepended in some cases.
-    decoded = decompressed.decode("utf-8-sig")
-
-    return decoded
+    return sel_scl.decode_xml(sel_scl.decompress_cid(data).data)
 
 
-def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
+def process_cid_file(
+    data: bytes | str, filepath: PurePath, dev: DeviceData, from_device: bool = False
+) -> str:
     """
-    .CID files are zlib-compressed data (zlib-header 0x7801 - No Compression/low).
-    The only known CID file currently is ``SET_61850.CID``, which contains XML data.
+    Decompress a Configured IED Description (CID) file, e.g. ``SET_61850.CID``,
+    and parse the IEC 61850 SCL in it into the device.
 
-    This function decompresses the zlib data and saves the decoded text to a new file,
-    which is hashed and recorded in ``dev.files``.
+    CID files on SEL relays are zlib-compressed SCL XML (the zlib header is
+    usually ``0x7801``). The decompressed data is saved as
+    ``<stem>_decompressed.xml`` (``.txt`` if it isn't XML), exactly as it
+    was decompressed, and hashed and recorded in ``dev.files``. A CID file
+    that isn't compressed is parsed as-is, and isn't saved again. The SCL is
+    parsed with :func:`~peat.modules.sel.sel_scl.parse_scl` and processed
+    with :func:`~peat.modules.sel.sel_scl.process_scl_into_dev`.
+
+    A local CID file that isn't compressed and is for an IED from another
+    manufacturer is skipped, since it isn't from a SEL relay. Files
+    downloaded from the relay (``from_device``) are always processed.
+
+    Args:
+        data: Contents of the file
+        filepath: Path of the file (on the device, or locally)
+        dev: The device
+        from_device: If the file was downloaded from the device
+
+    Returns:
+        The decoded text of the file, or an empty string if it couldn't
+        be decompressed (or was skipped)
     """
     log.info(f"Extracting data from CID file '{filepath.name}'")
 
@@ -3337,29 +3363,76 @@ def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
         return ""
 
     try:
-        extracted = extract_cid_content(data)
+        content = sel_scl.decompress_cid(data)
+    except Exception as ex:
+        if isinstance(data, str):
+            log.error(
+                f"Failed to extract CID file {filepath.name}: {ex}. It was received as "
+                f"text (FILE SHOW), which usually corrupts compressed files, download "
+                f"it with FTP or YMODEM instead"
+            )
+        else:
+            log.error(f"Failed to extract CID file {filepath.name}: {ex}")
+        return ""
 
-        ext = "txt"
-        if "<?xml version" in extracted:
-            ext = "xml"
+    if not content.complete:
+        log.warning(
+            f"CID file {filepath.name} may be incomplete or corrupted "
+            f"({len(content.data)} bytes were decompressed): {content.error}"
+        )
+
+    is_xml = sel_scl.looks_like_xml(content.data)
+    extracted = sel_scl.decode_xml(content.data)
+
+    if content.compressed and content.data:
+        file_extra = {"derived_from": [filepath.name], "zlib_header": content.zlib_header}
+        if content.trailing_bytes:
+            file_extra["trailing_bytes"] = content.trailing_bytes
+        if not content.complete:
+            file_extra["incomplete"] = True
 
         write_and_record_file(
             dev=dev,
-            data=extracted,
-            filename=f"{filepath.stem}_decompressed.{ext}",
+            data=content.data,
+            filename=f"{filepath.stem}_decompressed.{'xml' if is_xml else 'txt'}",
             source=SOURCE_DERIVED,
             peat_module="SELRelay",
             description=f"Decompressed contents of {filepath.name}",
-            extra={"derived_from": [filepath.name]},
+            extra=file_extra,
         )
+    elif not content.compressed:
+        log.debug(f"CID file {filepath.name} isn't compressed")
 
-        if not extracted:
-            log.warning(f"No data extracted from CID file {filepath.name}")
-
+    if not extracted.strip():
+        log.warning(f"No data extracted from CID file {filepath.name}")
         return extracted
+
+    if not is_xml:
+        log.warning(f"CID file {filepath.name} doesn't have XML data, it wasn't parsed")
+        return extracted
+
+    try:
+        scl = sel_scl.parse_scl(extracted)
     except Exception as ex:
-        log.error(f"Failed to extract CID file {filepath.name}: {ex}")
-        return ""
+        log.warning(f"Failed to parse the IEC 61850 SCL in CID file {filepath.name}: {ex}")
+        return extracted
+
+    if not content.compressed and not from_device:
+        ied = sel_scl.select_ied(scl)
+        if ied is not None and not sel_scl.is_sel_ied(ied):
+            log.warning(
+                f"Skipping CID file {filepath.name}: it isn't compressed and its IED "
+                f"'{ied.get('name', '')}' is from '{ied.get('manufacturer', '')}', so "
+                f"it isn't from a SEL relay"
+            )
+            return ""
+
+    try:
+        sel_scl.process_scl_into_dev(scl, dev, source=filepath.name)
+    except Exception as ex:
+        log.warning(f"Failed to process the IEC 61850 SCL in CID file {filepath.name}: {ex}")
+
+    return extracted
 
 
 def _getv(val: dict | Any) -> Any:

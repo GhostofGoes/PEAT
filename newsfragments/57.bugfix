@@ -1,0 +1,1 @@
+SEL: CID files compressed at any zlib level, with data after the compressed data, truncated, or not compressed are now decompressed (and identified by ``peat parse``) instead of failing. The decompressed size is limited, XML with a document type declaration isn't parsed, and the decompressed file is saved exactly as it was decompressed.
