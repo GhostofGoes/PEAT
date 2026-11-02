@@ -88,6 +88,13 @@ TLS
 .. automodule:: peat.protocols.tls
    :members:
 
+SSH host keys
+^^^^^^^^^^^^^
+.. autofunction:: peat.protocols.ssh.fetch_ssh_host_key
+
+.. autoclass:: peat.protocols.ssh.SSHHostKey
+   :members:
+
 MySQL
 ^^^^^
 .. automodule:: peat.protocols.mysql

@@ -252,6 +252,11 @@ RTAC Parsing
 .. automodule:: peat.modules.sel.rtac_parse
    :members:
 
+RTAC Engineering Access
+^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.rtac_engineering_access
+   :members:
+
 Siemens
 =======
 

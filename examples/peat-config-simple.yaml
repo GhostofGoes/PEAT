@@ -164,6 +164,7 @@ device_options:
     pull_http: true
     pull_postgres: true
     pull_ssl_cert: true
+    rtac_probe_tunnel_ports: false
     rtac_monitor_enable: false
     rtac_monitor_count: 3
     rtac_monitor_pause_for: 4.0
