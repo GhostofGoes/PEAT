@@ -27,6 +27,8 @@ from peat import (
 )
 from peat import config as peat_config
 from peat.data.data_utils import merge_models
+from peat.data.models import Firmware
+from peat.data.validators import validate_hash
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
 from . import sel_cascii
@@ -1090,6 +1092,39 @@ def process_fid(id_string: str, dev: DeviceData) -> None:
             setattr(fw_obj, key, value)
 
 
+def process_firmware_checksum(
+    checksum: str, dev: DeviceData, firmware: Firmware | None = None
+) -> None:
+    """
+    Put a firmware checksum into the device data model, e.g. the
+    ``Firmware Checksum`` of a RTAC or the checksum in the ``VER``
+    output of a relay.
+
+    The checksum is stored in ``firmware.checksum``. Some checksums are
+    hashes (e.g. a MD5 hash), and others definitely aren't (e.g. ``B0AB``).
+    If it's a valid hash, it's added to ``dev.related.hash``, and a 32
+    character hash is also used as the MD5 hash of the firmware (if unset).
+
+    Args:
+        checksum: The checksum
+        dev: The device
+        firmware: Firmware the checksum is for (default: ``dev.firmware``)
+    """
+    if firmware is None:
+        firmware = dev.firmware
+
+    firmware.checksum = checksum
+
+    try:
+        checksum_hash = validate_hash(checksum)
+    except ValueError:
+        return
+
+    dev.related.hash.add(checksum_hash)
+    if not firmware.hash.md5 and len(checksum) == 32:
+        firmware.hash.md5 = checksum_hash
+
+
 def parse_ipaddr(settings: dict) -> Interface:
     """
     Parse ``IPADDR`` section out of a port config (e.g., ``P5``).
@@ -1801,51 +1836,6 @@ def parse_logic_section(
     return logic
 
 
-def extract_fid(data: bytes | str) -> str:
-    return extract_string(data, r"FID\s?=\s?(SEL[\w\-]+)\s")
-
-
-def extract_bfid(data: bytes | str) -> str:
-    return extract_string(data, r"BFID\s?=\s?([\w\-]+)\s")
-
-
-def extract_cid(data: bytes | str) -> str:
-    return extract_string(data, r"CID\s?=\s?(\w+)\s")
-
-
-def extract_part_number(data: bytes | str) -> str:
-    return extract_string(data, r"part\s?(?:number|num):?\s+(\w+)\s", flags=re.IGNORECASE)
-
-
-def extract_serial_number(data: bytes | str) -> str:
-    return extract_string(data, r"serial\s?(?:number|num):?\s+(\w+)\s", flags=re.IGNORECASE)
-
-
-def extract_selboot_checksum(data: bytes | str) -> str:
-    return extract_string(
-        data, r"selboot:?\s.*checksum:?\s+(\d+)\s", flags=re.IGNORECASE | re.DOTALL
-    )
-
-
-def extract_string(data: bytes | str, regex: str, flags=None) -> str:
-    """
-    Extract a string from arbitrary data.
-    """
-    if isinstance(data, bytes):
-        data = data.decode("ascii")
-
-    re_flags = re.ASCII
-    if flags:
-        re_flags |= flags
-
-    result = re.search(regex, data, re_flags)
-
-    if result is not None:
-        return result.groups()[0]
-
-    return ""
-
-
 def parse_fid(id_string: str) -> dict[str, str]:
     """
     Parse the ``FID`` and ``BFID`` strings into a :class:`dict` with
@@ -2038,33 +2028,6 @@ def parse_status_output(lines: list[str], date_format: str = "") -> dict:
     # TODO: parse temperature
 
     return info
-
-
-def parse_ver_output(data: str) -> dict[str, str]:
-    data = data.strip()
-
-    results = {
-        "FID": extract_fid(data),
-        "BFID": extract_bfid(data),
-        "CID": extract_cid(data),
-        "part_number": extract_part_number(data),
-        "serial_number": extract_serial_number(data),
-    }
-
-    # ldata = data.lower()
-    # # 311L
-    # if ldata.startswith("partnumber") or ldata.startswith("part number"):
-    #     flash_size = extract_string
-
-    # # 451 and 351S?
-    # else:
-    #     pass
-
-    if not any(results.values()):
-        log.warning("Failed to parse any data from 'ver' output")
-        return {}
-
-    return results
 
 
 #: Text in an event report that means there aren't any events. Most relays print

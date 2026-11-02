@@ -1,0 +1,1 @@
+SEL: removed ``parse_simple_table``, ``parse_simple_list``, and ``parse_multiple_lists`` from ``peat.modules.sel.sel_http``, and the unused ``parse_ver_output`` and ``extract_*`` helpers from ``peat.modules.sel.relay_parse``. Use ``peat.modules.sel.relay_command_parse.parse_ver_output`` and ``parse_show_groups`` instead.

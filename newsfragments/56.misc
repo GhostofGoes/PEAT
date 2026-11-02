@@ -1,0 +1,1 @@
+SEL: the web interface code (``SELHTTP``) now only fetches pages. The pages are parsed by pure functions in the new ``peat.modules.sel.relay_command_parse`` (``VER``, ``ETH``, ``MAC``, ``SHO`` and ``MET`` output, which also accept Telnet and serial output) and ``peat.modules.sel.sel_web_parse`` (RTAC and SEL-3620 pages), with tests that use synthetic pages.

@@ -257,6 +257,16 @@ Relay Parsing
 .. automodule:: peat.modules.sel.relay_parse
    :members:
 
+Relay command output parsing
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.relay_command_parse
+   :members:
+
+Web page parsing
+^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_web_parse
+   :members:
+
 RTAC Parsing
 ^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.rtac_parse
