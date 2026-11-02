@@ -240,6 +240,13 @@ def test_classify_setting_4xx(section, name, value, kind):
         ("SHOW", "XYZ", "NOT USED", "setting"),
         ("SHOW", "XYZ", "!LOP", "setting"),
         ("", "XYZ", "Feeder OR Bus", "setting"),
+        # Display points are text, except in the logic classes, where they're
+        # 300-series equations (e.g. from "SHO L 1" output without a FID)
+        ("L1", "DP2", "LT1*!LT2", "equation"),
+        ("L1", "DP2", "IN101*IN102", "equation"),
+        ("L", "DP16", "IN101 OR IN102", "equation"),
+        ("F", "DP01", "TRIP OR CLOSE", "setting"),
+        ("1", "DP01", "NOT USED", "setting"),
     ],
 )
 def test_classify_setting_unknown_family(section, name, value, kind):

@@ -431,6 +431,25 @@ def test_settings_to_records_show_output():
     assert all(r["description"] is None for r in records)
 
 
+def test_settings_to_records_show_output_3xx_display_points():
+    # The family isn't known, so DP2 is an equation because of its value
+    text = (
+        "=>SHO L 1\r\n"
+        "SELogic group 1\r\n"
+        "\r\n"
+        "TR =M1P + Z1G + M2PT + 51GT\r\n"
+        "DP2 =LT1*!LT2\r\n"
+        "SV1 =!IN101\r\n"
+    )
+    records = settings_to_records(text)
+
+    assert [(r["section"], r["name"], r["kind"]) for r in records] == [
+        ("L1", "TR", "equation"),
+        ("L1", "DP2", "equation"),
+        ("L1", "SV1", "equation"),
+    ]
+
+
 def test_settings_to_records_family_from_model():
     text = '[L1]\r\nDP1,"52A"\r\n'
 

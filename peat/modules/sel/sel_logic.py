@@ -112,7 +112,8 @@ ENABLE_NAME_RE: Final = re.compile(r"^E[A-Z0-9_]+$")
 #: (``DP01``), local bit labels (``NLB01``, ``CLB01``, ``SLB01``, ``PLB01``),
 #: target LED aliases (``T1LEDA``), messenger point text (``MPTX01``), names
 #: and units (``PMSTN``, ``FTPUSER``, ``AI301TAG``, ``AI301EU``), and the
-#: settings of RTDs (``RTD01LOC``), which are never SELOGIC.
+#: settings of RTDs (``RTD01LOC``), which are never SELOGIC. Display points
+#: in the logic classes (``DP1``-``DP16``) are 300-series equations, not text.
 TEXT_NAME_RE: Final = re.compile(
     r"^(?:RID|TID|SID|BID\d|DP\d{1,2}|[NCSP]LB\d{1,2}|T\d{1,2}LEDA|MPTX\d{2}|"
     r"PMSTN|FTPUSER|AI\d{3}(?:TAG|EU)|RTD\d{1,2}[A-Z]{2,3})$"
@@ -366,7 +367,9 @@ def classify_setting(
     #. Every setting in the logic classes (``L``, ``L1``-``L6``) of
        300-series relays is an equation.
     #. Enable settings (``E50P``, ``ESV``, ``ETELNET``) and text settings
-       (``RID``, ``TID``, ``DP01``, ``NLB01``, ...) are settings.
+       (``RID``, ``TID``, ``DP01``, ``NLB01``, ...) are settings. Display
+       points in the logic classes (``DP1``) are 300-series equations, so
+       those are checked by their value if the family isn't known.
     #. Values with the syntax of an equation (operators like ``AND`` and
        ``NOT``, comparisons or math functions) are equations. Values with
        the 300-series symbols are only equations in the logic classes, or if
@@ -417,7 +420,11 @@ def classify_setting(
     if family == "3xx" and _LOGIC_SECTION_RE.match(section):
         return _equation_kind(value)
 
-    if ENABLE_NAME_RE.match(name) or TEXT_NAME_RE.match(name):
+    # Display points in the logic classes are 300-series equations (DP2 = LT1*!LT2)
+    is_text = TEXT_NAME_RE.match(name) and not (
+        name.startswith("DP") and _LOGIC_SECTION_RE.match(section)
+    )
+    if ENABLE_NAME_RE.match(name) or is_text:
         return "setting"
 
     # 300-series equations are all in the logic classes, so only look for the
