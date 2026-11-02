@@ -1,0 +1,1 @@
+SELRTAC: the web pull now uses the cached password (not the user name) of a verified login, no longer tries the relay ``ACC``/``OTTER`` credentials on RTAC web logins, and removes the fields it means to remove from its returned data.

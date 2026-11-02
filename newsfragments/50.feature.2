@@ -1,0 +1,1 @@
+Added ``peat.protocols.tls`` with ``fetch_peer_certificate()``, which gets a server's certificate with one TLS handshake and retries once with a legacy context for TLS 1.0/1.1-only devices, and ``parse_der_certificate()``, which parses a certificate with ``cryptography`` (or with OpenSSL, for certificates ``cryptography`` rejects) and calculates its DER and SPKI fingerprints.
