@@ -364,3 +364,11 @@ def test_baseline_cli_exit_codes(tmp_path, exec_peat):
 
     result = exec_peat([*compare, str(tmp_path / "does-not-exist")])
     assert result.returncode == 1
+
+    # an unreadable device file inside a directory input is an error, even if
+    # other devices were loaded
+    bad = tmp_path / "pull1" / "devices" / "192.0.2.99" / "device-data-full.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text('{"ip": "192.0.2.99", "name": ')
+    result = exec_peat([*compare, "--fail-on", "info", str(tmp_path / "pull1")])
+    assert result.returncode == 1, result.stderr

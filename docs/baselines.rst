@@ -114,19 +114,21 @@ Snapshot comparisons never compare values that are set by PEAT or the user inste
 
 - ``label``, ``comment``, ``asset``, ``id``, ``related``, ``successful_pulls``, MAC vendors;
 - ``extra`` (unstructured), ``event``, ``memory``, UEFI data, ``baseline_findings``, raw ``original`` data and ``logic.formats``;
-- volatile values: uptimes, ``start_time``, all ``statistics``, live clock values (``clock.time``, ``clock.offset``, ...), live indicator states, process IDs and resource usage, relationship counters and times, PLC task scan times, file times, ``interface.connected`` and ``service.status``.
+- volatile values: uptimes, ``start_time``, all ``statistics``, live clock values (``clock.time``, ``clock.offset``, ...), live indicator states, process IDs and resource usage, relationship counters and times, PLC task scan times, file times, ``interface.connected``, and the ``status`` and ``process_pid`` of services (also those listed on interfaces).
+
+These patterns also apply to the modules of a device (``module.*``), e.g. ``module.indicators.timestamp``.
 
 ``Baseline.ignore`` adds patterns (:mod:`fnmatch` syntax on paths without selectors; a pattern also matches everything below it), e.g. ``["firmware.version", "interface.description", "users.*"]``.
 
 To reduce noise:
 
-- files in the categories ``log``, ``event_record``, ``diagnostic`` and ``report`` change on every pull: only their disappearance is reported;
+- files in the categories ``log``, ``event_record``, ``diagnostic`` and ``report`` change and appear on every pull: only their disappearance is reported, not changes or new files;
 - relationships learned only from ARP, socket tables or logs come and go: a missing relationship is only reported if it was configured (``evidence`` ``config``, ``scl`` or ``user``). A *new* peer is always reported;
 - a change of ``key_switch`` or ``run_mode`` has severity ``high`` (a strong tampering indicator).
 
 Device type profiles
 --------------------
-A ``device_type`` baseline ("typical SEL-2032") describes every device of a type. It is built from one or more devices of ONE vendor and model, without per-unit identity (``DEVICE_TYPE_IGNORE`` in :mod:`peat.data.baseline`: addresses, names, serial numbers, file hashes, certificates, relationships, routes, IEC 61850 addressing, ...). With several devices, the profile keeps only what all of them share, and the values that differ between them are added to ``ignore``. Its selector matches the vendor ID and model. Comparisons remove the same identity values from both sides.
+A ``device_type`` baseline ("typical SEL-2032") describes every device of a type. It is built from one or more devices of ONE vendor and model, without per-unit identity (``DEVICE_TYPE_IGNORE`` in :mod:`peat.data.baseline`: addresses (also service listen addresses and module interface addresses), names, serial numbers, file hashes, certificates, relationships, routes, IEC 61850 addressing, ...). With several devices, the profile keeps only what all of them share, and the values that differ between them are added to ``ignore``. Its selector matches the vendor ID and model. Comparisons remove the same identity values from both sides.
 
 Severity and categories
 -----------------------
@@ -155,7 +157,9 @@ Print the current rules with ``peat baseline-show --known-defaults`` (all module
 
 Command line
 ============
-Three commands work with baselines. Inputs are PEAT device data: ``device-data-full.json`` (or ``device-data-summary.json``) files, parse summaries (``parse-summary.json``), directories containing them (searched recursively, e.g. a run directory or ``peat_results/``), or ``-`` (JSON from standard input). The inputs can be given before or after the options, but not on both sides.
+Three commands work with baselines. Inputs are PEAT device data: ``device-data-full.json`` (or ``device-data-summary.json``) files, parse summaries (``parse-summary.json``), directories containing them (searched recursively, e.g. a run directory or ``peat_results/``), or ``-`` (JSON from standard input). The inputs can be given before or after the options, but not on both sides. If any file or device in an input fails to load (e.g. a truncated ``device-data-full.json`` in a directory), the command fails with exit code ``1``.
+
+Parse summaries and ``device-data-summary.json`` files do not have all device data: parse summaries have no ``relationships``, and device summaries also no ``files``, ``registers``, ``tag``, ``io``, ``event`` and ``memory``. These keys are not compared for such inputs, and a baseline created from them adds them to its ``ignore`` list (with a warning). Use ``device-data-full.json`` files for complete comparisons.
 
 ``peat baseline-create``
 ------------------------

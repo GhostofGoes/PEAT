@@ -108,6 +108,7 @@ class IEC61850SCL(DeviceModule):
 
         main_dev: DeviceData | None = None
         devices: dict[str, DeviceData] = {}
+        claimed: set[int] = set()  # id() of the devices of the IEDs of this file
         for name, ied in ieds.items():
             # One bad IED never loses the others
             created = False
@@ -116,7 +117,7 @@ class IEC61850SCL(DeviceModule):
                 if main_dev is None and dev is not None:
                     ied_dev = dev
                 else:
-                    ied_dev, created = cls._ied_device(ied)
+                    ied_dev, created = cls._ied_device(ied, file, claimed)
                 cls._populate_ied(ied_dev, ied, file)
             except Exception as ex:
                 cls.log.warning(f"Failed to process IED '{name}' from '{file.name}': {ex}")
@@ -124,6 +125,7 @@ class IEC61850SCL(DeviceModule):
                     datastore.remove(ied_dev)  # don't leave a half-filled new device behind
                 continue
             devices[name] = ied_dev
+            claimed.add(id(ied_dev))
             if main_dev is None:
                 main_dev = ied_dev
 
@@ -153,17 +155,56 @@ class IEC61850SCL(DeviceModule):
         return main_dev
 
     @staticmethod
-    def _ied_device(ied: IEC61850) -> tuple[DeviceData, bool]:
+    def _ied_device(
+        ied: IEC61850, file: Path, claimed: set[int] | None = None
+    ) -> tuple[DeviceData, bool]:
         """
         Existing device for the IED (by name, then by IP), else a new one.
+
+        A device already used by another IED of the same file is never reused.
+        ``TEMPLATE`` (the IED name of every ICD file, IEC 61850-6) is not looked
+        up by name, and only matches a ``TEMPLATE`` device parsed from the same
+        file. A device found by IP is only reused if it has no IED name yet or
+        the same IED name.
 
         Returns:
             The device, and if it was created
         """
-        found = datastore.search(ied.ied_name, "name")
+        claimed = claimed or set()
+        file_path = file.as_posix()
+        template = ied.ied_name.upper() == "TEMPLATE"
+
+        def _usable(candidate: DeviceData | None) -> bool:
+            if candidate is None or id(candidate) in claimed:
+                return False
+            name = candidate.iec61850.ied_name
+            return not name or (
+                name == ied.ied_name and (not template or candidate.iec61850.scl_file == file_path)
+            )
+
+        if template:
+            # Same ICD file parsed again
+            found = next(
+                (
+                    d
+                    for d in datastore.objects
+                    if d.iec61850.ied_name == ied.ied_name
+                    and d.iec61850.scl_file == file_path
+                    and id(d) not in claimed
+                ),
+                None,
+            )
+        elif ied.ied_name:
+            found = datastore.search(ied.ied_name, "name")
+            if found is not None and id(found) in claimed:
+                found = None
+        else:
+            found = None
         ip = next((ap.ip for ap in ied.access_points if ap.ip), "")
         if found is None and ip:
-            found = datastore.search(ip, "ip")
+            candidate = datastore.search(ip, "ip")
+            if _usable(candidate):
+                found = candidate
         if found is not None:
             return found, False
         return datastore.create(ied.ied_name, "name"), True

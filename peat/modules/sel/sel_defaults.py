@@ -147,14 +147,27 @@ SEL_RELAY_VENDOR_RECOMMENDED: Final[Baseline] = Baseline(
             severity="medium",
             reason="FTP (21/tcp, cleartext) is enabled",
         ),
+        # A disabled Telnet service (ETELNET=N) is stored with enabled=False
         BaselineRule(
             id="sel.service.telnet.absent",
             name="Telnet not exposed",
-            path="service[protocol=telnet]",
-            operator="absent",
+            path="service[protocol=telnet].enabled",
+            operator="not_equals",
+            value=True,
             category="ports_services",
             severity="low",
-            reason="Telnet (23/tcp, cleartext) is exposed",
+            reason="Telnet (23/tcp, cleartext) is enabled",
+        ),
+        # Telnet found open by a scan or used by a pull (no settings: enabled unset)
+        BaselineRule(
+            id="sel.service.telnet.open",
+            name="Telnet not answering",
+            path="service[protocol=telnet].status",
+            operator="not_in",
+            value=["open", "verified"],
+            category="ports_services",
+            severity="low",
+            reason="Telnet (23/tcp, cleartext) is open ({actual})",
         ),
         BaselineRule(
             id="sel.accounts.default-credentials",

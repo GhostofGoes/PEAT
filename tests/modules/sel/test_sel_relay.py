@@ -173,7 +173,7 @@ def _relay(**kwargs) -> DeviceData:
 def test_known_defaults_evaluate_factory_device():
     dev = _relay(name="FEEDER 1")
     dev.extra["terminal_id"] = "STATION A"
-    dev.store("service", Service(protocol="telnet", port=23, transport="tcp"))
+    dev.store("service", Service(protocol="telnet", port=23, transport="tcp", enabled=True))
     dev.store("service", Service(protocol="ftp", port=21, enabled=True))
     dev.service[1].security.default_credentials = True
 
@@ -183,6 +183,7 @@ def test_known_defaults_evaluate_factory_device():
     vendor = {f.rule_id: f for f in compare_device(dev, SEL_RELAY_VENDOR_RECOMMENDED)}
     assert vendor["sel.service.ftp.disabled"].result == "fail"
     assert vendor["sel.service.telnet.absent"].result == "fail"
+    assert vendor["sel.service.telnet.open"].result == "pass"
     assert vendor["sel.accounts.default-credentials"].result == "fail"
     assert vendor["sel.identity.rid-changed"].result == "fail"
     assert vendor["sel.identity.tid-changed"].result == "fail"
@@ -192,6 +193,8 @@ def test_known_defaults_evaluate_hardened_device():
     dev = _relay(name="SUB7 FDR 12")
     dev.extra["terminal_id"] = "SUB7"
     dev.store("service", Service(protocol="ftp", port=2121, enabled=False))
+    # ETELNET=N: relay_parse stores a disabled Telnet service
+    dev.store("service", Service(protocol="telnet", port=23, transport="tcp", enabled=False))
     factory = {f.rule_id: f for f in compare_device(dev, SEL_RELAY_FACTORY_DEFAULTS)}
     assert factory["sel.default.rid"].result == "fail"
     assert factory["sel.default.ftp-port"].result == "fail"
@@ -199,10 +202,20 @@ def test_known_defaults_evaluate_hardened_device():
     for rule_id in (
         "sel.service.ftp.disabled",
         "sel.service.telnet.absent",
+        "sel.service.telnet.open",
         "sel.identity.rid-changed",
         "sel.identity.tid-changed",
     ):
         assert vendor[rule_id].result == "pass", rule_id
+
+
+def test_known_defaults_telnet_found_by_scan_is_exposed():
+    dev = _relay(name="SUB7 FDR 12")
+    dev.store("service", Service(protocol="telnet", port=23, transport="tcp", status="open"))
+    vendor = {f.rule_id: f for f in compare_device(dev, SEL_RELAY_VENDOR_RECOMMENDED)}
+    assert vendor["sel.service.telnet.absent"].result == "pass"  # no settings
+    assert vendor["sel.service.telnet.open"].result == "fail"
+    assert vendor["sel.service.telnet.open"].severity == "low"
 
 
 # ----------------------------------------------------------------------------- #
@@ -254,6 +267,23 @@ def test_process_cid_file_parses_scl(mocker, tmp_path, scl_raw):
     (cid,) = dev.files
     assert cid.path.as_posix() == "/SETTINGS/SET_61850.CID"
     assert cid.category == {"configuration", "iec61850"}
+
+
+def test_extract_cid_content_bounded(mocker):
+    from peat.modules.sel.relay_parse import extract_cid_content
+    from peat.parsing import scl
+
+    mocker.patch.object(scl, "MAX_DECOMPRESSED_SIZE", 1024)
+    bomb = zlib.compress(b"<SCL>" + b" " * 4096)
+    with pytest.raises(scl.ParseError):
+        extract_cid_content(bomb)
+    assert extract_cid_content(zlib.compress(b"\xef\xbb\xbf<SCL/>")) == "<SCL/>"
+    assert extract_cid_content(b"<SCL/>") == "<SCL/>"
+
+    write = mocker.patch.object(DeviceData, "write_file")
+    dev = DeviceData(ip="192.0.2.10")
+    assert process_cid_file(bomb, PurePosixPath("/SETTINGS/SET_61850.CID"), dev) == ""
+    write.assert_not_called()
 
 
 def test_parse_zlib_cid_any_name(mocker, tmp_path, scl_raw):

@@ -35,7 +35,7 @@ from peat.data.models import Baseline, BaselineFinding, BaselineRule, DeviceData
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-DEFAULT_IGNORE: tuple[str, ...] = (
+_IDENTITY_IGNORE: tuple[str, ...] = (
     # identity/context set by PEAT or the user, not by the device
     "label",
     "comment",
@@ -61,7 +61,10 @@ DEFAULT_IGNORE: tuple[str, ...] = (
     "*.local_path",
     "*.peat_module",
     "*.device",
-    # volatile values
+)
+
+# Volatile values of a device
+_VOLATILE_IGNORE: tuple[str, ...] = (
     "uptime",
     "*.uptime",
     "start_time",
@@ -110,13 +113,25 @@ DEFAULT_IGNORE: tuple[str, ...] = (
     "iec61850.header.history",
     "interface.connected",
     "service.status",
+    "service.process_pid",
+    "interface.services.status",
+    "interface.services.process_pid",
+)
+
+DEFAULT_IGNORE: tuple[str, ...] = (
+    *_IDENTITY_IGNORE,
+    *_VOLATILE_IGNORE,
+    # Patterns are anchored at the document root: repeat them for the modules of
+    # a device (DeviceData.module, which are DeviceData objects)
+    *(f"module.{p}" for p in (*_IDENTITY_IGNORE, *_VOLATILE_IGNORE) if not p.startswith("*")),
 )
 """
 Paths that are never compared in snapshot comparisons (:mod:`fnmatch` patterns
 of selector-free paths; a pattern also matches everything below it). These are
 values set by PEAT or the user instead of the device, data stored in other indices,
 unstructured ``extra`` data, raw ``original`` blobs, and volatile values such as
-counters, uptimes, clocks and live states. :attr:`Baseline.ignore
+counters, uptimes, clocks, live states and process IDs, of the device and of its
+modules. :attr:`Baseline.ignore
 <peat.data.models.Baseline.ignore>` adds patterns to this list.
 """
 
@@ -161,9 +176,20 @@ DEVICE_TYPE_IGNORE: tuple[str, ...] = (
     "ssh_keys",
     "logic.hash",
     "logic.name",
+    "service.listen_address",
+    "interface.services.listen_address",
     "module.serial_number",
     "module.mac",
     "module.ip",
+    "module.hostname",
+    "module.interface.ip",
+    "module.interface.mac",
+    "module.interface.hostname",
+    "module.interface.subnet_mask",
+    "module.interface.gateway",
+    "module.interface.id",
+    "module.service.listen_address",
+    "module.interface.services.listen_address",
 )
 """
 Paths additionally ignored for ``scope="device_type"`` baselines ("typical device"
@@ -489,7 +515,14 @@ def diff_docs(
                     continue  # observed-only peer not seen this time: not a deviation
                 out.append(("missing", sub, item, None))
             elif k not in exp_idx:
-                out.append(("unexpected", sub, None, act_idx[k]))
+                item = act_idx[k]
+                if (
+                    list_name == "files"
+                    and isinstance(item, dict)
+                    and set(item.get("category", [])) & VOLATILE_FILE_CATEGORIES
+                ):
+                    continue  # new log/event-record files appear on every pull
+                out.append(("unexpected", sub, None, item))
             elif (
                 list_name == "files"
                 and isinstance(exp_idx[k], dict)
@@ -719,7 +752,12 @@ def compare_device(
         )
     if baseline.expected is not None:
         diffs: list[tuple[str, str, Any, Any]] = []
-        ignore = tuple(DEFAULT_IGNORE) + tuple(baseline.ignore)
+        # + keys a lossy input format (parse/device summary) does not contain
+        ignore = (
+            tuple(DEFAULT_IGNORE)
+            + tuple(baseline.ignore)
+            + tuple(getattr(dev, "_cache", {}).get("omitted_keys", ()))
+        )
         expected_doc, actual_doc = device_to_doc(baseline.expected), doc
         if baseline.scope == "device_type":
             # strip per-unit identity BEFORE aligning list items, so list keys that use

@@ -468,6 +468,99 @@ def test_snapshot_volatile_files_and_relationships():
     assert [d for d, p in diffs if p.startswith("relationships")] == ["unexpected"]
 
 
+def test_snapshot_new_volatile_files_are_not_reported():
+    dev = sel_relay()
+    dev.store("files", File(path="/EVENTS/HR_1.CEV", category={"event_record"}, size=100))
+    baseline = _snapshot(dev, kind="previous_observed")
+    cur = sel_relay()
+    cur.store("files", File(path="/EVENTS/HR_1.CEV", category={"event_record"}, size=100))
+    cur.store("files", File(path="/EVENTS/HR_2.CEV", category={"event_record"}, size=100))
+    cur.store("files", File(path="/LOGS/SYSLOG.TXT", category={"log"}, size=5))
+    assert bl.compare_device(_exported(cur), baseline) == []
+    # other new files are still reported
+    cur.store("files", File(path="/SETTINGS/SET_9.TXT", category={"configuration"}))
+    assert _diffs(bl.compare_device(_exported(cur), baseline)) == {
+        ("unexpected", "files[path=/SETTINGS/SET_9.TXT]")
+    }
+
+
+def _module_device(when, pid: int) -> DeviceData:
+    from peat.data.models import Indicator, Interface
+
+    dev = DeviceData(ip="192.0.2.30", id="192.0.2.30", name="CLX")
+    dev.store("interface", Interface(name="eth0", ip="192.0.2.30", type="ethernet"))
+    dev.store(
+        "service",
+        Service(protocol="ssh", port=22, transport="tcp", status="open", process_pid=pid),
+        interface_lookup={"name": "eth0"},
+    )
+    for slot in ("0", "1"):
+        mod = DeviceData(slot=slot, name=f"mod{slot}")
+        mod.store(
+            "indicators",
+            Indicator(type="status_flag", name="cip_state", state="on", timestamp=when),
+        )
+        mod.store("interface", Interface(name="port1", type="ethernet", connected=slot == "0"))
+        mod.store(
+            "service",
+            Service(protocol="http", port=80, status="open", process_pid=pid),
+            interface_lookup={"name": "port1"},
+        )
+        dev.module.append(mod)
+    return dev
+
+
+def test_snapshot_volatile_values_of_modules_and_interface_services():
+    baseline = _snapshot(_module_device(T0, pid=100), kind="previous_observed")
+    cur = _module_device(T1, pid=200)
+    cur.module[0].interface[0].connected = False
+    for svc in [*cur.service, *cur.interface[0].services, *cur.module[0].service]:
+        svc.status = "closed"
+    assert bl.compare_device(_exported(cur), baseline) == []
+    for pattern in (
+        "module.indicators.timestamp",
+        "interface.services.status",
+        "module.interface.services.process_pid",
+        "service.process_pid",
+    ):
+        assert bl.is_ignored(pattern, bl.DEFAULT_IGNORE), pattern
+
+
+def test_device_type_profile_ignores_per_unit_service_and_module_addresses():
+    from peat.data.models import Interface
+
+    def unit(ip: str) -> DeviceData:
+        dev = DeviceData(ip=ip, id=ip, name="M1")
+        dev.description.vendor.id = "X"
+        dev.description.model = "Y"
+        dev.store("interface", Interface(name="eth0", ip=ip, type="ethernet"))
+        dev.store(
+            "service",
+            Service(protocol="ssh", port=22, transport="tcp", listen_address=ip),
+            interface_lookup={"name": "eth0"},
+        )
+        mod = DeviceData(slot="1")
+        mod.store(
+            "interface",
+            Interface(
+                name="port1",
+                ip=ip.replace("192.0.2", "198.51.100"),
+                mac=f"00:00:5E:00:53:{ip[-2:]}",
+            ),
+        )
+        dev.module.append(mod)
+        return _exported(dev)
+
+    profile = Baseline(
+        id="x-y-typical",
+        kind="approved",
+        scope="device_type",
+        selector=BaselineSelector(vendor_id="X", model="Y"),
+        expected=bl.device_type_profile([unit("192.0.2.10")]),
+    )
+    assert bl.compare_device(unit("192.0.2.11"), profile) == []
+
+
 def test_snapshot_operating_mode_change_is_high():
     dev = sel_relay()
     dev.key_switch = "RUN"

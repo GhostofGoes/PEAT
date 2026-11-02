@@ -61,11 +61,27 @@ _SNAPSHOT_EXCLUDE = ("event", "memory", "uefi_image", "uefi_hashes", "baseline_f
 
 _BASELINE_COMMANDS = ("baseline_create", "baseline_compare", "baseline_show")
 
+# Device data keys that lossy input formats do not contain (dev._cache["omitted_keys"]):
+# comparing them would report everything as "missing"/"unexpected"
+_PARSE_SUMMARY_OMITTED = ("relationships", "baseline_findings")
+_DEVICE_SUMMARY_OMITTED = (
+    "files",
+    "relationships",
+    "registers",
+    "tag",
+    "io",
+    "event",
+    "memory",
+    "baseline_findings",
+)
+
 
 # --------------------------------------------------------------------------- #
 # Loading device data
 # --------------------------------------------------------------------------- #
-def load_device_data(source: str | Path | dict | list) -> list[DeviceData]:
+def load_device_data(
+    source: str | Path | dict | list, errors: list[str] | None = None
+) -> list[DeviceData]:
     """
     Load devices from PEAT output.
 
@@ -84,18 +100,28 @@ def load_device_data(source: str | Path | dict | list) -> list[DeviceData]:
     PEAT module that produced the data is known (parse summaries, or a single
     ``files[*].peat_module`` value), it is set as ``dev._module``.
 
+    Parse summaries and ``device-data-summary.json`` files do not contain all
+    device data (e.g. no ``relationships``; summaries also no ``files``): the
+    missing keys are kept as ``dev._cache["omitted_keys"]`` and are not compared.
+
     .. note::
        This does not call :meth:`~peat.data.models.DeviceData.populate_fields`
        and does not add the devices to the :class:`~peat.data.store.Datastore`.
 
     Args:
         source: Where to load the device data from
+        errors: if given, every file or item that failed to load (e.g. an
+            unreadable file in a directory, an invalid device in a list) is
+            appended to it, also when other devices were loaded
 
     Returns:
         The loaded devices, or an empty list if an error occurred (the error is logged)
     """
+    if errors is None:
+        errors = []
+
     if isinstance(source, (dict, list)):
-        return _devices_from_json(source, origin="")
+        return _devices_from_json(source, origin="", errors=errors)
 
     if str(source) == "-":
         log.debug("Reading device data from standard input (stdin)")
@@ -103,8 +129,9 @@ def load_device_data(source: str | Path | dict | list) -> list[DeviceData]:
             data = json.loads(sys.stdin.read())
         except ValueError as ex:
             log.error(f"Failed to read device data JSON from stdin: {ex}")
+            errors.append("stdin")
             return []
-        return _devices_from_json(data, origin="stdin")
+        return _devices_from_json(data, origin="stdin", errors=errors)
 
     path = Path(os.path.expanduser(str(source)))
     if path.is_dir():
@@ -116,64 +143,95 @@ def load_device_data(source: str | Path | dict | list) -> list[DeviceData]:
                 f"No device data (device-data-full.json or "
                 f"device-data-summary.json files) found in directory '{path}'"
             )
+            errors.append(path.as_posix())
             return []
         devices = []
         for file in files:
-            devices.extend(_load_json_file(file))
+            devices.extend(_load_json_file(file, errors))
         return devices
 
     if not path.is_file():
         log.error(f"Device data source '{source}' does not exist")
+        errors.append(str(source))
         return []
 
-    return _load_json_file(path)
+    return _load_json_file(path, errors)
 
 
-def _load_json_file(path: Path) -> list[DeviceData]:
+def _load_json_file(path: Path, errors: list[str] | None = None) -> list[DeviceData]:
+    if errors is None:
+        errors = []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as ex:
         log.error(f"Failed to read device data from '{path}': {ex}")
+        errors.append(path.as_posix())
         return []
-    devices = _devices_from_json(data, origin=path.resolve().as_posix())
+    devices = _devices_from_json(data, origin=path.resolve().as_posix(), errors=errors)
     log.debug(f"Loaded {len(devices)} devices from '{path}'")
     return devices
 
 
-def _devices_from_json(data: Any, origin: str) -> list[DeviceData]:
+def _devices_from_json(
+    data: Any, origin: str, errors: list[str] | None = None
+) -> list[DeviceData]:
+    if errors is None:
+        errors = []
     where = f" in '{origin}'" if origin else ""
+    label = origin or "input"
 
     # Parse summary: device data is the host document in parse_results[*].results
     if isinstance(data, dict) and "parse_results" in data:
         devices = []
-        for result in data.get("parse_results") or []:
+        for n, result in enumerate(data.get("parse_results") or []):
             if isinstance(result, dict) and isinstance(result.get("results"), dict):
                 dev = _device_from_dict(result["results"], origin, result.get("module", ""))
-                if dev is not None:
-                    devices.append(dev)
+                if dev is None:
+                    errors.append(f"{label}: parse_results[{n}]")
+                    continue
+                dev._cache["omitted_keys"] = _PARSE_SUMMARY_OMITTED
+                devices.append(dev)
         if not devices:
             log.error(f"No device data found in the parse summary{where}")
+            errors.append(label)
         return devices
+
+    omitted = ()
+    if origin and Path(origin).name == "device-data-summary.json":
+        omitted = _DEVICE_SUMMARY_OMITTED
 
     if isinstance(data, dict):
         dev = _device_from_dict(data, origin)
-        return [dev] if dev is not None else []
+        if dev is None:
+            errors.append(label)
+            return []
+        if omitted:
+            dev._cache["omitted_keys"] = omitted
+        return [dev]
 
     if isinstance(data, list):
         devices = []
-        for item in data:
+        for n, item in enumerate(data):
             if not isinstance(item, dict):
                 log.error(f"Invalid device data{where}: expected objects in the list")
+                errors.append(label)
                 return []
+            item_omitted = omitted
             if isinstance(item.get("results"), dict) and "module" in item:  # parse result
                 dev = _device_from_dict(item["results"], origin, item["module"])
+                item_omitted = _PARSE_SUMMARY_OMITTED
             else:
                 dev = _device_from_dict(item, origin)
-            if dev is not None:
-                devices.append(dev)
+            if dev is None:
+                errors.append(f"{label}: [{n}]")
+                continue
+            if item_omitted:
+                dev._cache["omitted_keys"] = item_omitted
+            devices.append(dev)
         return devices
 
     log.error(f"Invalid device data{where}: expected a JSON object or list")
+    errors.append(label)
     return []
 
 
@@ -291,6 +349,17 @@ def create_baseline(
 
     now = utils.utc_now()
     ignore = list(ignore or [])
+
+    # Lossy inputs (parse/device summaries) do not have these keys: a baseline
+    # can't say anything about them, so they are not compared
+    omitted = sorted({k for d in devices for k in d._cache.get("omitted_keys", ())})
+    if omitted:
+        log.warning(
+            f"The device data is a summary without {', '.join(omitted)}: they are "
+            f"added to the baseline's 'ignore' list. Use device-data-full.json "
+            f"files to include them."
+        )
+        ignore.extend(k for k in omitted if k not in ignore)
     provenance = BaselineProvenance(
         created=now,
         author=author or str(consts.SYSINFO.get("username", "")),
@@ -703,10 +772,20 @@ def run_baseline(args: dict[str, Any]) -> int:
 
 
 def _load_inputs(inputs: list[str]) -> list[DeviceData] | None:
-    """Load all inputs; None if any input fails (the error is logged)."""
+    """
+    Load all inputs; None if any input, or any file or device in an input,
+    fails to load (the error is logged).
+    """
     devices: list[DeviceData] = []
     for source in inputs:
-        loaded = load_device_data(source)
+        errors: list[str] = []
+        loaded = load_device_data(source, errors)
+        if errors:
+            log.error(
+                f"Failed to load device data from '{source}': {', '.join(errors)} "
+                f"(see the errors above)"
+            )
+            return None
         if not loaded:
             log.error(f"No device data loaded from '{source}'")
             return None

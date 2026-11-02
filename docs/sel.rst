@@ -177,7 +177,7 @@ Known defaults
 ``peat baseline-compare --known-defaults`` (see :doc:`baselines`) checks SEL devices against these baselines (defined in ``peat/modules/sel/sel_defaults.py``):
 
 - ``sel-relay-factory-defaults`` (``factory_default``, severity ``info``): Telnet on port 23, FTP on port 21, the factory default RID ``FEEDER 1`` and TID ``STATION A``. A failed rule means "changed from the factory default".
-- ``sel-relay-vendor-recommended`` (``vendor_recommended``): FTP disabled, Telnet not exposed, no factory default password accepted, RID and TID changed from the factory defaults, GOOSE signed (IEC 62351-6, rarely supported by relays, severity ``info``).
+- ``sel-relay-vendor-recommended`` (``vendor_recommended``): FTP disabled, Telnet not enabled in the settings and not found open, no factory default password accepted, RID and TID changed from the factory defaults, GOOSE signed (IEC 62351-6, rarely supported by relays, severity ``info``).
 - ``sel-rtac-vendor-recommended`` (``vendor_recommended``): no factory default password accepted.
 
 Developer notes on SEL communications

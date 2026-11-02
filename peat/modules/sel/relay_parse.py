@@ -1,7 +1,6 @@
 import copy
 import csv
 import re
-import zlib
 from datetime import datetime, timedelta
 from pathlib import PurePath, PurePosixPath
 from typing import Any, Literal
@@ -2873,14 +2872,16 @@ def extract_cid_content(data: bytes) -> str:
     """
     Decompress a SEL ``.CID`` file (zlib). Data that is not zlib-compressed
     (a plain-XML CID exported by other tools) is decoded as-is.
+
+    Raises:
+        ParseError: the decompressed data is larger than
+            :data:`peat.parsing.scl.MAX_DECOMPRESSED_SIZE` (zlib bomb)
     """
     if not data:
         return ""
 
-    if data[:1] == b"\x78":
-        decompressed = zlib.decompress(data)
-    else:
-        decompressed = data
+    # Bounded decompression (same limit as the SCL parser)
+    decompressed = scl.decode_scl_bytes(data)
 
     # NOTE utf-8-sig is required to remove the
     # Byte Order Mark (BOM) that gets prepended in some cases.

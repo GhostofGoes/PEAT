@@ -223,6 +223,10 @@ def _bool(value: str | None, default: bool | None = None) -> bool | None:
     return value.strip().lower() in ("true", "1")
 
 
+# Largest xs:unsignedInt (SCL confRev, smpRate, nofASDU, bufTime, intgPd, ...)
+UINT32_MAX = 0xFFFFFFFF
+
+
 def _int(value: str | None, base: int = 10) -> int | None:
     try:
         return int(str(value).strip(), base) if value not in (None, "") else None
@@ -231,9 +235,12 @@ def _int(value: str | None, base: int = 10) -> int | None:
 
 
 def _uint(value: str | None) -> int | None:
-    """Non-negative integer, else :obj:`None` (malformed values never abort the parse)."""
+    """
+    ``xs:unsignedInt`` (0 to :data:`UINT32_MAX`), else :obj:`None` (malformed
+    values never abort the parse, and out-of-range values never reach Elasticsearch).
+    """
     result = _int(value)
-    return result if result is not None and result >= 0 else None
+    return result if result is not None and 0 <= result <= UINT32_MAX else None
 
 
 def _p_values(address_el) -> dict[str, str]:
@@ -298,7 +305,7 @@ def _ms(el) -> int | None:
         value = round(float(el.text.strip()))
     except (ValueError, OverflowError):
         return None
-    return value if value >= 0 else None
+    return value if 0 <= value <= UINT32_MAX else None
 
 
 def ln_name(ln_el) -> str:

@@ -342,6 +342,22 @@ def test_parse_malformed_numbers_do_not_abort(raw):
     assert ieds["MU1"].publications[0].smp_rate is None
 
 
+def test_parse_out_of_range_numbers_are_dropped(raw):
+    """xs:unsignedInt values above 2^32-1 would be rejected by the ES long mapping."""
+    big = b"99999999999999999999"
+    bad = _variant(raw, b'confRev="2"', b'confRev="' + big + b'"')
+    bad = _variant(
+        bad, b'<MaxTime unit="s" multiplier="m">1000', b'<MaxTime unit="s" multiplier="m">1e300'
+    )
+    ieds = scl.parse_scl_all(scl.load_scl(bad), "SCD")
+    g = ieds["PROT1"].publications[0]
+    assert g.conf_rev is None
+    assert g.max_time is None
+    assert g.min_time == 4
+    assert scl._uint(str(scl.UINT32_MAX)) == scl.UINT32_MAX
+    assert scl._uint(str(scl.UINT32_MAX + 1)) is None
+
+
 # --------------------------------------------------------------------------- #
 # Robustness: malformed address values (ECS-4 / ECS-9)
 # --------------------------------------------------------------------------- #

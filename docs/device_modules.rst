@@ -136,6 +136,10 @@ Notes:
   the file is still parsed.
 - IPv6 addresses, data type templates, ``DOI``/``DAI`` values and ``Private``
   elements are not modeled. An ``SSD`` without IEDs produces no device.
+- An IED reuses an existing device with the same IED name, else one with the
+  same IP address that has no IED name yet or the same IED name. The IEDs of
+  one file never share a device. ``TEMPLATE`` (the IED name in every ``ICD``
+  file) only matches a device parsed from the same file.
 - zlib-compressed SEL ``SET_61850.CID`` files are handled by
   :class:`~peat.modules.sel.sel_relay.SELRelay`, which uses the same SCL parser.
 

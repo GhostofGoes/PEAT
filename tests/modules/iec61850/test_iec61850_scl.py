@@ -140,6 +140,55 @@ def test_parse_reuses_existing_devices():
     assert len(datastore.search("MU1", "name").relationships) == 1
 
 
+def _icd(manufacturer: str, ied_type: str, ld_inst: str) -> str:
+    return (
+        '<SCL xmlns="http://www.iec.ch/61850/2003/SCL"><Header id="x"/>'
+        f'<IED name="TEMPLATE" manufacturer="{manufacturer}" type="{ied_type}">'
+        '<AccessPoint name="AP1"><Server><Authentication/>'
+        f'<LDevice inst="{ld_inst}"><LN0 lnClass="LLN0" inst=""/></LDevice>'
+        "</Server></AccessPoint></IED></SCL>"
+    )
+
+
+def test_parse_template_icds_are_separate_devices(out_config):
+    """Every ICD names its IED TEMPLATE (IEC 61850-6): never merged by that name."""
+    a = IEC61850SCL.parse(_write(out_config / "a.icd", _icd("VendorA", "RelayA", "LDA").encode()))
+    b = IEC61850SCL.parse(_write(out_config / "b.icd", _icd("VendorB", "MeterB", "LDB").encode()))
+    assert a is not b
+    assert len(datastore.objects) == 2
+    assert (a.description.vendor.name, a.description.model) == ("VendorA", "RelayA")
+    assert (b.description.vendor.name, b.description.model) == ("VendorB", "MeterB")
+    assert [ld.inst for ld in a.iec61850.logical_devices] == ["LDA"]
+    assert [ld.inst for ld in b.iec61850.logical_devices] == ["LDB"]
+    # parsing the same ICD again reuses its device
+    assert IEC61850SCL.parse(out_config / "a.icd") is a
+    assert len(datastore.objects) == 2
+
+
+def test_parse_ieds_with_same_ip_are_separate_devices(out_config):
+    scd = (
+        '<SCL xmlns="http://www.iec.ch/61850/2003/SCL"><Header id="x"/>'
+        '<Communication><SubNetwork name="S1">'
+        '<ConnectedAP iedName="IED_A" apName="AP1"><Address>'
+        '<P type="IP">192.168.1.100</P></Address></ConnectedAP>'
+        '<ConnectedAP iedName="IED_B" apName="AP1"><Address>'
+        '<P type="IP">192.168.1.100</P></Address></ConnectedAP>'
+        "</SubNetwork></Communication>"
+        '<IED name="IED_A" manufacturer="ACME" type="RelayA"><AccessPoint name="AP1">'
+        '<Server><Authentication/><LDevice inst="LDA"><LN0 lnClass="LLN0" inst=""/>'
+        "</LDevice></Server></AccessPoint></IED>"
+        '<IED name="IED_B" manufacturer="OTHER" type="RelayB"><AccessPoint name="AP1">'
+        '<Server><Authentication/><LDevice inst="LDB"><LN0 lnClass="LLN0" inst=""/>'
+        "</LDevice></Server></AccessPoint></IED></SCL>"
+    )
+    IEC61850SCL.parse(_write(out_config / "same_ip.scd", scd.encode()))
+    by_name = {d.iec61850.ied_name: d for d in datastore.objects}
+    assert set(by_name) == {"IED_A", "IED_B"}
+    assert by_name["IED_A"].description.model == "RelayA"
+    assert by_name["IED_B"].description.model == "RelayB"
+    assert [ld.inst for ld in by_name["IED_B"].iec61850.logical_devices] == ["LDB"]
+
+
 @pytest.mark.usefixtures("out_config")
 def test_parse_into_given_device():
     given = DeviceData(id="my-relay")

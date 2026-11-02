@@ -175,6 +175,61 @@ def test_load_device_data_errors(tmp_path, caplog):
     assert api.load_device_data({"parse_results": []}) == []
 
 
+def test_load_device_data_reports_partial_failures(tmp_path):
+    write_pull(tmp_path, sel_relay(), name="a")
+    bad = tmp_path / "b" / "devices" / "192.0.2.11" / "device-data-full.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text('{"ip": "192.0.2.11", "name": ')  # truncated
+    errors = []
+    devices = api.load_device_data(tmp_path, errors)
+    assert [d.ip for d in devices] == ["192.0.2.10"]
+    assert errors == [bad.as_posix()]
+
+    errors = []
+    devices = api.load_device_data([sel_relay().export(), {"ip": "not an ip"}], errors)
+    assert len(devices) == 1
+    assert errors == ["input: [1]"]
+
+    errors = []
+    parse_summary = {
+        "parse_results": [
+            {"module": "SELRelay", "results": consts.convert(sel_relay().elastic())},
+            {"module": "SELRelay", "results": {"ip": "not an ip"}},
+        ]
+    }
+    assert len(api.load_device_data(parse_summary, errors)) == 1
+    assert errors == ["input: parse_results[1]"]
+
+    # without the errors argument, the loaded devices are still returned
+    assert len(api.load_device_data(tmp_path)) == 1
+
+
+def test_lossy_inputs_are_not_compared_as_complete(tmp_path, caplog):
+    full = write_pull(tmp_path, sel_relay())
+    (full_dev,) = api.load_device_data(full)
+    assert "omitted_keys" not in full_dev._cache
+    assert full_dev.files
+    assert full_dev.relationships
+    baseline = api.create_baseline(full_dev, "previous_observed")
+
+    (summary,) = api.load_device_data(full.with_name("device-data-summary.json"))
+    assert {"files", "relationships"} <= set(summary._cache["omitted_keys"])
+    assert api.compare_to_baseline(summary, baseline, store=False) == []
+
+    parse_summary = {
+        "parse_results": [{"module": "SELRelay", "results": consts.convert(sel_relay().elastic())}]
+    }
+    (parsed,) = api.load_device_data(parse_summary)
+    assert parsed._cache["omitted_keys"] == ("relationships", "baseline_findings")
+    assert api.compare_to_baseline(parsed, baseline, store=False) == []
+
+    # a baseline created from a summary ignores what the summary does not have
+    from_summary = api.create_baseline(summary, "previous_observed")
+    assert {"files", "relationships"} <= set(from_summary.ignore)
+    assert "summary without" in caplog.text
+    assert api.compare_to_baseline(full_dev, from_summary, store=False) == []
+
+
 # --------------------------------------------------------------------------- #
 # Creating, saving and loading baselines
 # --------------------------------------------------------------------------- #
