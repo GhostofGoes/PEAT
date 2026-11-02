@@ -29,6 +29,7 @@ from peat.modules.sel.sel_ascii import (
 from peat.modules.sel.sel_serial import SELSerial
 from peat.modules.sel.sel_telnet import SELTelnet
 from peat.protocols.expect import Expecter
+from peat.protocols.telnet import Telnet
 
 from .fake_sel_relay import (
     FID_451,
@@ -300,15 +301,23 @@ def test_file_show_one_byte_chunks(relay_server):
 
 
 def test_file_show_truncated_with_legacy_timing(relay_server, mocker):
-    # The same stall with the old timing cuts the file off (for comparison)
+    # The same stall with the old timing cuts the file off (for comparison).
+    # The relay stalls until the download returns, and the old fixed read
+    # delay is long enough for the start of the file to arrive, so the result
+    # doesn't depend on how fast the test machine is.
     mocker.patch.object(SELTelnet, "can_download_files", return_value=True)
+    mocker.patch.object(Telnet, "READ_DELAY", 1.0)
+    stall = threading.Event()
     server = relay_server(
         lambda: FakeSELRelay(level="1", files={"SETTINGS SET_1.TXT": SET_1}),
-        pause_at=(b'X010,"10"', 0.6),
+        pause_at=(b'X010,"10"', stall),
     )
     tn = _telnet(server, legacy_timing=True)
     tn.priv_level = 1
-    data = tn.download_binary("SETTINGS SET_1.TXT", save_to_file=False)
+    try:
+        data = tn.download_binary("SETTINGS SET_1.TXT", save_to_file=False)
+    finally:
+        stall.set()
     assert data is not None
     assert len(data) < len(SET_1)
     tn.disconnect()

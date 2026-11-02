@@ -391,7 +391,7 @@ class SocketRelay:
         chunk_size: int = 0,
         chunk_delay: float = 0.0,
         response_delay: float = 0.0,
-        pause_at: tuple[bytes, float] | None = None,
+        pause_at: tuple[bytes, float | threading.Event] | None = None,
     ) -> None:
         """
         Args:
@@ -401,7 +401,10 @@ class SocketRelay:
             chunk_delay: Seconds between chunks
             response_delay: Seconds before each response
             pause_at: Pause for this many seconds after sending these bytes
-                (the first time), e.g. a slow link that stalls in the middle of a file
+                (the first time), e.g. a slow link that stalls in the middle of a file.
+                If the pause is a :class:`threading.Event`, the relay stalls until
+                the event is set (at most 30 seconds), so a test doesn't depend
+                on how fast the client reads.
         """
         self.relay = relay
         self.sock = sock
@@ -424,7 +427,10 @@ class SocketRelay:
                 self.pause_at = None
                 end = data.index(marker) + len(marker)
                 self._send_chunks(data[:end])
-                time.sleep(pause)
+                if isinstance(pause, threading.Event):
+                    pause.wait(timeout=30)
+                else:
+                    time.sleep(pause)
                 data = data[end:]
             self._send_chunks(data)
         except OSError:
