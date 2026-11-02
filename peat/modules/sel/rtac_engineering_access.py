@@ -352,6 +352,9 @@ class Listener:
         command, and a listener whose port or transport isn't known have no
         entries. A SEL server with no known SEL devices has one entry with
         no ``sel_port`` or ``device_name``, since ``WHO`` lists its devices.
+        An access point with a router whose destination isn't known (e.g. an
+        ID that isn't in the database tables) has an entry with no ``name``,
+        ``device_name`` or ``route`` for it, since its route may be direct.
         """
         if not self.gives_access:
             return []
@@ -715,6 +718,7 @@ def sel_client_port(settings: dict, serial: bool) -> int | None:
 @dataclass
 class _Endpoint:
     name: str
+    """Name of the endpoint, or ``""`` if the router has one that isn't known."""
     protocol: str = ""
     type: str = ""
     label: str = ""
@@ -782,8 +786,14 @@ def _resolve_endpoints(
 
     The access point is the endpoint that's an access point (regardless of
     whether it's the ``Source`` or the ``Destination`` in the export), and
-    the other endpoints are the destinations.
+    the other endpoints are the destinations. If the router doesn't have a
+    destination, or has one that isn't known (an endpoint without a name),
+    its access point gets a destination without a name or route, since the
+    route may be direct. If it isn't known which of its access points the
+    router is on, each of them that has a port gets one.
     """
+    unknown = [e for e in endpoints if not e.name]
+    endpoints = [e for e in endpoints if e.name]
     access_points: list[tuple[_Endpoint, Listener | None]] = []
     targets: list[_Endpoint] = []
     for endpoint in endpoints:
@@ -824,11 +834,24 @@ def _resolve_endpoints(
             f"isn't a port the RTAC listens on (e.g. an outgoing connection), or its "
             f"settings aren't in the configuration"
         )
+        # More than one access point: the router may be on any of them
+        for _, candidate in access_points:
+            if candidate is not None and candidate.port:
+                candidate.add_destination(_unknown_destination(router_name))
         return
 
-    if not targets:
-        warnings.append(f"Access point router '{router_name}' doesn't have a destination")
-        return
+    if not targets or unknown:
+        if targets:
+            problem = "has a destination that PEAT can't find"
+        else:
+            problem = "doesn't have a destination that PEAT can find"
+        warnings.append(
+            f"Access point router '{router_name}' {problem}, so the route from the "
+            f"access point '{listener.name}' to it isn't known (it may be direct)"
+        )
+        listener.add_destination(_unknown_destination(router_name))
+        if not targets:
+            return
 
     for target in targets:
         device = _find_device(target.name, devices)
@@ -849,6 +872,11 @@ def _resolve_endpoints(
         listener.add_destination(
             Destination(name=target.name, device_name=device_name, route=route, router=router_name)
         )
+
+
+def _unknown_destination(router_name: str) -> Destination:
+    """A destination of an access point router that isn't known."""
+    return Destination(name=None, device_name=None, route=None, router=router_name)
 
 
 def _router_extra(settings: dict) -> dict[str, Any]:
@@ -988,6 +1016,7 @@ def _export_router_endpoints(router: dict) -> list[_Endpoint]:
             continue
         name = endpoint.get("device_name")
         if name is None or name == "":
+            endpoints.append(_Endpoint(name="", label=label))  # not known
             continue
         endpoints.append(
             _Endpoint(
@@ -1164,7 +1193,9 @@ def discover_from_postgres(tables: dict) -> Discovery:
       destination are the columns that start with ``source`` or ``src``,
       and ``destination``, ``dest`` or ``dst``. They are names, or IDs of rows
       in the other tables (e.g. ``source_access_point_id`` is looked up in
-      the ``access_point_id`` column), or lists of these.
+      the ``access_point_id`` column), or lists of these. A destination ID
+      that isn't in the tables is a destination that isn't known (refer to
+      :meth:`Listener.entries`).
     - SEL servers: :data:`PG_SEL_SERVER_TABLES`, and the port from
       :data:`PG_LOCAL_PORT_TABLES` if those tables don't have it.
     - SEL devices: :data:`PG_SEL_CLIENT_TABLES`, with the serial port from
@@ -1269,7 +1300,7 @@ def _postgres_router_endpoints(row: dict, lookup_rows: list[dict]) -> list[_Endp
         if not label:
             continue
         rest = column[len(prefix) :]
-        if rest.endswith("type"):
+        if rest.endswith(("type", "typeid")):
             continue  # e.g. "destination_type", the type of the other column
 
         type_value = row.get(prefix + "type")
@@ -1281,7 +1312,10 @@ def _postgres_router_endpoints(row: dict, lookup_rows: list[dict]) -> list[_Endp
                 if rest in _ROUTER_NAME_COLUMNS:
                     name = item.strip()
             elif rest.endswith("id") and item is not None and not isinstance(item, bool):
+                # An ID that isn't in the tables is an endpoint that isn't known
                 name = _lookup_name(rest, item, lookup_rows)
+                if not name:
+                    endpoints.append(_Endpoint(name="", label=label))
             if name:
                 endpoints.append(
                     _Endpoint(

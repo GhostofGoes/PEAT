@@ -596,13 +596,72 @@ def test_export_router_problems():
         },
     }
     discovery = rea.discover_from_export(info)
-    assert discovery.entries(RTAC_IP) == []
+    # The route of the access point of a router without a destination isn't known
+    assert discovery.entries(RTAC_IP) == [entry(tcp_port=9001, transport="telnet")]
+    assert discovery.listeners[0].destinations == [
+        rea.Destination(name=None, device_name=None, route=None, router="Empty_APR")
+    ]
     assert len(discovery.warnings) == 2
     assert (
         "'Missing_APR' doesn't have a known access point (source 'Missing_AP')"
         in (discovery.warnings[0])
     )
-    assert "'Empty_APR' doesn't have a destination" in discovery.warnings[1]
+    assert discovery.warnings[1] == (
+        "Access point router 'Empty_APR' doesn't have a destination that PEAT can find, "
+        "so the route from the access point 'EA' to it isn't known (it may be direct)"
+    )
+
+
+def test_export_router_with_an_unknown_destination():
+    """
+    A destination without a name is a route that isn't known, also if the
+    router has other destinations, and if the access point isn't the source.
+    """
+    info = {
+        "Devices": {"EA": _ap(8001, "SSH"), "EB": _ap(8002, "SSH"), "Relay1": _sel_client()},
+        "AccessPointRouters": {
+            "APR1": _router("EA", "Relay1_SEL_TAP", ["Relay1_SEL_TAP", ("", "", "")]),
+            "APR2": _router("", "EB"),
+        },
+    }
+    discovery = rea.discover_from_export(info)
+    common = {"transport": "ssh", "needs_rtac_login": True}
+    assert discovery.entries(RTAC_IP) == [
+        entry(tcp_port=8001, **common),
+        entry(
+            name="Relay1_SEL_TAP",
+            tcp_port=8001,
+            device_name="Relay1",
+            route="interleaved",
+            **common,
+        ),
+        entry(tcp_port=8002, **common),
+    ]
+    assert len(discovery.warnings) == 2
+    assert "'APR1' has a destination that PEAT can't find" in discovery.warnings[0]
+    assert "'APR2' doesn't have a destination that PEAT can find" in discovery.warnings[1]
+
+
+def test_export_router_between_listening_access_points():
+    """
+    If it isn't known which of the access points of a router the client
+    connects to, the routes of all of them aren't known.
+    """
+    info = {
+        "Devices": {"EA": _ap(8001, "SSH"), "EB": _ap(8002, "SSH")},
+        "AccessPointRouters": {"APR": _router("EA", "EB")},
+    }
+    discovery = rea.discover_from_export(info)
+    common = {"transport": "ssh", "needs_rtac_login": True}
+    assert discovery.entries(RTAC_IP) == [
+        entry(tcp_port=8001, **common),
+        entry(tcp_port=8002, **common),
+    ]
+    assert [d.router for lst in discovery.listeners for d in lst.destinations] == [
+        "APR",
+        "APR",
+    ]
+    assert "'APR': its access point (EA, EB) isn't a port" in discovery.warnings[0]
 
 
 def test_export_access_point_settings_missing():
@@ -980,7 +1039,10 @@ def test_discover_from_postgres_unknown_values():
 
 
 def test_discover_from_postgres_generic_id_columns():
-    """Router columns like "source_id" are looked up in the access point IDs."""
+    """
+    Router columns like "source_id" are looked up in the access point IDs.
+    A destination ID that isn't in the tables is a destination that isn't known.
+    """
     tables = {
         "access_points": [
             {"access_point_id": 7, "name": "EA", "network_connection_type": "Telnet",
@@ -988,20 +1050,19 @@ def test_discover_from_postgres_generic_id_columns():
             {"access_point_id": 8, "name": "R1_SEL_TAP"},
         ],
         "access_point_routers": [
-            {"name": "APR", "source_id": 7, "destination_id": 8, "dest_other_id": 99},
+            {"name": "APR", "source_id": 7, "destination_id": 8, "dest_other_id": 99,
+             "destination_type_id": 3},
         ],
     }  # fmt: skip
     discovery = rea.discover_from_postgres(tables)
-    assert discovery.warnings == []
+    assert discovery.warnings == [
+        "Access point router 'APR' has a destination that PEAT can't find, so the route "
+        "from the access point 'EA' to it isn't known (it may be direct)"
+    ]
+    common = {"tcp_port": 9001, "transport": "telnet", "source": "postgres"}
     assert discovery.entries(RTAC_IP) == [
-        entry(
-            name="R1_SEL_TAP",
-            tcp_port=9001,
-            transport="telnet",
-            device_name="R1_SEL",
-            route="interleaved",
-            source="postgres",
-        )
+        entry(**common),
+        entry(name="R1_SEL_TAP", device_name="R1_SEL", route="interleaved", **common),
     ]
 
 
@@ -1613,6 +1674,55 @@ def test_probe_skips_routes_to_device_access_points(dev, mocker):
     }
     SELRTAC._process_engineering_access(dev, rea.discover_from_export(info))
     assert dev.extra["engineering_access"][0]["route"] == "direct"
+
+    assert SELRTAC.probe_tunnel_ports(dev) == {}
+    fetch_key.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "routers",
+    [
+        # A second router of the access point, to an ID that isn't in the tables
+        [
+            {"name": "APR1", "source_access_point_id": 1,
+             "destination_name": "Feeder_1_SEL_TAP"},
+            {"name": "APR2", "source_access_point_id": 1, "destination_access_point_id": 7},
+        ],
+        # One router with a list of destinations, one of which isn't in the tables
+        [
+            {"name": "APR1", "source_access_point_id": 1,
+             "destination_access_point_id": [2, 7]},
+        ],
+    ],
+)  # fmt: skip
+def test_probe_skips_ports_with_an_unknown_router_destination(dev, mocker, routers):
+    """
+    The access point of a router with a destination PEAT can't find has a
+    route that isn't known (it may be direct), so its port isn't probed, also
+    if its other routes are interleaved.
+    """
+    fetch_key = mocker.patch.object(sel_rtac, "fetch_ssh_host_key", return_value=None)
+    tables = {
+        "access_points": [
+            {"access_point_id": 1, "name": "EA", "network_connection_type": "SSH",
+             "local_port_number": 8001},
+            {"access_point_id": 2, "name": "Feeder_1_SEL_TAP"},
+            # The name of this access point is only in the connections table
+            {"access_point_id": 7, "connection_id": 70},
+        ],
+        "connections": [{"connection_id": 70, "name": "Feeder_2_SEL_AP"}],
+        "access_point_routers": routers,
+    }  # fmt: skip
+    discovery = rea.discover_from_postgres(tables)
+    assert len(discovery.warnings) == 1
+    assert "so the route from the access point 'EA' to it isn't known" in discovery.warnings[0]
+
+    SELRTAC._process_engineering_access(dev, discovery)
+    common = {"tcp_port": 8001, "transport": "ssh", "needs_rtac_login": True, "source": "postgres"}
+    assert SELRTAC.downstream_targets(dev) == [
+        entry(**common),
+        entry(name="Feeder_1_SEL_TAP", device_name="Feeder_1_SEL", route="interleaved", **common),
+    ]
 
     assert SELRTAC.probe_tunnel_ports(dev) == {}
     fetch_key.assert_not_called()

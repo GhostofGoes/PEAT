@@ -1484,7 +1484,8 @@ class SELRTAC(DeviceModule):
         log the connections. A port is only probed if all of its paths are
         SEL servers (which need the ``PORT`` command to reach a device) or
         ``interleaved`` (``_TAP``) routes. Ports with a direct route (``_AP``)
-        or a route that isn't known are never probed, since an access point
+        or a route that isn't known (e.g. an access point router whose
+        destination isn't known) are never probed, since an access point
         router may connect to the device as soon as a client connects, and on
         a direct route that stops the RTAC's polling of the device. Ports
         whose paths have different transports aren't probed either.
