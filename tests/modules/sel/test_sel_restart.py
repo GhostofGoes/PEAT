@@ -287,6 +287,29 @@ def test_restart_relay_without_verification(relay_server, mocker):
     assert dev.extra["restart"]["verified"] is False
 
 
+@pytest.mark.parametrize("verify", [True, False])
+def test_restart_relay_telnet_back_in_selboot(relay_server, mocker, verify):
+    # The relay answers Y with the SELBOOT prompt: the restart fails, and PEAT
+    # sends nothing more (no verify connection, no ID)
+    def factory():
+        relay = FakeSELRelay(sta_c="hang")
+        relay.on_restart = lambda: relay.send(b"\r\nSELBOOT\r\n!>")
+        return relay
+
+    server = relay_server(factory)
+    dev = _dev(server, restart_verify=verify)
+    checks = _port_checks(mocker, [True])
+
+    assert SELRelay.restart_relay(dev, comm_type="telnet") is False
+    record = dev.extra["restart"]
+    assert record["initiated"] is True
+    assert record["verified"] is False
+    assert "SELBOOT" in record["reason"]
+    assert checks.call_count == 0
+    assert len(server.relays) == 1
+    assert server.relays[0].lines[-1] == b"Y"
+
+
 def test_restart_relay_login_failure_is_not_retried(relay_server, mocker):
     server = relay_server(lambda: FakeSELRelay(passwords={"acc": "OTTER", "2ac": "Changed-2"}))
     dev = _dev(server)

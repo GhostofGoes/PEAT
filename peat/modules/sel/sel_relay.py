@@ -2261,6 +2261,7 @@ class SELRelay(DeviceModule):
         port = dev.options["telnet"]["port"]
         timeout = dev.options["telnet"]["timeout"]
         result = None  # type: RestartResult | None
+        halted = ""
 
         for attempt in range(3):
             if attempt:
@@ -2285,6 +2286,7 @@ class SELRelay(DeviceModule):
                     confirm_timeout=cls.restart_confirm_timeout,
                     reboot_timeout=cls.restart_reboot_timeout,
                 )
+                halted = tn.halted
                 break
 
         if result is None:
@@ -2293,6 +2295,12 @@ class SELRelay(DeviceModule):
 
         cls._record_restart(record, result)
         if not result:
+            return False
+        if halted:
+            # e.g. the relay restarted in SELBOOT. Nothing more is sent to it,
+            # so it isn't verified (no new connection).
+            record["reason"] = f"the restart was initiated, but {halted}"
+            cls.log.error(f"Restart of {dev.ip}: {record['reason']}")
             return False
 
         if not dev.options["sel"]["restart_verify"]:
