@@ -1,8 +1,10 @@
 import datetime
+from pathlib import PurePosixPath
 
 import pytest
 
 from peat import DeviceData, config
+from peat.data.models import File, HostProcess, Interface, Service
 from peat.parsing import command_parsers
 
 # to get data artifacts:
@@ -156,10 +158,502 @@ def test_proc_net_dev_parser(text_data, json_data, mocker, tmp_path, assert_no_e
 
     dev = DeviceData(id="test_procnetdevparser")
     assert command_parsers.ProcNetDevParser.parse_and_process(input_data, dev)
-    assert dev.extra["/proc/net/dev"] == expected
+    # The counters are in Interface.statistics, not duplicated in dev.extra
+    assert "/proc/net/dev" not in dev.extra
     assert len(dev.interface) == 7
     assert dev.interface[0].type == "loopback"
     assert dev.interface[1].type == "ethernet"
+
+    eth0 = dev.interface[1]
+    assert eth0.name == "eth0"
+    stats = eth0.statistics
+    assert stats.timestamp is not None
+    assert stats.timestamp.tzinfo is not None
+    assert stats.ingress.bytes == 15030
+    assert stats.ingress.packets == 113
+    assert stats.ingress.errors == 0
+    assert stats.ingress.dropped == 0
+    assert stats.ingress.multicast_packets == 0
+    assert stats.egress.bytes == 269699
+    assert stats.egress.packets == 377
+    assert stats.collisions == 0
+    assert stats.extra == {
+        "recv_fifo": 0,
+        "recv_frame": 0,
+        "recv_compressed": 0,
+        "trans_fifo": 0,
+        "trans_carrier": 0,
+        "trans_compressed": 0,
+    }
+    assert "statistics" not in eth0.extra
+    assert_no_errors()
+
+
+def test_proc_net_dev_existing_interface_and_vlan(text_data, assert_no_errors):
+    data = text_data("dev").replace("tun0:", "eth0.100:")
+    dev = DeviceData(id="test_proc_net_dev_existing_interface")
+    dev.store("interface", Interface(name="eth0", type="ethernet", ip="192.0.2.20"))
+
+    command_parsers.ProcNetDevParser.process(command_parsers.ProcNetDevParser.parse(data), dev)
+
+    # Merged into the existing interface (by name)
+    assert len(dev.interface) == 7
+    eth0 = dev.retrieve("interface", {"name": "eth0"})
+    assert eth0.ip == "192.0.2.20"
+    assert eth0.statistics.egress.bytes == 269699
+
+    vlan_if = dev.retrieve("interface", {"name": "eth0.100"})
+    assert vlan_if.parent == "eth0"
+    assert vlan_if.vlan.id == "100"
+    assert vlan_if.vlan.tagged is True
+    assert vlan_if.statistics.ingress.packets == 92
+    assert "100" in dev.related.vlans
+    assert_no_errors()
+
+
+def test_build_statistics():
+    now = datetime.datetime.now(datetime.UTC)
+    stats = command_parsers.build_statistics(
+        {"rx_bytes": 10, "tx_packets": 2, "collisions": 1, "rx_frame": 3, "rx_errors": -1},
+        command_parsers.IFCONFIG_STATISTICS,
+        now,
+    )
+    assert stats.timestamp == now
+    assert stats.ingress.bytes == 10
+    assert stats.egress.packets == 2
+    assert stats.collisions == 1
+    # Unmapped counters and invalid values go to extra
+    assert stats.extra == {"rx_frame": 3, "rx_errors": -1}
+    assert stats.ingress.errors is None
+    assert stats.has_counters()
+
+    empty = command_parsers.build_statistics({}, command_parsers.IFCONFIG_STATISTICS, now)
+    assert not empty.has_counters()
+
+
+@pytest.mark.parametrize(
+    ("name", "parent", "vlan_id"),
+    [
+        ("eth0.100", "eth0", "100"),
+        ("eth0.100@eth0", "eth0", "100"),
+        ("eth1.0", "eth1", "0"),
+        ("eth0:1", "eth0", ""),
+        ("eth0", "", ""),
+        ("fei0", "", ""),
+        ("br.lan", "", ""),
+        ("eth0.5000", "", ""),
+    ],
+)
+def test_set_interface_layering(name, parent, vlan_id):
+    iface = Interface(name=name)
+    command_parsers.set_interface_layering(iface)
+    assert iface.parent == parent
+    assert iface.vlan.id == vlan_id
+    if vlan_id:
+        assert iface.vlan.tagged is True
+
+
+def test_set_interface_layering_keeps_values():
+    iface = Interface(name="eth0.100", parent="bond0")
+    command_parsers.set_interface_layering(iface)
+    assert iface.parent == "bond0"
+    assert iface.vlan.id == "100"
+
+
+def test_ifconfig_vxworks(text_data, mocker, tmp_path, assert_no_errors):
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    data = text_data("ifconfig_vxworks.txt")
+
+    parsed = command_parsers.IfconfigParser.parse(data)
+    assert set(parsed) == {"lo0", "fei0"}
+    assert parsed["fei0"]["rx_bytes"] == 24000000
+    assert parsed["fei0"]["unsupported_protocol"] == 7
+
+    dev = DeviceData(id="test_ifconfig_vxworks")
+    assert command_parsers.IfconfigParser.parse_and_process(data, dev)
+    assert "ifconfig -a" not in dev.extra
+
+    fei0 = dev.retrieve("interface", {"name": "fei0"})
+    assert fei0.ip == "192.0.2.20"
+    assert fei0.mac == "00:A0:1E:01:02:03"
+    assert fei0.id == "2"
+    assert fei0.mtu == 1500
+    assert fei0.type == "ethernet"
+    assert fei0.enabled is True
+    assert fei0.connected is True
+    assert fei0.description.description == "Primary interface"
+    assert "statistics" not in fei0.extra
+    assert fei0.extra["queue"] == "none"
+    assert fei0.extra["capabilities"] == ["TXCSUM", "VLAN_MTU"]
+
+    stats = fei0.statistics
+    assert stats.timestamp is not None
+    assert stats.timestamp.tzinfo is not None
+    assert stats.ingress.packets == 12000
+    assert stats.ingress.multicast_packets == 250
+    assert stats.ingress.errors == 1
+    assert stats.ingress.dropped == 3
+    assert stats.ingress.bytes == 24000000
+    assert stats.ingress.unknown_protocols == 7
+    assert stats.egress.packets == 9000
+    assert stats.egress.multicast_packets == 4
+    assert stats.egress.errors == 2
+    assert stats.egress.bytes == 1000000
+    assert stats.collisions == 5
+    assert stats.extra == {}
+
+    lo0 = dev.retrieve("interface", {"name": "lo0"})
+    assert lo0.type == "loopback"
+    assert lo0.statistics.ingress.packets == 6
+    assert_no_errors()
+
+
+def test_ifconfig_busybox(text_data, mocker, tmp_path, assert_no_errors):
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    data = text_data("ifconfig_busybox.txt")
+
+    parsed = command_parsers.IfconfigParser.parse(data)
+    assert set(parsed) == {"eth0", "eth0.100", "eth0:1", "lo", "tun0"}
+    assert "mac" not in parsed["tun0"]  # 16-byte "HWaddr 00-00-..." is not a MAC
+
+    dev = DeviceData(id="test_ifconfig_busybox")
+    assert command_parsers.IfconfigParser.parse_and_process(data, dev)
+
+    eth0 = dev.retrieve("interface", {"name": "eth0"})
+    assert eth0.ip == "192.0.2.20"
+    assert eth0.subnet_mask == "255.255.255.0"
+    assert eth0.mac == "00:00:5E:00:53:01"
+    assert eth0.mtu == 1500
+    assert eth0.type == "ethernet"
+    assert eth0.enabled is True
+    assert eth0.connected is True
+    assert eth0.extra["broadcast"] == "192.0.2.255"
+    assert eth0.extra["txqueuelen"] == 1000
+    assert eth0.statistics.ingress.packets == 113
+    assert eth0.statistics.ingress.dropped == 2
+    assert eth0.statistics.ingress.bytes == 15030
+    assert eth0.statistics.egress.errors == 1
+    assert eth0.statistics.egress.bytes == 269699
+    assert eth0.statistics.collisions == 0
+    assert eth0.statistics.extra == {
+        "rx_overruns": 0,
+        "rx_frame": 0,
+        "tx_overruns": 0,
+        "tx_carrier": 0,
+    }
+
+    vlan_if = dev.retrieve("interface", {"name": "eth0.100"})
+    assert vlan_if.parent == "eth0"
+    assert vlan_if.vlan.id == "100"
+    assert vlan_if.vlan.tagged is True
+    assert "100" in dev.related.vlans
+
+    alias = dev.retrieve("interface", {"name": "eth0:1"})
+    assert alias.parent == "eth0"
+    assert alias.vlan.id == ""
+    assert not alias.statistics.has_counters()
+
+    lo = dev.retrieve("interface", {"name": "lo"})
+    assert lo.type == "loopback"
+
+    tun0 = dev.retrieve("interface", {"name": "tun0"})
+    assert tun0.mac == ""
+    assert tun0.extra["peer"] == "10.8.0.5"
+    assert "10.8.0.5" in dev.related.ip
+    assert_no_errors()
+
+
+def test_ifconfig_then_proc_net_dev_newest_wins(text_data, mocker, assert_no_errors):
+    t1 = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
+    t2 = t1 + datetime.timedelta(seconds=5)
+    mocker.patch.object(command_parsers.utils, "utc_now", side_effect=[t1, t2])
+
+    dev = DeviceData(id="test_ifconfig_then_proc_net_dev")
+    parsed = command_parsers.IfconfigParser.parse(text_data("ifconfig_busybox.txt"))
+    command_parsers.IfconfigParser.process(parsed, dev)
+    assert dev.retrieve("interface", {"name": "eth0"}).statistics.timestamp == t1
+
+    parsed = command_parsers.ProcNetDevParser.parse(text_data("dev"))
+    command_parsers.ProcNetDevParser.process(parsed, dev)
+    stats = dev.retrieve("interface", {"name": "eth0"}).statistics
+
+    # One complete sample: the newer /proc/net/dev sample replaced the ifconfig one
+    assert stats.timestamp == t2
+    assert "recv_fifo" in stats.extra
+    assert "rx_overruns" not in stats.extra
+    assert_no_errors()
+
+
+def test_arp_parser(text_data, mocker, tmp_path, assert_no_errors):
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    dev = DeviceData(id="test_arp_parser", ip="192.0.2.20")
+    assert command_parsers.ArpParser.parse_and_process(text_data("arp_a_multi.txt"), dev)
+    assert "arp -a" not in dev.extra
+
+    # The device's own entry is not a neighbor
+    rels = {r.remote.ip: r for r in dev.relationships}
+    assert set(rels) == {"192.0.2.5", "192.0.2.1", "192.0.2.9"}
+
+    for rel in rels.values():
+        assert rel.type == "neighbor_of"
+        assert rel.evidence == {"arp"}
+        assert rel.local.interface == "eth0"
+        assert rel.id
+        assert not rel.direction
+
+    assert rels["192.0.2.5"].remote.mac == "B4:96:91:51:3A:67"
+    assert rels["192.0.2.5"].state == ""
+    assert rels["192.0.2.1"].remote.mac == "00:A0:1E:02:03:04"
+    assert rels["192.0.2.1"].remote.hostname == "gateway"
+    assert rels["192.0.2.1"].state == "permanent"
+    assert rels["192.0.2.9"].remote.mac == ""
+    assert rels["192.0.2.9"].state == "incomplete"
+
+    # related.* is still populated
+    assert {"192.0.2.5", "192.0.2.1", "192.0.2.9"} <= dev.related.ip
+    assert {"B4:96:91:51:3A:67", "00:A0:1E:02:03:04"} <= dev.related.mac
+    assert "gateway" in dev.related.hosts
+    assert_no_errors()
+
+
+def test_arp_parser_single_line(text_data, assert_no_errors):
+    dev = DeviceData(id="test_arp_parser_single_line")
+    command_parsers.ArpParser.process(command_parsers.ArpParser.parse(text_data("arp_a.txt")), dev)
+    assert len(dev.relationships) == 1
+    rel = dev.relationships[0]
+    assert rel.remote.ip == "192.168.0.111"
+    assert rel.remote.mac == "B4:96:91:51:3A:67"
+    assert rel.local.interface == "eth0"
+
+    # Same entry again (e.g. a second pull): merged, not duplicated
+    command_parsers.ArpParser.process(command_parsers.ArpParser.parse(text_data("arp_a.txt")), dev)
+    assert len(dev.relationships) == 1
+    assert_no_errors()
+
+
+def test_netstat_vxworks(text_data, mocker, tmp_path, assert_no_errors):
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    dev = DeviceData(id="test_netstat_vxworks", ip="192.0.2.20")
+    dev.store("interface", Interface(name="lo0", ip="127.0.0.1"))
+    # Task listing (e.g. Sage "ti") ran before netstat
+    dev.store(
+        "processes",
+        HostProcess(type="task", pid=0x1C8F0E0, name="tTelnetd", extra={"task_id": "0x1c8f0e0"}),
+    )
+
+    data = text_data("netstat_anP.txt")
+    parsed = command_parsers.NetstatSocketsVxWorksParser.parse(data)
+    assert len(parsed) == 6
+    assert command_parsers.NetstatSocketsVxWorksParser.parse_and_process(data, dev)
+    assert "netstat -anP" not in dev.extra
+
+    # Tasks: merged with the existing task, one per TID
+    assert len(dev.processes) == 4
+    telnetd = dev.processes[0]
+    assert telnetd.name == "tTelnetd"
+    assert telnetd.pid == 0x1C8F0E0
+    pids = {p.pid: p for p in dev.processes}
+    assert pids[0x1C90000].type == "task"
+    assert pids[0x1C90000].extra == {"task_id": "0x1c90000"}
+
+    # Listening sockets -> services
+    services = {(s.port, s.transport): s for s in dev.service}
+    assert set(services) == {(23, "tcp"), (20000, "tcp"), (161, "udp")}
+    assert services[(23, "tcp")].process_name == "tTelnetd"
+    assert services[(23, "tcp")].process_pid == 0x1C8F0E0
+    assert services[(23, "tcp")].listen_address == "0.0.0.0"
+    assert services[(23, "tcp")].status == "open"
+    assert services[(20000, "tcp")].extra["task_id"] == "0x1c90000"
+    assert services[(161, "udp")].listen_address == "127.0.0.1"
+    lo0 = dev.retrieve("interface", {"name": "lo0"})
+    assert [s.port for s in lo0.services] == [161]
+
+    # Other sockets -> relationships (one per peer and server port)
+    rels = {r.remote.ip: r for r in dev.relationships}
+    assert set(rels) == {"192.0.2.5", "192.0.2.9"}
+    master = rels["192.0.2.5"]
+    assert master.evidence == {"netstat"}
+    assert master.direction == "ingress"  # the device listens on 20000
+    assert master.protocol == "dnp3"
+    assert master.transport == "tcp"
+    assert master.local.port == 20000
+    assert master.local.ip == "192.0.2.20"
+    assert master.count == 2
+    assert master.state == "established"
+    modbus = rels["192.0.2.9"]
+    assert modbus.direction == "egress"
+    assert modbus.protocol == "modbus_tcp"
+    assert modbus.remote.port == 502
+    assert modbus.count == 1
+
+    assert {"192.0.2.5", "192.0.2.9"} <= dev.related.ip
+    assert {23, 161, 502, 20000} <= dev.related.ports
+    assert "tTelnetd" in dev.related.process
+    assert_no_errors()
+
+
+def test_task_id_to_pid():
+    assert command_parsers.task_id_to_pid("0x1c8f0e0") == 0x1C8F0E0
+    assert command_parsers.task_id_to_pid("1c8f0e0") == 0x1C8F0E0
+    assert command_parsers.task_id_to_pid("tNetTask") is None
+    assert command_parsers.task_id_to_pid("0xffffffffffffffff") is None
+
+
+def test_netstat_linux(text_data, mocker, tmp_path, assert_no_errors):
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    dev = DeviceData(id="test_netstat_linux", ip="192.0.2.20")
+    dev.store("interface", Interface(name="eth0", ip="192.0.2.20"))
+    dev.store("service", Service(protocol="ssh", port=22, status="verified"))
+    dev.store("service", Service(protocol="snmp", port=161, transport="tcp"))
+
+    data = text_data("netstat_tulnp.txt")
+    parsed = command_parsers.NetstatLinuxParser.parse(data)
+    assert len(parsed) == 6
+    assert parsed[1]["pid"] is None
+    assert parsed[1]["program"] == ""
+    assert parsed[2]["local_address"] == "::"
+    assert parsed[4]["state"] == ""
+
+    assert command_parsers.NetstatLinuxParser.parse_and_process(data, dev)
+    assert "netstat -tulnp" not in dev.extra
+
+    procs = {(p.pid, p.name) for p in dev.processes}
+    assert procs == {(612, "dropbear"), (640, "lighttpd"), (655, "snmpd"), (660, "ntpd")}
+    assert all(p.type == "process" for p in dev.processes)
+
+    services = {(s.port, s.transport): s for s in dev.service}
+    assert set(services) == {
+        (22, "tcp"),
+        (161, "tcp"),
+        (161, "udp"),
+        (443, "tcp"),
+        (5000, "tcp"),
+        (123, "udp"),
+    }
+    # Merged with the existing ssh service (IPv4 and IPv6 listeners)
+    ssh = services[(22, "tcp")]
+    assert ssh.protocol == "ssh"
+    assert ssh.status == "verified"
+    assert ssh.process_name == "dropbear"
+    assert ssh.process_pid == 612
+    assert ssh.listen_address == "0.0.0.0"
+    # udp/161 is not merged into the tcp/161 service
+    assert services[(161, "udp")].process_name == "snmpd"
+    assert services[(161, "tcp")].process_name == ""
+    assert services[(5000, "tcp")].listen_address == "127.0.0.1"
+    assert services[(5000, "tcp")].process_pid is None
+    # Listener on a specific IP is also added to that interface
+    eth0 = dev.retrieve("interface", {"name": "eth0"})
+    assert [s.port for s in eth0.services] == [123]
+
+    assert {"dropbear", "lighttpd", "snmpd", "ntpd"} <= dev.related.process
+    assert {22, 123, 161, 443, 5000} <= dev.related.ports
+    assert not dev.relationships
+    assert_no_errors()
+
+
+def test_netstat_linux_connections(assert_no_errors):
+    data = (
+        "Proto Recv-Q Send-Q Local Address  Foreign Address    State       PID/Program name\n"
+        "tcp        0      0 0.0.0.0:22     0.0.0.0:*          LISTEN      612/dropbear\n"
+        "tcp        0      0 192.0.2.20:22  192.0.2.5:50122    ESTABLISHED 700/dropbear\n"
+        "tcp        0      0 192.0.2.20:22  192.0.2.5:50123    ESTABLISHED 701/dropbear\n"
+        "tcp        0      0 192.0.2.20:41000 192.0.2.9:443    TIME_WAIT   -\n"
+    )
+    dev = DeviceData(id="test_netstat_linux_connections", ip="192.0.2.20")
+    command_parsers.NetstatLinuxParser.process(command_parsers.NetstatLinuxParser.parse(data), dev)
+
+    rels = {r.remote.ip: r for r in dev.relationships}
+    assert rels["192.0.2.5"].direction == "ingress"
+    assert rels["192.0.2.5"].local.port == 22
+    assert rels["192.0.2.5"].count == 2
+    assert rels["192.0.2.5"].evidence == {"netstat"}
+    assert rels["192.0.2.9"].direction == "egress"
+    assert rels["192.0.2.9"].protocol == "https"
+    assert rels["192.0.2.9"].state == "time_wait"
+    assert_no_errors()
+
+
+def test_ip_route_parser(text_data, mocker, tmp_path, assert_no_errors):
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    data = text_data("ip_route.txt")
+
+    parsed = command_parsers.IpRouteParser.parse(data)
+    assert len(parsed) == 6
+    assert parsed[0] == {
+        "destination": "default",
+        "via": "192.0.2.1",
+        "dev": "eth0",
+        "proto": "static",
+        "metric": "100",
+    }
+    assert parsed[3]["flags"] == ["linkdown"]
+    assert parsed[4] == {"type": "blackhole", "destination": "203.0.113.0/24"}
+
+    dev = DeviceData(id="test_ip_route_parser")
+    assert command_parsers.IpRouteParser.parse_and_process(data, dev)
+    assert "ip route" not in dev.extra
+
+    routes = {r.destination: r for r in dev.routes}
+    assert len(routes) == 6
+    default = routes["0.0.0.0/0"]
+    assert default.gateway == "192.0.2.1"
+    assert default.interface == "eth0"
+    assert default.metric == 100
+    assert default.protocol == "static"
+    assert default.type == "static"
+
+    connected = routes["192.0.2.0/24"]
+    assert connected.gateway == ""
+    assert connected.type == "connected"
+    assert connected.protocol == "kernel"
+    assert connected.extra == {"scope": "link", "src": "192.0.2.20"}
+
+    assert routes["10.8.0.0/24"].type == "dynamic"
+    assert routes["198.51.100.0/24"].flags == "linkdown"
+    assert routes["203.0.113.0/24"].type == "blackhole"
+    assert routes["203.0.113.128/25"].type == "blackhole"
+    assert routes["203.0.113.128/25"].extra == {"action": "unreachable"}
+
+    # Gateways feed related.ip
+    assert {"192.0.2.1", "10.8.0.5"} <= dev.related.ip
+
+    # Parsing the same table again does not duplicate routes
+    command_parsers.IpRouteParser.process(parsed, dev)
+    assert len(dev.routes) == 6
+    assert_no_errors()
+
+
+def test_ls_recursive_parser_store(assert_no_errors):
+    listing = (
+        "/etc:\n"
+        "-rw-r--r--    1 0        0              194 Wed Jan 01 00:00:00 1970 interfaces\n"
+        "drwxr-xr-x    2 0        0                0 Wed Jan 01 00:00:00 1970 init.d\n"
+        "lrwxrwxrwx    1 0        0               12 Wed Jan 01 00:00:00 1970 "
+        "mtab -> /proc/mounts\n"
+    )
+    dev = DeviceData(id="test_ls_recursive_parser_store")
+    # A file already known (e.g. pulled) is merged by path, not duplicated
+    dev.store(
+        "files",
+        File(path=PurePosixPath("/etc/interfaces"), description="network config"),
+        lookup="path",
+    )
+
+    parsed = command_parsers.LsRecursiveParser.parse(listing)
+    assert len(parsed) == 3
+    command_parsers.LsRecursiveParser.process(parsed, dev)
+    command_parsers.LsRecursiveParser.process(parsed, dev)  # second listing: no duplicates
+
+    assert len(dev.files) == 3
+    files = {str(f.path): f for f in dev.files}
+    assert files["/etc/interfaces"].description == "network config"
+    assert files["/etc/interfaces"].size == 194
+    assert files["/etc/interfaces"].owner == "root"
+    assert files["/etc/init.d"].type == "dir"
+    assert files["/etc/mtab"].type == "symlink"
+    assert str(files["/etc/mtab"].target_path) == "/proc/mounts"
+    assert "/etc/interfaces" in dev.related.files
     assert_no_errors()
 
 
