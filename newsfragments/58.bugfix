@@ -1,0 +1,1 @@
+SEL: the part number in the ``STATUS`` output now sets the device's part number if the ``ID`` command didn't, and the ``STATUS`` layout of the SEL-751A and SEL-700G (serial number, FID, and part number on separate lines) is parsed instead of logging an error.
