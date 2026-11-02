@@ -257,6 +257,11 @@ IEC 61850 CID files
 .. automodule:: peat.modules.sel.sel_scl
    :members:
 
+Part number decoding
+^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_partno
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse

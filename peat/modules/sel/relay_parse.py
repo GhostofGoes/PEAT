@@ -28,7 +28,7 @@ from peat import config as peat_config
 from peat.data.data_utils import merge_models
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
-from . import sel_cascii, sel_scl
+from . import sel_cascii, sel_partno, sel_scl
 from .sel_consts import ANSI_CODES, LOGIC_KEYS
 from .sel_files import SOURCE_DERIVED, write_and_record_file
 
@@ -1032,6 +1032,21 @@ def process_info_into_dev(info: dict, dev: DeviceData) -> None:
     if info.get("PARTNO"):
         dev.part_number = info.pop("PARTNO")
 
+    # "PART NUM" from the status output (and the version output). It's also
+    # left in dev.extra, as before. PARTNO from the "id" command is used if
+    # the relay reports both.
+    status_part_number = info.get("part_number")
+    if status_part_number and not dev.part_number:
+        dev.part_number = status_part_number
+    elif status_part_number and sel_partno.normalize_part_number(
+        status_part_number
+    ) != sel_partno.normalize_part_number(dev.part_number):
+        log.warning(
+            f"Part number '{status_part_number}' (status or version output) is "
+            f"different from the relay's part number '{dev.part_number}' (PARTNO) "
+            f"on {dev.get_comm_id()}, keeping '{dev.part_number}'"
+        )
+
     # IEC 61850 values from the "id" command (iedName, type, configVersion, LIB61850ID)
     sel_scl.process_id_info(info, dev)
 
@@ -1065,6 +1080,9 @@ def process_info_into_dev(info: dict, dev: DeviceData) -> None:
             dev.name = name
         elif ident:
             dev.name = ident
+
+    # Ordering options from the part number (advisory), checked against the FID
+    sel_partno.process_part_number(dev)
 
 
 def process_fid(id_string: str, dev: DeviceData) -> None:
@@ -1935,6 +1953,8 @@ def parse_status_output(lines: list[str], date_format: str = "") -> dict:
         (:class:`~datetime.datetime` instance)
     - ``FID``: FID string
     - ``CID``: CID string (``"F029"``)
+    - ``serial_number`` and ``part_number`` (``PART NUM``), on relays that
+      print them (e.g. SEL-751A and SEL-700G)
     - (TODO) Temperature
     - (TODO) Self-test results for components (RAM, ROM, FPGA, etc.)
     - (TODO) Voltages and currents
@@ -2007,13 +2027,24 @@ def parse_status_output(lines: list[str], date_format: str = "") -> dict:
             info["CID"] = fid_cid[1].split("=")[1].strip()
 
         elif "serial num" in lines[2].lower():
-            serial_fid = [x.strip() for x in re.split(r"\s{2,}", lines[2]) if x]
-            info["serial_number"] = serial_fid[0].split("=")[1].strip()
-            info["FID"] = serial_fid[1].split("=")[1].strip()
-
-            cid_partnum = [x.strip() for x in re.split(r"\s{2,}", lines[3]) if x]
-            info["CID"] = cid_partnum[0].split("=")[1].strip()
-            info["part_number"] = cid_partnum[1].split("=")[1].strip()
+            # "Serial Num = ...  FID = ..." then "CID = ...  PART NUM = ...", or on
+            # separate lines: "Serial Num = ...", "FID = ...  CID = ...", and
+            # "PART NUM = ..." (SEL-751A and SEL-700G instruction manuals, STA)
+            status_keys = {
+                "SERIAL NUM": "serial_number",
+                "FID": "FID",
+                "CID": "CID",
+                "PART NUM": "part_number",
+            }
+            # An empty value (e.g. "Serial Num =   FID = ...") isn't the next key
+            status_key = r"(?:serial num|fid|cid|part num)\s*="
+            for line in lines[2:5]:
+                for key, value in re.findall(
+                    rf"\b(serial num|fid|cid|part num)\s*=\s*(?!{status_key})(\S+)",
+                    line,
+                    flags=re.ASCII | re.IGNORECASE,
+                ):
+                    info[status_keys[key.upper()]] = value
 
         elif "serial no" in lines[2].lower():
             sn_line = f"{lines[2]} {lines[3]}"

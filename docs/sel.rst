@@ -38,7 +38,7 @@ Data Collected
 - Full device configuration file
 - Firmware version and release date
 - Firmware ID
-- Part number
+- Part number, and the ordering options it encodes (refer to :ref:`sel-part-numbers`)
 - Relay ID
 - Protection schemes
 - Trip logic
@@ -140,6 +140,115 @@ Firmware IDs
    - Firmware release date: ``D20110429``
 
 Per SEL's documentation: "The firmware version will be either a standard release or a point release. A standard release adds new functionality to the firmware beyond the specifications of the existing version. A point release is reserved for modifying firmware functionality to conform to the specifications of the existing version."
+
+.. _sel-part-numbers:
+
+Part number decoding
+^^^^^^^^^^^^^^^^^^^^
+A relay's part number is the ordering code from the product's Model Option Table (MOT): a model prefix, then one or two characters for each ordering option (firmware, chassis, power supply, I/O cards, Ethernet ports, protocols, conformal coating, ...). PEAT gets it from ``PARTNO`` in the ``ID`` command output and the ``[INFO]`` section of the settings files, ``PART NUM`` in the ``STATUS`` output, and the web interface. It's saved as-is in ``part_number`` (``host.part_number``), and :mod:`peat.modules.sel.sel_partno` decodes it into ``extra.part_number_info``.
+
+The result is a hint, not an inventory of the hardware. The part number can be changed by a user (the ``PARTNO`` or ``PAR`` command), and SELect relays (SEL-7xx and SEL-2411) rewrite the slot characters from the cards they detect, so a serial card in Slot C shows as empty and some cards with the same ID can't be told apart. The result is always marked ``advisory``, and the data model fields (protocols, interfaces, ...) aren't changed.
+
+Supported products (the MOT is identified by its SEL document number and date):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Product
+     - Prefix
+     - Model Option Table
+     - Layout
+   * - SEL-351
+     - ``0351``
+     - WI-8349 (2017-02-23)
+     - documented
+   * - SEL-351S
+     - ``0351S``
+     - WI-8323 (2021-12-21)
+     - documented
+   * - SEL-351A
+     - ``0351A``
+     - WI-8347 (2017-02-23)
+     - documented
+   * - SEL-351A-1
+     - ``0351A``
+     - WI-8348 (2017-02-23)
+     - documented
+   * - SEL-311C
+     - ``0311C``
+     - WI-9285 (2017-02-23)
+     - documented
+   * - SEL-751A
+     - ``751A``
+     - WI-7074 (2018-09-13)
+     - documented
+   * - SEL-751
+     - ``751``
+     - WI-9222 (2026-05-20)
+     - documented
+   * - SEL-710
+     - ``0710``
+     - WI-5180 (2018-12-07)
+     - documented
+   * - SEL-787 (-0, -1, -E)
+     - ``0787``
+     - WI-7257 (2018-09-13)
+     - documented
+   * - SEL-787-2, -3, -4
+     - ``0787``
+     - WI-9842 (2024-10-21)
+     - documented
+   * - SEL-2411, SEL-2411-1
+     - ``2411``, ``02411``
+     - WI-7201 (2008-12-08)
+     - documented
+   * - SEL-2440
+     - ``24402``
+     - WI-8148 (2018-11-14)
+     - documented
+   * - SEL-2032
+     - ``2032``
+     - WI-3644 (2014-07-01)
+     - documented
+   * - SEL-700G
+     - ``0700G``
+     - None public
+     - inferred
+   * - SEL-421, SEL-451
+     - ``0421``, ``0451``
+     - None public
+     - prefix_only
+   * - SEL-487E, SEL-411L
+     - ``0487E``, ``0411L``
+     - None public
+     - prefix_only
+
+- ``documented``: the part number fits the MOT's layout, and each option is decoded.
+- ``inferred``: there's no public MOT. The SEL-700G slot positions are inferred from part numbers in SEL's documents, and only Slots A, C, and D (common SELect card codes) are decoded. The other codes are only recorded.
+- ``prefix_only``: only the model and the variant (e.g. ``5`` in ``04515...``, a SEL-451-5, or ``A`` in ``0411LA...``, a SEL-411L-A) are recorded.
+- ``placeholder``: the options are all ``X`` (e.g. ``0710XXXXXXXXXXXXXX`` in a settings template), so only the model is recorded.
+- ``unrecognized``: the prefix is known, but the part number doesn't fit the layout (wrong length or fixed characters), e.g. it's from an older MOT (such as a SEL-351-0 to -4) or was edited. The reason is in ``notes``, and the options aren't decoded, since the positions may have changed.
+
+Other part numbers (e.g. SEL-311L, SEL-787Z, RTACs) aren't decoded, and ``extra.part_number_info`` isn't set.
+
+``extra.part_number_info`` has:
+
+- ``part_number`` (upper case, without spaces), ``model``, ``layout``, ``mot``, and ``advisory`` (always ``true``).
+- A short description of each option, e.g. ``slot_c``, ``protocols``, ``nominal_current``, ``power_supply``, or ``housing``. The option names follow the Siemens MLFB decoder (:func:`~peat.modules.siemens.mlfb.decode_mlfb`), and a code that isn't in the table is ``"N/A"``, as there.
+- ``codes``: the code of each option.
+- ``unknown_codes``: the options whose codes aren't in the table, e.g. codes from older MOTs (``"X"`` instead of ``"0"`` for no conformal coating), with a note.
+- ``mismatches``: the model (or for the SEL-351, 351S, 311C, and 400-series, the variant) in the part number is different from the FID, e.g. ``{"model": {"part_number": "751", "fid": "751A"}}``. Only the characters in the part number are compared, so ``04217...`` matches ``SEL-421-7S``. A warning is logged, since the part number may have been edited or be from another device.
+
+For example, the SEL-710 test file's part number ``071001A5X6X71821210`` is decoded as a 110-250 V power supply with 125 V inputs in Slot A, 8 analog inputs in Slot C, 4 analog inputs and outputs in Slot D, 3 voltage inputs in Slot E, 1 A phase and 5 A neutral current inputs in Slot Z, a PTC thermistor input, EIA-232 with one 10/100BASE-T port, and IEC 61850.
+
+Notes:
+
+- SEL-2411 relays report the part number without a leading ``0`` (``2411``, then ``0`` for a SEL-2411 or ``1`` for a SEL-2411-1), as in the MOT header. SEL AN2015-02 prints it with one (``02411...``), so both are decoded.
+- The codes of the SEL-751 and SEL-787-2/-3/-4 protocol option are a list in the MOTs, not a bit field (``B`` is IEC 60870-5-103 and EtherNet/IP, ``C`` is IEC 61850, DNP3, and EtherNet/IP).
+- The two-character card codes depend on the product: ``B?`` is a 3 DI/4 DO/1 AO card on the SEL-7xx and a fast high-current 4 DI/4 DO card on the SEL-2411. The second character is the input voltage (``A`` 125 V, ``B`` 24 V, ``C`` 48 V, ``D`` 110 V, ``G`` 220 V, ``H`` 250 V).
+- The part number is decoded again whenever the part number or FID changes (e.g. ``STATUS`` before ``ID``), and when a pull or parse finishes.
+- If ``PART NUM`` in the ``STATUS`` output is different from ``PARTNO``, a warning is logged and ``PARTNO`` is kept. ``extra.part_number`` still has the ``STATUS`` value, as before.
+- The tables are from public MOTs, with descriptions written for PEAT, and need to be checked against the current MOTs when SEL changes them. Two MOTs (SEL-751 and SEL-787-2/-3/-4) are scanned images.
 
 Setting categories (configuration sections)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
