@@ -1,0 +1,1 @@
+SEL: removed ``peat.modules.sel.relay_parse.extract_csv_dicts``, which was only used by the old ``parse_cser`` and ``parse_chistory``.
