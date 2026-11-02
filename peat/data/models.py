@@ -212,15 +212,20 @@ def _is_unicast_mac(mac: str) -> bool:
 
 
 def numeric_severity(value: str | int | None) -> int | None:
-    """Return the int value of a numeric severity string ("3", "-1"), else None."""
+    """
+    Return the int value of a numeric severity string ("3", "-1"), else None.
+    Values outside the Elasticsearch ``long`` range are None (not numeric).
+    """
     if value is None:
         return None
     if isinstance(value, int):
-        return value
-    s = str(value).strip()
-    if re.fullmatch(r"[+-]?\d+", s):
-        return int(s)
-    return None
+        n = value
+    else:
+        s = str(value).strip()
+        if not re.fullmatch(r"[+-]?\d+", s):
+            return None
+        n = int(s)
+    return n if -(2**63) <= n <= MAX_ES_LONG else None
 
 
 INDICATOR_COLORS = frozenset(
@@ -873,6 +878,9 @@ class File(BaseModel):
             "device",
         )
     )
+    # True if PEAT wrote local_path itself from data it pulled (e.g.
+    # Firmware.original), so its stat() metadata does not describe the artifact
+    _written_by_peat: bool = PrivateAttr(default=False)
 
     # Validators
     @validator("extension", allow_reuse=True)
@@ -3635,7 +3643,14 @@ class Route(BaseModel):
     @validator("gateway", pre=True, allow_reuse=True)
     def _normalize_gateway(cls, v):
         v = str(v or "").strip()
-        return "" if v in ("*", "-", "0.0.0.0/0") else validate_ip(v)
+        if v in ("*", "-", "0.0.0.0/0"):
+            return ""
+        try:
+            return validate_ip(v)
+        except ValueError:
+            # Attribute assignment: the root validator above already moved the
+            # value to extra (it only changes a copy for the assigned field)
+            return ""
 
     def annotate(self, dev: DeviceData | None = None) -> None:
         if dev and self.gateway and self.gateway not in ("0.0.0.0", "::"):
@@ -4242,6 +4257,20 @@ class Relationship(BaseModel):
         return strip_empty_and_private(content)
 
 
+def _indicator_state(raw) -> str:
+    """Normalize an :attr:`Indicator.state` value (never raises)."""
+    s = str(raw if raw is not None else "").strip().lower()
+    if s in ("", "on", "off", "blinking"):
+        return s
+    if s in ("lit", "true", "1", "asserted", "active") or s in INDICATOR_COLORS:
+        return "on"
+    if s in ("unlit", "false", "0", "deasserted", "inactive", "dark"):
+        return "off"
+    if s in ("blink", "flash", "flashing"):
+        return "blinking"
+    return ""
+
+
 class Indicator(BaseModel):
     """
     A status indicator: front-panel LED, text display, key/mode switch,
@@ -4363,22 +4392,20 @@ class Indicator(BaseModel):
     def _normalize_state(cls, values):
         raw = values.get("state")
         s = str(raw if raw is not None else "").strip().lower()
-        if s in ("", "on", "off", "blinking"):
-            state = s
-        elif s in ("lit", "true", "1", "asserted", "active"):
-            state = "on"
-        elif s in ("unlit", "false", "0", "deasserted", "inactive", "dark"):
-            state = "off"
-        elif s in ("blink", "flash", "flashing"):
-            state = "blinking"
-        elif s in INDICATOR_COLORS:
-            state = "on"
+        state = _indicator_state(raw)
+        if s in INDICATOR_COLORS:
             values = {**values, "color": values.get("color") or s}
-        else:  # "unknown", vendor text: never fail the model (e.g. SEL-362X "unknown")
-            state = ""
+        elif not state and s:
+            # "unknown", vendor text: never fail the model (e.g. SEL-362X "unknown")
             if not values.get("value"):
                 values = {**values, "value": str(raw)}
         return {**values, "state": state}
+
+    @validator("state", pre=True, allow_reuse=True)
+    def _validate_state(cls, v):
+        # Also applies on attribute assignment (the root validator above only
+        # changes a copy of the values for the field being assigned)
+        return _indicator_state(v)
 
     def annotate(self, dev: DeviceData | None = None) -> None:
         if self.timestamp is not None:
@@ -7454,8 +7481,10 @@ def process_file(file: dict | File) -> File:
     # Local stat() metadata only describes the artifact if the local file IS the artifact
     # (e.g. "peat parse" input). For files pulled from a device it would report the
     # download time and the local user, not the values of the file on the device.
-    local_is_artifact = file.local_path is not None and (
-        file.path is None or PurePath(file.path) == PurePath(file.local_path)
+    local_is_artifact = (
+        file.local_path is not None
+        and not getattr(file, "_written_by_peat", False)
+        and (file.path is None or PurePath(file.path) == PurePath(file.local_path))
     )
 
     # If path isn't set, then set it to the local path
@@ -7614,6 +7643,8 @@ def annotate_obj_and_file(obj: Firmware | Logic, field_name: str, dev: DeviceDat
             # "firmware", "boot-firmware", "logic"
             filename=field_name.lower().replace("_", "-") + file_ext,
         )
+        if obj.file.local_path:
+            obj.file._written_by_peat = True
 
     process_file(obj.file)
 

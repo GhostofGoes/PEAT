@@ -51,7 +51,7 @@ Identity, merging and deduplication
    ":class:`~peat.data.models.Vlan`", "``id``", ""
    ":class:`~peat.data.models.BaselineFinding`", "``baseline_id``, ``rule_id``, ``path``", "a re-compare replaces the finding"
 
-Some time-varying models are "newest wins" instead of "first wins": a newer :class:`~peat.data.models.NetworkStatistics` sample (``timestamp``) replaces the older sample wholesale (counters of different samples are never mixed); newer :class:`~peat.data.models.Indicator` readings (``timestamp``) and :class:`~peat.data.models.Clock` readings (``observed``) overwrite older values. Modules MUST set these timestamps with ``utils.utc_now()``. Relationships aggregate their observations: ``evidence`` is the union, ``first_seen`` the minimum, ``last_seen`` the maximum and ``count`` the maximum.
+Some time-varying models are "newest wins" instead of "first wins": a newer :class:`~peat.data.models.NetworkStatistics` sample (``timestamp``) replaces the older sample wholesale (counters of different samples are never mixed); newer :class:`~peat.data.models.Indicator` readings (``timestamp``) and :class:`~peat.data.models.Clock` readings (``observed``) overwrite older values (an unknown newer ``state`` and a missing newer device ``time``/``offset`` also replace the older ones, and the newer ``Clock.sources`` win). Modules MUST set these timestamps with ``utils.utc_now()``. Relationships aggregate their observations: ``evidence`` is the union, ``first_seen`` the minimum, ``last_seen`` the maximum and ``count`` the maximum.
 
 Modules MUST aggregate high-volume observations (log lines, connection logs, ARP refreshes) per peer before calling ``store()`` (one ``store()`` per relationship with ``count``/``first_seen``/``last_seen``).
 

@@ -310,6 +310,12 @@ def test_generated_documents_are_mapped(devices):
     if missing:
         problems.setdefault("ot-device-relationships", set()).update(missing)
 
+    # Events with raw "original" text carry a root "hash" object
+    raw_event = models.Event(original="Jan 1 00:00:00 relay1 foo bar", severity="3")
+    missing = unmapped(raw_event.gen_elastic_content(goose_dev), "ot-device-events")
+    if missing:
+        problems.setdefault("ot-device-events", set()).update(missing)
+
     assert problems == {}
 
 

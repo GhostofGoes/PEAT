@@ -1087,6 +1087,7 @@ PEAT_INDICES: Final[dict[str, dict]] = {
             **BASE_FIELDS,
             "event": {"properties": EVENT_FIELDS},
             "host": {"properties": BASIC_HOST_FIELDS},
+            "hash": {"properties": HASH_FIELDS},  # hashes of Event.original
             "log": {"properties": {"level": KEYWORD}},  # Event.log_level
         }
     },

@@ -61,6 +61,23 @@ def test_create_index_custom_index_names(mocker):
         assert body["mappings"] is PEAT_INDICES[mapping_name]
 
 
+@pytest.mark.parametrize("disabled", ["ELASTIC_RELATIONSHIPS_INDEX", "ELASTIC_EVENTS_INDEX"])
+def test_push_elastic_dir_ignores_disabled_index_names(mocker, tmp_path, disabled):
+    """An empty (disabled) index name must not stop ELASTIC_DIR saving."""
+    mocker.patch.dict(
+        config["CONFIG"],
+        {"ELASTIC_DIR": tmp_path, disabled: "", "ELASTIC_DISABLE_DATED_INDICES": True},
+    )
+    es = Elastic()
+    es.es = mocker.MagicMock()
+    mocker.patch.object(es, "create_index", return_value=True)
+
+    assert es.push("peat-scan-summaries", {"a": 1}, doc_id="x")
+    assert list(es._docs_written) == ["peat-scan-summaries"]
+    assert es.push(config.ELASTIC_LOG_INDEX, {"a": 1}, doc_id="y")
+    assert config.ELASTIC_LOG_INDEX not in es._docs_written
+
+
 def test_url():
     unsafe_url = "http://elastic:changeme@localhost:9200"
     safe_url = "http://localhost:9200/"

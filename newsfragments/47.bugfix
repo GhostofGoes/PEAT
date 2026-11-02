@@ -1,8 +1,9 @@
 Fixed data model, Elasticsearch and device module bugs found while expanding the data model (`#48 <https://github.com/sandialabs/PEAT/issues/48>`_):
 
-- Textual event severities (e.g. ``warning``) were sent as ``event.severity``/``host.event.severity``, which are numbers in Elasticsearch, and caused mapping errors. Numeric severities are now sent as numbers and textual ones as ``log.level``.
+- Textual event severities (e.g. ``warning``) were sent as ``event.severity``/``host.event.severity``, which are numbers in Elasticsearch, and caused mapping errors. Numeric severities (within the Elasticsearch ``long`` range) are now sent as numbers, and textual or out-of-range ones as ``log.level``.
 - ``original`` file contents inside the ``files`` and ``module`` lists were exported in host documents and ``device-data-*.json`` files.
-- ``host.files`` and ``host.successful_pulls`` had no explicit Elasticsearch mapping.
+- ``host.files`` and ``host.successful_pulls`` had no explicit Elasticsearch mapping, and the ``hash.*`` hashes of an event's ``original`` text had no mapping in the events index.
+- An empty (disabled) log, events, memory or files index name stopped the saving of all Elasticsearch documents to ``ELASTIC_DIR``.
 - De-duplication of nested lists (e.g. the services of an interface) after merging two devices was discarded.
 - ``Interface.description`` (an object) was converted to a string by a validator.
 - Sorting lists with both timezone-naive and timezone-aware times (e.g. events) crashed.

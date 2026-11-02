@@ -559,6 +559,59 @@ def test_route_non_ip_gateways():
     assert "00:0C:29:AA:BB:CC" in dev.related.mac
 
 
+def test_route_gateway_assignment_never_raises():
+    r = Route(destination="10.0.0.0/8")
+    r.gateway = "link#3"
+    assert r.gateway == ""
+    assert r.extra["gateway_raw"] == "link#3"
+    assert r.type == "connected"
+    r.gateway = "192.0.2.1"
+    assert r.gateway == "192.0.2.1"
+
+
+def test_indicator_state_assignment_is_normalized():
+    ind = Indicator(name="RUN", type="led")
+    ind.state = "lit"
+    assert ind.state == "on"
+    ind.state = "red"
+    assert ind.state == "on"
+    assert ind.color == "red"
+    ind = Indicator(name="RUN", type="led")
+    ind.state = "unknown"
+    assert ind.state == ""
+    assert ind.value == "unknown"
+
+
+def test_event_severity_out_of_es_long_range():
+    doc = Event(action="x", severity="99999999999999999999").gen_elastic_content(None)
+    assert "severity" not in doc["event"]
+    assert doc["log"] == {"level": "99999999999999999999"}
+    assert Event(action="x", severity=str(-(2**63))).gen_elastic_content(None)["event"][
+        "severity"
+    ] == -(2**63)
+    dev = DeviceData(ip="192.0.2.10")
+    dev.store("event", Event(action="a", severity=str(2**63), created=T0))
+    assert dev.elastic()["event"][0].get("severity") is None
+
+
+def test_firmware_written_by_peat_has_no_local_stat_metadata(mocker, tmp_path):
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    dev = DeviceData(ip="192.0.2.10")
+    dev.firmware.original = b"\x00\x01firmware-bytes"
+    dev.logic.original = "logic text"
+    for _ in range(2):  # the skip persists across populate_fields() runs
+        dev.populate_fields()
+        for f in (dev.firmware.file, dev.logic.file):
+            assert f.local_path is not None
+            assert f.local_path.is_file()
+            assert f.size
+            assert f.hash.sha256
+            assert f.mtime is None
+            assert f.created is None
+            assert f.owner == ""
+            assert f.group == ""
+
+
 def test_event_severity_and_log_level():
     dev = DeviceData(ip="192.0.2.10")
     ev = Event(action="login", severity="INFO")

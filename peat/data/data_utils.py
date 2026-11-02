@@ -595,7 +595,11 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
 
     - Models with a ``_newest_wins_field`` (e.g. ``Indicator.timestamp``,
       ``Clock.observed``): if the source's value of that field is newer, the
-      source's non-default values overwrite the destination's.
+      source's non-default values overwrite the destination's, and the
+      source's items come first in merged lists (e.g. ``Clock.sources``), so
+      they win de-duplication. The ``state``/``value`` of a newer
+      ``Indicator`` reading and the ``time``/``offset`` of a newer ``Clock``
+      sample replace the destination's even when empty.
     - ``NetworkStatistics`` samples are never mixed: a newer sample replaces
       the destination wholesale, an empty destination takes the source
       wholesale, otherwise the source is ignored.
@@ -618,6 +622,9 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
     newest_field = getattr(dest, "_newest_wins_field", "") or ""
     newer = bool(newest_field) and _is_newer(
         getattr(source, newest_field), getattr(dest, newest_field)
+    )
+    older = bool(newest_field) and _is_newer(
+        getattr(dest, newest_field), getattr(source, newest_field)
     )
 
     if dst_type == "NetworkStatistics":
@@ -659,6 +666,10 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
     source_dict = dict(source)
 
     overwrite = newer
+    # (state, value) of the newer Indicator reading
+    reading = None
+    if dst_type == "Indicator" and (newer or older):
+        reading = (source.state, source.value) if newer else (dest.state, dest.value)
 
     if dst_type == "Service" and (
         source_dict.get("status") == "verified"
@@ -704,8 +715,14 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
         elif isinstance(current_value, list):
             if current_value and new_value:
                 if isinstance(current_value[0], BaseModel):
-                    current_value.extend(new_value)
-                    current_value[:] = dedupe_model_list(current_value)
+                    # dedupe_model_list keeps the FIRST item of a duplicate
+                    # group, so the newer sample's items go first when the
+                    # source is newer (e.g. live TimeSource state of a Clock)
+                    if newer:
+                        combined = list(new_value) + current_value
+                    else:
+                        combined = current_value + list(new_value)
+                    current_value[:] = dedupe_model_list(combined)
                     sort_model_list(current_value)
                 else:
                     for new_item in new_value:
@@ -739,6 +756,21 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
                 f"'{dest.__class__.__name__}' model (new_value={new_value} "
                 f"current_value={current_value})"
             )
+
+    # The device time and offset of a Clock belong to the sample's "observed"
+    # time: a newer sample without them must not keep the older sample's values
+    # (annotate() recomputes the offset from the merged time/observed).
+    if dst_type == "Clock" and newer:
+        if source.time is None:
+            dest.time = None
+        if source.offset is None:
+            dest.offset = None
+
+    # The reading of a newer timestamped Indicator replaces the older reading,
+    # even when the newer state is unknown (""). An older reading never fills
+    # the gaps of a newer one.
+    if reading is not None:
+        dest.state, dest.value = reading
 
     # Relationship aggregation rules (evidence is unioned by the set branch above)
     if dst_type == "Relationship":

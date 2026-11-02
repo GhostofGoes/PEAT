@@ -524,6 +524,64 @@ def test_merge_models_newest_wins():
     assert dst.source == "irig_b"
 
 
+def test_merge_models_newer_clock_replaces_sources_and_offset():
+    old = Clock(
+        time=T0 + timedelta(seconds=10),
+        observed=T0,
+        sources=[
+            TimeSource(protocol="sntp", address="192.0.2.1", selected=True, state="active"),
+            TimeSource(protocol="sntp", address="192.0.2.2", selected=False, state="standby"),
+        ],
+    )
+    old.annotate()
+    assert old.offset == 10.0
+    new = Clock(
+        time=None,
+        observed=T1,
+        sources=[
+            TimeSource(protocol="sntp", address="192.0.2.1", selected=False, state="unreachable"),
+            TimeSource(protocol="sntp", address="192.0.2.2", selected=True, state="active"),
+        ],
+    )
+    merge_models(old, new)
+    old.annotate()
+    assert old.observed == T1
+    assert [(s.address, s.selected, s.state) for s in old.sources] == [
+        ("192.0.2.1", False, "unreachable"),
+        ("192.0.2.2", True, "active"),
+    ]
+    # the newer sample has no device time: no stale time/offset from the older one
+    assert old.time is None
+    assert old.offset is None
+
+    # an older sample does not replace the live source state
+    merge_models(
+        old,
+        Clock(
+            observed=T0,
+            sources=[TimeSource(protocol="sntp", address="192.0.2.1", state="active", stratum=2)],
+        ),
+    )
+    first = old.sources[0]
+    assert (first.address, first.state, first.stratum) == ("192.0.2.1", "unreachable", 2)
+
+
+def test_merge_models_newer_indicator_unknown_state():
+    dst = Indicator(name="ALARM", type="led", state="on", timestamp=T0)
+    merge_models(dst, Indicator(name="ALARM", type="led", state="unknown", timestamp=T1))
+    assert dst.state == ""
+    assert dst.value == "unknown"
+    assert dst.timestamp == T1
+    # a definition (no timestamp) still only fills gaps
+    merge_models(dst, Indicator(name="ALARM", type="led", label="ALARM", color="red"))
+    assert dst.state == ""
+    assert dst.label == "ALARM"
+    assert dst.color == "red"
+    # an older reading is ignored
+    merge_models(dst, Indicator(name="ALARM", type="led", state="off", timestamp=T0))
+    assert dst.state == ""
+
+
 def test_merge_models_relationship_rules():
     dst = Relationship(
         remote=RelationshipEndpoint(ip="192.0.2.50"),
