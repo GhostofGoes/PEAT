@@ -79,7 +79,7 @@ MAX_DECOMPRESSED_SIZE = 256 * 1024 * 1024
 """Upper limit for the size of decompressed zlib-wrapped SCL (256 MiB)."""
 
 # Name of the control block attribute that references its DataSet
-_DATSET = "datSet"  # codespell:ignore
+_DATSET = "datSet"
 
 
 # --------------------------------------------------------------------------- #

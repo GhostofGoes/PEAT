@@ -37,7 +37,7 @@ DUPLICATE_APPID_GSE = (
     b"        </GSE>\n"
 )
 DUPLICATE_APPID_GSECONTROL = (
-    b'<GSEControl name="gcbMU" appID="MU1_G" datSet="dsSV" confRev="1"/>\n'  # codespell:ignore
+    b'<GSEControl name="gcbMU" appID="MU1_G" datSet="dsSV" confRev="1"/>\n'
     b'            <SampledValueControl name="svcb1"'
 )
 
@@ -248,11 +248,6 @@ def test_zlib_cid_claimed_only_by_selrelay(tmp_path, raw, level):
     assert scl.is_scl(path)
 
 
-@pytest.mark.xfail(
-    any(p.lower() == "*.cid" for p in SELRelay.filename_patterns),
-    reason="SELRelay still claims *.cid by name (removed by the SEL package, DESIGN.md 7.4)",
-    strict=False,
-)
 def test_plain_xml_cid_not_claimed_by_selrelay(tmp_path, raw):
     path = _write(tmp_path / "PROT1.cid", raw)
     assert _claims(IEC61850SCL, path)
