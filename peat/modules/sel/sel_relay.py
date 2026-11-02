@@ -117,10 +117,12 @@ from peat.protocols import FTP, check_tcp_port
 
 from .relay_parse import (
     SETTINGS_FILENAME_RE,
+    ConfigsType,
     clean_settings_text,
     combine_settings_files,
     create_dev_from_configs,
     event_data_present,
+    export_settings_records,
     has_settings_sections,
     is_event_filename,
     looks_like_show_output,
@@ -131,6 +133,7 @@ from .relay_parse import (
     parse_set_all,
     process_cid_file,
     process_info_into_dev,
+    split_logic,
 )
 from .sel_comms import populate_file_listing, pull_files
 from .sel_http import SELHTTP
@@ -613,7 +616,17 @@ class SELRelay(DeviceModule):
             and all_files["CFG.TXT"]["data"].strip() != "=>"
         ):
             try:
-                parse_cfg_txt(all_files["CFG.TXT"]["data"], dev)
+                cfg_configs = parse_cfg_txt(all_files["CFG.TXT"]["data"], dev)
+
+                # The settings files include the CFG.TXT settings, so only
+                # export the CFG.TXT settings records if there aren't any
+                if not any(
+                    SETTINGS_FILENAME_RE.match(name)
+                    and info.get("data")
+                    and has_settings_sections(clean_settings_text(info["data"]))
+                    for name, info in all_files.items()
+                ):
+                    export_settings_records(all_files["CFG.TXT"]["data"], dev, cfg_configs)
             except Exception as ex:
                 cls.log.warning(f"Failed to parse CFG.TXT pulled from {dev.address}: {ex}")
                 successful = False
@@ -1515,7 +1528,8 @@ class SELRelay(DeviceModule):
                 if not cid_extracted:
                     return None
             elif f_name.endswith("CFG.TXT"):
-                parse_cfg_txt(raw_data, dev)
+                cfg_configs = parse_cfg_txt(raw_data, dev)
+                export_settings_records(raw_data, dev, cfg_configs)
             else:
                 if not event_data_present(raw_data):
                     cls.log.warning(f"No event data in {file.name}")
@@ -1580,12 +1594,13 @@ class SELRelay(DeviceModule):
 
         for relay_name, set_all in relays.items():
             relay_dev = dev if not parsed_devs else None
+            configs = parse_config_data(set_all)
 
             if parsed_devs:
                 # Relays in templates often have the same IP address or
                 # name, so they'd end up as the same device. Use the name
                 # of the relay in the RDB file to keep them separate.
-                relay_dev = create_dev_from_configs(parse_config_data(set_all))
+                relay_dev = create_dev_from_configs(configs)
                 if any(relay_dev is d for d in parsed_devs):
                     cls.log.warning(
                         f"Relay '{relay_name}' in {file.name} has the same identifier "
@@ -1594,7 +1609,7 @@ class SELRelay(DeviceModule):
                     )
                     relay_dev = datastore.get(f"{file.stem}_{relay_name}", "id")
 
-            relay_dev = cls.parse_config(set_all=set_all, dev=relay_dev)
+            relay_dev = cls.parse_config(set_all=set_all, dev=relay_dev, configs=configs)
 
             if not relay_dev:
                 # Save the extracted SET_ALL data from the rdb to a temporary file
@@ -1732,7 +1747,10 @@ class SELRelay(DeviceModule):
         parsed_cfg = False
         if "CFG.TXT" in files:
             try:
-                parse_cfg_txt(files["CFG.TXT"].read_bytes(), dev)
+                cfg_data = files["CFG.TXT"].read_bytes()
+                cfg_configs = parse_cfg_txt(cfg_data, dev)
+                if not has_settings:  # SET_ALL.TXT includes the CFG.TXT settings
+                    export_settings_records(cfg_data, dev, cfg_configs)
                 parsed_cfg = True
             except Exception as ex:
                 cls.log.warning(f"Failed to parse {files['CFG.TXT']}: {ex}")
@@ -1768,12 +1786,23 @@ class SELRelay(DeviceModule):
         return dev
 
     @classmethod
-    def parse_config(cls, set_all: str, dev: DeviceData | None = None) -> DeviceData | None:
+    def parse_config(
+        cls, set_all: str, dev: DeviceData | None = None, configs: ConfigsType | None = None
+    ) -> DeviceData | None:
         try:
-            parsed, dev = parse_set_all(set_all_data=set_all, dev=dev)
+            # Parse the settings once, for both the parsed config and the records
+            if configs is None:
+                configs = parse_config_data(set_all)
+            parsed, dev = parse_set_all(set_all_data=set_all, dev=dev, configs=configs)
         except Exception:
             cls.log.exception("Failed config parsing due to a unhandled exception")
             return None
+
+        # Every setting (settings.json), and the SELOGIC control equations separate
+        # from the settings used by the logic (e.g. the TDURD and CFD timers, which
+        # are in trip_logic and close_logic).
+        records = export_settings_records(set_all, dev, configs)
+        parsed["logic_equations"], parsed["logic_settings"] = split_logic(records)
 
         dev.write_file(parsed, "parsed-config.json")
 

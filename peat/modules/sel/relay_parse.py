@@ -2,6 +2,7 @@ import copy
 import csv
 import re
 import zlib
+from collections.abc import Iterator
 from pathlib import PurePath, PurePosixPath
 from typing import Any, Final, Literal
 
@@ -28,6 +29,17 @@ from peat.data.data_utils import merge_models
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
 from .sel_consts import ANSI_CODES, LOGIC_KEYS
+from .sel_logic import (
+    RelayFamily,
+    classify_setting,
+    format_equations,
+    group_logic,
+    is_freeform_logic,
+    logic_assignment,
+    logic_variable,
+    parse_freeform_line,
+    relay_family,
+)
 
 ConfigSectionType = list[str] | dict[str, str]
 ConfigsType = dict[str, ConfigSectionType]
@@ -122,9 +134,18 @@ def split_raw_sections(text: str) -> list[tuple[str, list[str]]]:
     Returns:
         List of tuples of section name and the raw lines in that section
     """
-    sections = []  # type: list[tuple[str, list[str]]]
+    return [
+        (section, [line for _, line in lines]) for section, lines in _split_numbered_sections(text)
+    ]
 
-    for line in text.splitlines():
+
+def _split_numbered_sections(text: str) -> list[tuple[str, list[tuple[int, str]]]]:
+    """
+    Same as :func:`split_raw_sections`, with the line number (starting at 1) of each line.
+    """
+    sections = []  # type: list[tuple[str, list[tuple[int, str]]]]
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
 
@@ -132,7 +153,7 @@ def split_raw_sections(text: str) -> list[tuple[str, list[str]]]:
         if header:
             sections.append((header.group(1).strip(), []))
         elif sections:
-            sections[-1][1].append(line.rstrip())
+            sections[-1][1].append((line_number, line.rstrip()))
         else:
             log.debug("Skipping settings line before the first section header")
 
@@ -423,21 +444,28 @@ def extract_sections(raw_text: str) -> dict[str, list[str]]:
     raw_sections = {}
 
     for section, lines in split_raw_sections(raw_text):
-        cleaned_lines = []
-
-        for line in lines:
-            line = line.strip()
-
-            if line.endswith(","):
-                line += '""'  # Handle trailing commas in some configs
-            elif line.endswith(',"'):
-                line += '"'
-
-            cleaned_lines.append(line)
-
-        raw_sections[section] = cleaned_lines
+        raw_sections[section] = [_clean_settings_line(line) for line in lines]
 
     return raw_sections
+
+
+def _clean_settings_line(line: str) -> str:
+    line = line.strip()
+
+    if line.endswith(","):
+        line += '""'  # Handle trailing commas in some configs
+    elif line.endswith(',"'):
+        line += '"'
+
+    return line
+
+
+def _is_ini_section(lines: list[str]) -> bool:
+    """
+    If the (cleaned) lines of a section are INI-style ``KEY=VALUE`` pairs,
+    like ``[INFO]``, instead of CSV.
+    """
+    return bool(lines) and "," not in lines[0] and len(lines[0].split("=")) == 2
 
 
 def parse_ini_style(lines: list[str]) -> dict[str, str]:
@@ -470,6 +498,47 @@ def extract_csv_lines(lines: list[str]) -> list[list[str]]:
     return parsed_lines
 
 
+def _iter_csv_rows(lines: list[str]) -> Iterator[tuple[int, list[str]]]:
+    """
+    Parse CSV lines, keeping whitespace in the values.
+
+    Yields:
+        Tuples of the index in ``lines`` that the row starts at (a quoted
+        value can continue onto the next line), and the values in the row
+    """
+    reader = csv.reader(lines)
+
+    while True:
+        start = reader.line_num
+        try:
+            row = next(reader)
+        except StopIteration:
+            return
+        if row:
+            yield start, row
+
+
+def _setting_columns(row: list[str]) -> dict[str, str | None]:
+    """
+    Get the fields from the columns of a CSV-style setting line.
+
+    The columns are: name, value, range, type, a fifth column that's usually
+    empty, and the description. Most files only have the name and the value.
+    Columns that aren't in the line are None. The description is only taken
+    from the sixth column, and ``description_raw`` keeps its leading spaces
+    (``"      Phase"`` is an item under a heading in some files).
+    """
+    return {
+        "name": row[0].strip() if row else "",
+        "value": row[1].strip() if len(row) > 1 else "",
+        "range": row[2].strip() if len(row) > 2 else None,
+        "type": row[3].strip() if len(row) > 3 else None,
+        "col5": row[4].strip() if len(row) > 4 else None,
+        "description": row[5].strip() if len(row) > 5 else None,
+        "description_raw": row[5] if len(row) > 5 else None,
+    }
+
+
 def parse_csv_style(raw_lines: list[str], section_name: str) -> ConfigSectionType:
     """
     Parse lines of sections with CSV-style syntax. It's an odd and
@@ -477,6 +546,12 @@ def parse_csv_style(raw_lines: list[str], section_name: str) -> ConfigSectionTyp
     to handle it with ablomb, so we use that instead of trying to
     write some crazy regex ourselves. A good example of weird formatting
     is from the SEL-451, look at the SET_ALL files in tests/ and examples/.
+
+    Every setting has a ``value`` and a ``description`` (empty if there isn't
+    one). The range (3rd column), type (4th column), and the 5th column
+    are added as ``range``, ``type`` and ``col5`` if they aren't empty.
+    The description is only taken from the 6th column. If the description
+    has leading or trailing spaces, the original is in ``description_raw``.
     """
 
     # Examples of lines:
@@ -486,15 +561,17 @@ def parse_csv_style(raw_lines: list[str], section_name: str) -> ConfigSectionTyp
     #   E50P,"N","","","","      Phase"
     #   RST9,"0","","","",""
 
-    parsed_lines = extract_csv_lines(raw_lines)
+    # Keep the whitespace in the values for the description_raw field
+    rows = [row for _, row in _iter_csv_rows(raw_lines)]
+    parsed_lines = [[chunk.strip() for chunk in row] for row in rows]
 
     # ["\\SWCFG.ZIP"]
     if "STORAGE" in section_name:
         return [line[0].replace("\\", "/").strip() for line in parsed_lines]
 
-    results = {}
+    results = {}  # type: dict[str, Any]
 
-    for line in parsed_lines:
+    for line, row in zip(parsed_lines, rows, strict=True):
         if "CLASSES" in section_name:
             # NOTE: For certain rdb files the header is missing,
             # which corrupts the parsing of the [CLASSES] section.
@@ -531,17 +608,30 @@ def parse_csv_style(raw_lines: list[str], section_name: str) -> ConfigSectionTyp
                 hex_thingy = line[3].replace("0x", "").strip().lower()
                 results[line[0]]["hex_id"] = hex_thingy
         else:
+            fields = _setting_columns(row)
+
             # Always have value and description, even if it's not present for
             # a particular section. This makes it easier to read from the dict.
-            results[line[0]] = {
-                "value": "",
-                "description": "",
+            # Sections L1-L6 usually only have a value.
+            setting = {
+                "value": fields["value"],
+                "description": fields["description"] or "",
             }
 
-            if len(line) > 1:  # sections L1-L6 only have a value
-                results[line[0]]["value"] = line[1].strip()
-            if len(line) > 2:
-                results[line[0]]["description"] = line[-1].strip()
+            for key in ("range", "type", "col5"):
+                if fields[key]:
+                    setting[key] = fields[key]
+
+            if fields["description_raw"] and fields["description_raw"] != setting["description"]:
+                setting["description_raw"] = fields["description_raw"]
+
+            if line[0] in results:
+                log.warning(
+                    f"Setting '{line[0]}' is in section [{section_name}] more than "
+                    f"once, using the last value (the settings records have all of them)"
+                )
+
+            results[line[0]] = setting
 
     return results
 
@@ -567,7 +657,7 @@ def parse_sections(raw_sections: dict[str, list[str]]) -> dict[str, ConfigSectio
             continue
 
         # key-value pairs
-        if "," not in lines[0] and len(lines[0].split("=")) == 2:
+        if _is_ini_section(lines):
             configs[section] = parse_ini_style(lines)
 
         # CSV-thingy
@@ -813,6 +903,293 @@ def parse_config_data(config_text: bytes | str) -> dict[str, ConfigSectionType]:
         return {}
 
 
+#: Sections with information about the settings, instead of settings.
+#: These go in ``settings-meta.json`` instead of the settings records.
+SETTINGS_META_SECTIONS: Final = ("CLASSES", "STORAGE")
+
+
+def settings_family(configs: ConfigsType, model: str = "") -> RelayFamily | None:
+    """
+    Relay family (``"3xx"``, ``"4xx"`` or ``"7xx"``) from the ``RELAYTYPE``
+    and ``FID`` in the ``[INFO]`` section, or the model if they aren't there.
+    """
+    info = configs.get("INFO") if isinstance(configs.get("INFO"), dict) else {}
+    return relay_family(info.get("RELAYTYPE"), info.get("FID"), model)
+
+
+def _file_setting_rows(text: str) -> Iterator[tuple[str, int | None, dict[str, Any]]]:
+    """
+    Settings in the text of a settings file, with the line number of each.
+    Sections that are repeated with the same lines (e.g. the ``[INFO]`` at
+    the start of each settings file) are only included once.
+    """
+    seen = {}  # type: dict[str, list[list[str]]]
+
+    for section, numbered_lines in _split_numbered_sections(text):
+        if section.upper() in SETTINGS_META_SECTIONS:
+            continue
+
+        numbers = [number for number, _ in numbered_lines]
+        lines = [_clean_settings_line(line) for _, line in numbered_lines]
+
+        if lines in seen.get(section, []):
+            log.trace(f"Skipping repeated settings section [{section}]")
+            continue
+        seen.setdefault(section, []).append(lines)
+
+        if _is_ini_section(lines):
+            for number, line in zip(numbers, lines, strict=True):
+                key, _, value = line.partition("=")
+                yield section, number, {"name": key.strip(), "value": value.strip()}
+        else:
+            for idx, row in _iter_csv_rows(lines):
+                fields = _setting_columns(row)  # type: dict[str, Any]
+                if len(row) > 6:
+                    fields["extra_columns"] = row[6:]
+                yield section, numbers[idx], fields
+
+
+def _configs_setting_rows(
+    configs: ConfigsType,
+) -> Iterator[tuple[str, int | None, dict[str, Any]]]:
+    """
+    Settings in parsed settings, e.g. from :func:`parse_show_output`,
+    for when the text isn't in the settings file format.
+    """
+    for section, settings in configs.items():
+        if section.upper() in SETTINGS_META_SECTIONS or not isinstance(settings, dict):
+            continue
+
+        for name, setting in settings.items():
+            fields = {"name": name, "value": _getv(setting)}  # type: dict[str, Any]
+            if isinstance(setting, dict):
+                for key in ("range", "type", "col5", "description", "description_raw"):
+                    if setting.get(key):
+                        fields[key] = setting[key]
+            yield section, None, fields
+
+
+def settings_to_records(
+    text: bytes | str, configs: ConfigsType | None = None, model: str = ""
+) -> list[dict[str, Any]]:
+    """
+    Convert relay settings into a flat list of records, one per setting,
+    with every column from the settings file and the kind of setting.
+
+    Unlike :func:`parse_config_data`, every line is kept (including settings
+    that are in a section more than once), in the same order as the file.
+    ``[CLASSES]`` and ``[STORAGE]`` aren't settings and aren't included,
+    use :func:`settings_metadata` for those.
+
+    Each record has these keys (values are None if they don't apply):
+
+    - ``section``: settings class (section) the setting is in, e.g. ``"P1"``
+    - ``class_name``: name of the class from ``[CLASSES]``, e.g. ``"Port 1"``
+    - ``file``: file the class is in, from ``[CLASSES]``, e.g. ``"/SETTINGS/SET_P1.TXT"``
+    - ``line_number``: line in the text (starting at 1). None for ``SHOW`` command output.
+    - ``name`` and ``value``
+    - ``range``, ``type`` and ``col5``: the 3rd, 4th and 5th columns, if the line has them
+    - ``description``: the 6th column, with leading and trailing spaces removed
+    - ``description_raw``: the 6th column as it is in the file
+    - ``kind``: ``"equation"``, ``"equation_unset"``, ``"setting"``, ``"bit_list"``
+      or ``"alias"``, from :func:`~peat.modules.sel.sel_logic.classify_setting`
+
+    400-series free-form logic lines (``PROTSELn``, ``AUTO_n``) also have the
+    ``lhs``, ``rhs`` and ``comment`` of the line. Lines with more than six
+    columns also have ``extra_columns``.
+
+    Args:
+        text: Settings in the ``SET_ALL.TXT`` format, or ``SHOW`` command output
+        configs: The settings parsed from the text by :func:`parse_config_data`.
+            These are parsed from the text if they aren't passed.
+        model: Relay model (e.g. ``"351S"``), used if the relay family
+            isn't in the ``[INFO]`` section
+
+    Returns:
+        List of records
+    """
+    text = clean_settings_text(text)
+
+    if configs is None:
+        configs = parse_config_data(text)
+
+    family = settings_family(configs, model)
+    classes = configs.get("CLASSES") if isinstance(configs.get("CLASSES"), dict) else {}
+
+    if looks_like_show_output(text):
+        rows = _configs_setting_rows(configs)
+    else:
+        rows = _file_setting_rows(text)
+
+    records = []  # type: list[dict[str, Any]]
+
+    for section, line_number, fields in rows:
+        name = fields["name"]
+        if not name:
+            log.trace(f"Skipping setting without a name in section [{section}]")
+            continue
+
+        value = "" if fields["value"] is None else str(fields["value"])
+        class_info = classes.get(section) if isinstance(classes.get(section), dict) else {}
+
+        record = {
+            "section": section,
+            "class_name": class_info.get("name"),
+            "file": class_info.get("file"),
+            "line_number": line_number,
+            "name": name,
+            "value": value,
+            "range": fields.get("range"),
+            "type": fields.get("type"),
+            "col5": fields.get("col5"),
+            "description": fields.get("description"),
+            "description_raw": fields.get("description_raw"),
+            "kind": classify_setting(name, value, section, family),
+        }  # type: dict[str, Any]
+
+        if is_freeform_logic(name, section, family):
+            line = parse_freeform_line(value)
+            if line:
+                record.update(line)
+
+        if fields.get("extra_columns"):
+            record["extra_columns"] = fields["extra_columns"]
+
+        records.append(record)
+
+    return records
+
+
+def settings_metadata(configs: ConfigsType, model: str = "") -> dict[str, Any]:
+    """
+    Information about the settings that aren't settings themselves:
+    the relay family, the settings classes from ``[CLASSES]`` (with their file
+    and checksum), the "Saved on" lines from QuickSet, and the files listed
+    in ``[STORAGE]``.
+
+    Returns:
+        Dict with the keys that have data: ``family``, ``classes``, ``save_info``, ``storage``
+    """
+    meta = {}  # type: dict[str, Any]
+
+    family = settings_family(configs, model)
+    if family:
+        meta["family"] = family
+
+    if isinstance(configs.get("CLASSES"), dict):
+        classes = {k: v for k, v in configs["CLASSES"].items() if k != "SAVE_INFO"}
+        if classes:
+            meta["classes"] = classes
+        if configs["CLASSES"].get("SAVE_INFO"):
+            meta["save_info"] = list(configs["CLASSES"]["SAVE_INFO"])
+
+    if configs.get("STORAGE"):
+        meta["storage"] = list(configs["STORAGE"])
+
+    return meta
+
+
+def split_logic(records: list[dict[str, Any]]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """
+    Separate the SELOGIC control equations from the settings used by the logic.
+
+    The settings are the ones in the logic key lists that aren't equations
+    (e.g. ``TDURD``, the minimum trip duration, and ``CFD``, the close failure
+    time delay), the timers, presets and fail-safe settings of the
+    variables and outputs that have equations (e.g. ``SV01PU``, ``OUT101FS``),
+    and the lines of 400-series free-form logic that set a timer or counter
+    parameter to a number (e.g. ``PCN01PV := 500``).
+
+    Returns:
+        Tuple of the equations and the logic settings, each keyed by section
+        and then by name. Equations with a value of ``NA`` (not used) aren't
+        included. Free-form logic (400-series) is keyed by the variable that's
+        assigned (e.g. ``PSV01``), and has the last value if it's assigned more than once.
+    """
+    logic_names = {name for keys in LOGIC_KEYS.values() for name in keys}
+    grouped = group_logic(records)
+    equations = {}  # type: dict[str, dict[str, str]]
+    settings = {}  # type: dict[str, dict[str, str]]
+
+    for rec in records:
+        section = rec["section"]
+        name, value = logic_assignment(rec)
+
+        if rec["kind"] == "equation":
+            equations.setdefault(section, {})[name] = value
+        elif rec["kind"] == "setting":
+            variable = logic_variable(name)
+            if (
+                rec.get("lhs")  # Free-form logic, e.g. PCN01PV := 500
+                or name in logic_names
+                or (variable != name and variable in grouped.get(section, {}))
+            ):
+                settings.setdefault(section, {})[name] = value
+
+    return equations, settings
+
+
+def export_settings_records(
+    text: bytes | str, dev: DeviceData, configs: ConfigsType | None = None
+) -> list[dict[str, Any]]:
+    """
+    Save the settings records and SELOGIC control equations to files in the
+    device's output directory:
+
+    - ``settings.json``: every setting, from :func:`settings_to_records`
+    - ``settings-meta.json``: the settings classes and other information
+      about the settings, from :func:`settings_metadata` (if there is any)
+    - ``logic-equations.json``: the SELOGIC control equations by section and
+      variable, from :func:`~peat.modules.sel.sel_logic.group_logic`
+
+    A text listing of the equations is saved to ``dev.logic.formats["selogic-equations"]``.
+    The records aren't added to the device data (e.g. ``dev.extra``), since
+    there are thousands of them. Errors are logged instead of raised, since
+    the records are in addition to the other parsed data.
+
+    Args:
+        text: Settings in the ``SET_ALL.TXT`` format, ``CFG.TXT``, or ``SHOW`` command output
+        dev: :class:`~peat.data.models.DeviceData` instance the settings are for
+        configs: The settings parsed from the text by :func:`parse_config_data`.
+            These are parsed from the text if they aren't passed.
+
+    Returns:
+        The settings records, or an empty list if they couldn't be created
+    """
+    try:
+        text = clean_settings_text(text)
+        if configs is None:
+            configs = parse_config_data(text)
+
+        model = dev.description.model
+        records = settings_to_records(text, configs, model)
+
+        dev.write_file(records, "settings.json")
+
+        meta = settings_metadata(configs, model)
+        if meta:
+            dev.write_file(meta, "settings-meta.json")
+
+        dev.write_file(group_logic(records), "logic-equations.json")
+
+        equations_text = format_equations(records)
+        if equations_text:
+            dev.logic.formats["selogic-equations"] = equations_text
+    except Exception:
+        log.exception(f"Failed to export the settings records for {dev.get_id()}")
+        return []
+
+    kinds = {}  # type: dict[str, int]
+    for rec in records:
+        kinds[rec["kind"]] = kinds.get(rec["kind"], 0) + 1
+    log.debug(
+        f"{len(records)} settings records for {dev.get_id()} "
+        f"({', '.join(f'{count} {kind}' for kind, count in kinds.items())})"
+    )
+
+    return records
+
+
 def parse_cfg_txt(cfg_txt: bytes | str, dev: DeviceData) -> ConfigsType:
     """
     Parse contents of CFG.TXT, including the [INFO] and [CLASSES] sections.
@@ -841,7 +1218,9 @@ def parse_cfg_txt(cfg_txt: bytes | str, dev: DeviceData) -> ConfigsType:
 
 
 def parse_set_all(
-    set_all_data: bytes | str, dev: DeviceData | None = None
+    set_all_data: bytes | str,
+    dev: DeviceData | None = None,
+    configs: ConfigsType | None = None,
 ) -> tuple[dict[str, dict], DeviceData]:
     """
     Parse the data contained in SET_ALL.TXT.
@@ -850,6 +1229,8 @@ def parse_set_all(
         set_all_data: Data from a SET_ALL config pulled from an relay
             or extracted from a RDB project file
         dev: :class:`~peat.data.models.DeviceData` instance to add data to
+        configs: The settings already parsed from ``set_all_data`` by
+            :func:`parse_config_data`, so they aren't parsed again
 
     Returns:
         Tuple with the device configuration information parsed from the file
@@ -858,7 +1239,8 @@ def parse_set_all(
     """
     # Parse raw data from SET_ALL.TXT into a nested dict
     # NOTE: the 451 truncates config variable names longer than 7 characters
-    configs = parse_config_data(set_all_data)
+    if configs is None:
+        configs = parse_config_data(set_all_data)
 
     if not configs:
         raise ParseError("No config sections extracted from SET_ALL")
@@ -893,7 +1275,9 @@ def parse_set_all(
     }
 
     for section, keys in LOGIC_KEYS.items():
-        device_info[section.lower()] = parse_logic_section(configs, keys, section)
+        # The key lists have some duplicates
+        unique_keys = list(dict.fromkeys(keys))
+        device_info[section.lower()] = parse_logic_section(configs, unique_keys, section)
 
     log.trace(
         f"{len(configs)} SET_ALL config sections parsed: {', '.join(x for x in configs.keys())}"

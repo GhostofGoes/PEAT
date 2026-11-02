@@ -1,0 +1,1 @@
+SEL relays: the description of a CSV-style setting now only comes from the sixth column, so a line such as ``"URETRY1",3,2~10`` no longer gets its range as the description. The range, type, and fifth columns are kept, and duplicate settings in a section are logged.
