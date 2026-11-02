@@ -279,12 +279,18 @@ def parse_device_modbus_registers(start_element: ET.Element, page_name: str) -> 
                     "enable": convert_to_elastic(tag_enable),
                     "type": convert_to_elastic(tag_type),
                     "register_start": convert_to_elastic(tag_reg_start),
-                    "regsiter_stop": convert_to_elastic(tag_reg_stop),
+                    "register_stop": convert_to_elastic(tag_reg_stop),
                 }
     return tags
 
 
 def parse_maincontroller(maincontroller: ET, device_info: dict) -> None:
+    """
+    Parse the task definitions of an RTAC ``Main Controller.xml`` export into
+    ``device_info["MainController"]`` (``{task name: {child tag: value}}``; the
+    main task is named ``MainTask``). :class:`~peat.modules.sel.sel_rtac.SELRTAC`
+    turns them into :class:`~peat.data.models.LogicTask` entries.
+    """
     results: dict = {}
 
     # parse Main Task
@@ -301,7 +307,8 @@ def parse_maincontroller(maincontroller: ET, device_info: dict) -> None:
             for line in task:
                 if line.tag == "Name":
                     name = line.text
-                    results[name] = {}
+            if not name:
+                continue
             results[name] = {}
             for line in task:
                 results[name][line.tag] = convert_to_elastic(line.text)

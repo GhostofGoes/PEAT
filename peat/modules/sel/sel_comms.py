@@ -2,9 +2,10 @@ import timeit
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 
-from peat import DeviceData, DeviceError, config, log, utils
+from peat import DeviceData, DeviceError, File, config, log, utils
 from peat.protocols import FTP
 
+from .relay_parse import sel_file_categories
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
 
@@ -211,11 +212,12 @@ def pull_files(
 
     # Determine files to download from root directory and any sub-directories
     populate_file_listing(dev, comms)
+    file_listing = dev._cache["file_listing"]  # type: dict[str, list[str]]
 
-    log.trace(f"{method} file listing: {dev.extra['file_listing']}")
+    log.trace(f"{method} file listing: {file_listing}")
 
     to_download = filter_names(
-        list(dev.extra["file_listing"].keys()),
+        list(file_listing.keys()),
         only=dev.options["sel"]["only_download_dirs"],
         never=dev.options["sel"]["never_download_dirs"],
     )
@@ -229,7 +231,7 @@ def pull_files(
     for dirname in to_download:
         # Filter files to download based on config settings
         filenames = filter_names(
-            dev.extra["file_listing"][dirname],
+            file_listing[dirname],
             dev.options["sel"]["only_download_files"],
             dev.options["sel"]["never_download_files"],
         )
@@ -295,24 +297,83 @@ def pull_files(
     #  then reconstruct SET_ALL from individual settings files
     dev._cache["all_files"] = all_files
 
-    # Add files to related.files, in case they aren't already
+    # Add the downloaded files to the file inventory (merged with the listing
+    # entries by their path on the device), and to related.files
     for file_dict in all_files.values():
         dev.related.files.add(file_dict["name"])
+
+        data = file_dict.get("data")
+        file_obj = File(
+            path=file_dict["device_path"],
+            type="file",
+            peat_module=_module_name(dev),
+            category=sel_file_categories(file_dict["device_path"]),
+        )
+        if file_dict.get("local_path"):
+            file_obj.local_path = file_dict["local_path"]
+        if isinstance(data, (bytes, str)):
+            file_obj.size = len(data.encode("utf-8") if isinstance(data, str) else data)
+        dev.store("files", file_obj, lookup="path")
 
     return all_files
 
 
+def _module_name(dev: DeviceData) -> str:
+    return dev._module.__name__ if dev._module else "SELRelay"
+
+
+def _store_listing(dev: DeviceData, listing: dict[str, list[str]], dirs: set[str]) -> None:
+    """Add the relay's file listing to the file inventory (``dev.files``)."""
+    module = _module_name(dev)
+
+    for dirname in sorted(dirs):
+        if dirname == "/":
+            continue
+        dev.store(
+            "files",
+            File(path=PurePosixPath(f"/{dirname}"), type="dir", peat_module=module),
+            lookup="path",
+        )
+
+    for dirname, names in listing.items():
+        for name in names:
+            if name in listing and name != "/":  # sub-directory entry
+                continue
+            path = PurePosixPath("/" if dirname == "/" else f"/{dirname}") / name
+            dev.store(
+                "files",
+                File(
+                    path=path,
+                    type="file",
+                    peat_module=module,
+                    category=sel_file_categories(path),
+                ),
+                lookup="path",
+            )
+
+
 def populate_file_listing(dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -> None:
+    """
+    List the files on the relay (root directory and its sub-directories).
+
+    The listing (``{directory: [names]}``) is cached in
+    ``dev._cache["file_listing"]`` for the download, and every file and
+    directory is added to ``dev.files`` (:class:`~peat.data.models.File`).
+    ``dev.extra["settings_root_directory"]`` is set to the directory with the
+    settings files (``SETTINGS`` or ``/``).
+    """
     # ["DIAGNOSTICS", "EVENTS", "HMI", "REPORTS", "SER", "STATUS", "SETTINGS"]
-    if not dev.extra.get("file_listing"):
+    if not dev._cache.get("file_listing"):
         if isinstance(comms, FTP):
             slash_listing = comms.nlst_files()
         else:
             slash_listing = comms.list_files()
-        dev.extra["file_listing"] = {"/": clean_filenames(slash_listing)}
+        dev._cache["file_listing"] = {"/": clean_filenames(slash_listing)}
+
+    file_listing = dev._cache["file_listing"]  # type: dict[str, list[str]]
 
     if not dev.extra.get("settings_root_directory"):
-        if "SETTINGS" in dev.extra["file_listing"]["/"]:
+        if "SETTINGS" in file_listing["/"]:
             dev.extra["settings_root_directory"] = "SETTINGS"
         else:
             dev.extra["settings_root_directory"] = "/"
@@ -324,10 +385,10 @@ def populate_file_listing(dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -
     files_on_dev = set()
     dirs_on_dev = set()
 
-    for file in dev.extra["file_listing"]["/"]:
+    for file in file_listing["/"]:
         # Process sub-directories
         # Note(cegoes): Files will always have "." as far as I know
-        if "." not in file and file not in dev.extra["file_listing"]:
+        if "." not in file and file not in file_listing:
             if isinstance(comms, FTP):
                 listing = clean_filenames(comms.nlst_files(file))
             else:
@@ -349,19 +410,19 @@ def populate_file_listing(dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -
 
             # Sets the sub-directory to be a separate part of the file listing
             # dict from the files in the root directory, e.g.
-            #   dev.extra["file_listing"]["/"] = ["CFG.XML", ...]
-            #   dev.extra["file_listing"]["SETTINGS"] = ["SET_1.TXT", ...]
-            dev.extra["file_listing"][file] = listing
+            #   file_listing["/"] = ["CFG.XML", ...]
+            #   file_listing["SETTINGS"] = ["SET_1.TXT", ...]
+            file_listing[file] = listing
+        elif file in file_listing:  # sub-directory listed previously
+            dirs_on_dev.add(file)
+            files_on_dev.update(file_listing[file])
         else:
             root_files.append(file)
             files_on_dev.add(file)
 
     dirs_on_dev.add("/")
 
-    dev.extra["file_listing"]["/"] = root_files
-    dev.extra["num_directories_on_device"] = len(dirs_on_dev)
-    dev.extra["num_files_on_device"] = len(files_on_dev)
-    dev.extra["all_dirs_on_device"] = sorted(dirs_on_dev)
-    dev.extra["all_files_on_device"] = sorted(files_on_dev)
+    file_listing["/"] = root_files
 
+    _store_listing(dev, file_listing, dirs_on_dev)
     dev.related.files.update(files_on_dev)

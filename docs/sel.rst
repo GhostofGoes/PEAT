@@ -129,9 +129,11 @@ SEL configuration software stores device configurations in project files with a 
 
 Configured IED Description (.CID) Files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-``.CID`` files are zlib-compressed text data. This may be :term:`XML` data, or it could be other data. The only file we've seen so far is ``SET_61850.CID``, and it decompresses to XML. The schema for the XML is (I think) standardized by IEC 61850-6. If you are willing to pay for a copy of the standard, then maybe you can make some use out of the XML. It's only relevant if IEC61850 or GOOSE is enabled.
+``.CID`` files on SEL relays are zlib-compressed text data. The only file we've seen so far is ``SET_61850.CID``, and it decompresses to the relay's IEC 61850 Substation Configuration Language (SCL) XML, as defined by IEC 61850-6. It's only relevant if IEC 61850 (MMS) or GOOSE is enabled.
 
-If any ``.CID`` files are found during a PEAT pull, PEAT will attempt to decompress them and put the results in the device output directory with the name of ``decompressed_<filename>.xml`` (or ``.txt`` if non-XML data was extracted from the file). They can also be parsed directly with ``peat parse -d selrelay <filename>`` (e.g. ``peat parse -d selrelay ./SET_61850.CID``).
+If any ``.CID`` files are found during a PEAT pull, PEAT decompresses them and puts the results in the device output directory with the name of ``<filename>_decompressed.xml`` (or ``.txt`` if non-XML data was extracted from the file). The SCL is then parsed by :mod:`peat.parsing.scl` into ``iec61850`` (IED name, configuration version, access points, GOOSE/SV publications, report control blocks, subscriptions), the ``mms``, ``goose`` and ``sv`` services, and ``publishes_to``/``subscribes_to``/``reports_to`` relationships. The CID file is listed in ``files`` with the categories ``configuration`` and ``iec61850``. A CID that fails to parse never affects the rest of the pull: the decompressed file is still written.
+
+CID files can also be parsed directly with ``peat parse -d selrelay <filename>`` (e.g. ``peat parse -d selrelay ./SET_61850.CID``). ``SELRelay`` recognizes CID files by their content (zlib data that decompresses to SCL), not by the file extension: plain-XML ``.cid`` files exported by other vendors' tools are parsed by the :class:`~peat.modules.iec61850.iec61850_scl.IEC61850SCL` module.
 
 To manually extract them without using PEAT:
 
@@ -141,6 +143,42 @@ To manually extract them without using PEAT:
    sudo apt install qpdf
    zlib-flate -uncompress < ./SET_61850.CID > SET_61850.xml
 
+
+Data model mapping
+^^^^^^^^^^^^^^^^^^
+Where the data pulled from a relay ends up in the PEAT data model:
+
+- ``ETH`` command / ``eth`` web page: the Ethernet IP interface (e.g. ``Port 5``) gets the IP address, subnet mask, gateway, MAC (``MAC``/``MAC 1``) and the packet, byte and error counters in ``interface.statistics`` (``ingress`` = received, ``egress`` = sent). Counters the relay shows as ``$$$$`` (overflowed, cleared with ``ETH C``) are left empty and listed in ``statistics.extra.overflowed``. Each physical port (``5A``, ``5B``, ...) becomes its own interface with link state (``connected``), speed and duplex. ``NETMODE`` is stored in ``redundancy`` of the IP interface (``members`` = the ports): in ``FAILOVER`` mode the active port has ``redundancy.state`` ``active`` and the other ``standby``; in ``PRP`` mode both ports are ``active`` (the LAN A/B assignment is not recorded).
+- ``MAC`` command: the IP MAC goes to the Ethernet interface; the GOOSE MAC (the unicast source MAC of the relay's GOOSE frames) to ``iec61850.extra.goose_source_mac`` and ``related.mac``.
+- Port settings (``SET P``, ``SHO P``):
+
+  - DNP3 master sessions (``DNPIP1``-``DNPIP6``, ``REPADR``, ``DNPTR``, ...), allowed Modbus TCP clients (``MODIP1``-``MODIP3``) and C37.118 PDCs (``PMOIPA1``) become ``relationships`` with ``evidence`` ``config`` and the protocol roles (``outstation``/``master``, ``server``/``client``, ``pmu``/``pdc``).
+  - SNTP servers (``SNTPPSIP``, ``SNTPBSIP``) become ``clock.sources`` (priority 1 and 2), from which ``syncs_time_from`` relationships are derived.
+  - ``E61850`` is the ``mms`` service (TCP 102) and ``EGSE`` the ``goose`` service (both were ``iec61850`` before), the Ethernet Modbus service is ``modbus_tcp`` and the synchrophasor service ``c37_118``. Ports from settings are also in ``service.configured_port``. ``FTPANMS`` (anonymous FTP) is in ``service.security.anonymous_access``.
+  - Serial ports keep ``type`` ``serial`` (the electrical standard is unknown), except the front port ``F`` (``rs_232``) and ports with a ``COMMINF`` setting. The serial ``PROTO`` setting is normalized in ``interface.application`` (``mirrored_bits``, ``dnp3``, ``modbus_rtu``, ``sel``, ...). MIRRORED BITS ports are ``physical_link`` relationships.
+
+- ``STA`` command / ``sta`` page: self-test results become ``indicators`` (``type`` ``status_flag``, ``category`` ``self_test``) and set ``health`` (NAMUR NE 107): ``failure`` if a self-test failed, ``check_function`` if the relay reports "Relay Disabled", ``maintenance_required`` for warnings, else ``normal``. ``status`` holds the raw "Relay Enabled"/"Relay Disabled" text. The time source goes to ``clock.source`` (``irig_b``, ``sntp``, ``ptp``, ``internal``) and the device time to ``clock.time`` (device-local time, unless the relay reports its UTC offset, as the SEL-451 does).
+- ``ID`` command: ``iedName``, ``configVersion`` and ``LIB61850ID`` go to ``iec61850.ied_name``, ``iec61850.config_version`` and ``iec61850.extra.lib61850_id``.
+- Front-panel settings (``SET F``, ``SHO F``): target LED and pushbutton definitions (equation, latch, color, label) become ``indicators`` without a state.
+- History (``HIS``, ``HISTORY.TXT``) and SER: trips are ``event.action`` ``trip`` with ``event.kind`` ``alert`` and ``event.reason`` = the event type and targets. Settings and group changes have the new class/group as ``event.reason``, and asserted protection elements the ANSI device function name (e.g. ``51G Ground Time Overcurrent``).
+- Files: the file listing (FTP or ``FIL DIR``), the settings classes of ``CFG.TXT`` and the downloaded files are in ``files``, with ``category`` ``settings``/``configuration`` (``SET_*.TXT``), ``configuration`` (``CFG.TXT``), ``log`` (SER and history files), ``event_record`` (``EVENTS/``) and ``iec61850`` (``*.CID``).
+- Logins: when a factory default password is accepted (``ACC``/``OTTER``, ``2AC``/``TAIL``, FTP ``FTPUSER``/``TAIL``, ...), ``service.security.default_credentials`` is set on the service (Telnet, FTP, HTTP/HTTPS). It is ``false`` only if every factory default of that service was tried and rejected. Anonymous FTP logins set ``anonymous_access``. Passwords are never stored.
+
+RTACs:
+
+- Diagnostics: the CPU usage of the main and automation tasks is in ``logic.tasks`` (``cpu_percent``), the number of logged-in users in ``service.statistics.connections.active`` of the HTTPS service, and the power-on self-test summary in ``indicators``.
+- PostgreSQL: the DNP3, SEL and Modbus client connections and the remote devices become ``relationships`` (the RTAC is the ``master``/``client``; engineering access passthroughs are ``tunnel`` relationships). Serial port types ``232``/``422``/``485`` are ``rs_232``/``rs_422``/``rs_485``.
+- Sequence of Events log (``soe.csv``): ``event.reason`` for failed logins, factory resets and application restarts, ``event.severity`` from the priority, and logins with a source IP aggregated per source IP and service into ``relationships`` (``evidence`` ``log``, ``first_seen``, ``last_seen``, ``count``).
+- Files on the device (web file repository) and the members of offline project tarballs are in ``files``; offline ``Main Controller.xml`` tasks in ``logic.tasks``.
+- Monitor mode (``sel.rtac_monitor_enable``): a configuration change is pushed to the ``alerts`` index with ``event.kind`` ``alert``, ``event.category`` ``configuration``, ``event.type`` ``change`` and the changed paths in ``event.reason``.
+
+Known defaults
+^^^^^^^^^^^^^^
+``peat baseline-compare --known-defaults`` (see :doc:`baselines`) checks SEL devices against these baselines (defined in ``peat/modules/sel/sel_defaults.py``):
+
+- ``sel-relay-factory-defaults`` (``factory_default``, severity ``info``): Telnet on port 23, FTP on port 21, the factory default RID ``FEEDER 1`` and TID ``STATION A``. A failed rule means "changed from the factory default".
+- ``sel-relay-vendor-recommended`` (``vendor_recommended``): FTP disabled, Telnet not exposed, no factory default password accepted, RID and TID changed from the factory defaults, GOOSE signed (IEC 62351-6, rarely supported by relays, severity ``info``).
+- ``sel-rtac-vendor-recommended`` (``vendor_recommended``): no factory default password accepted.
 
 Developer notes on SEL communications
 -------------------------------------

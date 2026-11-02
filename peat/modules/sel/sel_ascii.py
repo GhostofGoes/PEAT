@@ -14,6 +14,23 @@ from peat.protocols.common import MAC_RE_DASH
 from .relay_parse import parse_status_output
 
 
+def hours_to_utc_offset(hours: str) -> str:
+    """
+    Convert a UTC offset in hours as shown by the SEL-451 ``date``/``time``
+    commands to ``+HH:MM``: ``"-08.0"`` -> ``"-08:00"``, ``"5.5"`` -> ``"+05:30"``.
+
+    Returns:
+        The offset, or ``""`` if the value isn't a number
+    """
+    try:
+        value = float(hours.strip())
+    except (ValueError, AttributeError):
+        return ""
+    sign = "-" if value < 0 else "+"
+    minutes = round(abs(value) * 60)
+    return f"{sign}{minutes // 60:02d}:{minutes % 60:02d}"
+
+
 class SELAscii(ABC):
     """
     Commands and parsers for the SEL ASCII command interface.
@@ -693,7 +710,7 @@ class SELAscii(ABC):
 
             raw_date = dates["local"]
             raw_time = times["local"]
-            tz_offset = dates["offset"].replace(".", ":")
+            tz_offset = hours_to_utc_offset(dates["offset"])
 
         # SEL-700G
         elif ":=" in raw_date:
@@ -766,4 +783,4 @@ class SELAscii(ABC):
         return self.exec_read("eve", added_delay=2.0)
 
 
-__all__ = ["SELAscii"]
+__all__ = ["SELAscii", "hours_to_utc_offset"]

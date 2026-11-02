@@ -2,6 +2,7 @@ import copy
 import csv
 import re
 import zlib
+from datetime import datetime, timedelta
 from pathlib import PurePath, PurePosixPath
 from typing import Any, Literal
 
@@ -11,12 +12,22 @@ from pathvalidate import is_valid_filepath
 
 from peat import (
     IO,
+    Description,
     DeviceData,
     Event,
+    File,
+    Indicator,
     Interface,
+    NetworkStatistics,
+    NetworkTraffic,
     ParseError,
+    Redundancy,
     Register,
+    Relationship,
+    RelationshipEndpoint,
     Service,
+    ServiceSecurity,
+    TimeSource,
     consts,
     datastore,
     log,
@@ -25,6 +36,7 @@ from peat import (
 )
 from peat import config as peat_config
 from peat.data.data_utils import merge_models
+from peat.parsing import scl
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
 from .sel_consts import ANSI_CODES, LOGIC_KEYS
@@ -375,6 +387,10 @@ def parse_set_all(
     # Extract DNP3 registers
     parse_and_process_dnp3(configs, dev)
 
+    # Front-panel target LED and pushbutton definitions ([F] class)
+    if isinstance(configs.get("F"), dict):
+        process_front_panel_settings(configs["F"], dev)
+
     parsed_ids = parse_ids(configs)
     dev.extra.update(parsed_ids)
 
@@ -392,6 +408,130 @@ def parse_set_all(
     log.debug(f"Completed parsing of SET_ALL ({len(configs)} sections parsed)")
 
     return device_info, dev
+
+
+# Front-panel settings (SET F / "SHO F"). Setting names are not verified across
+# relay models, so only these patterns are mapped; other settings are left alone.
+_FP_PATTERNS = (
+    (re.compile(r"^(T\d+|PB\d+)_?LED$", re.IGNORECASE), "equation"),
+    (re.compile(r"^(T\d+|PB\d+)_?LEDL$", re.IGNORECASE), "latched"),
+    (re.compile(r"^(T\d+|PB\d+)_?LEDC$", re.IGNORECASE), "color"),
+)
+
+
+def front_panel_indicators(settings: dict) -> tuple[list[Indicator], dict]:
+    """
+    Map front-panel settings (``SET F``, ``SHO F``) to target LED and pushbutton
+    definitions (configured, no live state).
+
+    - ``T01_LED``/``PB1_LED`` (SELogic equation) -> ``Indicator.equation``
+    - ``T01LEDL`` (latch, ``Y``/``N``) -> ``Indicator.latched``
+    - ``T01LEDC`` (color) -> ``Indicator.color`` (lowercased)
+    - a ``comment`` of the setting (``SHO F`` web page) -> ``Indicator.label``
+
+    Targets (``T*``) are ``type="led"``, ``category="target"``; pushbuttons
+    (``PB*``) are ``type="pushbutton"``, ``category="pushbutton"``.
+
+    Args:
+        settings: Setting name -> value (:class:`str`, or :class:`dict` with
+            ``value`` and optionally ``comment``)
+
+    Returns:
+        The indicators and the settings that were not mapped
+    """
+    definitions = {}  # type: dict[str, dict[str, str]]
+    remaining = {}
+
+    for key, raw in settings.items():
+        value = str(_getv(raw) if raw is not None else "").strip()
+        comment = str(raw.get("comment", "")).strip() if isinstance(raw, dict) else ""
+
+        for regex, field in _FP_PATTERNS:
+            match = regex.match(str(key).strip())
+            if match:
+                definition = definitions.setdefault(match.group(1).upper(), {})
+                definition[field] = value
+                if comment and not definition.get("label"):
+                    definition["label"] = comment
+                break
+        else:
+            remaining[key] = raw
+
+    indicators = []
+    for stem, definition in definitions.items():
+        is_pushbutton = stem.startswith("PB")
+        indicator = Indicator(
+            type="pushbutton" if is_pushbutton else "led",
+            category="pushbutton" if is_pushbutton else "target",
+            name=stem,
+            label=definition.get("label", ""),
+            equation=definition.get("equation", ""),
+            color=definition.get("color", "").lower(),
+        )
+        if definition.get("latched"):
+            indicator.latched = value_is_enabled(definition["latched"])
+        indicators.append(indicator)
+
+    return indicators, remaining
+
+
+def process_front_panel_settings(settings: dict, dev: DeviceData) -> dict:
+    """
+    Store the target LED and pushbutton definitions of the front-panel settings
+    (see :func:`front_panel_indicators`) in ``dev.indicators``.
+
+    Returns:
+        The settings that were not mapped to indicators
+    """
+    indicators, remaining = front_panel_indicators(settings)
+    for indicator in indicators:
+        dev.store("indicators", indicator)
+    return remaining
+
+
+def _module_name(dev: DeviceData, default: str = "SELRelay") -> str:
+    return dev._module.__name__ if dev._module else default
+
+
+def device_file_path(raw_path: str) -> PurePosixPath:
+    """
+    Normalize a file path on a relay to an absolute POSIX path:
+    ``"\\SETTINGS\\SET_1.TXT"`` -> ``/SETTINGS/SET_1.TXT``,
+    ``"SETTINGS SET_1.TXT"`` -> ``/SETTINGS/SET_1.TXT``, ``"CFG.TXT"`` -> ``/CFG.TXT``.
+    """
+    path = str(raw_path).strip().replace("\\", "/")
+    if " " in path and "/" not in path:
+        path = "/".join(path.split())  # Telnet style: "<dir> <file>"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return PurePosixPath(path)
+
+
+def sel_file_categories(path: PurePath | str) -> set[str]:
+    """
+    :attr:`~peat.data.models.File.category` of a file on a SEL relay.
+
+    - ``SET_*.TXT`` -> ``settings``, ``configuration``
+    - ``CFG.TXT``, ``CFG.XML`` -> ``configuration``
+    - ``SER.TXT``, ``CSER.TXT``, ``HISTORY.TXT``, ``CHISTORY.TXT`` -> ``log``
+    - files in ``EVENTS/`` -> ``event_record``
+    - ``*.CID`` -> ``configuration``, ``iec61850``
+    """
+    path = PurePosixPath(str(path).replace("\\", "/"))
+    name = path.name.upper()
+    parents = {p.upper() for p in path.parent.parts}
+
+    if name.endswith(".CID"):
+        return {"configuration", "iec61850"}
+    if name.startswith("SET_") and name.endswith(".TXT"):
+        return {"settings", "configuration"}
+    if name in ("CFG.TXT", "CFG.XML"):
+        return {"configuration"}
+    if name in ("SER.TXT", "CSER.TXT", "HISTORY.TXT", "CHISTORY.TXT"):
+        return {"log"}
+    if "EVENTS" in parents:
+        return {"event_record"}
+    return set()
 
 
 def process_info_classes(configs: ConfigsType, dev: DeviceData) -> None:
@@ -422,20 +562,26 @@ def process_info_classes(configs: ConfigsType, dev: DeviceData) -> None:
                 if save_ts and not dev.logic.last_updated:
                     dev.logic.last_updated = save_ts
 
-        # Create Path objects from the file keys
-        # This will parse the file path as well, if it's specified
-        # "SET_1.TXT"
-        # "\\SETTINGS\\SET_1.TXT"
-        file_objs = [
-            PurePosixPath(c["file"].replace("\\", "/"))
-            for c in configs["CLASSES"].values()
-            if isinstance(c, dict) and c.get("file")
-        ]
-        file_names = [f.name for f in file_objs]
+        # Settings files of each settings class, e.g.
+        # "SET_1.TXT" or "\\SETTINGS\\SET_1.TXT"
+        for settings_class in configs["CLASSES"].values():
+            if not isinstance(settings_class, dict) or not settings_class.get("file"):
+                continue
 
-        if file_names:
-            dev.extra["files_from_classes"] = file_names
-            dev.related.files.update(file_names)
+            file_obj = File(
+                path=device_file_path(settings_class["file"]),
+                type="file",
+                description=settings_class.get("name", ""),
+                peat_module=_module_name(dev),
+            )
+            file_obj.category = sel_file_categories(file_obj.path)
+            if settings_class.get("class"):
+                file_obj.extra["settings_class"] = settings_class["class"]
+            if settings_class.get("hex_id"):
+                file_obj.extra["hex_id"] = settings_class["hex_id"]
+
+            dev.store("files", file_obj, lookup="path")
+            dev.related.files.add(file_obj.path.name)
 
     if configs.get("STORAGE"):
         # Add any filenames from [STORAGE] section, if they're files
@@ -487,9 +633,18 @@ def create_dev_from_configs(configs: ConfigsType) -> DeviceData:
     return datastore.get(rand_id, "id")
 
 
-def process_info_into_dev(info: dict, dev: DeviceData) -> None:
+def process_info_into_dev(info: dict, dev: DeviceData, observed: datetime | None = None) -> None:
     """
     Put data from the info dict into the PEAT device data model.
+
+    Args:
+        info: Data from the ``id``/``sta`` commands, the status page, the ``exit``
+            output or the front matter of event files
+        dev: Device to update
+        observed: When the data was read from the device (live reads). If set,
+            ``device_time`` becomes ``dev.clock.time`` with ``dev.clock.observed``.
+            If :obj:`None` (e.g. a parsed file), ``device_time`` is only used if
+            the clock time is unset, and no offset is computed.
     """
     # Make copy to mutate, so we can pop keys that
     # shouldn't go into dev.extra
@@ -515,6 +670,33 @@ def process_info_into_dev(info: dict, dev: DeviceData) -> None:
     if relaytype and not dev.description.model:
         dev.description.model = relaytype.strip("0")
 
+    # Device clock (status output, "exit" output, "date"/"time" commands)
+    device_time = info.pop("device_time", None)
+    if device_time:
+        apply_device_time(dev, device_time, observed)
+
+    time_source = info.pop("time_source", None)
+    if time_source:
+        dev.clock.source = normalize_time_source(time_source)
+        dev.clock.extra["time_source_raw"] = str(time_source).strip()
+
+    # IEC 61850 identity ("id" command)
+    ied_name = str(info.pop("iedName", "") or "").strip()
+    if ied_name:
+        dev.iec61850.ied_name = ied_name
+    config_version = str(info.pop("configVersion", "") or "").strip()
+    if config_version:
+        dev.iec61850.config_version = config_version
+    lib61850_id = str(info.pop("LIB61850ID", "") or "").strip()
+    if lib61850_id:
+        dev.iec61850.extra["lib61850_id"] = lib61850_id
+
+    # Self-tests and "Relay Enabled"/"Relay Disabled" (status output)
+    self_tests = info.pop("self_tests", None) or []
+    relay_enabled = info.pop("relay_enabled", None)
+    if self_tests or relay_enabled is not None:
+        apply_self_tests(dev, self_tests, relay_enabled, observed)
+
     # Add any remaining info that hasn't been processed
     # to dev.extra (hence the .pop() calls above).
     dev.extra.update(info)
@@ -532,6 +714,231 @@ def process_info_into_dev(info: dict, dev: DeviceData) -> None:
             dev.name = name
         elif ident:
             dev.name = ident
+
+
+def normalize_time_source(raw: str) -> str:
+    """
+    Normalize a SEL time source name to a :attr:`~peat.data.models.Clock.source` value.
+
+    - ``IRIG``, ``IRIG-B``, ``HIRIG`` (high-accuracy IRIG) -> ``irig_b``
+    - ``PTP`` -> ``ptp``, ``SNTP`` -> ``sntp``, ``Internal`` -> ``internal``
+    - anything else is lowercased (spaces and dashes become underscores)
+    """
+    value = str(raw).strip().lower()
+    if value.replace("-", "").replace("_", "").replace(" ", "") in ("irig", "irigb", "hirig"):
+        return "irig_b"
+    return re.sub(r"[\s\-]+", "_", value)
+
+
+def _format_utc_offset(value: datetime) -> str:
+    """UTC offset of an aware datetime as ``+HH:MM``."""
+    offset = value.utcoffset() or timedelta(0)
+    minutes = int(offset.total_seconds() // 60)
+    sign = "+" if minutes >= 0 else "-"
+    hours, mins = divmod(abs(minutes), 60)
+    return f"{sign}{hours:02d}:{mins:02d}"
+
+
+def apply_device_time(
+    dev: DeviceData, device_time: datetime | str, observed: datetime | None = None
+) -> None:
+    """
+    Set ``dev.clock.time`` from a time read from the device.
+
+    The time stays naive (device-local) unless the device reported its UTC offset
+    (SEL-451 ``date``/``time``), in which case ``dev.clock.utc_offset`` is set too.
+
+    Args:
+        dev: Device to update
+        device_time: Device time (a string is parsed)
+        observed: PEAT's (aware) time when the device time was read. If
+            :obj:`None`, the clock is only set if it's empty and no offset is computed.
+    """
+    if isinstance(device_time, str):
+        device_time = utils.parse_date(device_time)
+    if not isinstance(device_time, datetime):
+        return
+
+    if observed is not None:
+        dev.clock.time = device_time
+        dev.clock.observed = observed
+        dev.clock.offset = None  # recomputed by Clock.annotate()
+    elif dev.clock.time is None:
+        dev.clock.time = device_time
+    else:
+        return
+
+    if device_time.tzinfo is not None and device_time.utcoffset() is not None:
+        dev.clock.utc_offset = _format_utc_offset(device_time)
+
+
+_SELF_TEST_HEALTH = {
+    "OK": "normal",
+    "PASS": "normal",
+    "PASSED": "normal",
+    "FAIL": "failure",
+    "FAILED": "failure",
+    "FAILURE": "failure",
+    "F": "failure",
+    "WARN": "maintenance_required",
+    "WARNING": "maintenance_required",
+    "W": "maintenance_required",
+}
+
+_NUMBER_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+_RELAY_ENABLED_RE = re.compile(r"^\s*relay\s+(enabled|disabled)\b", re.IGNORECASE)
+
+
+def _is_value_token(token: str) -> bool:
+    return bool(_NUMBER_RE.match(token)) or token.upper() in _SELF_TEST_HEALTH
+
+
+def parse_self_tests(lines: list[str]) -> dict:
+    """
+    Parse the self-test results and the enabled state from the output of the
+    SEL ASCII ``STA`` command (or the ``sta`` web page).
+
+    Self-tests follow a ``SELF TESTS`` line, as rows of column names followed by
+    a row of values, optionally with a row label (``OS``, ``PS``). Values are
+    numbers (offsets, voltages, temperature) or ``OK``/``W``/``WARN``/``F``/``FAIL``.
+    ``Failures``/``Warnings`` lists (one failed item per line, ``No Failures``)
+    are also handled.
+
+    .. code-block:: text
+
+       SELF TESTS (W=Warn, F=Fail)
+
+                IA     IB     IC     IN
+       OS       2      2      1      1
+
+                TEMP   RAM   ROM   A/D   CR_RAM
+                24.0   OK    OK    FAIL  OK
+
+       Relay Enabled
+
+    Returns:
+        :class:`dict` with ``self_tests`` (list of ``{name, value, health}``,
+        ``health`` is a NE 107 value or ``""`` for plain measurements) and
+        ``relay_enabled`` (``True``/``False``, or :obj:`None` if not reported)
+    """
+    results = {"self_tests": [], "relay_enabled": None}
+    if not lines:
+        return results
+
+    cleaned = [str(x).replace("\x02", "").replace("\x03", "").strip() for x in lines]
+
+    for line in cleaned:
+        match = _RELAY_ENABLED_RE.match(line)
+        if match:
+            results["relay_enabled"] = match.group(1).lower() == "enabled"
+
+    start = next(
+        (i + 1 for i, line in enumerate(cleaned) if re.match(r"^self[\s-]?tests?\b", line, re.I)),
+        None,
+    )
+    if start is None:
+        return results
+
+    rows = [line for line in cleaned[start:] if not _RELAY_ENABLED_RE.match(line)]
+    seen = set()
+
+    def _add(name: str, value: str, health: str) -> None:
+        if name and name not in seen:
+            seen.add(name)
+            results["self_tests"].append({"name": name, "value": value, "health": health})
+
+    list_mode = ""  # "failure" or "maintenance_required" inside a Failures/Warnings list
+    idx = 0
+    while idx < len(rows):
+        line = rows[idx]
+        lower = line.lower()
+
+        if lower in ("failures", "warnings"):
+            list_mode = "failure" if lower == "failures" else "maintenance_required"
+            idx += 1
+            continue
+        if not line or "=" in line:
+            list_mode = ""
+            idx += 1
+            continue
+        if list_mode:
+            if not lower.startswith("no "):
+                _add(line, "FAIL" if list_mode == "failure" else "WARN", list_mode)
+            idx += 1
+            continue
+
+        header = line.split()
+        nxt = rows[idx + 1].split() if idx + 1 < len(rows) else []
+        if header and nxt and not any(_is_value_token(t) for t in header):
+            label = ""
+            values = nxt
+            if len(nxt) == len(header) + 1 and not _is_value_token(nxt[0]):
+                label, values = nxt[0], nxt[1:]
+            if len(values) == len(header) and all(_is_value_token(v) for v in values):
+                for column, value in zip(header, values, strict=True):
+                    name = f"{label}_{column}" if label else column
+                    _add(name, value, _SELF_TEST_HEALTH.get(value.upper(), ""))
+                idx += 2
+                continue
+        idx += 1
+
+    return results
+
+
+def apply_self_tests(
+    dev: DeviceData,
+    self_tests: list[dict],
+    relay_enabled: bool | None,
+    timestamp: datetime | None = None,
+) -> None:
+    """
+    Store self-test results from :func:`parse_self_tests` as
+    :class:`~peat.data.models.Indicator` (``type="status_flag"``,
+    ``category="self_test"``) and derive ``dev.health`` (NE 107):
+    ``failure`` if any self-test failed, ``check_function`` if the relay is
+    disabled, ``maintenance_required`` if a self-test warns, else ``normal``.
+    """
+    if timestamp is None:
+        timestamp = utils.utc_now()
+
+    for test in self_tests:
+        dev.store(
+            "indicators",
+            Indicator(
+                type="status_flag",
+                category="self_test",
+                name=test["name"],
+                value=str(test.get("value", "")),
+                health=test.get("health", ""),
+                timestamp=timestamp,
+            ),
+        )
+
+    if relay_enabled is not None:
+        raw = "Relay Enabled" if relay_enabled else "Relay Disabled"
+        dev.status = raw
+        dev.store(
+            "indicators",
+            Indicator(
+                type="status_flag",
+                category="run",
+                name="relay_enabled",
+                state="on" if relay_enabled else "off",
+                value=raw,
+                health="normal" if relay_enabled else "check_function",
+                timestamp=timestamp,
+            ),
+        )
+
+    healths = {t.get("health", "") for t in self_tests}
+    if "failure" in healths:
+        dev.health = "failure"
+    elif relay_enabled is False:
+        dev.health = "check_function"
+    elif "maintenance_required" in healths:
+        dev.health = "maintenance_required"
+    elif relay_enabled or "normal" in healths:
+        dev.health = "normal"
 
 
 def process_fid(id_string: str, dev: DeviceData) -> None:
@@ -589,6 +996,538 @@ def parse_ipaddr(settings: dict) -> Interface:
     return iface
 
 
+# --------------------------------------------------------------------------- #
+# ETH command / "eth" web page
+# --------------------------------------------------------------------------- #
+_ETH_COUNTER_NAMES = (
+    "packets_sent",
+    "packets_received",
+    "bytes_sent",
+    "bytes_received",
+    "errors_sent",
+    "errors_received",
+)
+
+# Model field path ("ingress.packets") of each ETH counter, for "overflowed"
+_ETH_COUNTER_PATHS = {
+    "packets_sent": "egress.packets",
+    "packets_received": "ingress.packets",
+    "bytes_sent": "egress.bytes",
+    "bytes_received": "ingress.bytes",
+    "errors_sent": "egress.errors",
+    "errors_received": "ingress.errors",
+}
+
+
+def _safe_ipv4(value: str) -> str:
+    """:func:`~peat.protocols.clean_ipv4`, returning ``""`` for invalid values."""
+    try:
+        return clean_ipv4(value.strip())
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _eth_value(name: str, text: str) -> str:
+    """Value of a ``NAME: value`` line of the ETH output (``""`` if absent)."""
+    match = re.search(
+        rf"^\s*{name}\s*[:=]\s*(?:PORT\s+)?(\S+)", text, re.ASCII | re.IGNORECASE | re.MULTILINE
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _eth_speed(raw: str) -> int | None:
+    """``"100M"`` -> ``100``, ``"1G"`` -> ``1000``, ``"---"`` -> :obj:`None` (Mbps)."""
+    match = re.fullmatch(r"(\d+)\s*([MG])?(?:BPS)?", raw.strip().upper())
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value * 1000 if match.group(2) == "G" else value
+
+
+def parse_eth_output(text: str) -> dict:
+    """
+    Parse the output of the SEL ASCII ``ETH`` command (Ethernet port status and
+    counters), which is also shown by the ``eth`` page of the relay web interface.
+
+    .. code-block:: text
+
+       MAC: 00-30-A7-00-00-01
+       IP ADDRESS: 192.0.2.10/24
+       DEFAULT GATEWAY: 192.0.2.1
+
+       NETMODE: FAILOVER
+       PRIMARY PORT: PORT 5A
+       ACTIVE PORT: PORT 5A
+
+                 LINK    SPEED   DUPLEX  MEDIA
+       PORT 5A   UP      100M    FULL    TX
+       PORT 5B   DOWN    ---     ---     FX
+
+            PACKETS                 BYTES               ERRORS
+          SENT     RCVD         SENT       RCVD      SENT    RCVD
+       $$$$$$$  $$$$$$$   1463657022 1664082074         0       0
+
+    A counter that exceeds its display width is shown as ``$`` characters by the
+    relay (cleared with ``ETH C``). Such counters are returned as :obj:`None` and
+    listed in ``statistics["overflowed"]``.
+
+    Args:
+        text: Raw text of the command output or web page
+
+    Returns:
+        :class:`dict` with the keys ``macs`` (list, the ``MAC``/``MAC 1`` value
+        first), ``ip``, ``subnet_mask``, ``gateway``, ``network_mode``,
+        ``primary_port``, ``active_port``, ``ports`` (``{port: {link, speed,
+        duplex, media}}``) and ``statistics`` (counters + ``overflowed``).
+        Empty values are omitted.
+    """
+    if isinstance(text, bytes):
+        text = text.decode("ascii", "replace")
+    text = text.replace("\r", "")
+    result = {}
+
+    # "MAC: 00-30-A7-..." or "MAC 1: ...", "MAC 2: ..." (SEL-451)
+    macs = []
+    for _, raw_mac in re.findall(
+        r"^\s*MAC(\s*\d+)?\s*:\s*(\S+)", text, re.ASCII | re.IGNORECASE | re.MULTILINE
+    ):
+        mac = raw_mac.replace("-", ":").upper()
+        if mac not in macs:
+            macs.append(mac)
+    if macs:
+        result["macs"] = macs
+
+    raw_ip = _eth_value("IP ADDRESS", text)
+    if raw_ip and "/" in raw_ip:
+        try:
+            ip, mask = split_ipv4_cidr(raw_ip)
+            result["ip"] = _safe_ipv4(ip)
+            result["subnet_mask"] = mask
+        except ValueError:
+            log.warning(f"Invalid IP ADDRESS in ETH output: {raw_ip}")
+    elif raw_ip:
+        result["ip"] = _safe_ipv4(raw_ip)
+    if not result.get("subnet_mask") and _eth_value("SUBNET MASK", text):
+        result["subnet_mask"] = _safe_ipv4(_eth_value("SUBNET MASK", text))
+    for key in ("ip", "subnet_mask"):
+        if key in result and not result[key]:
+            del result[key]
+
+    for key, name in (
+        ("gateway", "DEFAULT GATEWAY"),
+        ("network_mode", "NETMODE"),
+        ("primary_port", "PRIMARY PORT"),
+        ("active_port", "ACTIVE PORT"),
+    ):
+        value = _eth_value(name, text)
+        if value and value != "---":
+            result[key] = _safe_ipv4(value) if key == "gateway" else value.upper()
+            if not result[key]:
+                del result[key]
+
+    ports = {}
+    for name, link, speed, duplex, media in re.findall(
+        r"^\s*PORT\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$",
+        text,
+        re.ASCII | re.IGNORECASE | re.MULTILINE,
+    ):
+        if name.upper() in ("LINK", "STATUS") or name.endswith(":"):
+            continue
+        duplex = duplex.lower().replace("---", "")
+        ports[name.upper()] = {
+            "link": link.lower(),
+            "speed": _eth_speed(speed),
+            "duplex": duplex if duplex in ("half", "full", "auto") else "",
+            "media": media.replace("---", ""),
+        }
+    if ports:
+        result["ports"] = ports
+
+    counters = re.search(
+        r"^\s*(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s*$",
+        text,
+        re.ASCII | re.MULTILINE,
+    )
+    if counters:
+        stats = {"overflowed": []}
+        for name, raw in zip(_ETH_COUNTER_NAMES, counters.groups(), strict=True):
+            if "$" in raw:
+                stats[name] = None
+                stats["overflowed"].append(name)
+            else:
+                stats[name] = int(raw)
+        result["statistics"] = stats
+
+    return result
+
+
+def _ethernet_interface_name(dev: DeviceData, ip: str, ports: list[str]) -> str:
+    """
+    Name of the relay's Ethernet IP interface: the existing interface with this IP
+    (created by :func:`process_port_settings`), else ``Port <n>`` from the
+    physical port names (``5A``/``5B`` -> ``Port 5``), else ``Port 5``.
+    """
+    if ip:
+        for iface in dev.interface:
+            if iface.ip == ip and iface.name:
+                return iface.name
+    prefixes = {m.group() for m in (re.match(r"\d+", p) for p in ports) if m}
+    if len(prefixes) == 1:
+        return f"Port {prefixes.pop()}"
+    for iface in dev.interface:
+        if iface.type == "ethernet" and iface.ip and iface.name:
+            return iface.name
+    return "Port 5"
+
+
+def apply_eth_output(eth: dict, dev: DeviceData, timestamp: datetime | None = None) -> None:
+    """
+    Put the data from :func:`parse_eth_output` into the data model.
+
+    - counters -> :attr:`~peat.data.models.Interface.statistics` of the Ethernet IP
+      interface (overflowed counters are :obj:`None`, listed in
+      ``statistics.extra["overflowed"]``)
+    - ``MAC``/``MAC 1`` -> IP interface ``mac``
+    - physical ports (``5A``, ``5B``, ...) -> one physical
+      :class:`~peat.data.models.Interface` each
+    - ``NETMODE`` -> IP interface ``redundancy`` (``members`` = the ports);
+      ``FAILOVER``: the active port is ``state="active"``, the others ``standby``;
+      ``PRP``: every port is ``state="active"``
+
+    Args:
+        eth: Parsed ETH data
+        dev: Device to update
+        timestamp: When the counters were read (default: now)
+    """
+    if not eth:
+        return
+    if timestamp is None:
+        timestamp = utils.utc_now()
+
+    ports = list(eth.get("ports", {}))
+    ip = eth.get("ip") or ""
+    name = _ethernet_interface_name(dev, ip or dev.ip, ports)
+    iface = Interface(name=name, type="ethernet")
+    if ip:
+        iface.ip = ip
+    if eth.get("subnet_mask"):
+        iface.subnet_mask = eth["subnet_mask"]
+    if eth.get("gateway") and eth["gateway"] != "0.0.0.0":
+        iface.gateway = eth["gateway"]
+
+    macs = eth.get("macs", [])
+    if macs:
+        iface.mac = macs[0]
+        if len(macs) > 1:
+            iface.extra["mac_addresses"] = macs
+        dev.related.mac.update(macs)
+
+    stats = eth.get("statistics")
+    if stats:
+        iface.statistics = NetworkStatistics(
+            timestamp=timestamp,
+            ingress=NetworkTraffic(
+                packets=stats.get("packets_received"),
+                bytes=stats.get("bytes_received"),
+                errors=stats.get("errors_received"),
+            ),
+            egress=NetworkTraffic(
+                packets=stats.get("packets_sent"),
+                bytes=stats.get("bytes_sent"),
+                errors=stats.get("errors_sent"),
+            ),
+        )
+        if stats.get("overflowed"):
+            iface.statistics.extra["overflowed"] = sorted(
+                _ETH_COUNTER_PATHS[c] for c in stats["overflowed"]
+            )
+
+    mode = eth.get("network_mode", "").upper()
+    if mode:
+        iface.redundancy = Redundancy(
+            protocol="prp" if mode == "PRP" else "failover" if mode == "FAILOVER" else "",
+            mode=mode.lower(),
+            members=ports,
+        )
+        if eth.get("primary_port"):
+            iface.redundancy.extra["primary_port"] = eth["primary_port"]
+
+    dev.store("interface", iface, lookup="name")
+
+    active = eth.get("active_port", "")
+    for port, info in eth.get("ports", {}).items():
+        port_iface = Interface(
+            name=port,
+            type="ethernet",
+            physical=True,
+            connected=info.get("link") == "up",
+            speed=info.get("speed"),
+            duplex=info.get("duplex", ""),
+        )
+        if info.get("media"):
+            port_iface.description = Description(description=info["media"])
+        if mode == "FAILOVER" and active:
+            port_iface.redundancy = Redundancy(
+                protocol="failover", state="active" if port == active else "standby"
+            )
+        elif mode == "PRP":
+            # NOTE: SEL names the PRP ports "xA"/"xB", but the LAN A/B assignment
+            # is not confirmed by documentation available to PEAT, so "lan" is
+            # left empty.
+            port_iface.redundancy = Redundancy(protocol="prp", state="active")
+        dev.store("interface", port_iface, lookup="name")
+
+
+def normalize_serial_protocol(proto: str) -> str:
+    """
+    Normalize a serial port ``PROTO`` setting to a canonical protocol name.
+
+    - ``MB*`` (``MBA``, ``MBB``, ``MB8A``, ``MB8B``, ``MBT``, ...) -> ``mirrored_bits``
+    - ``DNP`` -> ``dnp3``
+    - ``MOD`` -> ``modbus_rtu``
+    - ``SEL`` -> ``sel``
+    - anything else is lowercased (e.g. ``LMD`` -> ``lmd``)
+    """
+    raw = proto.strip().upper()
+    if raw.startswith("MB"):
+        return "mirrored_bits"
+    if raw in ("DNP", "DNP3"):
+        return "dnp3"
+    if raw in ("MOD", "MODBUS"):
+        return "modbus_rtu"
+    return raw.lower()
+
+
+def _int_setting(settings: dict, *keys: str) -> int | None:
+    """First of ``keys`` present in ``settings`` with an integer value."""
+    for key in keys:
+        value = str(_getv(settings.get(key, ""))).strip()
+        if value.isdigit():
+            return int(value)
+    return None
+
+
+def _str_setting(settings: dict, *keys: str) -> str:
+    """First non-empty value of ``keys`` in ``settings``."""
+    for key in keys:
+        value = str(_getv(settings.get(key, ""))).strip()
+        if value:
+            return value
+    return ""
+
+
+def _float_setting(settings: dict, *keys: str) -> float | None:
+    for key in keys:
+        value = str(_getv(settings.get(key, ""))).strip()
+        if value:
+            try:
+                return float(value)
+            except ValueError:
+                log.debug(f"Non-numeric value for setting {key}: {value}")
+    return None
+
+
+def _add_time_source(dev: DeviceData, source: TimeSource) -> None:
+    """Add (or merge) a :class:`~peat.data.models.TimeSource` in ``dev.clock.sources``."""
+    source.annotate(dev)
+    for existing in dev.clock.sources:
+        if (existing.protocol, existing.address, existing.port) == (
+            source.protocol,
+            source.address,
+            source.port,
+        ):
+            merge_models(existing, source)
+            return
+    dev.clock.sources.append(source)
+
+
+def _dnp3_relationships(
+    settings: dict, svc: Service, iface: Interface, dev: DeviceData
+) -> list[Relationship]:
+    """
+    DNP3 master sessions (``DNPIP{n}``, ``DNPTR{n}``, ``REPADR{n}``, ...) ->
+    one ``communicates_with`` relationship per configured master.
+    """
+    relationships = []
+
+    for idx in range(1, 7):
+        # "IP Address (zzz.yyy.xxx.www)"
+        ip = _safe_ipv4(_str_setting(settings, f"DNPIP{idx}"))
+        if not ip or ip == "0.0.0.0":
+            continue
+
+        extra = {"station_num": idx}
+
+        # "UDP Response Port (REQ, 1025-65534)"
+        udp_port = _str_setting(settings, f"DNPUDP{idx}")
+        if udp_port.isdigit():
+            extra["udp_response_port"] = int(udp_port)
+            dev.related.ports.add(int(udp_port))
+        elif udp_port:
+            extra["udp_response_port"] = udp_port
+
+        # "DNP Session Map (1-5)"
+        if _str_setting(settings, f"DNPMAP{idx}"):
+            extra["session_map"] = _str_setting(settings, f"DNPMAP{idx}")
+
+        # "Seconds to Send Data Link Heartbeat (0-7200)"
+        heartbeat = _int_setting(settings, f"DNPINA{idx}")
+        if heartbeat is not None:
+            extra["heartbeat_timeout"] = heartbeat
+
+        # "Enable Control Operations (Y,N)"
+        if _str_setting(settings, f"DNPCL{idx}"):
+            extra["control_operations_enabled"] = value_is_enabled(
+                _str_setting(settings, f"DNPCL{idx}")
+            )
+
+        if _str_setting(settings, f"DNPID{idx}"):
+            extra["dnp3_id"] = _str_setting(settings, f"DNPID{idx}")
+
+        relationships.append(
+            Relationship(
+                type="communicates_with",
+                protocol="dnp3",
+                # "Transport Protocol (UDP,TCP)"
+                transport=_str_setting(settings, f"DNPTR{idx}").lower(),
+                direction="ingress",
+                local=RelationshipEndpoint(
+                    interface=iface.name,
+                    port=svc.port,
+                    role="outstation",
+                    protocol_address=svc.protocol_id,
+                ),
+                remote=RelationshipEndpoint(
+                    ip=ip,
+                    role="master",
+                    # "DNP Address to Report to (0-65519)"
+                    protocol_address=_str_setting(settings, f"REPADR{idx}"),
+                ),
+                enabled=svc.enabled if svc.enabled is not None else True,
+                evidence={"config"},
+                extra=extra,
+            )
+        )
+
+    return relationships
+
+
+def _modbus_relationships(settings: dict, svc: Service, iface: Interface) -> list[Relationship]:
+    """Allowed Modbus TCP clients (``MODIP1``-``MODIP3``) -> relationships."""
+    relationships = []
+
+    for idx in range(1, 4):
+        ip = _safe_ipv4(_str_setting(settings, f"MODIP{idx}"))
+        if not ip or ip == "0.0.0.0":
+            continue
+
+        extra = {"allow_list": True, "endpoint_num": idx}
+        timeout = _float_setting(settings, f"MTIMEO{idx}")
+        if timeout is not None:
+            extra["timeout"] = timeout
+
+        relationships.append(
+            Relationship(
+                type="communicates_with",
+                protocol="modbus_tcp",
+                transport="tcp",
+                direction="ingress",
+                local=RelationshipEndpoint(interface=iface.name, port=svc.port, role="server"),
+                remote=RelationshipEndpoint(ip=ip, role="client"),
+                enabled=svc.enabled,
+                evidence={"config"},
+                extra=extra,
+            )
+        )
+
+    return relationships
+
+
+def _c37_118_relationships(
+    settings: dict, svc: Service, iface: Interface, dev: DeviceData
+) -> list[Relationship]:
+    """
+    IEEE C37.118 synchrophasor outputs (``PMOTS{n}``, ``PMOIPA{n}``, ...) -> relationships.
+
+    Transport schemes: ``TCP`` (the PDC connects to the relay), ``UDP_S`` (data
+    and commands over UDP), ``UDP_T``/``UDP_U`` (UDP data plus a PDC-initiated TCP
+    command channel). Reference: "Ethernet Operation" in SEL documentation.
+    """
+    relationships = []
+
+    for idx in range(1, 2):
+        scheme = _str_setting(settings, f"PMOTS{idx}").upper()
+        ip = _safe_ipv4(_str_setting(settings, f"PMOIPA{idx}"))
+        if not ip:
+            continue
+
+        tcp_port = _int_setting(settings, f"PMOTCP{idx}")
+        udp_port = _int_setting(settings, f"PMOUDP{idx}")
+        extra = {"transport_scheme": scheme, "endpoint_num": idx}
+
+        rel = Relationship(
+            type="communicates_with",
+            protocol="c37_118",
+            local=RelationshipEndpoint(interface=iface.name, role="pmu"),
+            remote=RelationshipEndpoint(ip=ip, role="pdc"),
+            enabled=bool(scheme and scheme != "OFF") and svc.enabled is not False,
+            evidence={"config"},
+            extra=extra,
+        )
+
+        if scheme == "TCP":
+            rel.transport = "tcp"
+            rel.direction = "ingress"
+            rel.local.port = tcp_port
+        elif scheme.startswith("UDP"):
+            rel.transport = "udp"
+            rel.direction = "egress"
+            rel.remote.port = udp_port
+            if tcp_port is not None:
+                extra["tcp_local_port"] = tcp_port
+        else:
+            if tcp_port is not None:
+                extra["tcp_local_port"] = tcp_port
+            if udp_port is not None:
+                extra["udp_remote_port"] = udp_port
+
+        for port in (tcp_port, udp_port):
+            if port:
+                dev.related.ports.add(port)
+
+        relationships.append(rel)
+
+    return relationships
+
+
+def apply_mac_output(macs: dict[str, str], dev: DeviceData) -> None:
+    """
+    Put the output of the ``MAC`` command (:meth:`SELAscii.show_mac`) into the
+    data model: ``ip_mac`` -> ``mac`` of the Ethernet IP interface; ``goose_mac``
+    (the relay's unicast GOOSE source MAC) -> ``dev.iec61850.extra["goose_source_mac"]``.
+    Both are added to ``related.mac``.
+    """
+    ip_mac = macs.get("ip_mac", "")
+    goose_mac = macs.get("goose_mac", "")
+
+    if ip_mac:
+        name = ""
+        for iface in dev.interface:
+            if iface.type == "ethernet" and iface.ip and (not dev.ip or iface.ip == dev.ip):
+                name = iface.name
+                break
+        iface = Interface(type="ethernet", name=name, mac=ip_mac)
+        if not name and dev.ip:
+            iface.ip = dev.ip
+        dev.store("interface", iface, lookup="name" if name else None)
+        dev.related.mac.add(ip_mac)
+
+    if goose_mac:
+        dev.iec61850.extra["goose_source_mac"] = goose_mac
+        # Unicast source MAC of the relay's GOOSE frames (pcap/Zeek key on it)
+        dev.related.mac.add(goose_mac)
+
+
 def process_port_settings(
     port_id: Literal["1", "2", "3", "4", "5", "F"],
     settings: dict[str, dict | str],
@@ -596,12 +1535,25 @@ def process_port_settings(
 ) -> None:
     """
     Process parsed port settings into the device data model.
+
+    - Ethernet ports (``IPADDR``) -> :class:`~peat.data.models.Interface` with the
+      IP settings; serial ports -> serial interface (``application`` = normalized
+      ``PROTO``; ``type`` is ``serial``, ``rs_232`` for the front port ``F``, or
+      from ``COMMINF``)
+    - ``E<service>`` settings -> :class:`~peat.data.models.Service` (``mms``,
+      ``goose``, ``dnp3``, ``modbus_tcp``, ``sntp``, ``c37_118``, ...), with
+      ``configured_port`` set wherever the port comes from a setting
+    - DNP3 masters, allowed Modbus TCP clients and C37.118 PDCs ->
+      :class:`~peat.data.models.Relationship` (``evidence={"config"}``)
+    - SNTP servers -> ``dev.clock.sources``
+    - MIRRORED BITS serial ports -> ``physical_link`` relationships
     """
     log.trace(f"Processing port settings for port {port_id} from {dev.get_id()}")
 
     iface = Interface(
         name=f"Port {port_id}",
     )
+    relationships = []  # type: list[Relationship]
 
     if "EPORT" in settings:
         iface.enabled = value_is_enabled(_getv(settings["EPORT"]))
@@ -613,8 +1565,7 @@ def process_port_settings(
         # Serial interfaces
         # Generally, these are are port 1-3 and port F
         if settings.get("PROTO"):
-            app_proto = _getv(settings["PROTO"]).replace("DNP", "DNP3").lower()
-            iface.application = app_proto
+            iface.application = normalize_serial_protocol(_getv(settings["PROTO"]))
         elif "PROTO" not in settings and port_id == "F":
             iface.application = "sel"
 
@@ -627,6 +1578,18 @@ def process_port_settings(
                 iface.baudrate = int(speed)
 
             iface.type = "serial"
+
+        # The electrical standard is only known for the front port (always
+        # EIA-232) or from an explicit communications interface setting.
+        comm_inf = _str_setting(settings, "COMMINF")
+        if "232" in comm_inf:
+            iface.type = "rs_232"
+        elif "485" in comm_inf:
+            iface.type = "rs_485"
+        elif "422" in comm_inf:
+            iface.type = "rs_422"
+        elif port_id == "F":
+            iface.type = "rs_232"
 
         if "BITS" in settings:
             iface.data_bits = int(_getv(settings["BITS"]))
@@ -679,10 +1642,27 @@ def process_port_settings(
             if key in settings:
                 iface.extra[key] = _getv(settings[key])
 
-    # Service configurations
-    # TODO: break this out into a function
-    # TODO: utility functions for setting processing (alternate keys, type casts)
+        # MIRRORED BITS: relay-to-relay protection link on this serial port
+        if iface.application == "mirrored_bits":
+            mb_extra = {}
+            for key, name in (("TXID", "tx_id"), ("RXID", "rx_id")):
+                if _str_setting(settings, key):
+                    mb_extra[name] = _str_setting(settings, key)
+            relationships.append(
+                Relationship(
+                    type="physical_link",
+                    protocol="mirrored_bits",
+                    local=RelationshipEndpoint(
+                        interface=iface.name, serial_port=iface.name, role="peer"
+                    ),
+                    remote=RelationshipEndpoint(role="peer"),
+                    enabled=iface.enabled,
+                    evidence={"config"},
+                    extra=mb_extra,
+                )
+            )
 
+    # Service configurations
     services = []
 
     if settings.get("FTPUSER") or settings.get("FTPSERV"):
@@ -702,7 +1682,9 @@ def process_port_settings(
 
         if settings.get("FTPANMS"):
             anon_login_enabled = value_is_enabled(_getv(settings["FTPANMS"]))
-            ftp_svc.extra["anonymous_login_enabled"] = anon_login_enabled
+            ftp_svc.security = ServiceSecurity(anonymous_access=anon_login_enabled)
+            if anon_login_enabled:
+                ftp_svc.security.authentication_required = False
 
         if settings.get("FTPAUSR"):
             ftp_svc.extra["anonymous_access_level"] = _getv(settings["FTPAUSR"])
@@ -721,195 +1703,112 @@ def process_port_settings(
         "PMIP",
     ]:
         # "EHTTP", "ETELNET", etc.
-        if settings.get(f"E{svc_name}"):
-            protocol = svc_name.lower()
+        if not settings.get(f"E{svc_name}"):
+            continue
 
-            if svc_name in ["GSE", "61850"]:
-                protocol = "iec61850"
-            elif svc_name == "DNP":
-                protocol = "dnp3"
-            elif svc_name == "PMIP":
-                protocol = "c37.118"
+        raw_enable = str(_getv(settings[f"E{svc_name}"])).strip()
+        protocol = {
+            "GSE": "goose",  # IEC 61850 GOOSE (EGSE)
+            "61850": "mms",  # IEC 61850 MMS server (E61850)
+            "DNP": "dnp3",
+            "PMIP": "c37_118",
+        }.get(svc_name, svc_name.lower())
 
-            svc = Service(
-                protocol=protocol,
-                enabled=value_is_enabled(_getv(settings[f"E{svc_name}"])),
-            )
+        svc = Service(protocol=protocol, enabled=value_is_enabled(raw_enable))
 
-            if protocol == "http":
+        if protocol == "mms":
+            svc.transport = "tcp"
+            svc.port = 102
+
+        elif protocol == "http":
+            svc.transport = "tcp"
+
+            svc.port = _int_setting(settings, "HTTPPOR", "HTTPPORT")
+            svc.configured_port = svc.port
+
+            if settings.get("HIDLE"):
+                svc.extra = {"idle_timeout": float(_getv(settings["HIDLE"]))}
+            elif settings.get("HTTPIDLE"):
+                svc.extra = {"idle_timeout": float(_getv(settings["HTTPIDLE"]))}
+
+        elif protocol == "telnet":
+            svc.transport = "tcp"
+
+            # 311L: "TPORTC" is the "Telnet Port for Card Access"
+            svc.port = _int_setting(settings, "TPORT", "TPORTC")
+            svc.configured_port = svc.port
+
+            if settings.get("TIDLE"):
+                svc.extra["idle_timeout"] = float(_getv(settings["TIDLE"]))
+
+        elif protocol == "sntp":
+            svc.transport = "udp"
+
+            # ESNTP is OFF, UNICAST, MANYCAST or BROADCAST
+            sntp_mode = raw_enable.lower()
+            svc.enabled = sntp_mode not in ("off", "n", "no", "0", "")
+
+            svc.port = _int_setting(settings, "SNTPPORT", "SNTPPOR")
+            svc.configured_port = svc.port
+
+            ts_extra = {}
+            if sntp_mode in ("unicast", "manycast", "broadcast"):
+                ts_extra["mode"] = sntp_mode
+            poll_rate = _int_setting(settings, "SNTPRATE", "SNTPRAT")
+            if poll_rate is not None:
+                ts_extra["poll_rate"] = poll_rate
+            timeout = _float_setting(settings, "SNTPTO")
+            if timeout is not None:
+                ts_extra["timeout"] = timeout
+
+            sources = []
+            for priority, keys in ((1, ("SNTPPSIP", "SNTPPIP")), (2, ("SNTPBSIP", "SNTPBIP"))):
+                address = _safe_ipv4(_str_setting(settings, *keys))
+                if address and address != "0.0.0.0":
+                    sources.append(
+                        TimeSource(
+                            protocol="sntp",
+                            address=address,
+                            priority=priority,
+                            enabled=svc.enabled,
+                            extra=dict(ts_extra),
+                        )
+                    )
+                    dev.related.ip.add(address)
+
+            for source in sources:
+                _add_time_source(dev, source)
+
+            # Broadcast mode has no server addresses: keep the settings
+            if not sources and ts_extra:
+                dev.clock.extra.update({f"sntp_{k}": v for k, v in ts_extra.items()})
+
+        elif protocol == "dnp3":
+            svc.port = _int_setting(settings, "DNPNUM", "DNPPNUM")
+            svc.configured_port = svc.port
+            if settings.get("DNPADR"):
+                svc.protocol_id = _getv(settings["DNPADR"])
+            if settings.get("DNPID"):
+                # "DNP ID for Object 0, Var 246 (20 characters)"
+                svc.extra["dnp3_id"] = _getv(settings["DNPID"])
+            if settings.get("DNPMAP"):
+                svc.extra["session_map"] = _getv(settings["DNPMAP"])
+
+            relationships.extend(_dnp3_relationships(settings, svc, iface, dev))
+
+        elif protocol == "modbus":
+            if iface.type == "ethernet":
+                svc.protocol = "modbus_tcp"
                 svc.transport = "tcp"
+                svc.port = 502
+                relationships.extend(_modbus_relationships(settings, svc, iface))
 
-                if settings.get("HTTPPOR"):
-                    svc.port = int(_getv(settings["HTTPPOR"]))
-                elif settings.get("HTTPPORT"):
-                    svc.port = int(_getv(settings["HTTPPORT"]))
+        elif protocol == "c37_118":
+            # C37.118 is TCP (port 4712) or UDP (port 4713)
+            # Reference: https://wiki.wireshark.org/IEEE%20C37.118
+            relationships.extend(_c37_118_relationships(settings, svc, iface, dev))
 
-                if settings.get("HIDLE"):
-                    svc.extra = {"idle_timeout": float(_getv(settings["HIDLE"]))}
-                elif settings.get("HTTPIDLE"):
-                    svc.extra = {"idle_timeout": float(_getv(settings["HTTPIDLE"]))}
-
-            elif protocol == "telnet":
-                svc.transport = "tcp"
-
-                if settings.get("TPORT"):
-                    svc.port = int(_getv(settings["TPORT"]))
-                # 311L: "Telnet Port for Card Access"
-                elif settings.get("TPORTC"):
-                    svc.port = int(_getv(settings["TPORTC"]))
-
-                if settings.get("TIDLE"):
-                    svc.extra["idle_timeout"] = float(_getv(settings["TIDLE"]))
-
-            elif protocol == "sntp":
-                svc.transport = "udp"
-
-                if settings.get("SNTPPORT"):
-                    svc.port = int(_getv(settings["SNTPPORT"]))
-                elif settings.get("SNTPPOR"):
-                    svc.port = int(_getv(settings["SNTPPOR"]))
-
-                if settings.get("SNTPPSIP"):
-                    svc.extra["sntp_primary_ip"] = clean_ipv4(_getv(settings["SNTPPSIP"]))
-                    dev.related.ip.add(svc.extra["sntp_primary_ip"])
-                elif settings.get("SNTPPIP"):
-                    svc.extra["sntp_primary_ip"] = clean_ipv4(_getv(settings["SNTPPIP"]))
-                    dev.related.ip.add(svc.extra["sntp_primary_ip"])
-
-                if settings.get("SNTPBSIP"):
-                    svc.extra["sntp_backup_ip"] = clean_ipv4(_getv(settings["SNTPBSIP"]))
-                    dev.related.ip.add(svc.extra["sntp_backup_ip"])
-                elif settings.get("SNTPBIP"):
-                    svc.extra["sntp_backup_ip"] = clean_ipv4(_getv(settings["SNTPBIP"]))
-                    dev.related.ip.add(svc.extra["sntp_backup_ip"])
-
-                if settings.get("SNTPRATE"):
-                    svc.extra["sntp_rate"] = int(_getv(settings["SNTPRATE"]))
-                elif settings.get("SNTPRAT"):
-                    svc.extra["sntp_rate"] = int(_getv(settings["SNTPRAT"]))
-                if settings.get("SNTPTO"):
-                    svc.extra["sntp_timeout"] = float(_getv(settings["SNTPTO"]))
-
-            elif protocol == "dnp3":
-                if settings.get("DNPNUM"):
-                    svc.port = int(_getv(settings["DNPNUM"]))
-                elif settings.get("DNPPNUM"):
-                    svc.port = int(_getv(settings["DNPPNUM"]))
-                if settings.get("DNPADR"):
-                    svc.protocol_id = _getv(settings["DNPADR"])
-                if settings.get("DNPID"):
-                    # "DNP ID for Object 0, Var 246 (20 characters)"
-                    svc.extra["dnp3_id"] = _getv(settings["DNPID"])
-                if settings.get("DNPMAP"):
-                    svc.extra["session_map"] = _getv(settings["DNPMAP"])
-
-                dnp3_stations = []
-
-                for idx in range(1, 7):
-                    st = {}
-
-                    if settings.get(f"DNPIP{idx}"):
-                        # "IP Address (zzz.yyy.xxx.www)"
-                        st["ip"] = clean_ipv4(_getv(settings[f"DNPIP{idx}"]))
-                        dev.related.ip.add(st["ip"])
-
-                    if settings.get(f"DNPTR{idx}"):
-                        # "Transport Protocol (UDP,TCP)"
-                        st["transport"] = _getv(settings[f"DNPTR{idx}"]).lower()
-
-                    if settings.get(f"DNPUDP{idx}"):
-                        # "UDP Response Port (REQ, 1025-65534)"
-                        st["port"] = int(_getv(settings[f"DNPUDP{idx}"]))
-                        dev.related.ports.add(st["port"])
-
-                    if settings.get(f"REPADR{idx}"):
-                        # "DNP Address to Report to (0-65519)"
-                        st["report_address"] = _getv(settings[f"REPADR{idx}"])
-
-                    if settings.get(f"DNPMAP{idx}"):
-                        # "DNP Session Map (1-5)"
-                        st["session_map"] = _getv(settings[f"DNPMAP{idx}"])
-
-                    if settings.get(f"DNPINA{idx}"):
-                        # "Seconds to Send Data Link Heartbeat (0-7200)"
-                        st["heartbeat_timeout"] = int(_getv(settings[f"DNPINA{idx}"]))
-
-                    if settings.get(f"DNPCL{idx}"):
-                        # "Enable Control Operations (Y,N)"
-                        cne = value_is_enabled(_getv(settings[f"DNPCL{idx}"]))
-                        st["control_operations_enabled"] = cne
-
-                    if settings.get(f"DNPID{idx}"):
-                        st["dnp3_id"] = _getv(settings[f"DNPID{idx}"])
-
-                    if st:
-                        st["station_num"] = idx
-                        dnp3_stations.append(st)
-
-                if dnp3_stations:
-                    svc.extra["dnp3_stations"] = dnp3_stations
-
-            elif protocol == "modbus":
-                if iface.type == "ethernet":
-                    svc.transport = "tcp"
-                    svc.port = 502
-
-                endpoints = []
-
-                for idx in range(1, 4):
-                    endp = {}
-
-                    if settings.get(f"MODIP{idx}"):
-                        endp["ip"] = clean_ipv4(_getv(settings[f"MODIP{idx}"]))
-                        dev.related.ip.add(endp["ip"])
-
-                    if settings.get(f"MTIMEO{idx}"):
-                        endp["timeout"] = float(_getv(settings[f"MTIMEO{idx}"]))
-
-                    if endp:
-                        endp["endpoint_num"] = idx
-                        endpoints.append(endp)
-
-                if endpoints:
-                    svc.extra["modbus_endpoints"] = endpoints
-
-            elif protocol == "c37.118":
-                # TODO: improve processing of PMU fields, want to add a
-                #   separate local service for each PMU that's configured,
-                #   based on it's configuration (TCP,UDP_S,UDP_T,UDP_U)
-                #   Refer to "Ethernet Operation" section in SEL documentation
-                # C37.118 is TCP (port 4712) or UDP (port 4713)
-                # Reference: https://wiki.wireshark.org/IEEE%20C37.118
-                endpoints = []
-
-                for idx in range(1, 2):
-                    endp = {}
-                    if settings.get(f"PMOTS{idx}"):
-                        # TODO: resolve to actual transport method
-                        #   Possible values: (OFF,TCP,UDP_S,UDP_T,UDP_U)
-                        endp["transport_scheme"] = str(_getv(settings[f"PMOTS{idx}"]))
-                        endp["enabled"] = bool(endp["transport_scheme"].lower() != "off")
-
-                    if settings.get(f"PMOIPA{idx}"):
-                        endp["ip"] = clean_ipv4(_getv(settings[f"PMOIPA{idx}"]))
-                        dev.related.ip.add(endp["ip"])
-
-                    if settings.get(f"PMOTCP{idx}"):
-                        endp["tcp_local_port"] = int(_getv(settings[f"PMOTCP{idx}"]))
-                        dev.related.ports.add(endp["tcp_local_port"])
-
-                    if settings.get(f"PMOUDP{idx}"):
-                        endp["udp_remote_port"] = int(_getv(settings[f"PMOUDP{idx}"]))
-                        dev.related.ports.add(endp["udp_remote_port"])
-
-                    if endp:
-                        endp["endpoint_num"] = idx
-                        endpoints.append(endp)
-
-                if endpoints:
-                    svc.extra["c37_endpoints"] = endpoints
-
-            services.append(svc)
+        services.append(svc)
 
     # Store interface in the data model, followed by the services
     dev.store("interface", iface)
@@ -922,6 +1821,9 @@ def process_port_settings(
             dev.related.protocols.add(service.protocol)
 
         dev.store("service", service, interface_lookup={"name": iface.name})
+
+    for rel in relationships:
+        dev.store("relationships", rel)
 
 
 def process_network_configuration(configs: dict[str, dict], dev: DeviceData) -> None:
@@ -1381,9 +2283,10 @@ def parse_status_output(lines: list[str]) -> dict:
         (:class:`~datetime.datetime` instance)
     - ``FID``: FID string
     - ``CID``: CID string (``"F029"``)
-    - (TODO) Temperature
-    - (TODO) Self-test results for components (RAM, ROM, FPGA, etc.)
-    - (TODO) Voltages and currents
+    - ``time_source``: Time source (``"Internal"``, ``"IRIG-B"``, ...)
+    - ``self_tests``: Self-test results (see :func:`parse_self_tests`),
+      including temperature and power supply voltages where reported
+    - ``relay_enabled``: ``True`` for "Relay Enabled", ``False`` for "Relay Disabled"
 
     Args:
         lines: Extracted status info lines
@@ -1424,7 +2327,7 @@ def parse_status_output(lines: list[str]) -> dict:
     if "Time Source" in lines[1]:
         # "GENERATOR RELAY                          Time Source: Internal"
         name_ts = re.search(
-            r"(?P<dev_name>[\w\-. ]+)\s+Time Source: (?P<time_source>\w+)",
+            r"(?P<dev_name>[\w\-. ]+)\s+Time Source: (?P<time_source>[\w\-]+)",
             lines[1],
             re.ASCII,
         )
@@ -1435,6 +2338,13 @@ def parse_status_output(lines: list[str]) -> dict:
     else:
         # "STATION A"
         info["device_name"] = lines[1].strip()
+
+    # Self-tests and "Relay Enabled"/"Relay Disabled"
+    self_test_info = parse_self_tests(lines)
+    if self_test_info["self_tests"]:
+        info["self_tests"] = self_test_info["self_tests"]
+    if self_test_info["relay_enabled"] is not None:
+        info["relay_enabled"] = self_test_info["relay_enabled"]
 
     # Finish early if there are only two lines
     if len(lines) <= 2:
@@ -1474,10 +2384,6 @@ def parse_status_output(lines: list[str]) -> dict:
     except Exception:
         log.exception("Failed to parse FID from status lines")
         log.error(f"Bad lines: {lines}")
-
-    # TODO: parse voltages and currents
-    # TODO: parse self-test statuses
-    # TODO: parse temperature
 
     return info
 
@@ -1522,8 +2428,18 @@ def event_data_present(data: bytes | str) -> bool:
 
 
 def parse_and_process_events(
-    data: bytes | str, dataset: str, dev: DeviceData
+    data: bytes | str, dataset: str, dev: DeviceData, observed: datetime | None = None
 ) -> tuple[list[dict], dict]:
+    """
+    Parse SER/CSER/HISTORY/CHISTORY data and store the events in ``dev``.
+
+    Args:
+        data: Raw data
+        dataset: Name of the source (file name or command), selects the parser
+        dev: Device to update
+        observed: When the data was read live from the device (for the status
+            front matter, see :func:`process_info_into_dev`)
+    """
     log.info(f"Parsing events in {dataset} from {dev.get_id()}")
 
     if isinstance(data, bytes):
@@ -1564,7 +2480,7 @@ def parse_and_process_events(
         return [], info
 
     if info:
-        process_info_into_dev(info, dev)
+        process_info_into_dev(info, dev, observed)
 
     if not events:
         log.warning(f"No events in {dataset} from {dev.get_id()}")
@@ -1805,9 +2721,51 @@ def parse_chistory(lines: list[str]) -> tuple[list[dict], dict]:
     return events, device_info
 
 
+def ansi_meaning(element: str) -> str:
+    """
+    Meaning of a relay element name from its ANSI/IEEE C37.2 device function
+    number, e.g. ``"51G"`` -> ``"AC Time Overcurrent Relay"``.
+
+    Returns:
+        The meaning, or ``""`` if the element doesn't start with a known code
+    """
+    element = element.strip().upper()
+    match = re.match(r"^(\d+)([A-Z]*)", element)
+    if not match:
+        return ""
+    for candidate in (element, f"{match.group(1)}{match.group(2)}", match.group(1)):
+        if candidate in ANSI_CODES:
+            return ANSI_CODES[candidate]
+    return ""
+
+
+def history_event_details(event_value: str, targets: Any = "") -> tuple[str, str, set[str]]:
+    """
+    ``action``, ``reason`` and ``kind`` of an event from the relay history
+    (``HIS`` command, ``HISTORY.TXT``, ``CHISTORY.TXT``, ``his`` web page).
+
+    A trip (``EVENT`` contains ``trip``) is ``action="trip"`` with ``kind={"alert"}``;
+    the reason is the ``EVENT`` column (fault type) and the asserted targets, e.g.
+    ``"AG T; targets 11000000"``.
+    """
+    event_value = str(event_value).strip()
+    targets = str(targets).strip() if targets not in (None, "") else ""
+    reason = event_value
+    if targets:
+        reason = f"{event_value}; targets {targets}" if event_value else f"targets {targets}"
+    if "trip" in event_value.lower():
+        return "trip", reason, {"alert"}
+    return event_value.lower(), reason, {"event"}
+
+
 def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> None:
     """
     Process events into the data model.
+
+    ``event.reason`` is set for history rows (fault type and targets), settings
+    and group changes (the new state, e.g. ``Class P 5``) and asserted/deasserted
+    protection elements with a known ANSI device number (e.g.
+    ``51G AC Time Overcurrent Relay``).
 
     Args:
         raw_events: list of events extracted from an event file
@@ -1818,11 +2776,12 @@ def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> Non
     for raw_event in raw_events:
         event_category = {"host"}  # type: set[str]
         event_type = set()  # type: set[str]
+        event_kind = {"event"}  # type: set[str]
+        reason = ""
         extra = {}
 
         # SER/CSER
         if raw_event.get("element"):
-            pass
             # Examples of element values:
             # 'Relay', 'Power-up', 'Settings changed', '51G', 'OUT101', 'Group change'
             event_element = raw_event["element"].lower()  # type: str
@@ -1830,6 +2789,9 @@ def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> Non
             if "change" in event_element:
                 event_category.add("configuration")
                 event_type.add("change")
+                # "Settings changed" / "Class P 5", "Group change" / "Group 2"
+                if raw_event.get("state"):
+                    reason = raw_event["state"].strip()
             elif "power" in event_element and "up" in event_element:
                 event_type.add("start")
             elif "archive cleared" in event_element:
@@ -1845,6 +2807,9 @@ def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> Non
             if "assert" in event_state:
                 event_type.add("change")
                 action = f"{event_state}-{event_element}"
+                meaning = ansi_meaning(raw_event["element"])
+                if meaning:
+                    reason = f"{raw_event['element'].strip()} {meaning}"
 
             if raw_event["element"] and raw_event["state"]:
                 message = f"{raw_event['element']} {raw_event['state']}"
@@ -1853,14 +2818,16 @@ def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> Non
 
         # HISTORY/CHISTORY
         elif raw_event.get("event"):
-            action = raw_event["event"].lower()
+            action, reason, event_kind = history_event_details(
+                raw_event["event"], raw_event.get("targets", "")
+            )
 
-            if "trip" in action:
+            if action == "trip":
                 event_type.add("change")
                 message = (
-                    f"Trip {raw_event['targets']} "
-                    f"(Current: {raw_event['current']}"
-                    f"- Frequency: {raw_event['frequency']}"
+                    f"{raw_event['event']} {raw_event['targets']} "
+                    f"(Current: {raw_event['current']} - "
+                    f"Frequency: {raw_event['frequency']})"
                 )
             else:
                 message = raw_event["event"]
@@ -1880,10 +2847,11 @@ def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> Non
             # time: "16:09:12.264"
             created=date_parse(f"{raw_event['date']} {raw_event['time']}"),
             dataset=dataset,
-            kind={"event"},
+            kind=event_kind,
             message=message,
             original=raw_event["original"],
             provider=dev.get_id(),
+            reason=reason,
             # TODO: should sequence be reverse order for SER/CSER?
             # Since "1" in the log is actually the newest event, not the oldest?
             sequence=int(raw_event["sequence"]),
@@ -1902,10 +2870,17 @@ def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> Non
 
 
 def extract_cid_content(data: bytes) -> str:
+    """
+    Decompress a SEL ``.CID`` file (zlib). Data that is not zlib-compressed
+    (a plain-XML CID exported by other tools) is decoded as-is.
+    """
     if not data:
         return ""
 
-    decompressed = zlib.decompress(data)
+    if data[:1] == b"\x78":
+        decompressed = zlib.decompress(data)
+    else:
+        decompressed = data
 
     # NOTE utf-8-sig is required to remove the
     # Byte Order Mark (BOM) that gets prepended in some cases.
@@ -1916,10 +2891,15 @@ def extract_cid_content(data: bytes) -> str:
 
 def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
     """
-    .CID files are zlib-compressed data (zlib-header 0x7801 - No Compression/low).
-    The only known CID file currently is ``SET_61850.CID``, which contains XML data.
+    .CID files are zlib-compressed data (zlib header ``0x78``, usually ``0x7801``).
+    The only known CID file currently is ``SET_61850.CID``, which contains the
+    IEC 61850 SCL (XML) of the relay.
 
-    This function decompresses the zlib data and saves the decoded text to a new file.
+    This function decompresses the zlib data, saves the decoded text to a new file,
+    adds the CID file to ``dev.files`` and parses the SCL into ``dev.iec61850``
+    (with :func:`peat.parsing.scl.apply_iec61850`: MMS/GOOSE/SV services,
+    publications/subscriptions/reports and their relationships). A failure to
+    parse the SCL never loses the decompressed file or the rest of the pull.
     """
     log.info(f"Extracting data from CID file '{filepath.name}'")
 
@@ -1938,11 +2918,35 @@ def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
 
         if not extracted:
             log.warning(f"No data extracted from CID file {filepath.name}")
-
-        return extracted
     except Exception as ex:
         log.error(f"Failed to extract CID file {filepath.name}: {ex}")
         return ""
+
+    cid_path = PurePosixPath(PurePath(filepath).as_posix())
+    dev.store(
+        "files",
+        File(
+            path=cid_path,
+            type="file",
+            size=len(data),
+            peat_module=_module_name(dev),
+            category={"configuration", "iec61850"},
+        ),
+        lookup="path",
+    )
+
+    # IEC 61850 SCL (DESIGN 7.4.1): after the decompressed file was written,
+    # in its own try so a bad SCL never loses the file or the rest of the pull
+    if extracted:
+        try:
+            root = scl.load_scl(extracted.encode("utf-8"))
+            ied = scl.parse_scl(root, file_type=scl.file_type_from_name(filepath) or "CID")
+            ied.scl_file = cid_path.as_posix()
+            scl.apply_iec61850(dev, ied, populate_interfaces=False)
+        except Exception as ex:  # never lose the CID file or the rest of the pull
+            log.warning(f"Failed to parse SCL in '{filepath.name}': {ex}")
+
+    return extracted
 
 
 def _getv(val: dict | Any) -> Any:

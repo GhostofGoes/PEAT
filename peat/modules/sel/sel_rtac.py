@@ -44,7 +44,8 @@ import re
 import tarfile
 import xml.etree.ElementTree as ET
 from copy import deepcopy
-from pathlib import Path
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import Literal
 
@@ -53,8 +54,13 @@ import psycopg2
 from peat import (
     DeviceData,
     DeviceModule,
+    File,
     Interface,
     IPMethod,
+    LogicTask,
+    Relationship,
+    RelationshipEndpoint,
+    Service,
     datastore,
     exit_handler,
     state,
@@ -76,7 +82,239 @@ from .rtac_parse import (
     parse_tagprocessor,
 )
 from .sel_consts import RTAC_DB_NAME, RTAC_DB_TABLES, RTAC_TRANSIENT_KEYS
+from .sel_defaults import SEL_RTAC_KNOWN_DEFAULTS, credential_security
 from .sel_http import SELHTTP
+
+
+def config_change_alert(changed_paths: list[str], module: str = "SELRTAC") -> dict:
+    """
+    Document pushed to the ``alerts`` index when the RTAC monitor mode finds a
+    configuration change between two pulls (ECS: ``event.kind: alert``,
+    ``event.category: [configuration]``, ``event.type: [change]``, the changed
+    paths in ``event.reason``).
+    """
+    paths = sorted(set(changed_paths))
+    return {
+        "message": "device configuration changed",
+        "event": {
+            "action": "config-change",
+            "category": ["configuration"],
+            "kind": "alert",
+            "module": module,
+            "reason": "changed: " + ", ".join(paths),
+            "severity": 10,
+            "type": ["change"],
+        },
+    }
+
+
+# serial_ports.serial_port_type_id -> Interface.type / Relationship.medium
+RTAC_SERIAL_TYPES = {"232": "rs_232", "422": "rs_422", "485": "rs_485"}
+
+# Postgres client settings table -> (protocol, local role, remote role)
+RTAC_ETHERNET_CLIENT_TABLES = {
+    "dnp_client_ethernet_settings": ("dnp3", "master", "outstation"),
+    "sel_client_ethernet_settings": ("sel", "client", "server"),
+    "modbus_ethernet_settings": ("modbus_tcp", "client", "server"),
+}
+
+# "<prefix>_serial_ports" postgres table -> protocol
+RTAC_SERIAL_PROTOCOLS = {
+    "dnp": "dnp3",
+    "modbus": "modbus_rtu",
+    "sel": "sel",
+    "iec60870": "iec101",
+}
+
+
+def rtac_serial_type(serial_port_type_id) -> str:
+    """``serial_port_type_id`` (``232``/``422``/``485``) -> ``rs_232``/... else ``serial``."""
+    return RTAC_SERIAL_TYPES.get(str(serial_port_type_id or "").strip(), "serial")
+
+
+def _int_or_none(value) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def rtac_config_relationships(config: dict) -> list[Relationship]:
+    """
+    Relationships from the RTAC PostgreSQL configuration tables.
+
+    - ``dnp_client_ethernet_settings``, ``sel_client_ethernet_settings``,
+      ``modbus_ethernet_settings`` -> ``communicates_with`` (``egress``, the RTAC is
+      the master/client) to ``server_ip_address``:``server_ip_port``; the device
+      name and model come from ``remote_devices`` (joined on ``remote_device_id``)
+    - ``*_serial_ports`` and ``serial_port_connections`` rows that name a serial
+      port and a remote device -> serial ``communicates_with`` relationships
+      (``medium`` from the port's ``serial_port_type_id``). The column names of
+      these tables are not verified against an RTAC; rows without a serial port
+      or a remote device are skipped.
+    - ``Eng_Access_*`` remote devices (engineering access passthrough) -> ``tunnel``
+    - other remote devices -> ``communicates_with`` with only the remote name
+
+    Args:
+        config: Tables pulled by :meth:`SELRTAC.pull_postgres`
+            (``{table: {row_id: {column: value}}}``)
+    """
+    remote_devices = config.get("remote_devices") or {}
+    devices_by_id = {}
+    for key, row in remote_devices.items():
+        rid = row.get("remote_device_id", key)
+        devices_by_id[str(rid)] = row
+
+    serial_ports = config.get("serial_ports") or {}
+    ports_by_id = {}
+    for key, row in serial_ports.items():
+        ports_by_id[str(row.get("serial_port_id", key))] = row
+
+    relationships = []
+    connected = set()  # names of remote devices with a relationship
+
+    def _remote(row: dict) -> tuple[str, dict]:
+        rid = row.get("remote_device_id")
+        rem = devices_by_id.get(str(rid), {}) if rid is not None else {}
+        return str(rem.get("name") or ""), rem
+
+    for table, (protocol, local_role, remote_role) in RTAC_ETHERNET_CLIENT_TABLES.items():
+        for row in (config.get(table) or {}).values():
+            ip = str(row.get("server_ip_address") or "").strip()
+            if not ip or ip == "0.0.0.0":
+                continue
+            name, rem = _remote(row)
+            local_tcp = _int_or_none(row.get("local_tcp_port")) or None  # 0 = any
+            local_udp = _int_or_none(row.get("local_udp_port")) or None
+            transport = str(row.get("transport") or row.get("transport_protocol") or "").lower()
+            if transport not in ("tcp", "udp"):
+                transport = "udp" if local_udp and not local_tcp else "tcp"
+            extra = {}
+            if rem.get("model"):
+                extra["remote_model"] = rem["model"]
+            if rem.get("manufacturer"):
+                extra["remote_manufacturer"] = rem["manufacturer"]
+            relationships.append(
+                Relationship(
+                    type="communicates_with",
+                    protocol=protocol,
+                    transport=transport,
+                    direction="egress",
+                    local=RelationshipEndpoint(
+                        port=local_tcp if transport == "tcp" else local_udp, role=local_role
+                    ),
+                    remote=RelationshipEndpoint(
+                        ip=ip,
+                        port=_int_or_none(row.get("server_ip_port")),
+                        name=name,
+                        role=remote_role,
+                    ),
+                    evidence={"config"},
+                    extra=extra,
+                )
+            )
+            if name:
+                connected.add(name)
+
+    # Serial client connections (column names unverified, see docstring)
+    serial_tables = {
+        t: RTAC_SERIAL_PROTOCOLS.get(t.removesuffix("_serial_ports"), "")
+        for t in config
+        if t.endswith("_serial_ports")
+    }
+    serial_tables["serial_port_connections"] = ""
+    for table, protocol in serial_tables.items():
+        for row in (config.get(table) or {}).values():
+            if not isinstance(row, dict):
+                continue
+            name, rem = _remote(row)
+            port_row = ports_by_id.get(str(row.get("serial_port_id")), {})
+            device_file = str(row.get("device_file") or port_row.get("device_file") or "")
+            if not name or not device_file:
+                continue
+            extra = {}
+            if rem.get("model"):
+                extra["remote_model"] = rem["model"]
+            relationships.append(
+                Relationship(
+                    type="communicates_with",
+                    protocol=protocol,
+                    medium=rtac_serial_type(port_row.get("serial_port_type_id")),
+                    local=RelationshipEndpoint(
+                        interface=device_file,
+                        serial_port=device_file,
+                        role="master" if protocol == "dnp3" else "client",
+                    ),
+                    remote=RelationshipEndpoint(
+                        name=name, role="outstation" if protocol == "dnp3" else "server"
+                    ),
+                    evidence={"config"},
+                    extra=extra,
+                )
+            )
+            connected.add(name)
+
+    for row in remote_devices.values():
+        name = str(row.get("name") or "").strip()
+        if not name or name in connected:
+            continue
+        extra = {}
+        if row.get("model"):
+            extra["remote_model"] = row["model"]
+        if "Eng_Access_" in name:
+            # Engineering access passthrough tunnel, e.g. "Eng_Access_40"
+            relationships.append(
+                Relationship(
+                    type="tunnel",
+                    remote=RelationshipEndpoint(name=name, role="engineering_access"),
+                    evidence={"config"},
+                    extra=extra,
+                )
+            )
+        else:
+            relationships.append(
+                Relationship(
+                    type="communicates_with",
+                    remote=RelationshipEndpoint(name=name),
+                    evidence={"config"},
+                    extra=extra,
+                )
+            )
+
+    return relationships
+
+
+def rtac_tar_member_file(member: tarfile.TarInfo) -> File:
+    """:class:`~peat.data.models.File` for a member of an RTAC project export tarball."""
+    file_obj = File(
+        path=PurePosixPath(member.name),
+        type="dir" if member.isdir() else "file",
+        size=member.size if member.isfile() else None,
+        peat_module="SELRTAC",
+        category={"configuration", "project"},
+    )
+    if member.mtime:
+        file_obj.mtime = datetime.fromtimestamp(member.mtime, tz=UTC)
+    return file_obj
+
+
+def maincontroller_tasks(main_controller: dict) -> list[LogicTask]:
+    """
+    Tasks of an offline RTAC ``Main Controller.xml`` (as parsed by
+    :func:`~peat.modules.sel.rtac_parse.parse_maincontroller`) ->
+    :class:`~peat.data.models.LogicTask` (child tags in ``extra``).
+    """
+    tasks = []
+    for name, values in main_controller.items():
+        if not name:
+            continue
+        tasks.append(
+            LogicTask(
+                name=str(name),
+                extra={k: v for k, v in (values or {}).items() if v not in (None, "")},
+            )
+        )
+    return tasks
 
 
 class SELRTAC(DeviceModule):
@@ -134,6 +372,14 @@ class SELRTAC(DeviceModule):
         },
     }
 
+    # Hardening checks (peat/modules/sel/sel_defaults.py)
+    known_defaults = SEL_RTAC_KNOWN_DEFAULTS
+
+    # NOTE: no factory default login is documented for the RTAC (the web and
+    # PostgreSQL user/password lists in default_options are guesses PEAT tries,
+    # not vendor factory defaults), so none is declared here.
+    factory_default_credentials = set()
+
     _tag_to_parser_map = {
         "AccessPointRouter": parse_accesspointrouters,
         "Device": parse_devices,
@@ -165,6 +411,14 @@ class SELRTAC(DeviceModule):
                 dev._cache["verified_web_pass"],
                 protocol,
             )
+            if logged_in:
+                cls._store_login_security(
+                    dev,
+                    protocol,
+                    port,
+                    dev._cache["verified_web_user"],
+                    dev._cache["verified_web_pass"],
+                )
         # Check all user, and pass, only proceed when logged_in is True, or exhausted
         else:
             if dev.options["web"]["user"]:
@@ -186,6 +440,7 @@ class SELRTAC(DeviceModule):
                         dev._cache["verified_web_user"] = username
                         dev._cache["verified_web_pass"] = password
                         dev.related.user.add(username)
+                        cls._store_login_security(dev, protocol, port, username, password)
                         break
 
                 if logged_in:
@@ -226,6 +481,25 @@ class SELRTAC(DeviceModule):
         session.disconnect()
         cls.log.debug(f"RTAC HTTP verification failed for {dev.ip}:{port}")
         return False
+
+    @classmethod
+    def _store_login_security(
+        cls, dev: DeviceData, protocol: str, port: int | None, user: str, password: str
+    ) -> None:
+        """
+        Record the security facts of a successful login on the service
+        (``Service.security``). The credential itself is never stored.
+        """
+        dev.store(
+            "service",
+            Service(
+                protocol=protocol,
+                port=port,
+                transport="tcp",
+                security=credential_security(cls, user, password),
+            ),
+            lookup=["protocol", "port"] if port else "protocol",
+        )
 
     @classmethod
     def _verify_https_ssl_certificate(cls, dev: DeviceData) -> bool:
@@ -304,6 +578,9 @@ class SELRTAC(DeviceModule):
             dev.related.user.add(kwargs["user"])
             if "password" in kwargs:
                 dev._cache["verified_pg_pass"] = kwargs["password"]
+                cls._store_login_security(
+                    dev, "postgres", kwargs["port"], kwargs["user"], kwargs["password"]
+                )
 
             cmd = "SELECT * from device_info;"
             curs.execute(cmd)
@@ -408,13 +685,26 @@ class SELRTAC(DeviceModule):
         err: list[str] | None = None,
         key_err: list[str] | None = None,
         value_err: list[str] | None = None,
+        changed_paths: list[str] | None = None,
     ) -> tuple[list[str], list[str], list[str]]:
+        """
+        Compare two dicts recursively, ignoring transient keys (``RTAC_TRANSIENT_KEYS``).
+
+        Args:
+            changed_paths: If a list is passed, the dotted path of every key that
+                was added, removed or changed is appended to it
+
+        Returns:
+            Messages for missing keys, changed values, and other errors
+        """
         if err is None:
             err = []
         if key_err is None:
             key_err = []
         if value_err is None:
             value_err = []
+        if changed_paths is None:
+            changed_paths = []
 
         for k1, v1 in dict_1.items():
             if path is None:
@@ -427,15 +717,25 @@ class SELRTAC(DeviceModule):
                 continue
             if k1 not in dict_2:
                 key_err.append(f"Key {dict_2_name}{old_path} not in {dict_2_name}\n")
+                changed_paths.append(".".join(old_path))
             elif isinstance(v1, dict) and isinstance(dict_2[k1], dict):
                 cls.compare_dictionaries(
-                    v1, dict_2[k1], "d1", "d2", old_path[:], err, key_err, value_err
+                    v1,
+                    dict_2[k1],
+                    "d1",
+                    "d2",
+                    old_path[:],
+                    err,
+                    key_err,
+                    value_err,
+                    changed_paths,
                 )
             elif v1 != dict_2[k1]:
                 value_err.append(
                     f"Value of {dict_1_name}{old_path} ({v1}) not same "
                     f"as {dict_2_name}{old_path} ({dict_2[k1]})\n"
                 )
+                changed_paths.append(".".join(old_path))
 
         for k in dict_2.keys():
             if path is None:
@@ -443,8 +743,11 @@ class SELRTAC(DeviceModule):
             else:
                 old_path = path[:]
             old_path.append(f"{k}")
+            if cls.chk_transient_path(old_path):
+                continue
             if k not in dict_1:
                 key_err.append(f"Key {dict_2_name}{old_path} not in {dict_1_name}\n")
+                changed_paths.append(".".join(old_path))
 
         return key_err, value_err, err
 
@@ -465,29 +768,15 @@ class SELRTAC(DeviceModule):
         d1 = dev._cache["history"][d1_name]
         d2 = dev._cache["history"][d2_name]
         cls.log.info(f"Comparing dictionaries '{d1_name}' and '{d2_name}'")
-        res1 = cls.compare_dictionaries(d1, d2, "d1", "d2")
-        res2 = ([], [], [])
-        if (res1[0] == [] and res1[1] == [] and res1[2] == []) and (
-            res2[0] == [] and res2[1] == [] and res2[2] == []
-        ):
+        changed_paths = []  # type: list[str]
+        res1 = cls.compare_dictionaries(d1, d2, "d1", "d2", changed_paths=changed_paths)
+        if res1[0] == [] and res1[1] == [] and res1[2] == []:
             cls.log.info("nominal")
         else:
             cls.log.error("abnominal")
+            alert = config_change_alert(changed_paths, cls.__name__)
             if state.elastic:
-                # update action to key that is changed
-                state.elastic.push(
-                    "alerts",
-                    {
-                        "message": "device configuration changed",
-                        "event": {
-                            "action": "config-change",
-                            "category": "device-config-change",
-                            "kind": {"alert"},
-                            "module": cls.__name__,  # "SELRTAC"
-                            "severity": 10,
-                        },
-                    },
-                )
+                state.elastic.push("alerts", alert)
 
     @classmethod
     def pull_config(cls, dev: DeviceData) -> None:
@@ -541,7 +830,7 @@ class SELRTAC(DeviceModule):
                 username = dev.options["web"]["user"]
             if not username:
                 username = "ACC"
-            password = dev._cache.get("verified_web_user")
+            password = dev._cache.get("verified_web_pass")
             if not password:
                 password = dev.options["web"]["pass"]
             if not password:
@@ -552,6 +841,7 @@ class SELRTAC(DeviceModule):
                 )
                 return None
             dev.related.user.add(username)
+            cls._store_login_security(dev, protocol, port, username, password)
 
         web_methods = [
             session.view_dashboard,
@@ -609,8 +899,7 @@ class SELRTAC(DeviceModule):
 
         # Remove fields we don't want in elasticsearch
         for bad_field in ["web_syslog_events", "web_usagepolicy", "web_device_info"]:
-            if bad_field in pulled_config:
-                del bad_field
+            pulled_config.pop(bad_field, None)
 
         return pulled_config
 
@@ -850,10 +1139,8 @@ class SELRTAC(DeviceModule):
                 if sp.get(fc_key):
                     flow_control = fc_key
 
-            s_type = "serial"
-            s_port_id = str(sp.get("serial_port_type_id", ""))
-            if s_port_id == "232":
-                s_type = "rs-232"
+            # 232/422/485 -> rs_232/rs_422/rs_485, else "serial" (standard unknown)
+            s_type = rtac_serial_type(sp.get("serial_port_type_id"))
 
             iface = Interface(
                 connected=bool(sp.get("port_power")),
@@ -916,6 +1203,10 @@ class SELRTAC(DeviceModule):
                 # This only appears in dnp_client_ethernet_settings
                 if eth_settings.get("ssh_username"):
                     dev.related.user.add(eth_settings["ssh_username"])
+
+        # Configured client connections and remote devices -> relationships
+        for rel in rtac_config_relationships(config):
+            dev.store("relationships", rel)
 
         # config is large and leads to excessive-sized device-data-summary.json
 
@@ -990,14 +1281,13 @@ class SELRTAC(DeviceModule):
             else:
                 mode = "r"  # transparent, i think this auto-determines compression
 
-            device_info["existing_files"] = []
             with tarfile.open(name=file.as_posix(), mode=mode, encoding="utf-8") as tar:
                 for member in tar.getmembers():
                     cls.log.debug(f"Parsing '{member.name}' from '{file.name}'")
                     f_handle = tar.extractfile(member)
 
                     if f_handle is not None:  # skip directories
-                        device_info["existing_files"].append(member.name)
+                        dev.store("files", rtac_tar_member_file(member), lookup="path")
                         # see note earlier in code about utf-8-sig encoding
                         data = f_handle.read().decode(encoding="utf-8-sig")
 
@@ -1019,6 +1309,13 @@ class SELRTAC(DeviceModule):
         #       Get a DeviceData from datastore, then update:
         #           registers, IP, services, interfaces, model/brand/vendor
         #   Internal Tags?
+        # Offline "Main Controller.xml" task definitions -> dev.logic.tasks
+        main_controller = device_info.pop("MainController", None)
+        if main_controller:
+            for task in maincontroller_tasks(main_controller):
+                if not any(t.name == task.name for t in dev.logic.tasks):
+                    dev.logic.tasks.append(task)
+
         dev.extra.update(device_info)
 
         # TODO: hack, defaulting model to 3530 for now (it's not being extracted...)
