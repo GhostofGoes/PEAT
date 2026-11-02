@@ -324,17 +324,20 @@ def oneshot_main(args: dict[str, Any]) -> bool:
             return success
 
         elif args["func"] == "push":
-            if not push(
+            push_success = push(
                 targets,
                 comm_type,
                 sorted_device_types,
                 args["input_source"],
                 args["push_type"],
                 skip_scan=config.PUSH_SKIP_SCAN,
-            ):
-                return False
+            )
 
-            return export_device_data(args)
+            # Export the device results even if the push failed, so they
+            # include what was collected and the files prepared for the push.
+            export_success = export_device_data(args)
+
+            return push_success and export_success
 
         elif args["func"] == "pillage":
             return pillage(args["pillage_source"])

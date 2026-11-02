@@ -47,6 +47,9 @@ SOURCE_RDB_STREAM: Final = "rdb_stream"
 #: File that was parsed with ``peat parse`` (or ``DeviceModule.parse()``)
 SOURCE_PARSE_INPUT: Final = "parse_input"
 
+#: Settings file PEAT prepared to push (upload) to the device with ``peat push``
+SOURCE_PUSH: Final = "push"
+
 
 def _to_bytes(data: bytes | bytearray | str) -> bytes:
     if isinstance(data, str):
@@ -346,6 +349,7 @@ __all__ = [
     "SOURCE_DERIVED",
     "SOURCE_DOWNLOAD",
     "SOURCE_PARSE_INPUT",
+    "SOURCE_PUSH",
     "SOURCE_RDB_STREAM",
     "SOURCE_WEB_DOWNLOAD",
     "SOURCE_WEB_PAGE",

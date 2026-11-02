@@ -506,6 +506,19 @@ device_options:
     # If the relay should be restarted (rebooted) after pushing updated configs ("peat push").
     restart_after_push: false
 
+    # Name of the relay to push from a QuickSet RDB file with more than one relay
+    # ("peat push" of a *.rdb file). This is the name of the relay's storage in the
+    # RDB file ("Relays/<name>/"), which is also in "extra.rdb_relay_name" when the
+    # RDB file is parsed. If empty, PEAT pushes the only relay in the file, or the
+    # relay whose IP address, RID/TID, or part number match the device.
+    push_rdb_relay: ""
+
+    # Upload settings files that aren't on the relay (in its file listing or the
+    # [CLASSES] in its CFG.TXT). By default, PEAT refuses to push anything if
+    # one of the files isn't on the relay, since it's usually the wrong settings
+    # for the relay, and the relay would reject it partway through the push.
+    push_unlisted_files: false
+
     # Alternate method of FTP pulls that may work on older devices.
     # Only enable this if debugging issues with FTP downloads.
     old_ftp: false

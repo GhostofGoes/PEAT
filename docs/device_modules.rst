@@ -247,6 +247,11 @@ Downloaded file hashing
 .. automodule:: peat.modules.sel.sel_files
    :members:
 
+Pushing settings
+^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_push
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse

@@ -1,0 +1,1 @@
+``peat push`` now exports the device results even when the push fails, and a failed push to one device no longer stops the push to the other devices. An exception during a push is now logged for the right device, instead of raising ``UnboundLocalError`` or naming another device.
