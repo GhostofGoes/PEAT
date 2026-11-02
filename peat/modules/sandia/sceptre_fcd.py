@@ -68,6 +68,7 @@ from peat import (
     Tag,
     config,
     datastore,
+    utils,
 )
 from peat.data.data_utils import merge_models
 from peat.data.models import LogicTask, Relationship, RelationshipEndpoint
@@ -550,8 +551,10 @@ def extract_interface_info(com: Element, dev: DeviceData) -> None:
         if "connection" in child.tag:
             if _ele(child, "endpoint"):
                 conn_ep = _parse_endpoint(_ele(child, "endpoint"))
-                if conn_ep.get("ip"):
+                if utils.is_ip(str(conn_ep.get("ip") or "")):
                     dev.related.ip.add(conn_ep["ip"])
+                elif conn_ep.get("ip") and conn_ep["ip"] != "*":
+                    dev.related.hosts.add(conn_ep["ip"])  # e.g. "tcp://outstation-1:20000"
                 if conn_ep.get("multicast_ip"):
                     dev.related.ip.add(conn_ep["multicast_ip"])
 
@@ -687,8 +690,11 @@ def client_connection_relationship(
         rel.local.serial_port = endpoint["serial_port"]
     else:
         rel.transport = str(endpoint.get("transport", "")).lower()
-        if endpoint.get("ip"):
-            rel.remote.ip = endpoint["ip"]
+        host = str(endpoint.get("ip") or "").strip()
+        if utils.is_ip(host):
+            rel.remote.ip = host
+        elif host and host != "*":  # e.g. "tcp://outstation-1:20000"
+            rel.remote.hostname = host
         if endpoint.get("port"):
             rel.remote.port = endpoint["port"]
         if endpoint.get("multicast_ip"):
@@ -734,8 +740,16 @@ def io_provider_relationship(direction: str, raw_endpoint: str | None) -> Relati
         extra={"io": direction},
     )
 
-    ip = endpoint.get("ip", "")
-    multicast_ip = endpoint.get("multicast_ip", "")
+    ip = str(endpoint.get("ip") or "").strip()
+    multicast_ip = str(endpoint.get("multicast_ip") or "").strip()
+    # A hostname (e.g. "tcp://provider:5555") or a wildcard is kept in remote.address
+    hostname = ""
+    if ip and not utils.is_ip(ip):
+        hostname = ip if ip != "*" else ""
+        ip = ""
+    if multicast_ip and not utils.is_ip(multicast_ip):
+        rel.extra["multicast_address"] = multicast_ip
+        multicast_ip = ""
     if not multicast_ip and ip and _is_multicast(ip):
         multicast_ip, ip = ip, ""
 
@@ -745,6 +759,8 @@ def io_provider_relationship(direction: str, raw_endpoint: str | None) -> Relati
             rel.local.ip = ip  # local interface that receives the multicast
     elif ip:
         rel.remote.ip = ip
+    elif hostname and direction != "input":
+        rel.remote.hostname = hostname
 
     return rel
 

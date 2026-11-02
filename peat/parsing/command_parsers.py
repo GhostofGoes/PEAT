@@ -12,6 +12,7 @@ References for /proc (aka, "procfs"):
 """
 
 import datetime
+import ipaddress
 import itertools
 import json
 import os.path
@@ -913,13 +914,11 @@ class IfconfigParser(NixParserBase):
 
             # ifconfig flags reference:
             # https://docs.oracle.com/cd/E19253-01/816-5166/ifconfig-1m/index.html
+            # (net-tools/BusyBox never print DOWN: no UP flag = administratively down)
             flags = if_dict.get("flags", [])
-            if "RUNNING" in flags:
-                iface.connected = True
-            if "UP" in flags:
-                iface.enabled = True
-            elif "DOWN" in flags:
-                iface.enabled = False
+            if flags:
+                iface.enabled = "UP" in flags and "DOWN" not in flags
+                iface.connected = "RUNNING" in flags
 
             counters = {}
             for key, value in if_dict.items():
@@ -1596,21 +1595,44 @@ class IpRouteParser(NixParserBase):
     # Routing protocols (proto) of dynamically learned routes
     DYNAMIC_PROTOCOLS = {"dhcp", "ra", "ospf", "bgp", "rip", "zebra", "babel", "isis", "bird"}
 
+    @staticmethod
+    def _is_destination(value: str) -> bool:
+        """``default`` or a network/address (not a prompt or an error message)."""
+        if value == "default":
+            return True
+        try:
+            ipaddress.ip_network(value, strict=False)
+            return True
+        except ValueError:
+            return False
+
     @classmethod
     def parse(cls, to_parse: str) -> list[dict]:
         routes = []
+        current = None  # route that the following "nexthop" lines belong to
 
         for line in _extract_lines(to_parse):
             parts = line.split()
-            # Multipath next hops are on their own lines ("nexthop via ...")
-            if parts[0] in ("nexthop", "cache") or parts[0].endswith(":"):
+            # Multipath next hops are on their own lines ("nexthop via ... dev ...")
+            if parts[0] == "nexthop":
+                if current is not None:
+                    hop = {
+                        key: parts[i + 1]
+                        for i, key in enumerate(parts[:-1])
+                        if key in ("via", "dev", "weight")
+                    }
+                    if hop:
+                        current.setdefault("nexthops", []).append(hop)
+                continue
+            current = None
+            if parts[0] == "cache" or parts[0].endswith(":"):
                 continue
 
             route = {}  # type: dict[str, str | list[str]]
             if parts[0] in cls.ROUTE_TYPES:
                 route["type"] = parts.pop(0)
-            if not parts:
-                continue
+            if not parts or not cls._is_destination(parts[0]):
+                continue  # e.g. a shell prompt or a BusyBox usage message
             route["destination"] = parts.pop(0)
 
             flags = []
@@ -1626,6 +1648,7 @@ class IpRouteParser(NixParserBase):
                 route["flags"] = flags
 
             routes.append(route)
+            current = route
 
         return routes
 
@@ -1635,6 +1658,12 @@ class IpRouteParser(NixParserBase):
             raw_type = raw.get("type", "")
             gateway = raw.get("via", "")
             protocol = raw.get("proto", "")
+            interface = raw.get("dev", "")
+            # Multipath route: the first next hop is the gateway
+            nexthops = raw.get("nexthops") or []
+            if not gateway and nexthops:
+                gateway = nexthops[0].get("via", "")
+                interface = interface or nexthops[0].get("dev", "")
 
             if raw_type in ("blackhole", "unreachable", "prohibit"):
                 route_type = "blackhole"
@@ -1654,12 +1683,14 @@ class IpRouteParser(NixParserBase):
             }
             if raw_type in ("unreachable", "prohibit"):
                 extra["action"] = raw_type
+            if nexthops:
+                extra["nexthops"] = nexthops
 
             try:
                 route = Route(
                     destination=raw.get("destination", ""),
                     gateway=gateway,
-                    interface=raw.get("dev", ""),
+                    interface=interface,
                     metric=int(raw["metric"]) if str(raw.get("metric", "")).isdigit() else None,
                     type=route_type,
                     protocol=protocol,
@@ -1804,12 +1835,19 @@ def store_relationships(dev: DeviceData, relationships: list[Relationship]) -> N
     peer and server port, see :meth:`~peat.data.models.Relationship.key`)
     are aggregated first, ``count`` is the number of observations.
 
+    Sessions with the device itself (loopback addresses or one of the
+    device's own IP addresses as the peer) are not relationships: skipped.
+
     .. note::
        Call this after the device's listening services were stored,
        since they are used to infer the direction of the sessions.
     """
+    own_ips = {dev.ip} | {i.ip for i in dev.interface if i.ip}
+    own_ips.discard("")
     groups = {}  # type: dict[str, list[Relationship]]
     for rel in relationships:
+        if rel.remote.ip and (rel.remote.ip in own_ips or _is_loopback(rel.remote.ip)):
+            continue
         rel.annotate(dev)
         groups.setdefault(rel.id, []).append(rel)
 
@@ -1817,6 +1855,13 @@ def store_relationships(dev: DeviceData, relationships: list[Relationship]) -> N
         rel = group[0]
         rel.count = len(group)
         dev.store("relationships", rel)
+
+
+def _is_loopback(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
 
 
 def _process_name(dev: DeviceData, process_type: str, pid: int | None) -> str:

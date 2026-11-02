@@ -131,6 +131,44 @@ def test_serial_client_relationship(assert_no_errors):
     assert_no_errors()
 
 
+HOSTNAME_ENDPOINTS = """<?xml version="1.0" encoding="utf-8"?>
+<SCEPTRE>
+    <field-device>
+        <name>fep-9</name>
+        <comms>
+            <dnp3-client>
+                <address>1</address>
+                <dnp3-connection>
+                    <endpoint>tcp://outstation-1:20000</endpoint>
+                    <address>10</address>
+                </dnp3-connection>
+            </dnp3-client>
+        </comms>
+        <output>
+            <endpoint>tcp://provider:5555</endpoint>
+            <binary><id>O0</id><name>breaker.closed</name></binary>
+        </output>
+    </field-device>
+</SCEPTRE>
+"""
+
+
+def test_hostname_endpoints_do_not_abort_the_parse():
+    dev = SCEPTRE.parse_config(HOSTNAME_ENDPOINTS)
+    by_type = {r.type: r for r in dev.relationships}
+    client = by_type["communicates_with"]
+    assert (client.remote.ip, client.remote.hostname, client.remote.port) == (
+        "",
+        "outstation-1",
+        20000,
+    )
+    provider = by_type["depends_on"]
+    assert (provider.remote.ip, provider.remote.hostname) == ("", "provider")
+    assert provider.remote.address == "tcp://provider:5555"
+    assert "outstation-1" not in dev.related.ip
+    assert "outstation-1" in dev.related.hosts
+
+
 def test_rtu_relationships_and_cycle_time(assert_no_errors):
     dev = SCEPTRE.parse_config(RTU)
 

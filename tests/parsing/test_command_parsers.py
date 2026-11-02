@@ -363,6 +363,32 @@ def test_ifconfig_busybox(text_data, mocker, tmp_path, assert_no_errors):
     assert_no_errors()
 
 
+def test_ifconfig_down_interface_without_down_flag(assert_no_errors):
+    """net-tools/BusyBox print no DOWN flag: an interface without UP is down."""
+    data = (
+        "eth1      Link encap:Ethernet  HWaddr 00:50:C2:B2:7F:F5\n"
+        "          BROADCAST MULTICAST  MTU:1500  Metric:1\n"
+        "          RX packets:0 errors:0 dropped:0 overruns:0 frame:0\n"
+        "          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0\n"
+        "          collisions:0 txqueuelen:1000\n"
+        "          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)\n"
+        "\n"
+        "eth2      Link encap:Ethernet  HWaddr 00:50:C2:B2:7F:F6\n"
+        "          UP BROADCAST MULTICAST  MTU:1500  Metric:1\n"
+        "          RX packets:0 errors:0 dropped:0 overruns:0 frame:0\n"
+        "          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0\n"
+        "          collisions:0 txqueuelen:1000\n"
+        "          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)\n"
+    )
+    dev = DeviceData(id="test_ifconfig_down")
+    command_parsers.IfconfigParser.process(command_parsers.IfconfigParser.parse(data), dev)
+    eth1 = dev.retrieve("interface", {"name": "eth1"})
+    assert (eth1.enabled, eth1.connected) == (False, False)
+    eth2 = dev.retrieve("interface", {"name": "eth2"})
+    assert (eth2.enabled, eth2.connected) == (True, False)  # up, no link
+    assert_no_errors()
+
+
 def test_ifconfig_then_proc_net_dev_newest_wins(text_data, mocker, assert_no_errors):
     t1 = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
     t2 = t1 + datetime.timedelta(seconds=5)
@@ -572,6 +598,59 @@ def test_netstat_linux_connections(assert_no_errors):
     assert rels["192.0.2.9"].protocol == "https"
     assert rels["192.0.2.9"].state == "time_wait"
     assert_no_errors()
+
+
+def test_netstat_sessions_with_itself_are_not_relationships(assert_no_errors):
+    linux = (
+        "Proto Recv-Q Send-Q Local Address  Foreign Address    State       PID/Program name\n"
+        "tcp        0      0 127.0.0.1:5000 0.0.0.0:*          LISTEN      700/app\n"
+        "tcp        0      0 127.0.0.1:5000 127.0.0.1:41000    ESTABLISHED 700/app\n"
+        "tcp        0      0 127.0.0.1:41000 127.0.0.1:5000    ESTABLISHED 701/client\n"
+        "tcp        0      0 192.0.2.20:41001 192.0.2.20:22    ESTABLISHED 702/ssh\n"
+        "tcp        0      0 ::1:41002      ::1:5000           ESTABLISHED 703/client\n"
+        "tcp        0      0 192.0.2.20:41003 192.0.2.9:443    ESTABLISHED 704/curl\n"
+    )
+    dev = DeviceData(id="test_netstat_self", ip="192.0.2.20")
+    command_parsers.NetstatLinuxParser.process(
+        command_parsers.NetstatLinuxParser.parse(linux), dev
+    )
+    assert [r.remote.ip for r in dev.relationships] == ["192.0.2.9"]
+
+    vxworks = (
+        "INET sockets\n"
+        "Prot   Recv-Q Send-Q Local Address         Foreign Address       State       TID\n"
+        "TCP         0      0 127.0.0.1.5000        0.0.0.0.*             LISTEN      0x1c90000\n"
+        "TCP         0      0 127.0.0.1.5000        127.0.0.1.1030        ESTABLISHED 0x1c90000\n"
+        "TCP         0      0 127.0.0.1.1030        127.0.0.1.5000        ESTABLISHED 0x1ca0000\n"
+    )
+    dev = DeviceData(id="test_netstat_self_vx", ip="192.0.2.20")
+    parser = command_parsers.NetstatSocketsVxWorksParser
+    parser.process(parser.parse(vxworks), dev)
+    assert dev.relationships == []
+    assert_no_errors()
+
+
+def test_ip_route_parser_multipath_and_junk_lines():
+    data = (
+        "default proto static metric 100\n"
+        "\tnexthop via 10.0.0.1 dev eth0 weight 1\n"
+        "\tnexthop via 10.0.1.1 dev eth1 weight 1\n"
+        "10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.5\n"
+        "BusyBox v1.31.1 (2020-01-01) multi-call binary.\n"
+        "root@x3:~\n"
+    )
+    dev = DeviceData(id="test_ip_route_multipath")
+    assert command_parsers.IpRouteParser.parse_and_process(data, dev)
+    routes = {r.destination: r for r in dev.routes}
+    assert set(routes) == {"0.0.0.0/0", "10.0.0.0/24"}
+    default = routes["0.0.0.0/0"]
+    assert (default.gateway, default.interface, default.type) == ("10.0.0.1", "eth0", "static")
+    assert [h["via"] for h in default.extra["nexthops"]] == ["10.0.0.1", "10.0.1.1"]
+    assert routes["10.0.0.0/24"].type == "connected"
+
+    junk = DeviceData(id="test_ip_route_junk")
+    command_parsers.IpRouteParser.parse_and_process("root@x3:~\nip: can't find device 'foo'", junk)
+    assert junk.routes == []
 
 
 def test_ip_route_parser(text_data, mocker, tmp_path, assert_no_errors):

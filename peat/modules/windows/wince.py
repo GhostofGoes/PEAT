@@ -216,8 +216,6 @@ class WindowsCE(DeviceModule):
 
         # Populate information about network sockets
         if "network_sockets" in data:
-            dev.extra["network_sockets"] = data["network_sockets"]
-
             _protocol_lookups = {
                 21: "ftp",
                 23: "telnet",
@@ -232,13 +230,20 @@ class WindowsCE(DeviceModule):
             # TCP sockets. Sockets in LISTEN state are services, other
             # sockets (connections) are relationships.
             connections = []  # type: list[Relationship]
+            # Sockets (or their columns) that are not mapped to services or
+            # relationships are kept in dev.extra["network_sockets"]
+            unmapped = {"TCP Sockets": [], "UDP Sockets": []}
             for t_skt in data["network_sockets"].get("TCP Sockets", []):
                 if t_skt.get("state") != "LISTEN":
                     rel = connection_from_socket(t_skt, "tcp")
                     if rel:
                         connections.append(rel)
+                    else:
+                        unmapped["TCP Sockets"].append(t_skt)
                     continue
 
+                if set(t_skt) - {"state", "Local Port"}:
+                    unmapped["TCP Sockets"].append(t_skt)
                 t_port = t_skt["Local Port"]  # type: int
                 dev.related.ports.add(t_port)
 
@@ -254,6 +259,12 @@ class WindowsCE(DeviceModule):
             # UDP sockets. Save all ports to related, but only
             # save low ports as services (port < 10000).
             for u_skt in data["network_sockets"].get("UDP Sockets", []):
+                if (
+                    not u_skt.get("Local Port")
+                    or u_skt["Local Port"] >= 10000
+                    or set(u_skt) - {"Local Port"}
+                ):
+                    unmapped["UDP Sockets"].append(u_skt)
                 if u_skt.get("Local Port"):
                     u_port = u_skt["Local Port"]  # type: int
                     dev.related.ports.add(u_port)
@@ -271,6 +282,10 @@ class WindowsCE(DeviceModule):
 
             # After the services, so the direction is inferred from listening ports
             store_relationships(dev, connections)
+
+            unmapped = {k: v for k, v in unmapped.items() if v}
+            if unmapped:
+                dev.extra["network_sockets"] = unmapped
 
         # Populate information about processes
         if "process_list" in data:

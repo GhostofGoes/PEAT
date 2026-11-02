@@ -109,7 +109,11 @@ def test_sockets(parsed):
     # LISTEN sockets are services, the others relationships
     ports = {(s.port, s.transport) for s in parsed.service}
     assert {(44818, "tcp"), (21, "tcp"), (161, "udp")} <= ports
-    assert parsed.extra["network_sockets"] == PILLAGE["network_sockets"]
+    # Only sockets that aren't services or relationships stay in extra
+    assert parsed.extra["network_sockets"] == {
+        "TCP Sockets": [{"Local Port": 1051, "state": "CLOSED"}],  # no remote address
+        "UDP Sockets": [{"Local Port": 50000}],
+    }
 
     rels = {r.remote.ip: r for r in parsed.relationships}
     assert set(rels) == {"192.0.2.10", "192.0.2.20"}
