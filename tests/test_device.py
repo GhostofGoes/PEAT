@@ -48,7 +48,8 @@ def test_known_defaults_contract_all_modules():
             assert len(rule_ids) == len(set(rule_ids)), (name, baseline.id)
         for user, password in module.factory_default_credentials:
             assert user, name
-            assert password, name
+            # an empty factory password is valid (ControlLogix "Administrator")
+            assert isinstance(password, str), name
             assert module.is_factory_default_credential(user.upper(), password), name
             assert module.is_factory_default_credential(user.lower(), password), name
             assert not module.is_factory_default_credential(user, password + "x"), name

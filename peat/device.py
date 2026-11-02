@@ -141,6 +141,7 @@ class DeviceModule:
 
     Use :meth:`get_known_defaults` to read them (includes parent classes).
     Never include passwords or other secrets.
+    See :func:`peat.api.baseline_api.compare_to_known_defaults` and :doc:`baselines`.
     """
 
     factory_default_credentials: set[tuple[str, str]] = set()

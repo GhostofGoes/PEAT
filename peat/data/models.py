@@ -3019,6 +3019,10 @@ class Event(BaseModel):
     id: str = ""
     """
     Unique identifier for the Event, if any.
+
+    .. note::
+       FortiGate events also store the log ID here for compatibility with
+       older PEAT output. This use is deprecated: the log ID is in ``code``.
     """
 
     ingested: datetime | None = None
