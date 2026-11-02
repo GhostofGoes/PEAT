@@ -1,0 +1,1 @@
+SEL: new ``sel.fast_ser`` option (off by default) that also collects unsolicited Fast SER records with the ``fast`` pull method, adds them to the SER events and the uptime, and disables Fast SER on the port again when it's done. Since acknowledging Fast SER messages clears the Fast Meter ``STSET`` bit, Fast SER isn't enabled if that bit is set, or if its state isn't known.
