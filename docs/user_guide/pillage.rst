@@ -17,8 +17,9 @@ be pulled, and for recovering configurations when a device is gone.
 
 Requirements
 ============
-- **Linux only** (tested on Ubuntu 18.04 and newer). The :doc:`container <containers>` is
-  an option on other platforms, with limitations noted below.
+- **Linux only** for disk images (tested on Ubuntu 18.04 and newer). Pillaging a directory
+  of files also works on macOS; the :doc:`container <containers>` is an option on other
+  platforms, with the limitations noted below.
 - **Must run as root** (``sudo``), which is needed to mount images.
 - ``qemu-nbd`` from the ``qemu-utils`` package, to attach disk images:
   ``sudo apt install qemu-utils``.

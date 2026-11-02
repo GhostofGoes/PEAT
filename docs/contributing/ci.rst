@@ -20,7 +20,8 @@ Workflows
        (every PR must add ``newsfragments/<PR>.*``); **Changelog Construction Check**
        (``towncrier build --draft``); **Code Quality Checks** (``pdm run lint``,
        ``check-sdist``); **Unit Tests** on a matrix of Python 3.11/3.12/3.13 and
-       Ubuntu 24.04, Windows (latest and 2022), and macOS, with slow tests enabled and
+       Ubuntu 24.04, Windows (latest and 2022), and macOS (15 on Apple Silicon and Intel,
+       26 on Apple Silicon), with slow tests enabled and
        coverage uploaded as artifacts.
    * - ``tests-container.yml`` (Container Tests)
      - Every push and pull request
@@ -30,7 +31,8 @@ Workflows
    * - ``build.yml`` (Build)
      - Every push and pull request; called by the release workflow
      - Builds the Python package (and checks its contents), the Linux executables (PEAT
-       and Sneakypeat, with StaticX), and the Windows executables, and smoke-tests each
+       and Sneakypeat, with StaticX), the Windows executables, and the macOS executables
+       (on Apple Silicon and Intel runners), and smoke-tests each
        (``--version``, ``--list-modules``, a parse with the example module). Also builds
        the HTML docs and man page. Artifacts are uploaded for download from the run.
    * - ``documentation.yml`` (Documentation)

@@ -95,8 +95,9 @@ Git
   (:doc:`index`). Scope commits to a single change.
 - Open a *draft* pull request when work is nearing completion, to raise visibility and
   start discussion before the review.
-- Before merging: ``AUTHORS`` and module docstring authors updated, tests added, CI
-  passing, review by a maintainer.
+- Before merging: ``AUTHORS`` and module docstring authors updated (and
+  ``.github/CODEOWNERS`` when taking ownership of a new area, such as a new device
+  module), tests added, CI passing, review by a maintainer.
 
 Versioning
 ==========

@@ -91,7 +91,7 @@ dependencies, which takes a few seconds. ``--no-logo`` doesn't make it faster.
 
 No hosts are responding, but the devices are up
 -----------------------------------------------
-- PEAT needs root (Linux) or Administrator (Windows) rights to use :term:`ARP` and
+- PEAT needs root (Linux and macOS) or Administrator (Windows) rights to use :term:`ARP` and
   :term:`ICMP` for online checks; otherwise it tries a TCP connection to port 80, which
   many devices don't listen on. Re-run with ``sudo`` or from an elevated PowerShell, or
   set :attr:`SYN_PORT <peat.settings.Configuration.SYN_PORT>` to a port the devices do
@@ -102,6 +102,8 @@ No hosts are responding, but the devices are up
   libpcap/tcpdump are missing; install them (``sudo apt install tcpdump``) for reliable
   ARP/ICMP checks.
 - On Windows, install `Npcap <https://npcap.com/>`__.
+- On macOS, raw packets need the BPF devices, which only root can open by default: run
+  PEAT with ``sudo``, or install Wireshark's ChmodBPF helper. See :ref:`macos-limitations`.
 - In a container, ``--network host`` is required.
 
 Hosts are online but not identified ("verified")
@@ -150,6 +152,13 @@ Windows: colors and formatting look wrong
 Use PowerShell or Windows Terminal rather than ``cmd``. Disable colors with ``--no-color``
 or customize a problematic color with Loguru's ``LOGURU_<LEVEL>_COLOR`` environment
 variables (see :doc:`/contributing/logging`).
+
+macOS: the executable is blocked by Gatekeeper
+----------------------------------------------
+The executables are not signed or notarized. An executable downloaded with a web browser
+is quarantined and refuses to run until the attribute is removed:
+``xattr -d com.apple.quarantine ./peat_macos_arm64``. Downloads with ``curl`` or the
+install script are not affected.
 
 Elasticsearch export problems
 -----------------------------

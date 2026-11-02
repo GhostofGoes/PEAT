@@ -4,7 +4,8 @@ Install
 PEAT is distributed in several formats, all published with each
 `release on GitHub <https://github.com/sandialabs/PEAT/releases>`__:
 
-- Pre-built, self-contained executables for Linux (``peat``) and Windows (``peat.exe``).
+- Pre-built, self-contained executables for Linux (``peat``), Windows (``peat.exe``), and
+  macOS (``peat_macos_arm64`` for Apple Silicon, ``peat_macos_x86_64`` for Intel).
   **Recommended for most users.** Python is not required.
 - A :term:`container <Container>` image on the GitHub Container Registry
   (``ghcr.io/sandialabs/peat``) for :term:`Docker` and :term:`Podman`.
@@ -75,6 +76,39 @@ Installation
          chmod u+x ./peat
          ./peat --version
          man ./peat.1
+
+   .. tab-item:: :peat-icon:`apple` macOS
+      :sync: macos
+
+      The Linux install script also works on macOS: it downloads the executable for your
+      Mac (Apple Silicon or Intel) and the man page, and installs them to
+      ``/usr/local/bin/peat`` and ``/usr/local/share/man/man1/peat.1``.
+
+      .. code-block:: bash
+
+         curl -fLO https://raw.githubusercontent.com/sandialabs/PEAT/refs/heads/main/scripts/install_peat.sh
+         less install_peat.sh          # Review the script before running it
+         chmod +rx install_peat.sh
+         sudo ./install_peat.sh
+         peat --version
+         man peat
+
+      **Manual installation**
+
+      Download ``peat_macos_arm64`` (Apple Silicon) or ``peat_macos_x86_64`` (Intel) and
+      ``peat.1`` from the `releases page <https://github.com/sandialabs/PEAT/releases>`__,
+      then follow the Linux manual steps with the downloaded file name in place of ``peat``
+      (``mandb`` is not needed on macOS). The executables are not signed or notarized: an
+      executable downloaded with a web browser is quarantined and Gatekeeper blocks it until
+      the attribute is removed:
+
+      .. code-block:: bash
+
+         xattr -d com.apple.quarantine ./peat_macos_arm64
+
+      The executables require macOS 15 or newer. The Python package also works on macOS
+      (Python 3.11 to 3.13; see the Python package tab). Scans need ``sudo`` for ARP and
+      ICMP host discovery; see :ref:`macos-limitations`.
 
    .. tab-item:: :peat-icon:`windows` Windows
       :sync: windows
@@ -187,7 +221,7 @@ files (``peat_version``), so results from different versions can be told apart.
 
 Uninstalling
 ============
-- **Linux**: ``sudo rm /usr/local/bin/peat /usr/local/share/man/man1/peat.1``
+- **Linux and macOS**: ``sudo rm /usr/local/bin/peat /usr/local/share/man/man1/peat.1``
 - **Windows**: delete ``%LOCALAPPDATA%\Programs\peat.exe``. The install script adds
   ``%LOCALAPPDATA%\Programs`` to your user ``PATH``; remove it if nothing else uses it
   (Settings > System > About > Advanced system settings > Environment Variables).
@@ -203,9 +237,9 @@ Releases are managed via `GitHub Releases <https://github.com/sandialabs/PEAT/re
 and are versioned by date (for example ``v2026.9.2``, see :doc:`/changelog`). A release
 usually consists of:
 
-- The Linux and Windows executables (``peat`` and ``peat.exe``), and bundles of each with
-  the example configuration files (``peat_linux_<version>.tgz``,
-  ``peat_windows_<version>.zip``)
+- The Linux, Windows, and macOS executables (``peat``, ``peat.exe``, ``peat_macos_arm64``,
+  and ``peat_macos_x86_64``), and bundles of the Linux and Windows ones with the example
+  configuration files (``peat_linux_<version>.tgz``, ``peat_windows_<version>.zip``)
 - The Python source distribution (``.tar.gz``) and binary wheel (``.whl``)
 - The Linux man page (``peat.1``)
 - The container image via the GitHub Container Registry (``ghcr.io/sandialabs/peat``)

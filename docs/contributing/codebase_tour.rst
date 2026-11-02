@@ -17,7 +17,7 @@ Repository layout
    ├── distribution/         Packaging: PyInstaller specs, build scripts, Sneakypeat, Malcolm dashboard
    ├── scripts/              Install scripts, Elasticsearch test stack, changelog helper, small utilities
    ├── newsfragments/        Towncrier changelog fragments (one per pull request)
-   ├── .github/              GitHub Actions workflows, issue and PR templates
+   ├── .github/              GitHub Actions workflows, CODEOWNERS, issue and PR templates
    ├── .devcontainer/        VS Code devcontainer configuration
    ├── pyproject.toml        Project metadata, dependencies, tool configuration, PDM scripts
    ├── pdm.lock              Pinned dependency versions
@@ -32,6 +32,8 @@ Top-level files
 ---------------
 - ``.dockerignore``: files excluded from the container build context
 - ``.editorconfig``: consistent editor settings (indentation, line endings)
+- ``.github/CODEOWNERS``: the GitHub users responsible for each area of the codebase; they
+  are requested automatically as reviewers on pull requests that change those areas.
 - ``.gitattributes``: how Git treats file types and line endings, so Bash scripts always
   have ``LF`` endings even when cloned on Windows, and device files keep theirs
 - ``.gitignore``: anything that shouldn't be committed (virtualenvs, outputs, caches)

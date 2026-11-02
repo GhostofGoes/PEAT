@@ -29,6 +29,10 @@ and situation:
      - Single self-contained file built with PyInstaller
      - Engineering workstations and Windows laptops, which are usually what's available on
        a control network
+   * - macOS executables (``peat_macos_arm64``, ``peat_macos_x86_64``)
+     - Single self-contained files built with PyInstaller on macOS 15, one per
+       architecture
+     - Macs running macOS 15 or newer
    * - Container image (``ghcr.io/sandialabs/peat``)
      - The CLI with its dependencies and Zeek, on a slim Debian/Python base
      - Reproducible runs anywhere with Docker or Podman; HEAT; CI
@@ -48,8 +52,8 @@ The goals behind these formats:
   emulated environments), and Windows (real-world control networks almost always have a
   Windows machine with a path to the devices, such as an engineering workstation; getting
   PEAT there on a flash drive or through a data diode avoids the many problems of getting
-  a Linux system onto the network). macOS compatibility is maintained on a best-effort
-  basis for developers who use Macs.
+  a Linux system onto the network), and macOS (Apple Silicon and Intel) for developers
+  and for assessors who work from a Mac.
 - **Portability**: a reasonable size and easy to get onto a system, including isolated
   ones.
 
@@ -112,8 +116,8 @@ The Windows distribution is a PyInstaller bundle built on Windows. Files involve
    pdm run build-exe
    .\dist\peat.exe --version
 
-``pdm run build-exe`` also works on Linux and macOS to produce a non-portable executable
-for the build machine's own distribution (useful for quick tests of the packaging).
+``pdm run build-exe`` also works on Linux to produce a non-portable executable for the
+build machine's own distribution (useful for quick tests of the packaging).
 
 Hidden imports
 --------------
@@ -122,6 +126,25 @@ loaded at runtime, and some libraries (pysnmp MIBs, ``dateutil``, ``manuf``) nee
 listed explicitly in ``hidden_imports`` in ``peat.spec``. The symptom of a missing one is
 ``Failed to import mypackage.mymodule: No module named 'csv'`` at runtime. See the notes in
 ``peat.spec`` and :doc:`/developer/module_developer_guide`.
+
+macOS executables
+=================
+The macOS executables are PyInstaller bundles built with the same ``distribution/peat.spec``
+as Windows. StaticX is Linux-only and isn't needed: a macOS executable runs on the release
+it was built on and newer ones. PyInstaller builds for the architecture of the Python
+interpreter, so the build workflow builds ``peat_macos_arm64`` on an Apple Silicon runner
+and ``peat_macos_x86_64`` on an Intel runner, each on the oldest macOS release tested in CI
+(macOS 15).
+
+.. code-block:: bash
+
+   pdm install -d
+   pdm run build-exe        # For the current architecture (arm64 or x86_64)
+   ./dist/peat --version
+   ./dist/peat --help
+
+The executables are not signed or notarized; :ref:`macos-limitations` describes the
+Gatekeeper quarantine step users of browser-downloaded copies need.
 
 Sneakypeat
 ==========

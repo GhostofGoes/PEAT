@@ -165,7 +165,11 @@ Serial port scanning
 ====================
 Devices connected directly over RS-232 (including USB-to-serial adapters) are scanned with
 ``-s`` (``--serial``). Targets are port names or numbers; a number ``N`` means ``COMN`` on
-Windows and ``/dev/ttySN`` plus ``/dev/ttyUSBN`` on Linux. Since the state of a serial port
+Windows, ``/dev/ttySN`` plus ``/dev/ttyUSBN`` on Linux, and the ``N``-th of the sorted
+``/dev/cu.*`` devices on macOS (excluding the built-in Bluetooth and debug console ports).
+On macOS name the ``/dev/cu.*`` "callout" device (``/dev/cu.usbserial-1410``, or just
+``usbserial-1410``), not ``/dev/tty.*``, which waits for a carrier-detect signal that most
+devices never send. Since the state of a serial port
 can't be checked beforehand, scanning many unconnected ports takes a while; name the ports
 you have and limit the baud rates with ``--baudrates`` when you know them.
 

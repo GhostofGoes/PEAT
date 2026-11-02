@@ -151,7 +151,7 @@ Active commands (``scan``, ``pull``, ``push``) take targets with one of these ar
   <broadcast-scanning>`: networks, broadcast addresses, interface names, or files of them.
 - ``-s`` (``--serial``): serial ports, as names (``COM4``, ``/dev/ttyUSB0``) or numbers
   and ranges (``0-4`` is ``COM0`` to ``COM4`` on Windows, ``/dev/ttyS0`` to ``/dev/ttyS4``
-  on Linux).
+  on Linux, and the first five ``/dev/cu.*`` devices on macOS).
 - ``-f`` (``--file``): a JSON summary from a previous scan, pull, or push. The verified
   hosts in it become the targets, which allows chaining runs: ``peat scan ... -q -E | peat pull -f -``
   (``-`` reads from standard input).

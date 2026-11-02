@@ -42,8 +42,8 @@ workflow creates it.
 #. Wait for the workflow to finish. It:
 
    - Runs the test workflow and the build workflow with the version stamped into the
-     artifacts (Linux and Windows executables, Python package, HTML docs, man page,
-     Sneakypeat).
+     artifacts (Linux, Windows, and macOS executables, Python package, HTML docs, man
+     page, Sneakypeat).
    - Builds the changelog from the accumulated news fragments with Towncrier and commits
      the updated ``CHANGELOG.rst`` to the target branch (skipped if the changelog already
      has an entry for the tag).

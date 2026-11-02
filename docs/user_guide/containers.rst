@@ -14,7 +14,9 @@ each command. Install instructions are in :doc:`/getting_started/install`.
    ``docker`` with ``podman``; the interfaces are nearly identical, though lesser-used
    arguments may differ. Refer to the `Podman documentation <https://docs.podman.io/en/latest/>`__.
    On Linux, ``sudo`` is required before ``docker`` unless your user is in the ``docker``
-   group; it is omitted below for brevity.
+   group; it is omitted below for brevity. Docker Desktop on macOS and Windows runs
+   containers in a Linux VM, so ``--network host`` reaches the VM's network, not the
+   host's: to scan from a Mac or a Windows machine, use the native executable instead.
 
 Container arguments that matter
 ===============================

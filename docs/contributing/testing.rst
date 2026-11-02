@@ -16,7 +16,9 @@ Kinds of tests
 - **Unit tests**: `pytest <https://docs.pytest.org/en/stable/>`__ tests of the CLI, the
   APIs, the data model, protocols, and modules, using sample files in ``data_files/``
   directories and mocked network interactions. Run in CI on Linux, Windows, and macOS
-  across Python 3.11, 3.12, and 3.13.
+  across Python 3.11, 3.12, and 3.13. The ``All Tests Passed`` job of the test workflow
+  succeeds only when every other job passed or was skipped, so it is the one status check
+  to require in branch protection.
 - **Container-based integration tests**: tests that run against real software in a
   container, currently the OpenPLC Runtime v4 module against the official OpenPLC
   container, and the MySQL protocol against a MySQL service. Marked

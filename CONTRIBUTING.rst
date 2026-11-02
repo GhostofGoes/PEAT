@@ -212,6 +212,7 @@ Requirements before merging
 ---------------------------
 
 #. Your name and any other contributors to the change are in ``AUTHORS``
+#. If you are taking ownership of a new area of the codebase (e.g. a new device module), your GitHub username is listed for that path in ``.github/CODEOWNERS``
 #. The list of authors in the relevant module-level docstring(s) is updated, including email addresses, so it is clear who to contact about a particular portion of the codebase
 #. There is a minimal set of tests for the change (if applicable)
 #. The GitHub Actions CI pipeline passes
