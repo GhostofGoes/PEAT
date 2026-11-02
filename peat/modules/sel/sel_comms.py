@@ -1,12 +1,21 @@
 import timeit
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
+from typing import Final
 
-from peat import DeviceData, DeviceError, config, log, utils
+from peat import DeviceData, DeviceError, config, consts, log, utils
 from peat.protocols import FTP
 
+from .sel_files import SOURCE_DOWNLOAD, record_downloaded_file
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
+
+#: Directories with the preferred copy of a file when files in different
+#: directories have the same name. ``HISTORY.TXT`` and ``CHISTORY.TXT`` are
+#: in both ``REPORTS`` and ``EVENTS`` on the 700G, and the SEL-351S and SEL-421
+#: instruction manuals list them in both (Virtual File Interface sections).
+#: The other report files (``SER.TXT``, ``CSER.TXT``, etc.) are in ``REPORTS``.
+PREFERRED_DIRS: Final = ("REPORTS",)
 
 
 def clean_filenames(filenames: list[bytes | str]) -> list[str]:
@@ -34,14 +43,40 @@ def _method_name(comms: FTP | SELTelnet | SELSerial) -> str:
         raise DeviceError(f"Invalid comms class: {comms.__class__.__name__}")
 
 
+def _transfer_info(comms: FTP | SELTelnet | SELSerial) -> dict[str, str]:
+    """
+    How files are transferred by ``comms``, for ``File.extra``.
+
+    .. note::
+       Call this after a download. For serial, it uses the result of the
+       ``FILE SHOW`` support check cached by the download, instead of
+       sending a command to the relay to find out.
+    """
+    if isinstance(comms, FTP):
+        return {"transport": "ftp", "file_transfer": "ftp"}
+
+    if isinstance(comms, SELSerial):
+        if comms.force_ymodem or getattr(comms, "_supports_show", None) is False:
+            return {"transport": "serial", "file_transfer": "ymodem"}
+        return {"transport": "serial", "file_transfer": "file_show"}
+
+    return {"transport": "telnet", "file_transfer": "file_show"}
+
+
 def download_files(
     files: list[str],
     comms: FTP | SELTelnet | SELSerial,
     save_dir: Path | None,
     handle_download_errors: bool = True,
+    dev: DeviceData | None = None,
+    directory: str | None = None,
 ) -> dict[str, dict[str, bytes | str | Path]]:
     """
     Download a selected list of files from a relay in a comms-agnostic manner.
+
+    Each file is hashed, using the data as it was received (before ``.TXT``
+    files are decoded). If ``dev`` is set, then each file is also recorded in
+    ``dev.files`` using :func:`~peat.modules.sel.sel_files.record_downloaded_file`.
 
     .. code-block:: python
 
@@ -52,9 +87,23 @@ def download_files(
                "raw_path": path,
                "device_path": PurePosixPath(...),
                "local_path": Path(...),
+               "hash": {"md5": "...", "sha1": "...", ...},
+               "size": 1234,
+               "file": File(...),  # only if dev is set
            },
            ...
        }
+
+    Args:
+        files: Paths of the files to download, in the format used by ``comms``
+            (``SETTINGS/SET_1.TXT`` for FTP, ``SETTINGS SET_1.TXT`` for Telnet/serial)
+        comms: Communication method to use, as a class instance
+        save_dir: Directory to save the files to, or :obj:`None` to not save them
+        handle_download_errors: If errors should be logged instead of raised
+        dev: Device to record the downloaded files for
+        directory: Directory on the device the files are in, if it isn't
+            part of the paths in ``files`` (e.g. older relays, where PEAT
+            changes to the directory before downloading)
     """
 
     method = _method_name(comms)
@@ -75,7 +124,9 @@ def download_files(
         # - "SET_P1.TXT"
         # - "SETTINGS SET_P1.TXT"
         # - "SETTINGS/SET_P1.TXT" (need to confirm)
-        fmt_path = path.split(" ")[-1].replace("\\", "/")
+        fmt_path = "/".join(path.replace("\\", "/").split())
+        if directory and directory != "/" and "/" not in fmt_path.strip("/"):
+            fmt_path = f"{directory}/{fmt_path}"
         if fmt_path[0] != "/":
             fmt_path = f"/{fmt_path}"
         path_obj = PurePosixPath(fmt_path)
@@ -84,14 +135,35 @@ def download_files(
         log.info(f"Retrieving '{path}' from {comms.address} via {method}")
 
         try:
-            file_data = comms.download_binary(path, save_to_file=False)
+            raw_data = comms.download_binary(path, save_to_file=False)
 
-            if file_data is None:
+            if raw_data is None:
                 log.error(f"Failed to download {filename} from {comms.address} via {method}")
                 continue
 
-            if isinstance(file_data, bytes) and path.upper().endswith(".TXT"):
-                file_data = file_data.decode("utf-8")
+            file_data = raw_data
+            if isinstance(raw_data, bytes) and path.upper().endswith(".TXT"):
+                try:
+                    file_data = raw_data.decode("utf-8")
+                except UnicodeDecodeError:
+                    # e.g. a degree sign (0xB0) in an event file. The saved
+                    # file and the hashes are of the raw bytes either way.
+                    log.warning(
+                        f"{filename} from {comms.address} isn't valid UTF-8, decoding as Latin-1"
+                    )
+                    file_data = raw_data.decode("latin-1")
+
+            # What's saved and hashed
+            content = raw_data
+            description = ""
+            if isinstance(file_data, str) and file_data.strip() == "=>":
+                log.warning(
+                    f"File '{filename}' only has '=>' as contents, "
+                    f"probably as a artifact of a Telnet mis-parse. "
+                    f"Writing empty data instead."
+                )
+                content = ""
+                description = "Only '=>' was received, probably a Telnet mis-parse"
 
             file_dict = {
                 "name": filename,
@@ -102,22 +174,41 @@ def download_files(
             }
 
             if save_dir:
-                local_path = save_dir / filename
-                if isinstance(file_data, str) and file_data.strip() == "=>":
-                    log.warning(
-                        f"File '{filename}' only has '=>' as contents, "
-                        f"probably as a artifact of a Telnet mis-parse. "
-                        f"Writing empty data instead."
-                    )
-                    utils.write_file("", local_path)
-                else:
-                    utils.write_file(file_data, local_path)
-                file_dict["local_path"] = local_path
+                # utils.write_file() writes to "<name>.<num>" if the file exists.
+                # Pick that name here, so local_path is the file that's written.
+                local_path = save_dir / consts.sanitize_filename(filename)
+                if local_path.exists():
+                    local_path = utils.dup_path(local_path)
+                if utils.write_file(content, local_path):
+                    file_dict["local_path"] = local_path
 
-            # Check for duplicates. An example of this is on the 700G,
-            # which has EVENTS/HISTORY.TXT and REPORTS/HISTORY.TXT,
-            # which contain the same data (timestamp will differ tho),
-            # but have different parent directories.
+            # Recording is a side effect: never drop a downloaded file because of it
+            try:
+                if dev is not None:
+                    file_obj = record_downloaded_file(
+                        dev=dev,
+                        data=content,
+                        name=filename,
+                        device_path=path_obj,
+                        local_path=file_dict["local_path"] or None,
+                        source=SOURCE_DOWNLOAD,
+                        peat_module="SELRelay",
+                        description=description,
+                        extra=_transfer_info(comms),
+                    )
+                    file_dict["file"] = file_obj
+                    file_dict["hash"] = file_obj.hash.dict(exclude_none=True)
+                    file_dict["size"] = file_obj.size
+                else:
+                    raw_content = content.encode("utf-8") if isinstance(content, str) else content
+                    file_dict["hash"] = utils.gen_hashes(raw_content)
+                    file_dict["size"] = len(raw_content)
+            except Exception as rec_ex:
+                log.warning(f"Failed to record hashes for '{path}' from {comms.address}: {rec_ex}")
+
+            # Check for duplicates in the same directory. Files with the same
+            # name in different directories (e.g. EVENTS/HISTORY.TXT and
+            # REPORTS/HISTORY.TXT on the 700G) are handled by pull_files().
             if filename in all_file_data:
                 ext_count = 1
                 while f"{filename}.{ext_count}" in all_file_data:
@@ -183,11 +274,48 @@ def filter_names(
     return sorted(filtered)
 
 
+def _in_preferred_dir(file_dict: dict) -> bool:
+    return PurePosixPath(file_dict["device_path"]).parent.name.upper() in PREFERRED_DIRS
+
+
+def _files_by_name(files_by_path: dict[str, dict], address: str) -> dict[str, dict]:
+    """
+    Key downloaded files by their name instead of their path on the device.
+
+    If files in different directories have the same name, a file in one of
+    :data:`PREFERRED_DIRS` is used. Otherwise, the file in the last directory
+    (in sorted order) is used, which is the same as before files were keyed by path.
+    """
+    by_name = {}  # type: dict[str, dict]
+
+    for file_dict in files_by_path.values():
+        name = file_dict["name"]
+        current = by_name.get(name)
+
+        if current is None:
+            by_name[name] = file_dict
+            continue
+
+        if _in_preferred_dir(file_dict) or not _in_preferred_dir(current):
+            by_name[name] = file_dict
+
+        log.info(
+            f"'{name}' is in multiple directories on {address} "
+            f"('{current['device_path']}' and '{file_dict['device_path']}'), "
+            f"using '{by_name[name]['device_path']}'"
+        )
+
+    return by_name
+
+
 def pull_files(
     dev: DeviceData, comms: FTP | SELTelnet | SELSerial
 ) -> dict[str, dict[str, bytes | str]]:
     """
     Recursively download all files from a relay in a comms-agnostic manner.
+
+    Every file downloaded is hashed and recorded in ``dev.files`` (see
+    :func:`~peat.modules.sel.sel_files.record_downloaded_file`).
 
     Args:
         dev: The device to pull from
@@ -196,7 +324,11 @@ def pull_files(
 
     Returns:
         The files downloaded, keyed by filename, with value being a dict including
-        the file data, the device path, and the local path (if it was saved locally).
+        the file data, the device path, the local path (if it was saved locally),
+        the hashes, and the :class:`~peat.data.models.File` in ``dev.files``.
+        If files in different directories have the same name (e.g. ``EVENTS/HISTORY.TXT``
+        and ``REPORTS/HISTORY.TXT``), only one is included. All of the files,
+        keyed by their path on the device, are in ``dev._cache["all_files_by_path"]``.
     """
     method = _method_name(comms)
     start_time = timeit.default_timer()
@@ -222,8 +354,8 @@ def pull_files(
 
     log.info(f"Directories to download from {dev.address} via {method}: {to_download}")
 
-    # Raw and file paths contents of all files downloaded
-    all_files = {}
+    # Raw and file paths contents of all files downloaded, keyed by device path
+    files_by_path = {}  # type: dict[str, dict]
 
     # Download files from each directory
     for dirname in to_download:
@@ -270,9 +402,12 @@ def pull_files(
                 comms=comms,
                 save_dir=sub_dir,
                 handle_download_errors=dev.options["sel"].get("handle_download_errors", True),
+                dev=dev,
+                directory=dirname,
             )
 
-            all_files.update(downloaded)
+            for file_dict in downloaded.values():
+                files_by_path.setdefault(file_dict["device_path"].as_posix(), file_dict)
 
             # Restore directory location
             if (dev.extra.get("sel_old_ftp") or dev.options["sel"]["old_ftp"]) and isinstance(
@@ -286,17 +421,20 @@ def pull_files(
 
     duration = timeit.default_timer() - start_time
     log.info(
-        f"Pulled {len(all_files)} files from {dev.address} via {method} "
+        f"Pulled {len(files_by_path)} files from {dev.address} via {method} "
         f"(duration: {utils.fmt_duration(duration)})"
     )
-    log.debug(f"Files pulled from {dev.address} via {method}: {', '.join(all_files.keys())}")
+    log.debug(f"Files pulled from {dev.address} via {method}: {', '.join(files_by_path)}")
+
+    all_files = _files_by_name(files_by_path, dev.address)
 
     # NOTE: if SET_ALL.TXT isn't in the files, it's reconstructed from the
     # individual settings files (SET_*.TXT) in SELRelay.pull_configs()
     dev._cache["all_files"] = all_files
+    dev._cache["all_files_by_path"] = files_by_path
 
     # Add files to related.files, in case they aren't already
-    for file_dict in all_files.values():
+    for file_dict in files_by_path.values():
         dev.related.files.add(file_dict["name"])
 
     return all_files

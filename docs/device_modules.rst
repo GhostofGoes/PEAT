@@ -242,6 +242,11 @@ General comms functions
 .. automodule:: peat.modules.sel.sel_comms
    :members:
 
+Downloaded file hashing
+^^^^^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_files
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse

@@ -28,6 +28,7 @@ from peat.data.data_utils import merge_models
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
 from .sel_consts import ANSI_CODES, LOGIC_KEYS
+from .sel_files import SOURCE_DERIVED, write_and_record_file
 
 ConfigSectionType = list[str] | dict[str, str]
 ConfigsType = dict[str, ConfigSectionType]
@@ -2459,7 +2460,8 @@ def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
     .CID files are zlib-compressed data (zlib-header 0x7801 - No Compression/low).
     The only known CID file currently is ``SET_61850.CID``, which contains XML data.
 
-    This function decompresses the zlib data and saves the decoded text to a new file.
+    This function decompresses the zlib data and saves the decoded text to a new file,
+    which is hashed and recorded in ``dev.files``.
     """
     log.info(f"Extracting data from CID file '{filepath.name}'")
 
@@ -2474,7 +2476,15 @@ def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
         if "<?xml version" in extracted:
             ext = "xml"
 
-        dev.write_file(extracted, f"{filepath.stem}_decompressed.{ext}")
+        write_and_record_file(
+            dev=dev,
+            data=extracted,
+            filename=f"{filepath.stem}_decompressed.{ext}",
+            source=SOURCE_DERIVED,
+            peat_module="SELRelay",
+            description=f"Decompressed contents of {filepath.name}",
+            extra={"derived_from": [filepath.name]},
+        )
 
         if not extracted:
             log.warning(f"No data extracted from CID file {filepath.name}")
