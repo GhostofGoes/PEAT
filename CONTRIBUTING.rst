@@ -590,6 +590,7 @@ Anything related to installing, packaging, or distributing PEAT. See the :ref:`d
 - ``linux-install-script.sh``  Installs the PEAT executable in ``/usr/local/bin``, the man page in ``/usr/local/share/man/man1/``, and updates the ``mandb``. Intended to be distributed with the Linux executable and the man page (``peat.1``).
 - ``peat.spec``  `PyInstaller spec <https://pyinstaller.readthedocs.io/en/stable/spec-files.html>`__ for building portable PEAT executables (for both Linux and Windows)
 - ``peat_icon.ico``  Icon file used for the Windows executable
+- ``wireshark/``  Wireshark Lua dissector for SEL ASCII (``selascii.lua``) and the ``socat2pcap.py`` serial capture converter. Refer to ``distribution/wireshark/README.md``.
 
 examples
 ^^^^^^^^

@@ -1,0 +1,34 @@
+# frame.number|selascii.direction|selascii.type|selascii.cmd|selascii.cmd.category|selascii.response_to|selascii.request_in|selascii.prompt|selascii.access_level|selascii.line_count|selascii.error|selascii.id.fid|selascii.id.iedname|selascii.cascii.checksum.status|selascii.password|selascii.input|selascii.question|selascii.fast.type|selfm.msgtype|selascii.ymodem.block|selascii.ymodem.filename|selascii.reassembled_in|selascii.password.factory_default|selascii.cmd.operates_equipment|selascii.cmd.state_change|selascii.access_level.changed|selascii.cascii.bad_checksum|selascii.telnet_sb_unterminated|_ws.lua.error|_ws.malformed
+6|1|Prompt|||||=|0|||||||||||||||||||||
+7|0|Command|ID|Read|||||||||||||||||||||||||
+9|1;1|Response;Prompt|||ID;ID|7;7|=|0|10||SEL-700G-R200-V0-Z006003-D20180629|SEL_700G_1|1;1;1;1;1;1;1;1;1;1||||||||||||||||
+10|0|Command|ACC|Access level|||||||||||||||||||||||||
+11|1|Password prompt|||ACC|10|Password: ?||0||||||||||||||||||||
+12|0|Password|||ACC|||||||||*****|||||||||||||||
+13|1|Password prompt|||ACC|10|Password: ?||0||||||||||||||||||||
+14|0|Password|||ACC|||||||||*****||||||||1|||||||
+15|1|Response|||ACC|10|=>|1|3||||||||||||||||1||||
+17|1|Echo / unframed text|||||||1||||||||||||||||||||
+19|1|Echo / unframed text|||||||1||||||||||||||||||||
+21|1|Echo / unframed text|||||||1||||||||||||||||||||
+22|0|Command|CAS|Read|||||||||||||||||||||||||
+23|1;1|Response;Prompt|||CAS;CAS|22;22|=>|1|6||||1;1;1;1;1;0|||||||||||||1|||
+24|0;0|Command;Command|SER;XYZ|Read|||||||||||||||||||||||||
+25|1;1|Response;Prompt|||SER 3;SER 3|24;24|=>|1|6||||||||||||||||||||
+26|1;1|Response;Prompt|||XYZ;XYZ|24;24|=>|1|1|Invalid Command|||||||||||||||||||
+27|0|Command|2AC|Access level|||||||||||||||||||||||||
+28|1|Password prompt|||2AC|27|Password: ?||0||||||||||||||||||||
+29|0|Password|||2AC|||||||||****||||||||1|||||||
+30|1|Response|||2AC|27|=>>|2|1||||||||||||||||1||||
+31|0|Command|STA|Maintenance (resets, clears or restarts)||||||||||||||||||||1|||||
+32|1|Question|||STA C|31|||0|||||||Restart the relay (Y,N)?|||||||||||||
+33|0|Input|||STA C||||||||||N||||||||||||||
+34|1|Response|||STA C|31|=>>|2|1||||||||||||||||||||
+35|0|Command|PUL|Control (operates equipment)|||||||||||||||||||1||||||
+36|1|Question|||PUL OUT101|35|||0|||||||Pulse OUT101 (Y,N)?|||||||||||||
+37|0|Input|||PUL OUT101||||||||||N||||||||||||||
+38|1|Prompt|||PUL OUT101|35|=>>|2|||||||||||||||||||||
+39|0|SEL Fast message|||||||||||||||0xa5c0|0xa5c0|||||||||||
+40|1|SEL Fast message|||||||||||||||0xa5c0|0xa5c0|||||||||||
+41|0|Command|QUI|Access level|||||||||||||||||||||||||
+42|1|Prompt|||QUI|41|=|0|||||||||||||||||1||||

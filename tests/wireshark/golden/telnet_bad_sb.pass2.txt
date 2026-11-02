@@ -1,0 +1,8 @@
+# frame.number|selascii.direction|selascii.type|selascii.cmd|selascii.cmd.category|selascii.response_to|selascii.request_in|selascii.prompt|selascii.access_level|selascii.line_count|selascii.error|selascii.id.fid|selascii.id.iedname|selascii.cascii.checksum.status|selascii.password|selascii.input|selascii.question|selascii.fast.type|selfm.msgtype|selascii.ymodem.block|selascii.ymodem.filename|selascii.reassembled_in|selascii.password.factory_default|selascii.cmd.operates_equipment|selascii.cmd.state_change|selascii.access_level.changed|selascii.cascii.bad_checksum|selascii.telnet_sb_unterminated|_ws.lua.error|_ws.malformed
+4|1|Prompt|||||=>|1|||||||||||||||||||||
+5|0|Command|ID|Read|||||||||||||||||||||||||
+6|1;1|Response;Prompt|||ID;ID|5;5|=>|1|10||SEL-700G-R200-V0-Z006003-D20180629|SEL_700G_1|1;1;1;1;1;1;1;1;1;1||||||||||||||1||
+7|0|Command|STA|Read|||||||||||||||||||||||||
+8|1;1|Response;Prompt|||STA;STA|7;7|=>|1|4||||||||||||||||||||
+10|0|Command|QUI|Access level|||||||||||||||||||||||||
+11|1|Prompt|||QUI|10|=|0|||||||||||||||||1||||

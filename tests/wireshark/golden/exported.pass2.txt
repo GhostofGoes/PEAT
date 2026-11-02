@@ -1,0 +1,15 @@
+# frame.number|selascii.direction|selascii.type|selascii.cmd|selascii.cmd.category|selascii.response_to|selascii.request_in|selascii.prompt|selascii.access_level|selascii.line_count|selascii.error|selascii.id.fid|selascii.id.iedname|selascii.cascii.checksum.status|selascii.password|selascii.input|selascii.question|selascii.fast.type|selfm.msgtype|selascii.ymodem.block|selascii.ymodem.filename|selascii.reassembled_in|selascii.password.factory_default|selascii.cmd.operates_equipment|selascii.cmd.state_change|selascii.access_level.changed|selascii.cascii.bad_checksum|selascii.telnet_sb_unterminated|_ws.lua.error|_ws.malformed
+1|0|Command|ACC|Access level|||||||||||||||||||||||||
+2|1|Password prompt|||ACC|1|Password: ?||0||||||||||||||||||||
+3|0|Password|||ACC|||||||||*****||||||||1|||||||
+4|1|Response|||ACC|1|=>|1|1||||||||||||||||||||
+5|0|Command|STA|Read|||||||||||||||||||||||||
+6|1||||||||||||||||||||10||||||||
+7|1||||||||||||||||||||10||||||||
+8|1||||||||||||||||||||10||||||||
+9|1||||||||||||||||||||10||||||||
+10|1;1|Response;Prompt|||STA;STA|5;5|=>|1|4||||||||||||||||||||
+11|0|Flow control|||||||||||||||||||||||||||
+12|0|Flow control|||||||||||||||||||||||||||
+13|0|Command|QUI|Access level|||||||||||||||||||||||||
+14|1|Prompt|||QUI|13|=|0|||||||||||||||||1||||

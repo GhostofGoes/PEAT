@@ -3,6 +3,7 @@
 
 # Dev/etc
 *.py 		    text eol=lf
+*.lua           text eol=lf
 .dockerignore   text eol=lf
 .editorconfig   text eol=lf
 .gitattributes  text eol=lf
@@ -125,3 +126,6 @@ BOOTROM.SYS binary
 
 # Rockwell tests
 tests/modules/rockwell/data_files/*.txt     text eol=lf
+
+# Wireshark dissector golden output
+tests/wireshark/golden/*.txt     text eol=lf
