@@ -12,6 +12,7 @@ from peat.protocols import Telnet
 from peat.protocols.common import MAC_RE_DASH
 
 from .relay_parse import parse_status_output
+from .sel_cascii import parse_id_output
 
 
 class SELAscii(ABC):
@@ -466,7 +467,7 @@ class SELAscii(ABC):
 
         return parse_status_output(output)
 
-    def get_id(self) -> dict[str, str]:
+    def get_id(self) -> dict[str, str | list[str]]:
         """
         ``id`` command.
 
@@ -483,32 +484,17 @@ class SELAscii(ABC):
         - IED Name (``iedName``)
         - Type
         - Configuration version (``configVersion``)
-        """
-        lines = self.exec_read("id", added_delay=5.0)
 
-        self.log.trace2(f"** Unparsed 'id' command output **\n{lines}")
-        if not lines:
+        Refer to :func:`~peat.modules.sel.sel_cascii.parse_id_output`
+        for details on how the output is parsed.
+        """
+        raw = self.exec_read("id", return_lines=False, added_delay=5.0)
+
+        self.log.trace2(f"** Unparsed 'id' command output **\n{raw!r}")
+        if not raw:
             return {}
 
-        # TODO: move parsing of output to an independent function
-        # 351 has newline separating id and data, 451 doesn't
-        info = {}
-        for line in lines[:-2]:  # Exclude '=>>' and weird byte lines
-            # Handle any weird input that could happen
-            if "," not in line:
-                self.log.trace2(f"No comma in line of id command output. Raw line: {line}")
-                continue
-
-            # Example line: "DEVID=STATION A","049C"
-            # Remove the trailing hex and quotes, then split on '='
-            key_val = line.rpartition(",")[0].replace('"', "").replace("\x02", "").split("=")
-            self.log.trace2(f"get_id() => 'key_val': {key_val}")
-
-            # Handle cases of no value for a key, e.g. "configVersion=","0609"
-            if len(key_val) == 1:
-                self.log.trace(f"No value for key '{key_val[0]}' in result of id command")
-            else:
-                info[key_val[0]] = key_val[1]  # info['DEVID'] = 'STATION A'
+        info = parse_id_output(raw)
 
         self.log.trace2(f"** get_id() => 'info' **\n{info}")
         return info

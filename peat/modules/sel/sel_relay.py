@@ -116,7 +116,9 @@ from peat.file_signature import FileSignature
 from peat.protocols import FTP, check_tcp_port
 
 from .relay_parse import (
+    SER_DEVICE_TIME_KEY,
     SETTINGS_FILENAME_RE,
+    apply_uptime,
     clean_settings_text,
     combine_settings_files,
     create_dev_from_configs,
@@ -158,6 +160,13 @@ RELAY_FILENAMES: Final = (
     "CHISTORY.TXT",
 )
 
+#: Event files, in the order they're parsed. The compressed files (CSER, CHISTORY)
+#: are only parsed if the other file of the same kind (SER, HISTORY) has no events.
+EVENT_FILES: Final = (
+    ("ser", ("SER.TXT", "CSER.TXT")),
+    ("history", ("HISTORY.TXT", "CHISTORY.TXT")),
+)
+
 #: Directories on relays, and "Misc" in RDB files.
 #: Files in these belong to the relay in the parent directory.
 RELAY_DIRNAMES: Final = (
@@ -175,10 +184,6 @@ RELAY_DIRNAMES: Final = (
 #   CFG.XML
 #   VEC_D.TXT, VEC_E.TXT
 #   *.CEV
-
-# TODO: calculate uptime based on time since last "Relay powered up" event
-#   AND no power off event.
-#   Use: dev.retrieve("event", {...})
 
 # TODO: get BADPASS and other auth events from TAR.TXT
 #   Refer to section 7.35 in the SEL351S manual.
@@ -610,15 +615,6 @@ class SELRelay(DeviceModule):
 
         successful = True
 
-        # Parse Sequential Event Recorder (SER) events
-        events = []
-        if all_files.get("SER.TXT") and all_files["SER.TXT"]["data"].strip():
-            events = parse_and_process_events(all_files["SER.TXT"]["data"], "SER.TXT", dev)[0]
-
-        # Fallback to parsing CSER if SER parsing fails
-        if not events and all_files.get("CSER.TXT") and all_files["CSER.TXT"]["data"].strip():
-            parse_and_process_events(all_files["CSER.TXT"]["data"], "CSER.TXT", dev)
-
         # Parse CFG.TXT, if it's present
         if (
             all_files.get("CFG.TXT")
@@ -687,6 +683,15 @@ class SELRelay(DeviceModule):
                 f"parsing was skipped. The file may not exist on this device model."
             )
 
+        # Parse the events after the settings, so the date format (DATE_F) is known.
+        # NOTE: on SEL-400 series relays, reading SER.TXT with FILE READ (YMODEM)
+        # does a "SER CV" (clears the SER records viewed from that port), so a
+        # later read of SER.TXT or CSER.TXT from the same port has no new records.
+        cls._parse_event_files(
+            dev, {name.upper(): info["data"] for name, info in all_files.items()}
+        )
+        cls._apply_uptime(dev, live=True)
+
         for filename, file_info in all_files.items():
             if filename.upper().endswith(".CID") and file_info["data"]:
                 process_cid_file(
@@ -694,6 +699,73 @@ class SELRelay(DeviceModule):
                 )
 
         return successful
+
+    @classmethod
+    def _parse_event_files(
+        cls, dev: DeviceData, files: dict[str, bytes | str | Path]
+    ) -> dict[str, list[dict]]:
+        """
+        Parse the event files from a relay (:data:`EVENT_FILES`): ``SER.TXT``,
+        falling back to ``CSER.TXT``, and ``HISTORY.TXT``, falling back to
+        ``CHISTORY.TXT``. This is used by pulls and when parsing files.
+
+        Args:
+            dev: Device to add the events to
+            files: Data (or the path to a file) of the files, keyed by
+                their uppercase name. Other files are ignored.
+
+        Returns:
+            The events that were parsed, keyed by ``ser`` and ``history``
+        """
+        results = {}
+
+        for kind, names in EVENT_FILES:
+            results[kind] = []
+            for name in names:
+                if results[kind] or not files.get(name):
+                    continue
+
+                data = files[name]
+                if isinstance(data, Path):
+                    data = data.read_bytes()
+
+                if not event_data_present(data):
+                    cls.log.debug(f"No events in {name} from {dev.get_id()}")
+                    continue
+
+                try:
+                    results[kind] = parse_and_process_events(data, name, dev)[0]
+                except Exception:
+                    cls.log.exception(f"Failed to parse {name} from {dev.get_id()}")
+
+        return results
+
+    @classmethod
+    def _apply_uptime(cls, dev: DeviceData, live: bool) -> None:
+        """
+        Calculate the uptime of the relay from its SER events
+        (refer to :func:`~peat.modules.sel.relay_parse.apply_uptime`).
+
+        The relay's current time is the time in the header of the SER report,
+        since it's from the same clock as the SER records and the SER was just
+        read, or if there wasn't a header, ``device_time`` (e.g. from the
+        information the relay sends when logging out, or the ``date`` and
+        ``time`` commands).
+
+        Args:
+            dev: The device
+            live: If the events were pulled from the relay (instead of parsed
+                from files), so the relay's current time
+                can be used to calculate the uptime
+        """
+        device_now = None
+        if live:
+            device_now = dev._cache.get(SER_DEVICE_TIME_KEY) or dev.extra.get("device_time")
+
+        try:
+            apply_uptime(dev, device_now=device_now)
+        except Exception as ex:
+            cls.log.warning(f"Failed to calculate the uptime of {dev.get_id()}: {ex}")
 
     @classmethod
     def _write_combined_set_all(cls, dev: DeviceData, combined: str, names: list[str]) -> None:
@@ -834,6 +906,11 @@ class SELRelay(DeviceModule):
             if results.get("his"):
                 his_data = "\n".join(results.pop("his")["result"])
                 parse_and_process_events(his_data, dataset="HIS", dev=dev)
+
+            # NOTE: on SEL-400 series relays, "ser" without arguments only
+            # returns the 20 newest records, so the power-up record often
+            # isn't included and only a lower bound of the uptime is known.
+            cls._apply_uptime(dev, live=True)
 
             if results.get("mac"):
                 for mac_name, mac_value in results.pop("mac")["result"].items():
@@ -1111,6 +1188,9 @@ class SELRelay(DeviceModule):
                 cls.log.exception(f"'{method.__name__}' failed on {dev.ip}:{port}")
                 was_successful = False
                 continue
+
+        # Uptime from the SER page ("get_sequential_events")
+        cls._apply_uptime(dev, live=True)
 
         cls.log.info(
             f"Finished pulling data via web interface from {dev.ip}:{port} "
@@ -1590,6 +1670,8 @@ class SELRelay(DeviceModule):
                 if not events and not info:
                     return None
 
+                cls._apply_uptime(dev, live=False)
+
             cls._record_parse_input(dev, file, raw_data)
 
             cls.update_dev(dev)  # Populate any fields that are unset
@@ -1862,21 +1944,12 @@ class SELRelay(DeviceModule):
             except Exception as ex:
                 cls.log.warning(f"Failed to parse {files['CFG.TXT']}: {ex}")
 
-        # Parse Sequential Event Recorder (SER) events, falling back to CSER
-        events = []
-        for ser_name in ["SER.TXT", "CSER.TXT"]:
-            if not events and ser_name in files:
-                ser_data = files[ser_name].read_bytes()
-                if event_data_present(ser_data):
-                    events = parse_and_process_events(ser_data, ser_name, dev)[0]
-
-        # History of events, falling back to CHISTORY
-        history = []
-        for his_name in ["HISTORY.TXT", "CHISTORY.TXT"]:
-            if not history and his_name in files:
-                his_data = files[his_name].read_bytes()
-                if event_data_present(his_data):
-                    history = parse_and_process_events(his_data, his_name, dev)[0]
+        # Sequential Event Recorder (SER) events, falling back to CSER,
+        # and the history of events, falling back to CHISTORY
+        parsed_events = cls._parse_event_files(dev, files)
+        events = parsed_events["ser"]
+        history = parsed_events["history"]
+        cls._apply_uptime(dev, live=False)
 
         cid_extracted = False
         for name, path in files.items():

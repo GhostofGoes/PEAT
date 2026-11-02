@@ -1,0 +1,1 @@
+SEL: the ``dataset`` of relay events is now ``ser`` or ``history`` whatever the source, and the file, command, or web page an event was read from is in ``extra.source_datasets``. The same event from several sources is stored once, so event counts can change, and ``extra.targets`` of history events from the web interface is now a string instead of an integer.

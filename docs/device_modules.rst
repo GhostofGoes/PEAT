@@ -247,6 +247,11 @@ Downloaded file hashing
 .. automodule:: peat.modules.sel.sel_files
    :members:
 
+Compressed ASCII
+^^^^^^^^^^^^^^^^
+.. automodule:: peat.modules.sel.sel_cascii
+   :members:
+
 Relay Parsing
 ^^^^^^^^^^^^^
 .. automodule:: peat.modules.sel.relay_parse

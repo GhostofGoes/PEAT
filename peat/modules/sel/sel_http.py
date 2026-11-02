@@ -20,7 +20,6 @@ from urllib.parse import urljoin, urlparse
 
 import humanfriendly
 from bs4 import BeautifulSoup
-from dateutil.parser import parse as date_parse
 from requests import Response
 
 from peat import DeviceData, Event, PeatError, config, consts, datastore, log, utils
@@ -1510,13 +1509,16 @@ class SELHTTP(HTTP):
 
         return True
 
-    # TODO: separate parsing
-    # TODO: generalize for use with Telnet/Serial => relay_parse.parse_history
     def get_historical_events(self, dev: DeviceData) -> bool:
         """
         Get historical event log from a relay.
 
         Tested on SEL 351S and 451 relays. May work on the 351.
+
+        The page is parsed with
+        :func:`~peat.modules.sel.relay_parse.parse_and_process_events`, the same
+        parser used for ``HISTORY.TXT`` and the ``his`` command, including the
+        status information before the events (even if there are no events).
 
         .. warning::
            Older versions of the 351 may not support this (failed on a device
@@ -1528,72 +1530,11 @@ class SELHTTP(HTTP):
             self.log.warning(f"Failed to read historical events page: {ex}")
             return False
 
-        if "No data available" in page:  # SEL 451
+        events, _ = parse_and_process_events(page, "Historical Events ('his')", dev)
+
+        if not events:
             self.log.debug("No historical events available")
             return False
-
-        lines = split_lines(page)
-        # Find the header line for the actual events
-        header_index = next(i for i, s in enumerate(lines) if s[0] == "#" and "date" in s.lower())
-        if header_index != 0:
-            # Process the status information front matter
-            self._process_status_data(lines[:header_index], dev)
-
-        if "History Buffer Empty" in page:  # SEL 351S (and possibly the 351?)
-            self.log.warning("Historical event buffer empty")
-            return False
-
-        for raw_line in lines[header_index + 1 :]:
-            # TODO: handle links in lines
-            line = raw_line.strip()
-            hist_event_regex = (
-                r"(\d*)[ ]*(\d{2}/\d{2}/\d{2}) (\d{2}:\d{2}:\d{2}\.\d{3}) "
-                r"([a-zA-Z ]*)[ ]*(-?\d*\.\d*|\$*)[ ]*(\d*) "
-                r"(\d*\.\d*)[ ]*(\d)[ ]*(\d)[ ]*(\d*)?"
-            )
-            res = re.match(hist_event_regex, line, re.ASCII | re.IGNORECASE)
-            if not res:
-                self.log.warning(
-                    f"Historical Event line parsing regex failed\n***Raw Data: {repr(line)}"
-                )
-                continue
-            values = res.groups()
-
-            event_val = values[3].strip()
-
-            # Store the actual fields as named by SEL in the event metadata
-            # for easier reference without looking at "original".
-            extra = {
-                "event": event_val,
-                "current": float(values[5].strip()),
-                "frequency": float(values[6].strip()),
-                "group": int(values[7].strip()),
-                "shot": int(values[8].strip()),
-            }
-
-            if "$" not in values[4]:
-                # Represent "$$$$$$$" values by not including locat field
-                extra["locat"] = float(values[4].strip())
-
-            if values[9]:
-                extra["targets"] = int(values[9].strip())
-
-            event = Event(
-                action=event_val,
-                category={"host"},
-                created=date_parse(f"{values[1]} {values[2]}"),
-                dataset="Historical Events ('his')",
-                kind={"event"},
-                original=raw_line,
-                provider=self.ip,
-                # TODO: should sequence be reverse order, since "1" in the
-                #  log is actually the newest event, not the oldest?
-                sequence=int(values[0]),
-                type={"info", "change"},
-                extra=extra,
-            )
-
-            dev.store("event", event)
 
         return True
 

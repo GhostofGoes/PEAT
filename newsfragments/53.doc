@@ -1,0 +1,1 @@
+SEL: documented Compressed ASCII, how events and uptime are parsed, and that a ``FILE READ`` of ``SER.TXT`` on SEL-400 series relays clears the viewed SER records for that port.

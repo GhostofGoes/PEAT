@@ -2,11 +2,13 @@ import copy
 import csv
 import re
 import zlib
+from datetime import datetime, timedelta
 from pathlib import PurePath, PurePosixPath
 from typing import Any, Final, Literal
 
 import olefile
 from dateutil.parser import parse as date_parse
+from dateutil.parser import parserinfo
 from pathvalidate import is_valid_filepath
 
 from peat import (
@@ -27,6 +29,7 @@ from peat import config as peat_config
 from peat.data.data_utils import merge_models
 from peat.protocols import clean_ipv4, split_ipv4_cidr
 
+from . import sel_cascii
 from .sel_consts import ANSI_CODES, LOGIC_KEYS
 from .sel_files import SOURCE_DERIVED, write_and_record_file
 
@@ -872,6 +875,11 @@ def parse_set_all(
 
     # Process the [INFO] and [CLASSES] sections
     process_info_classes(configs, dev)
+
+    # Date format of the relay (DATE_F), used to parse the dates of events
+    date_format = extract_date_format(configs)
+    if date_format:
+        dev.extra["date_format"] = date_format
 
     # Extract network info
     process_network_configuration(configs, dev)
@@ -1885,7 +1893,8 @@ def parse_fid(id_string: str) -> dict[str, str]:
         release_datetime = None
     else:
         release_datetime = utils.parse_date(release_date)
-    settings_version = sfid.pop()  # Z100100
+    # Older firmware doesn't have the settings version ("SEL-551-R101-Vr-D960321")
+    settings_version = sfid.pop() if sfid[-1][:1] in ("Z", "z") else ""  # Z100100
     version = sfid.pop()  # V0
     revision = sfid.pop()  # R200
 
@@ -1896,6 +1905,8 @@ def parse_fid(id_string: str) -> dict[str, str]:
         "settings_version": settings_version,
         "release_date": release_datetime,
     }
+    if not settings_version:
+        del info["settings_version"]
 
     if sfid[0] == "SEL":
         info["model"] = sfid[1]  # "351"
@@ -1904,7 +1915,7 @@ def parse_fid(id_string: str) -> dict[str, str]:
     return info
 
 
-def parse_status_output(lines: list[str]) -> dict:
+def parse_status_output(lines: list[str], date_format: str = "") -> dict:
     """
     Parse status command output.
 
@@ -1928,6 +1939,8 @@ def parse_status_output(lines: list[str]) -> dict:
 
     Args:
         lines: Extracted status info lines
+        date_format: Date format of the device (``DATE_F`` setting),
+            ``MDY`` (the default), ``YMD``, or ``DMY``
 
     Returns:
         Data extracted from the command output
@@ -1958,7 +1971,7 @@ def parse_status_output(lines: list[str]) -> dict:
     if id_time:
         # "THERMOMETER", "FEEDER 1", "SEL-700G", "Relay 1"
         info["device_identifier"] = id_time["dev_id"].strip()
-        info["device_time"] = date_parse(f"{id_time['date']} {id_time['time']}")
+        info["device_time"] = parse_sel_datetime(id_time["date"], id_time["time"], date_format)
     else:
         log.debug(f"Failed to match 'sta' output for line {repr(lines[0])}")
 
@@ -1974,8 +1987,12 @@ def parse_status_output(lines: list[str]) -> dict:
             info["device_name"] = name_ts["dev_name"].strip()
             info["time_source"] = name_ts["time_source"].strip()
     else:
-        # "STATION A"
-        info["device_name"] = lines[1].strip()
+        # "STATION A", or on 400-series relays,
+        # "Station A                  Serial Number: 2001001234"
+        name, _, serial = lines[1].partition("Serial Number:")
+        info["device_name"] = name.strip()
+        if serial.strip():
+            info["serial_number"] = serial.strip()
 
     # Finish early if there are only two lines
     if len(lines) <= 2:
@@ -2050,62 +2067,371 @@ def parse_ver_output(data: str) -> dict[str, str]:
     return results
 
 
+#: Text in an event report that means there aren't any events. Most relays print
+#: ``No data available`` (``"No Data Available"`` for compressed commands),
+#: and the SEL-351S prints ``History Buffer Empty``.
+EMPTY_EVENT_MARKERS: Final = ("no data available", "history buffer empty")
+
+#: Values of the ``DATE_F`` (date format) global setting
+DATE_FORMATS: Final = ("MDY", "YMD", "DMY")
+
+_DATE_PATTERN: Final = r"\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?"
+_TIME_PATTERN: Final = r"\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?"
+
+#: Header line of a SER or history report, e.g. ``#  DATE  TIME  ELEMENT  STATE``.
+#: The SEL-551 SER report uses ``Row`` instead of ``#``, and some history
+#: files have a column before the date (``#  REF  DATE  TIME ...``).
+EVENT_HEADER_RE: Final = re.compile(
+    r"^(?:#|row)\s+(?:\S+\s+)?date\s+time\b", re.ASCII | re.IGNORECASE
+)
+
+#: Key in ``DeviceData._cache`` for the relay's time in the header of the last
+#: SER report that was parsed, which is the reference time for the uptime
+SER_DEVICE_TIME_KEY: Final = "sel_ser_device_time"
+
+#: Row in a SER report, e.g. ``213  01/15/2021  17:09:45.504    Relay Powered Up``.
+#: The element and state (``rest``) are split on two or more spaces, since
+#: both can have single spaces (``GROUND O/C 1 LINE 1   51S1 PICKED UP``).
+SER_ROW_RE: Final = re.compile(
+    rf"^(?P<num>\d+)\s+(?P<date>{_DATE_PATTERN})\s+(?P<time>{_TIME_PATTERN})"
+    r"(?:\s+(?P<rest>.*?))?\s*$",
+    re.ASCII,
+)
+
+#: States that may be separated from the element by a single space in SER rows
+_SER_STATES: Final = ("asserted", "deasserted", "enabled", "disabled")
+
+_NUMBER_OR_UNKNOWN: Final = r"-?\d+(?:\.\d+)?|\$[$.]*"
+
+#: Columns in the header of a history report (``HIS`` command or ``HISTORY.TXT``),
+#: with the name of the value and its regex. The names vary by relay family:
+#: ``CURR`` (351S, 421, 551) or ``CURRENT`` (751A, 700G), ``FREQ`` (351S, 751A)
+#: or ``FREQX`` (700G). ``$`` characters are an unknown value (e.g. ``$$$$$$$``
+#: for the fault location when the fault locator didn't run).
+HISTORY_COLUMNS: Final = {
+    "#": ("num", r"\d+"),
+    "ROW": ("num", r"\d+"),
+    "REF": ("ref", r"\d+"),
+    "REF_NUM": ("ref", r"\d+"),
+    "DATE": ("date", _DATE_PATTERN),
+    "TIME": ("time", _TIME_PATTERN),
+    "EVENT": ("event", r"\S.*?"),
+    "LOCAT": ("locat", _NUMBER_OR_UNKNOWN),
+    "LOCATION": ("locat", _NUMBER_OR_UNKNOWN),
+    "CURR": ("current", _NUMBER_OR_UNKNOWN),
+    "CURRENT": ("current", _NUMBER_OR_UNKNOWN),
+    "FREQ": ("frequency", _NUMBER_OR_UNKNOWN),
+    "FREQX": ("frequency", _NUMBER_OR_UNKNOWN),
+    "FREQUENCY": ("frequency", _NUMBER_OR_UNKNOWN),
+    "GRP": ("group", r"\d+"),
+    "GROUP": ("group", r"\d+"),
+    "SHOT": ("shot", r"\d+"),
+    "TARGETS": ("targets", r".*?"),
+}
+
+#: Layout of ``HISTORY.TXT`` that PEAT parsed before it read the header
+#: (record number, reference number, date, time, event, current, frequency, targets)
+_LEGACY_HISTORY_ROW_RE: Final = re.compile(
+    rf"^(?P<num>\d+)\s+(?P<ref>\d+)\s+(?P<date>{_DATE_PATTERN})\s+(?P<time>{_TIME_PATTERN})\s+"
+    r"(?P<event>\S.*?)\s+(?P<current>[\d.]+)\s+(?P<frequency>[\d.]+)(?:\s+(?P<targets>.*?))?\s*$",
+    re.ASCII,
+)
+
+#: History events that are trips, e.g. ``TRIP``, ``Diff 87 Trip``, or ``AG T``
+#: (fault type and ``T`` for a trip, on the 351S and 421)
+TRIP_EVENT_RE: Final = re.compile(r"\btrip\b|^[ABCG]{1,4} T$", re.IGNORECASE)
+
+#: Element of a SER record for a relay power-up or restart: ``Relay newly powered up``
+#: (351S), ``Relay Powered Up`` (700 series), ``Power-up`` (400 series, with the
+#: settings group as the state), and ``Diagnostic Restart`` (400 series).
+#: This must match the whole element (after :func:`_normalize_name`), so that
+#: the alias of a Relay Word bit (e.g. ``UPS POWER UP``) isn't a power-up.
+POWER_UP_RE: Final = re.compile(
+    r"^(?:relay (?:newly )?powered up|power[- ]?up|diagnostic restart)\.?$", re.IGNORECASE
+)
+
+#: Element of a SER record that's logged for a power-up OR a settings change
+#: (SEL-551, SEL-710 and SEL-749M), so it doesn't mean the relay restarted
+AMBIGUOUS_POWER_UP_RE: Final = re.compile(
+    r"^relay (?:newly )?powered up or settings changed\.?$", re.IGNORECASE
+)
+
+
+#: Event file names (refer to :data:`EVENT_FILENAME_RE`), with the
+#: Compressed ASCII prefix (``C``) and the kind of events
+_EVENT_FILE_KIND_RE: Final = re.compile(
+    r"(?:^|[^A-Z])(?P<compressed>C?)(?P<kind>SER|HISTORY)\.TXT$", re.IGNORECASE
+)
+
+#: Commands (and words in the names of web pages) for each kind of events,
+#: and if they're Compressed ASCII
+_EVENT_DATASET_WORDS: Final = {
+    "ser": ("ser", False),
+    "sequential": ("ser", False),
+    "cse": ("ser", True),
+    "cser": ("ser", True),
+    "his": ("history", False),
+    "history": ("history", False),
+    "historical": ("history", False),
+    "chi": ("history", True),
+    "chis": ("history", True),
+    "chistory": ("history", True),
+}
+
+
+def event_dataset_kind(dataset: str) -> tuple[str, bool]:
+    """
+    The kind of events in a dataset, and if they're Compressed ASCII.
+
+    File names are classified by their suffix (``SER.TXT``, ``CSER.TXT``,
+    ``HISTORY.TXT``, or ``CHISTORY.TXT``), so a prefix
+    (``Whistler_SER.TXT``) doesn't matter. Commands must match exactly
+    (``ser``, ``cse``, ``his``, ``chi``), and other names (e.g. web pages)
+    are classified by their words.
+
+    Args:
+        dataset: Name of the file, command, or web page the events are from,
+            e.g. ``SER.TXT``, ``CSER.TXT``, ``HIS``, or
+            ``Sequential Event Recorder ('ser')``
+
+    Returns:
+        ``ser`` (Sequential Events Recorder) or ``history`` (or an empty string
+        if the dataset isn't known), and :obj:`True` if it's Compressed ASCII
+        (``CSER.TXT``, ``CHISTORY.TXT``, or the ``CSE`` and ``CHI`` commands)
+    """
+    name = dataset.strip()
+
+    # A file name is classified by its suffix, so a prefix (e.g. a device
+    # or site name, like "Whistler_SER.TXT") doesn't change the kind
+    file_match = _EVENT_FILE_KIND_RE.search(name)
+    if file_match:
+        kind = "ser" if file_match["kind"].upper() == "SER" else "history"
+        return kind, bool(file_match["compressed"])
+
+    lower = name.lower()
+    if lower in _EVENT_DATASET_WORDS:  # Command, e.g. "ser" or "CHI"
+        return _EVENT_DATASET_WORDS[lower]
+
+    # Any other file (e.g. "SET_1.TXT") isn't an event file
+    if re.search(r"\.[a-z0-9]{1,4}$", lower):
+        return "", False
+
+    # Other names, e.g. web pages ("Historical Events ('his')"),
+    # are classified by their first word that's known
+    for word in re.findall(r"[a-z]+", lower):
+        if word in _EVENT_DATASET_WORDS:
+            return _EVENT_DATASET_WORDS[word]
+
+    return "", False
+
+
+def extract_date_format(configs: ConfigsType) -> str:
+    """
+    Get the date format of the relay from the ``DATE_F`` global setting.
+
+    Returns:
+        ``MDY``, ``YMD``, or ``DMY``, or an empty string if it's not in the settings
+    """
+    for section in configs.values():
+        if isinstance(section, dict) and "DATE_F" in section:
+            value = str(_getv(section["DATE_F"])).strip().strip('"').upper()
+            if value in DATE_FORMATS:
+                return value
+
+    return ""
+
+
+def get_date_format(dev: DeviceData) -> str:
+    """
+    The date format of the device (``DATE_F``), if it was parsed from its settings.
+    """
+    value = str(dev.extra.get("date_format", "")).upper()
+    return value if value in DATE_FORMATS else ""
+
+
+def infer_date_format(dates: list[str]) -> str:
+    """
+    Infer the date format from dates in event reports, for when the ``DATE_F``
+    setting isn't known. A date with the year first is ``YMD``, a first part
+    larger than 12 is ``DMY``, and a second part larger than 12 is ``MDY``.
+
+    Returns:
+        The date format, or an empty string if it can't be determined
+        (e.g. ``01/02/2021``)
+    """
+    for date in dates:
+        parts = re.split(r"[/-]", str(date).strip())
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            continue
+
+        if len(parts[0]) == 4:
+            return "YMD"
+
+        first, second = int(parts[0]), int(parts[1])
+        if first > 12 >= second:
+            return "DMY"
+        if second > 12 >= first:
+            return "MDY"
+
+    return ""
+
+
+def parse_sel_datetime(date: str, time: str, date_format: str = "") -> datetime:
+    """
+    Parse a date and time from a SEL device, e.g. ``01/15/2021`` and ``17:09:45.504``.
+
+    The result is timezone-unaware, since relays report their local time.
+
+    Args:
+        date: The date, in the format of the device (``DATE_F`` setting)
+        time: The time
+        date_format: ``MDY`` (the default), ``YMD``, or ``DMY``
+
+    Raises:
+        ValueError: if the date or time is invalid
+    """
+    order = date_format.upper() if date_format else ""
+
+    return date_parse(f"{date} {time}".strip(), dayfirst=order == "DMY", yearfirst=order == "YMD")
+
+
+def _clean_event_text(data: bytes | str) -> str:
+    """
+    Decode event data and remove NUL characters. Bytes are decoded as UTF-8,
+    or Latin-1 if they aren't valid UTF-8, so non-ASCII bytes don't fail.
+    """
+    if isinstance(data, (bytes, bytearray)):
+        return clean_settings_text(bytes(data))
+
+    return data.replace("\x00", "")
+
+
 def event_data_present(data: bytes | str) -> bool:
-    if isinstance(data, bytes):
-        data = data.decode("ascii")
+    """
+    If event data (SER, CSER, HISTORY, CHISTORY) has events.
 
-    data = data.lower().strip()
+    Data has events if it has at least one row (a line that starts with a
+    number) and doesn't have any of the :data:`EMPTY_EVENT_MARKERS`
+    (e.g. ``No data available``). Every line is checked, since the marker
+    is after the status information and header in some reports.
+    """
+    text = _clean_event_text(data).replace(sel_cascii.STX, "").replace(sel_cascii.ETX, "")
+    lines = [line.strip() for line in text.lower().splitlines() if line.strip()]
 
-    if not data or "data available" in data or "history buffer empty" in data:
-        return False
-    else:
-        return True
+    for line in lines:
+        if not line[:1].isdigit() and any(marker in line for marker in EMPTY_EVENT_MARKERS):
+            return False
+
+    return any(line[:1].isdigit() for line in lines)
+
+
+def _parse_front_matter(lines: list[str], date_format: str = "") -> dict:
+    """
+    Parse the status information before the events in a report,
+    e.g. the relay ID, station ID, current time, and FID.
+    """
+    front = []
+    for line in lines:
+        lowered = line.lower()
+        if EVENT_HEADER_RE.match(line) or any(m in lowered for m in EMPTY_EVENT_MARKERS):
+            break
+        front.append(line)
+
+    # A single line is only parsed if it's a FID (e.g. not a "=>" prompt)
+    if not front or (len(front) == 1 and not re.match(r"\s*FID\s*=", front[0], re.I)):
+        return {}
+
+    try:
+        return parse_status_output(front, date_format=date_format)
+    except Exception as ex:
+        log.debug(f"Failed to parse the status information in event data: {ex}")
+        return {}
 
 
 def parse_and_process_events(
     data: bytes | str, dataset: str, dev: DeviceData
 ) -> tuple[list[dict], dict]:
-    log.info(f"Parsing events in {dataset} from {dev.get_id()}")
+    """
+    Parse events from SER (``SER.TXT``, ``ser`` command or web page),
+    CSER (``CSER.TXT``), history (``HISTORY.TXT``, ``his`` command or web page),
+    or CHISTORY (``CHISTORY.TXT``) data, and add them to the device.
 
-    if isinstance(data, bytes):
-        data = data.decode("ascii")
+    The kind of events is determined from ``dataset``
+    (refer to :func:`event_dataset_kind`). SER or history data that
+    is Compressed ASCII is parsed as CSER or CHISTORY.
+
+    Args:
+        data: The data
+        dataset: Name of the file, command, or page the data is from
+        dev: Device to add the events and status information to
+
+    Returns:
+        The events (from :func:`parse_ser`, :func:`parse_cser`,
+        :func:`parse_history`, or :func:`parse_chistory`) and the status
+        information (e.g. ``device_time``)
+    """
+    log.info(f"Parsing events in {dataset} from {dev.get_id()}")
 
     # TODO: error state should be better propagated to callers,
     # e.g. the caller should be able to differentiate between
     # no events returned because there are no events vs.
     # no events returned because a parsing error occurred.
 
-    raw_lines = split_lines(data)  # type: list[str]
+    kind, compressed = event_dataset_kind(dataset)
+    if not kind:
+        log.error(f"Invalid SER/HISTORY filename: {dataset}")
+        state.error = True
+        return [], {}
+
+    text = _clean_event_text(data)
+    raw_lines = split_lines(text)
 
     if not raw_lines:
         return [], {}
 
-    if not event_data_present(raw_lines[0]):
+    if not compressed and sel_cascii.is_compressed_ascii(text):
+        log.debug(f"{dataset} is Compressed ASCII")
+        compressed = True
+
+    date_format = get_date_format(dev)
+
+    if not event_data_present(text):
         log.debug(f"No event data present for {dataset}")
-        return [], {}
+        info = {} if compressed else _parse_front_matter(raw_lines, date_format)
+        if info:
+            process_info_into_dev(info, dev)
+        return [], info
 
     info = {}
 
     try:
-        if "cser" in dataset.lower():
-            events, info = parse_cser(raw_lines)
-        elif "ser" in dataset.lower():
-            events, info = parse_ser(raw_lines)
-        elif "chistory" in dataset.lower():
-            events, info = parse_chistory(raw_lines)
-        elif "history" in dataset.lower() or dataset.lower() == "his":
-            events, info = parse_history(raw_lines)
+        if kind == "ser" and compressed:
+            events, info = parse_cser(text)
+        elif kind == "ser":
+            events, info = parse_ser(raw_lines, date_format=date_format)
+        elif compressed:
+            events, info = parse_chistory(text)
         else:
-            log.error(f"Invalid SER/HISTORY filename: {dataset}")
-            state.error = True
-            return [], info
+            events, info = parse_history(raw_lines, date_format=date_format)
     except Exception:
         log.exception(f"Failed to parse events in {dataset} from {dev.get_id()}")
         state.error = True
         return [], info
 
+    if compressed:
+        # Don't add the empty keys of parse_cser and parse_chistory to the device
+        info = {key: value for key, value in info.items() if value not in (None, "")}
+
     if info:
-        process_info_into_dev(info, dev)
+        try:
+            process_info_into_dev(info, dev)
+        except Exception as ex:
+            # Don't lose the events if the status information is bad
+            log.warning(f"Failed to process the status information in {dataset}: {ex}")
+
+        # The relay's time when the SER was read, from the same clock as the events
+        if kind == "ser" and isinstance(info.get("device_time"), datetime):
+            dev._cache[SER_DEVICE_TIME_KEY] = info["device_time"]
 
     if not events:
         log.warning(f"No events in {dataset} from {dev.get_id()}")
@@ -2118,7 +2444,31 @@ def parse_and_process_events(
     return events, info
 
 
-def parse_ser(raw_lines: list[str]) -> tuple[list[dict], dict]:
+def _find_header(lines: list[str]) -> int | None:
+    return next((idx for idx, line in enumerate(lines) if EVENT_HEADER_RE.match(line)), None)
+
+
+def _split_ser_element_state(rest: str) -> tuple[str, str]:
+    """
+    Split the element and state in a SER row, which are separated by two or more
+    spaces. If there's only a single space before a common state
+    (e.g. ``SALARM Deasserted``), then that's used.
+    """
+    parts = [part for part in re.split(r"\s{2,}|\t", rest.strip()) if part]
+
+    if not parts:
+        return "", ""
+
+    if len(parts) == 1:
+        element, _, last_word = parts[0].rpartition(" ")
+        if element and last_word.lower() in _SER_STATES:
+            return element, last_word
+        return parts[0], ""
+
+    return parts[0], " ".join(parts[1:])
+
+
+def parse_ser(raw_lines: list[str], date_format: str = "") -> tuple[list[dict], dict]:
     """
     Parse output of ``SER.TXT``, the ``ser`` command, or the ``ser`` web page.
 
@@ -2128,227 +2478,599 @@ def parse_ser(raw_lines: list[str]) -> tuple[list[dict], dict]:
     - Output from 'ser' command (via Telnet or serial)
     - "ser" page in the web interface
 
+    Examples of rows:
+
+    .. code-block:: text
+
+       1024 12/09/2020  18:08:43.048    SALARM                       Deasserted
+       213  01/15/2021  17:09:45.504    Relay Powered Up
+       6      03/15/2001   00:00:00.004   Power-up              Group 1
+       4      03/15/2001   00:30:00.021   GROUND O/C 1 LINE 1   51S1 PICKED UP
+
+    Rows that can't be parsed (e.g. ``Invalid Data``, for a record that was
+    corrupted by a power loss) are skipped.
+
+    Args:
+        raw_lines: Lines of the SER data
+        date_format: Date format of the relay (``DATE_F`` setting), used for
+            the current time in the status information. If not set, it's
+            inferred from the dates of the events.
+
     Returns:
         Events and status info. Events will be empty if there are no events.
         Status info will be empty if no front matter was present.
     """
+    lines = split_lines("\n".join(raw_lines))
+    header_index = _find_header(lines)
 
-    try:
-        # Find the header line for the actual events
-        header_index = next(
-            idx for idx, line in enumerate(raw_lines) if "#" in line and "date" in line.lower()
+    if header_index is None:
+        rows = lines
+        front = []
+    else:
+        rows = lines[header_index + 1 :]
+        front = lines[:header_index]
+
+    events = []
+    skipped = []
+
+    for line in rows:
+        if not line[:1].isdigit():
+            continue
+
+        match = SER_ROW_RE.match(line)
+        if not match:
+            skipped.append(line)
+            continue
+
+        element, ser_state = _split_ser_element_state(match["rest"] or "")
+        if not element:
+            skipped.append(line)
+            continue
+
+        events.append(
+            {
+                "sequence": int(match["num"]),
+                "date": match["date"],
+                "time": match["time"],
+                "original": line,
+                "element": element,
+                "state": ser_state,
+            }
         )
-    except StopIteration:
+
+    if skipped:
+        log.debug(f"Skipped {len(skipped)} SER lines that aren't events: {skipped[:10]}")
+
+    if header_index is None and not events:
         log.warning("No events found in SER output, attempting to parse status info")
-        return [], parse_status_output(raw_lines)
+        return [], _parse_front_matter(lines, date_format)
+
+    if not date_format:
+        date_format = infer_date_format([e["date"] for e in events])
 
     status_info = {}
 
     # Process the status information front matter
-    if header_index != 0 and "SEL-2032" not in raw_lines[0]:
-        status_info = parse_status_output(raw_lines[:header_index])
-
-    # Filter to just the lines with the events
-    event_lines = raw_lines[header_index + 1 :]
-    events = []
-
-    for line in event_lines:
-        if line and line[0].isdigit():
-            # line spacing may be 1 character or two, but event values
-            # can also have single spaces, e.g. "Relay Powered Up".
-            # To handle this, we use a regex...
-            #
-            # 1024 12/09/2020  18:08:43.048    SALARM                       Deasserted
-            # 213  01/15/2021  17:09:45.504    Relay Powered Up
-            # 214  01/13/2021  10:17:40.740    SALARM                       Deasserted
-            result = re.match(
-                (
-                    r"(?P<seq>\d+)\s+"
-                    r"(?P<date>\S+)\s+"
-                    r"(?P<time>\S+)\s+"
-                    r"(?P<element>(?:\w| \w)+)\s*"
-                    r"(?P<state>(?:\w| \w)+)?"
-                ),
-                line,
-                re.ASCII | re.IGNORECASE,
-            )
-
-            if not result:
-                log.warning(
-                    f"Failed to parse SER events due to unexpected format.\nRaw line: '{line}'"
-                )
-                return [], status_info
-
-            values = result.groupdict()
-
-            event = {
-                "sequence": int(values["seq"]),
-                "date": values["date"],
-                "time": values["time"],
-                "original": line,
-                "element": values["element"],
-                "state": "" if not values.get("state") else values["state"],
-            }
-
-            events.append(event)
+    if front and "SEL-2032" not in front[0]:
+        status_info = _parse_front_matter(front, date_format)
 
     return events, status_info
 
 
-# TODO: combine duplicate logic between parse_history(), parse_ser_events(),
-#   and sel_http.SELHTTP.get_historical_events()
-def parse_history(raw_lines: list[str]) -> tuple[list[dict], dict]:
+def _history_row_regex(header: str) -> re.Pattern | None:
     """
-    Parse output of ``HISTORY.TXT``.
+    Build a regex for the rows of a history report from its header,
+    e.g. ``#  DATE  TIME  EVENT  LOCAT  CURR  FREQ  GRP  SHOT  TARGETS``.
+    """
+    tokens = header.split()
+    names = [token.upper() for token in tokens]
+
+    if not {"DATE", "TIME", "EVENT"} <= set(names):
+        return None
+
+    parts = []
+    used = set()
+    trailing = ""
+
+    for index, name in enumerate(names):
+        group, pattern = HISTORY_COLUMNS.get(name, (f"col{index}", r"\S+"))
+        if group in used:
+            group = f"col{index}"
+        used.add(group)
+
+        if index == len(names) - 1 and group == "targets":
+            # Targets are optional, and can have spaces ("INST SOTF 50 51 81")
+            trailing = rf"(?:\s+(?P<targets>{pattern}))?"
+        else:
+            parts.append(rf"(?P<{group}>{pattern})")
+
+    return re.compile(r"^" + r"\s+".join(parts) + trailing + r"\s*$", re.ASCII)
+
+
+def _history_row_event(values: dict, line: str) -> dict | None:
+    """
+    Create an event from the values of a history row (from the regex built by
+    :func:`_history_row_regex`), or :obj:`None` if it doesn't have the
+    values of an event (sequence number, date, time, and event).
+    """
+    sequence = values.get("ref") or values.get("num")
+    if not sequence or not values.get("date") or not values.get("time"):
+        return None
+
+    event_name = (values.get("event") or "").strip()
+    if not event_name:
+        return None
+
+    event = {
+        "sequence": int(sequence),
+        "date": values["date"],
+        "time": values["time"],
+        "original": line,
+        "event": event_name,  # "Trip"
+        "current": _to_float(values.get("current")),  # 1.00
+        "frequency": _to_float(values.get("frequency")),  # 60.0
+        "targets": (values.get("targets") or "").strip(),  # "11000000"
+    }
+
+    if values.get("ref") and values.get("num"):
+        event["record_number"] = int(values["num"])
+    if values.get("locat") is not None and _to_float(values["locat"]) is not None:
+        event["locat"] = _to_float(values["locat"])
+    for key in ("group", "shot"):
+        if values.get(key) is not None:
+            event[key] = int(values[key])
+
+    return event
+
+
+def parse_history(raw_lines: list[str], date_format: str = "") -> tuple[list[dict], dict]:
+    """
+    Parse output of ``HISTORY.TXT``, the ``his`` command, or the ``his`` web page.
+
+    The columns are read from the header line, since they vary by relay family:
+
+    .. code-block:: text
+
+       #  DATE TIME EVENT LOCAT CURR FREQ GRP SHOT TARGETS     (351S)
+       #  DATE TIME EVENT LOCAT CURR GRP TARGETS               (421)
+       #  DATE TIME EVENT CURRENT FREQ TARGETS                 (751A)
+       #  DATE TIME EVENT CURRENT FREQX TARGETS                (700G)
+       #  DATE TIME EVENT SHOT CURR TARGETS                    (551)
+
+    Events can have spaces (``AG T``, ``Phase 51 Trip``), as can targets.
+    Unknown values (``$$$$$$$``) are :obj:`None`. Rows that can't be parsed
+    (e.g. ``Invalid History Data``) are skipped.
+
+    Args:
+        raw_lines: Lines of the history data
+        date_format: Date format of the relay (``DATE_F`` setting), used for
+            the current time in the status information. If not set, it's
+            inferred from the dates of the events.
 
     Returns:
         Events and status info. Events will be empty if there are no events.
         Status info will be empty if no front matter was present.
     """
-    # Find the header line for the actual events
-    try:
-        header_index = next(
-            idx for idx, line in enumerate(raw_lines) if "#" in line and "date" in line.lower()
-        )
-    except StopIteration:
+    lines = split_lines("\n".join(raw_lines))
+    header_index = _find_header(lines)
+
+    if header_index is None:
         log.warning("No events found in HISTORY output, attempting to parse status info")
-        return [], parse_status_output(raw_lines)
+        return [], _parse_front_matter(lines, date_format)
+
+    row_regex = _history_row_regex(lines[header_index])
+
+    events = []
+    skipped = []
+
+    for line in lines[header_index + 1 :]:
+        if not line[:1].isdigit():
+            continue
+
+        match = (row_regex.match(line) if row_regex else None) or _LEGACY_HISTORY_ROW_RE.match(
+            line
+        )
+        if not match:
+            skipped.append(line)
+            continue
+
+        try:
+            event = _history_row_event(match.groupdict(), line)
+        except (KeyError, TypeError, ValueError) as ex:
+            log.debug(f"Failed to parse history row {line!r}: {ex}")
+            event = None
+
+        if event is None:
+            skipped.append(line)
+            continue
+
+        events.append(event)
+
+    if skipped:
+        log.info(f"Skipped {len(skipped)} history lines that couldn't be parsed: {skipped[:10]}")
+
+    if not date_format:
+        date_format = infer_date_format([e["date"] for e in events])
 
     status_info = {}
 
     # Process the status information front matter
     if header_index != 0:
-        status_info = parse_status_output(raw_lines[:header_index])
-
-    # Filter to just the lines with the events
-    event_lines = raw_lines[header_index + 1 :]
-    events = []
-
-    # TODO: parse 351 history format
-    # "#     DATE      TIME     EVENT   LOCAT  CURR  FREQ GRP SHOT TARGETS"
-
-    for line in event_lines:
-        if line and line[0].isdigit():
-            result = re.match(
-                (
-                    r"(?P<num>\d+)\s+"
-                    r"(?P<ref>\S+)\s+"
-                    r"(?P<date>\S+)\s+"
-                    r"(?P<time>\S+)\s+"
-                    r"(?P<event>(?:\w| \w)+)\s+"
-                    r"(?P<current>[\d\.]+)\s+"
-                    r"(?P<freqx>[\d\.]+)\s+"
-                    r"(?P<targets>[\w\d\.]+)\s*"
-                ),
-                line,
-                re.ASCII | re.IGNORECASE,
-            )
-
-            if not result:
-                log.warning(
-                    f"Failed to parse HISTORY events due to unexpected format.\nRaw line: {line}"
-                )
-                return [], status_info
-
-            values = result.groupdict()
-
-            event = {
-                "sequence": int(values["ref"]),
-                "date": values["date"],
-                "time": values["time"],
-                "original": line,
-                "event": values["event"],  # "Trip"
-                "current": float(values["current"]),  # 1.00
-                "frequency": float(values["freqx"]),  # 60.0
-                "targets": values["targets"],  # "11000000"
-            }
-
-            events.append(event)
+        status_info = _parse_front_matter(lines[:header_index], date_format)
 
     return events, status_info
 
 
-def extract_csv_dicts(lines: list[str]) -> tuple[dict[str, str], list[dict[str, str]]]:
-    header = next(iter(csv.DictReader(lines[:2])))
-    device_info = {
-        "serial_number": header.get("SERIAL NO", ""),
-        "FID": header.get("FID", "").split("=")[-1],
-        "CID": header.get("CID", ""),
-    }
-
-    rows = list(csv.DictReader(lines[2:]))
-
-    return device_info, rows
+def _upper_keys(row: dict) -> dict:
+    return {str(key).strip().upper(): value for key, value in row.items() if key != "_extra"}
 
 
-def parse_cser(lines: list[str]) -> tuple[list[dict], dict]:
+def _first_value(row: dict, *keys: str) -> Any:
+    for key in keys:
+        if row.get(key) not in (None, ""):
+            return row[key]
+    return None
+
+
+def _parse_cascii_events(lines: list[str] | str) -> tuple[list[dict], dict]:
     """
-    Extract and parse events and device info from ``CSER.TXT``.
+    Parse a Compressed ASCII report (e.g. ``CSER.TXT``) into its blocks
+    (refer to :func:`~peat.modules.sel.sel_cascii.parse_report`), and get
+    the device information from the header (``"FID","SERIAL NO","CID"``
+    on the 700 series, ``"RID","SID","FID"`` on the 400 series).
+    The device information always has ``serial_number``, ``FID``, and ``CID``
+    (empty strings if they aren't in the header).
+    """
+    text = lines if isinstance(lines, str) else "\r\n".join(lines)
+    blocks = sel_cascii.parse_report(sel_cascii.parse_records(text))
+
+    device_info = {}
+    for block in blocks:
+        labels = [label.strip().upper() for label in block["labels"]]
+        if not block["rows"] or not labels or labels[0] not in ("FID", "RID"):
+            continue
+
+        row = _upper_keys(block["rows"][0])
+        fid = _first_value(row, "FID")
+        if fid:
+            device_info["FID"] = str(fid).split("=")[-1].strip()
+
+        for key, info_key in (
+            ("SERIAL NO", "serial_number"),
+            ("SERIALNO", "serial_number"),
+            ("CID", "CID"),
+            ("RID", "device_identifier"),
+            ("SID", "device_name"),
+        ):
+            value = _first_value(row, key)
+            if value not in (None, "") and info_key not in device_info:
+                device_info[info_key] = str(value).strip()
+        break
+
+    # parse_cser and parse_chistory have always returned these keys
+    # (empty if they aren't in the header), and HEAT uses these functions
+    for key in ("serial_number", "FID", "CID"):
+        device_info.setdefault(key, "")
+
+    return blocks, device_info
+
+
+def _cascii_row_timestamp(row: dict) -> tuple[str, str, datetime | None]:
+    """
+    The date and time of a Compressed ASCII row, from the ``DATE`` and ``TIME``
+    labels (700 series), or the ``MONTH``, ``DAY``, ``YEAR``, ``HOUR``, ``MIN``,
+    ``SEC``, and ``MSEC`` labels (most other relays).
 
     Returns:
-        Events and device info (FID, CID, and serial number).
+        The date and time (as strings, ``MM/DD/YYYY`` and ``HH:MM:SS.mmm``
+        for the separate labels), and the datetime, if the date
+        is in separate labels (so it doesn't depend on ``DATE_F``)
     """
-    device_info, rows = extract_csv_dicts(lines)
+    if row.get("DATE") not in (None, "") and row.get("TIME") not in (None, ""):
+        return str(row["DATE"]).strip(), str(row["TIME"]).strip(), None
 
+    try:
+        year = int(row["YEAR"])
+        if year < 100:
+            # The same century as a 2-digit year in a text report
+            # (refer to parse_sel_datetime), so the events can be merged
+            year = parserinfo().convertyear(year)
+        msec = int(row.get("MSEC") or 0)
+        usec = int(row.get("USEC") or 0)
+        created = datetime(
+            year,
+            int(row["MONTH"]),
+            int(row["DAY"]),
+            int(row["HOUR"]),
+            int(row["MIN"]),
+            int(row["SEC"]),
+            msec * 1000 + usec,
+        )
+    except (KeyError, TypeError, ValueError):
+        return "", "", None
+
+    return (
+        created.strftime("%m/%d/%Y"),
+        f"{created:%H:%M:%S}.{msec:03d}",
+        created,
+    )
+
+
+def parse_cser(lines: list[str] | str) -> tuple[list[dict], dict]:
+    """
+    Extract and parse events and device info from ``CSER.TXT``
+    (or the output of the ``CSE`` command).
+
+    The rows are mapped by their labels, so both known layouts work:
+    ``"REC_NUM","DATE","TIME","ELEMENT","STATE"`` (700 series) and
+    ``"#","MONTH","DAY","YEAR","HOUR","MIN","SEC","MSEC","ELEMENT","STATE"``
+    (400 series). Rows can be shorter than the labels (e.g. ``Relay Powered Up``
+    has no state). Checksums are verified, and events from rows with a wrong
+    checksum have ``checksum_valid`` set to :obj:`False`.
+
+    Args:
+        lines: Lines of the data, or the data
+
+    Returns:
+        Events and device info (``FID``, ``CID``, ``serial_number``, and for the
+        400 series, the relay and station ID). ``FID``, ``CID``, and
+        ``serial_number`` are empty strings if they aren't in the data.
+    """
+    blocks, device_info = _parse_cascii_events(lines)
     events = []
-    last_key = list(rows[0].keys())[-1]  # "0A31"
 
-    for row, line in zip(rows, lines[3:], strict=False):
-        event = {
-            "sequence": int(row["REC_NUM"]),
-            "date": row["DATE"],
-            "time": row["TIME"],
-            "original": line,
-            "element": row["ELEMENT"],
-        }
+    for block in blocks:
+        if "ELEMENT" not in [label.strip().upper() for label in block["labels"]]:
+            continue
 
-        # Handle special lines, like "Relay Powered Up"
-        if not row[last_key]:
-            row[last_key] = row["STATE"]
-            row["STATE"] = ""
-        event["state"] = row["STATE"]
+        for raw_row, record in zip(block["rows"], block["records"], strict=False):
+            row = _upper_keys(raw_row)
+            sequence = _first_value(row, "#", "REC_NUM")
+            date, time, created = _cascii_row_timestamp(row)
+            element = str(row.get("ELEMENT") or "").strip()
 
-        events.append(event)
+            if not isinstance(sequence, int) or not date or not element:
+                log.debug(f"Skipping CSER row that isn't an event: {record.text!r}")
+                continue
+
+            event = {
+                "sequence": sequence,
+                "date": date,
+                "time": time,
+                "original": record.text,
+                "element": element,
+                "state": str(row.get("STATE") or "").strip(),
+            }
+            if created:
+                event["created"] = created
+            if record.status == sel_cascii.STATUS_INVALID:
+                event["checksum_valid"] = False
+
+            events.append(event)
 
     return events, device_info
 
 
-def parse_chistory(lines: list[str]) -> tuple[list[dict], dict]:
+def parse_chistory(lines: list[str] | str) -> tuple[list[dict], dict]:
     """
-    Extract and parse events and device info from ``CHISTORY.TXT``.
+    Extract and parse events and device info from ``CHISTORY.TXT``
+    (or the output of the ``CHI`` command).
+
+    The rows are mapped by their labels, which vary by relay family, e.g.
+    ``REC_NUM,REF_NUM,MONTH,...,EVENT,CURRENT,FREQX,TARGETS`` (700 series),
+    ``REC_NUM,REF_NUM,MONTH,...,EVENT,LOCATION,CURR,FREQ,GROUP,SHOT,TARGETS``
+    (351S), or ``EVENT_NUM,MONTH,...,MSEC,USEC,EVENT,LOCATION,...`` (421).
+
+    Args:
+        lines: Lines of the data, or the data
 
     Returns:
-        Events and device info (just the FID generally with CHISTORY).
+        Events and device info (just the FID generally with CHISTORY,
+        refer to :func:`parse_cser`).
     """
-    device_info, rows = extract_csv_dicts(lines)
-
+    blocks, device_info = _parse_cascii_events(lines)
     events = []
 
-    for row, line in zip(rows, lines[3:], strict=False):
-        date = f"{row['MONTH']}/{row['DAY']}/{row['YEAR']}"
-        time = f"{row['HOUR']}:{row['MIN']}:{row['SEC']}.{row['MSEC']}"
+    for block in blocks:
+        if "EVENT" not in [label.strip().upper() for label in block["labels"]]:
+            continue
 
-        event = {
+        for raw_row, record in zip(block["rows"], block["records"], strict=False):
+            row = _upper_keys(raw_row)
+
             # NOTE: for CHISTORY, "REC_NUM" is just it's order in the file
             # The actual sequence number is REF_NUM (REF, not REC, easy to miss)
-            "sequence": int(row["REF_NUM"]),
-            "date": date,
-            "time": time,
-            "original": line,
-            "event": row["EVENT"],  # "Trip"
-            "current": float(row["CURRENT"]),  # 1.00
-            "frequency": float(row["FREQX"]),  # 60.0
-            "targets": row["TARGETS"],  # "11000000"
-        }
+            sequence = _first_value(row, "REF_NUM", "EVENT_NUM", "REC_NUM", "#")
+            date, time, created = _cascii_row_timestamp(row)
+            event_name = str(row.get("EVENT") or "").strip()
 
-        events.append(event)
+            if not isinstance(sequence, int) or not date or not event_name:
+                log.debug(f"Skipping CHISTORY row that isn't an event: {record.text!r}")
+                continue
+
+            event = {
+                "sequence": sequence,
+                "date": date,
+                "time": time,
+                "original": record.text,
+                "event": event_name,  # "Trip"
+                "current": _to_float(_first_value(row, "CURR", "CURRENT")),  # 1.00
+                "frequency": _to_float(_first_value(row, "FREQ", "FREQX", "FREQUENCY")),
+                "targets": str(row.get("TARGETS") or "").strip(),  # "11000000"
+            }
+            if created:
+                event["created"] = created
+
+            locat = _to_float(_first_value(row, "LOCATION", "LOCAT"))
+            if locat is not None:
+                event["locat"] = locat
+            for key, labels in (("group", ("GROUP", "GRP")), ("shot", ("SHOT",))):
+                value = _to_int(_first_value(row, *labels))
+                if value is not None:
+                    event[key] = value
+
+            if record.status == sel_cascii.STATUS_INVALID:
+                event["checksum_valid"] = False
+
+            events.append(event)
 
     return events, device_info
+
+
+def _normalize_name(value: Any) -> str:
+    # CSER may use underscores where SER has spaces ("GROUND_O/C_1_LINE_1")
+    return re.sub(r"[\s_]+", " ", str(value or "")).strip().lower()
+
+
+def _event_identity(event: Event) -> tuple:
+    """
+    What makes an event unique: the kind of events (``ser`` or ``history``),
+    when it happened, and the element and state (SER) or event (history).
+    The same event from different sources (e.g. ``SER.TXT`` and the ``ser``
+    command) has the same identity. The sequence number isn't used, since
+    it changes as new events are added (``1`` is the newest event).
+    """
+    if event.created is None:
+        return (event.dataset, event.sequence, event.original)
+
+    if event.dataset == "ser":
+        name = (
+            _normalize_name(event.extra.get("element")),
+            _normalize_name(event.extra.get("state")),
+        )
+    elif event.dataset == "history":
+        name = (_normalize_name(event.extra.get("event")),)
+    else:
+        name = (event.message.lower(),)
+
+    return (event.dataset, event.created, *name)
+
+
+def _create_event(
+    raw_event: dict, dev: DeviceData, kind: str, dataset: str, date_format: str
+) -> Event | None:
+    """
+    Create an :class:`~peat.data.models.Event` from an event parsed by
+    :func:`parse_ser`, :func:`parse_cser`, :func:`parse_history`, or
+    :func:`parse_chistory`.
+    """
+    event_category = {"host"}  # type: set[str]
+    event_type = set()  # type: set[str]
+    extra = {"source_datasets": [dataset]}
+
+    created = raw_event.get("created")
+    if created is None:
+        if not raw_event.get("date") or not raw_event.get("time"):
+            return None
+        # date: "09/13/2022" (Month/Day/Year by default, refer to DATE_F)
+        # time: "16:09:12.264"
+        created = parse_sel_datetime(raw_event["date"], raw_event["time"], date_format)
+
+    # SER/CSER
+    if raw_event.get("element"):
+        # Examples of element values:
+        # 'Relay', 'Power-up', 'Settings changed', '51G', 'OUT101', 'Group change'
+        element = str(raw_event["element"]).strip()
+        event_element = element.lower()
+        # Examples of event state:
+        # 'Enabled', 'Group 1', 'Class P 5', 'Asserted', 'Deasserted'
+        ser_state = str(raw_event.get("state") or "").strip()
+
+        extra["element"] = element
+        if ser_state:
+            extra["state"] = ser_state
+
+        # Power-up is checked first, since it can be combined with
+        # a settings change ("Relay newly powered up or settings changed")
+        power_up = ser_power_up_kind(element, ser_state)
+        if power_up == "ambiguous":
+            event_category.add("configuration")
+            event_type.update({"start", "change"})
+        elif power_up == "power_up":
+            event_type.add("start")
+        elif "change" in event_element:
+            event_category.add("configuration")
+            event_type.add("change")
+        elif "archive cleared" in event_element:
+            # "SER archive cleared"
+            event_category.update({"database", "file"})
+            event_type.update({"change", "deletion"})
+
+        action = event_element.replace(" ", "-")  # type: str
+
+        event_state = ser_state.lower()
+        if "assert" in event_state:
+            event_type.add("change")
+            action = f"{event_state}-{event_element}"
+
+        message = f"{element} {ser_state}" if ser_state else element
+
+    # HISTORY/CHISTORY
+    elif raw_event.get("event"):
+        event_name = str(raw_event["event"]).strip()
+        action = event_name.lower()
+        event_type.add("info")
+        extra["event"] = event_name
+
+        for key in ("current", "frequency", "targets", "locat", "group", "shot"):
+            if raw_event.get(key) not in (None, ""):
+                extra[key] = raw_event[key]
+
+        if TRIP_EVENT_RE.search(event_name):
+            event_type.add("change")
+            details = ", ".join(
+                f"{label}: {raw_event[key]}"
+                for label, key in (
+                    ("Targets", "targets"),
+                    ("Current", "current"),
+                    ("Frequency", "frequency"),
+                )
+                if raw_event.get(key) not in (None, "")
+            )
+            message = f"{event_name} ({details})" if details else event_name
+        else:
+            message = event_name
+
+    else:
+        return None
+
+    if raw_event.get("checksum_valid") is False:
+        extra["checksum_valid"] = False
+
+    return Event(
+        action=action,
+        category=event_category,
+        created=created,
+        dataset=kind,
+        kind={"event"},
+        message=message,
+        module=dev._module.__name__ if dev._module else "SELRelay",
+        original=raw_event.get("original", ""),
+        provider=dev.get_id(),
+        # NOTE: "1" is the newest event in the SER and history
+        sequence=_to_int(raw_event.get("sequence")),
+        type=event_type,
+        extra=extra,
+    )
 
 
 def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> None:
     """
     Process events into the data model.
+
+    The event's ``dataset`` is the kind of events, ``ser`` (SER and CSER) or
+    ``history`` (HISTORY and CHISTORY), and the dataset the event was parsed
+    from (e.g. ``SER.TXT``) is in ``extra.source_datasets``. An event that's
+    the same as an event that was already processed (the same kind of event,
+    time, element and state, or event; e.g. from ``SER.TXT`` and the ``ser``
+    command) is merged with it, so SER and history events are never merged.
+
+    Dates are parsed using the relay's date format (the ``DATE_F`` setting)
+    if it's known, otherwise it's inferred from the dates (refer to
+    :func:`infer_date_format`), and the default is month/day/year.
+
+    Events that can't be processed (e.g. an invalid date) are skipped
+    and a warning is logged.
 
     Args:
         raw_events: list of events extracted from an event file
@@ -2356,90 +3078,235 @@ def process_events(raw_events: list[dict], dev: DeviceData, dataset: str) -> Non
         dev: device object to add events to
         dataset: Dataset of the events, e.g. ``ser``, ``CSER.TXT``, ``HISTORY.TXT``
     """
+    kind = event_dataset_kind(dataset)[0] or dataset
+    date_format = get_date_format(dev) or infer_date_format(
+        [e.get("date", "") for e in raw_events if isinstance(e, dict) and not e.get("created")]
+    )
+
+    existing = {_event_identity(e): e for e in dev.event if e.dataset == kind}
+    skipped = 0
+
     for raw_event in raw_events:
-        event_category = {"host"}  # type: set[str]
-        event_type = set()  # type: set[str]
-        extra = {}
+        try:
+            event = _create_event(raw_event, dev, kind, dataset, date_format)
+        except Exception as ex:
+            log.warning(f"Skipping invalid event in {dataset} from {dev.get_id()}: {ex}")
+            log.debug(f"Raw event: {raw_event}")
+            skipped += 1
+            continue
 
-        # SER/CSER
-        if raw_event.get("element"):
-            pass
-            # Examples of element values:
-            # 'Relay', 'Power-up', 'Settings changed', '51G', 'OUT101', 'Group change'
-            event_element = raw_event["element"].lower()  # type: str
+        if event is None:
+            log.warning(f"Skipping invalid event in {dataset} from {dev.get_id()}: {raw_event}")
+            skipped += 1
+            continue
 
-            if "change" in event_element:
-                event_category.add("configuration")
-                event_type.add("change")
-            elif "power" in event_element and "up" in event_element:
-                event_type.add("start")
-            elif "archive cleared" in event_element:
-                # "SER archive cleared"
-                event_category.update({"database", "file"})
-                event_type.update({"change", "deletion"})
+        identity = _event_identity(event)
+        match = existing.get(identity)
 
-            action = event_element.replace(" ", "-")  # type: str
+        if match is None:
+            dev.store("event", event, append=True)
+            existing[identity] = event
+            continue
 
-            # Examples of event state:
-            # 'Enabled', 'Group 1', 'Class P 5', 'Asserted', 'Deasserted'
-            event_state = raw_event["state"].lower()
-            if "assert" in event_state:
-                event_type.add("change")
-                action = f"{event_state}-{event_element}"
+        sources = match.extra.setdefault("source_datasets", [])
+        if dataset not in sources:
+            sources.append(dataset)
+        merge_models(match, event)
+        match.annotate(dev)
 
-            if raw_event["element"] and raw_event["state"]:
-                message = f"{raw_event['element']} {raw_event['state']}"
-            else:
-                message = raw_event["element"]
+    if skipped:
+        log.warning(f"Skipped {skipped} invalid events in {dataset} from {dev.get_id()}")
 
-        # HISTORY/CHISTORY
-        elif raw_event.get("event"):
-            action = raw_event["event"].lower()
 
-            if "trip" in action:
-                event_type.add("change")
-                message = (
-                    f"Trip {raw_event['targets']} "
-                    f"(Current: {raw_event['current']}"
-                    f"- Frequency: {raw_event['frequency']}"
-                )
-            else:
-                message = raw_event["event"]
+def _naive(value: datetime) -> datetime:
+    # The relay's clock is local time. A UTC offset (e.g. from the "date"
+    # command on the 451) is dropped, so it can be compared to event times.
+    return value.replace(tzinfo=None) if value.tzinfo else value
 
-            extra["current"] = raw_event["current"]
-            extra["frequency"] = raw_event["frequency"]
-            extra["targets"] = raw_event["targets"]
 
-        else:
-            log.error("Invalid events")
-            return
+def ser_power_up_kind(element: Any, state: Any = "") -> str:
+    """
+    If a SER record is a power-up or restart of the relay.
 
-        event = Event(
-            action=action,
-            category=event_category,
-            # date: "09/13/2022" (Month/Day/Year)
-            # time: "16:09:12.264"
-            created=date_parse(f"{raw_event['date']} {raw_event['time']}"),
-            dataset=dataset,
-            kind={"event"},
-            message=message,
-            original=raw_event["original"],
-            provider=dev.get_id(),
-            # TODO: should sequence be reverse order for SER/CSER?
-            # Since "1" in the log is actually the newest event, not the oldest?
-            sequence=int(raw_event["sequence"]),
-            type=event_type,
-            extra=extra,
+    The whole element must be a power-up record (refer to :data:`POWER_UP_RE`
+    and :data:`AMBIGUOUS_POWER_UP_RE`), and a record whose state is the state
+    of a Relay Word bit (e.g. ``Asserted``) isn't a power-up, since that's
+    a SER trigger element (or its alias), not a record logged by the relay.
+
+    Returns:
+        ``power_up`` if it's a power-up or restart, ``ambiguous`` if it's
+        a power-up or a settings change (SEL-551, 710, 749M), otherwise
+        an empty string
+    """
+    name = _normalize_name(element)
+
+    if not name or _normalize_name(state) in _SER_STATES:
+        return ""
+    if AMBIGUOUS_POWER_UP_RE.match(name):
+        return "ambiguous"
+    if POWER_UP_RE.match(name):
+        return "power_up"
+
+    return ""
+
+
+def _power_up_kind(event: Event) -> str:
+    """
+    :func:`ser_power_up_kind` of a SER event (from :func:`process_events`).
+    """
+    return ser_power_up_kind(event.extra.get("element"), event.extra.get("state"))
+
+
+def compute_uptime(
+    events: list[Event], device_now: datetime | None
+) -> tuple[timedelta | None, dict]:
+    """
+    Calculate how long a relay has been running from its SER events.
+
+    The relay logs a SER record when it powers up or restarts (refer to
+    :data:`POWER_UP_RE`). The uptime is the time between the newest
+    power-up record and the relay's current time. Both are in the relay's
+    local time, so the timezone doesn't matter. The newest record is chosen
+    by its time, not the sequence number.
+
+    The uptime can't be calculated if:
+
+    - The newest power-up record (or the only one) is ambiguous (refer to
+      :data:`AMBIGUOUS_POWER_UP_RE`). The relay has been running since at
+      least that record, so it's the lower bound.
+    - There's no power-up record, e.g. the SER is a ring buffer that has
+      more recent records, or it was cleared. The relay has been running since
+      at least the oldest record, so it's the lower bound. This assumes that
+      the relay logs power-ups to the SER (all documented SEL relays do).
+    - The result is negative (e.g. the relay's clock was reset), in which
+      case nothing is calculated.
+
+    Records corrupted by a power loss (``Invalid Data``) don't have a time,
+    so they're ignored.
+
+    Args:
+        events: SER events (``dataset`` is ``ser``)
+        device_now: The relay's current time (local time on the relay).
+            If :obj:`None`, then only the time of the last boot is returned.
+
+    Returns:
+        The uptime (or :obj:`None`) and information about it:
+
+        - ``last_boot``: Time of the newest power-up record (relay local time),
+          if it's not ambiguous
+        - ``source``: ``ser_power_up`` (uptime), ``ser_ambiguous_power_up``,
+          or ``ser_oldest_record`` (lower bound)
+        - ``lower_bound``: Minimum uptime (:class:`~datetime.timedelta`),
+          if the uptime can't be calculated
+    """
+    info = {}
+    dated = [e for e in events if e.created is not None]
+
+    if not dated:
+        return None, info
+
+    power_ups = [e for e in dated if _power_up_kind(e) == "power_up"]
+    ambiguous = [e for e in dated if _power_up_kind(e) == "ambiguous"]
+
+    newest_boot = max(power_ups, key=lambda e: _naive(e.created)) if power_ups else None
+    newest_ambiguous = max(ambiguous, key=lambda e: _naive(e.created)) if ambiguous else None
+
+    boot_is_newest = newest_boot is not None and (
+        newest_ambiguous is None or _naive(newest_ambiguous.created) < _naive(newest_boot.created)
+    )
+
+    if boot_is_newest:
+        info["last_boot"] = _naive(newest_boot.created)
+
+    if device_now is None:
+        return None, info
+
+    now = _naive(device_now)
+
+    if boot_is_newest:
+        uptime = now - info["last_boot"]
+        if uptime < timedelta(0):
+            log.warning(
+                f"The relay's time ({now}) is before its last power-up ({info['last_boot']}), "
+                f"the relay's clock may have been changed. Uptime won't be calculated."
+            )
+            return None, info
+
+        info["source"] = "ser_power_up"
+        return uptime, info
+
+    if newest_ambiguous is not None:
+        anchor = _naive(newest_ambiguous.created)
+        source = "ser_ambiguous_power_up"
+    else:
+        anchor = min(_naive(e.created) for e in dated)
+        source = "ser_oldest_record"
+
+    lower_bound = now - anchor
+    if lower_bound < timedelta(0):
+        log.warning(
+            f"The relay's time ({now}) is before its SER records ({anchor}), "
+            f"the relay's clock may have been changed. Uptime won't be calculated."
+        )
+        return None, info
+
+    info["source"] = source
+    info["lower_bound"] = lower_bound
+
+    return None, info
+
+
+def apply_uptime(dev: DeviceData, device_now: datetime | None = None) -> timedelta | None:
+    """
+    Set the device's uptime from its SER events (refer to :func:`compute_uptime`).
+
+    If the uptime is calculated, ``dev.uptime`` and ``dev.start_time``
+    (``now - uptime``, in UTC) are set if they aren't already set. Otherwise,
+    the lower bound is saved in ``dev.extra["uptime_lower_bound"]``.
+    How it was determined is saved in ``dev.extra["uptime_source"]``, and the
+    time of the last power-up (relay local time) in
+    ``dev.extra["last_boot_device_time"]``.
+
+    Args:
+        dev: The device, with SER events (from :func:`process_events`)
+        device_now: The relay's current time (local time on the relay), e.g.
+            from the SER report header, the ``date`` and ``time`` commands,
+            or the information when logging out. This must be from the
+            same pull as the SER, so leave it unset when parsing files
+            (only ``last_boot_device_time`` is saved).
+
+    Returns:
+        The uptime, or :obj:`None` if it couldn't be calculated
+    """
+    ser_events = [e for e in dev.event if e.dataset == "ser"]
+    if not ser_events:
+        return None
+
+    if device_now is not None and not isinstance(device_now, datetime):
+        device_now = utils.parse_date(str(device_now))
+
+    uptime, info = compute_uptime(ser_events, device_now)
+
+    if info.get("last_boot"):
+        dev.extra["last_boot_device_time"] = info["last_boot"]
+
+    if uptime is not None:
+        dev.extra.pop("uptime_lower_bound", None)
+        if not dev.uptime:
+            dev.uptime = uptime
+            dev.extra["uptime_source"] = info["source"]
+            log.info(f"Uptime of {dev.get_id()} from its SER: {uptime}")
+        if not dev.start_time:
+            dev.start_time = utils.utc_now() - uptime
+    elif info.get("lower_bound") is not None and not dev.uptime:
+        dev.extra["uptime_lower_bound"] = info["lower_bound"]
+        dev.extra["uptime_source"] = info["source"]
+        log.info(
+            f"{dev.get_id()} has been running for at least {info['lower_bound']} "
+            f"(the uptime can't be calculated from its SER: {info['source']})"
         )
 
-        if not dev._module:
-            event.module = "SELRelay"
-        else:
-            event.module = dev._module.__name__
-
-        # If a event exists with the same sequence number, update it.
-        # Otherwise, it's a new event and don't bother comparing values.
-        dev.store("event", event, lookup="sequence")
+    return uptime
 
 
 def extract_cid_content(data: bytes) -> str:
@@ -2539,6 +3406,12 @@ def clean_id(id_str: str) -> str:
 
 
 def split_lines(val: bytes | str) -> list[str]:
-    if isinstance(val, bytes):
-        val = val.decode("ascii")
-    return [x.strip() for x in val.strip().splitlines() if x]
+    """
+    Split text into stripped lines, without blank lines and STX (``0x02``)
+    and ETX (``0x03``) characters. Bytes are decoded as UTF-8, or Latin-1 if
+    they aren't valid UTF-8 (refer to :func:`clean_settings_text`).
+    """
+    if isinstance(val, (bytes, bytearray)):
+        val = clean_settings_text(bytes(val))
+    val = val.replace(sel_cascii.STX, "").replace(sel_cascii.ETX, "")
+    return [x.strip() for x in val.strip().splitlines() if x.strip()]
