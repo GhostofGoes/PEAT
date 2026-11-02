@@ -69,7 +69,7 @@ The choices above serve a few goals that come up repeatedly in the code:
 - **Standardized, documented output.** One data model and one Elasticsearch schema for
   every vendor (see :doc:`/reference/database_schema`).
 - **Portability.** PEAT must run wherever it's needed: a single self-contained executable
-  for old and new Linux and Windows systems, a container, or a Python package, with
+  for old and new Linux, Windows, and macOS systems, a container, or a Python package, with
   minimal dependencies on the host. The build and distribution design is described in
   :doc:`/contributing/building`.
 - **Reproducibility.** Every run records its complete configuration, its internal state,

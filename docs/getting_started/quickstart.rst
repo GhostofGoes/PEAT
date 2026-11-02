@@ -12,7 +12,7 @@ Before you start:
   :ref:`container <quickstart-container>` tab.
 - Have the address of a :doc:`supported device <supported_devices>` on a network you are
   authorized to scan, or use the parse workflow, which needs no device at all.
-- On Linux, run active commands (``scan``, ``pull``) with ``sudo``; on Windows, use an
+- On Linux and macOS, run active commands (``scan``, ``pull``) with ``sudo``; on Windows, use an
   Administrator PowerShell. PEAT works without elevated permissions, but scanning is
   slower and less reliable (see :doc:`requirements`).
 

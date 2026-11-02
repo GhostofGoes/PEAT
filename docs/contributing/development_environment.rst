@@ -121,6 +121,8 @@ Some dependencies need system libraries, and some features need tools:
   (libpcap for Scapy, libpq for PostgreSQL, libxml2/libxslt for XML parsing, ``lrzsz``
   for SEL YMODEM transfers, ``qemu-utils`` for pillage, Graphviz for the documentation's
   class diagrams).
+- macOS: ``brew install lrzsz graphviz`` (the Python dependencies ship wheels for macOS;
+  ``qemu-utils`` is not needed, since disk-image pillage is Linux only).
 - Building the Linux executable needs ``python3-dev patchelf binutils scons`` as well; see
   :doc:`building`.
 
@@ -166,7 +168,7 @@ Helpful PDM commands
    pdm run docs-html         # Build the HTML documentation into _docs_html/
    pdm run docs-a11y         # Accessibility checks of the built documentation
 
-   pdm run build-exe         # Executable with PyInstaller (Windows, or non-portable Linux)
+   pdm run build-exe         # Executable with PyInstaller (Windows, macOS, or non-portable Linux)
    pdm run build-linux-exe   # Portable Linux executable (PyInstaller + StaticX)
    pdm run build-docker      # Container image
    pdm build                 # Python wheel and sdist into dist/

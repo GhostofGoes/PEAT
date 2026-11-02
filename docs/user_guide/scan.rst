@@ -215,7 +215,8 @@ See :ref:`scan-summary` for every field. A device's full data is also written to
 
 Scanning considerations
 =======================
-- **Permissions**: root (Linux) or Administrator (Windows) lets PEAT use ARP and ICMP for
+- **Permissions**: root (Linux and macOS) or Administrator (Windows) lets PEAT use ARP and
+  ICMP for
   online checks, which are faster and gentler than TCP connection attempts, and resolves
   device MAC addresses. See :doc:`/getting_started/requirements`.
 - **Timeouts**: ``-T`` (``--timeout``) defaults to 5 seconds. Lower it on fast local

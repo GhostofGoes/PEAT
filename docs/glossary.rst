@@ -309,7 +309,7 @@ Terms link here from the pages that use them.
       An open-source search and analytics database forked from :term:`Elasticsearch`, used by :term:`Malcolm`. PEAT exports to it transparently; see :doc:`/user_guide/opensearch`.
 
    OS
-      Operating System. Examples are Windows, Linux, and MacOS; on devices, VxWorks, ThreadX, or Linux.
+      Operating System. Examples are Windows, Linux, and macOS; on devices, VxWorks, ThreadX, or Linux.
 
    OSI
       Open Systems Interconnection. Generally used to reference the :term:`OSI Model`.

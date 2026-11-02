@@ -6,7 +6,7 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Open in Dev Containers](https://img.shields.io/static/v1?label=Dev%20Containers&message=Open&color=blue)](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/sandialabs/PEAT)
 
-PEAT is a Operational Technology (OT) device interrogator, including pulling, parsing and uploading artifacts (configuration, firmware, process logic, etc.) and network discovery ("scanning"). It runs on most systems, including Linux, Windows, macOS (Apple Silicon and Intel), and as a Docker container. Refer to the [supported platforms](https://sandialabs.github.io/PEAT/system_requirements.html#supported-platforms) documentation for the versions tested in CI and platform limitations.
+PEAT is a Operational Technology (OT) device interrogator, including pulling, parsing and uploading artifacts (configuration, firmware, process logic, etc.) and network discovery ("scanning"). It runs on most systems, including Linux, Windows, macOS (Apple Silicon and Intel), and as a Docker container. Refer to the [supported platforms](https://sandialabs.github.io/PEAT/getting_started/requirements.html#supported-platforms) documentation for the versions tested in CI and platform limitations.
 
 Documentation about installation, usage, development, and other information is in the [PEAT documentation](https://sandialabs.github.io/PEAT/).
 
@@ -52,7 +52,7 @@ sudo docker run -i ghcr.io/sandialabs/peat:latest --help
 
 ## Install notes
 
-PEAT is distributed in several formats, including executable files for Linux and Windows and a Docker Container. The format you want to install depends on your use case. Typically, you'll want the executable format, which is `peat` on Linux and `peat.exe` on Windows. These can be downloaded from the [releases page](https://github.com/sandialabs/PEAT/releases) or from [CI/CD builds](https://github.com/sandialabs/PEAT/actions).
+PEAT is distributed in several formats, including executable files for Linux, Windows, and macOS and a Docker Container. The format you want to install depends on your use case. Typically, you'll want the executable format, which is `peat` on Linux, `peat.exe` on Windows, and `peat_macos_arm64` (Apple Silicon) or `peat_macos_x86_64` (Intel) on macOS. These can be downloaded from the [releases page](https://github.com/sandialabs/PEAT/releases) or from [CI/CD builds](https://github.com/sandialabs/PEAT/actions).
 
 Python is NOT required to run PEAT if using the executable or container. PEAT is designed to be portable and brings it's own dependencies for the most part, requiring minimal or no configuring on the target system. Refer to the [system requirements page](https://sandialabs.github.io/PEAT/getting_started/requirements.html) for further details.
 

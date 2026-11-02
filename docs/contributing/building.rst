@@ -81,7 +81,8 @@ versions (a package built on Ubuntu 24.04 works on Ubuntu 14.04 or RHEL 7).
    pdm install -d
 
    # Build. This reinstalls psycopg2 from source first so its libraries are bundled,
-   # runs PyInstaller with distribution/peat.spec, then StaticX.
+   # runs PyInstaller with distribution/peat.spec, then StaticX. Linux only: on
+   # Windows or macOS use "pdm run build-exe" instead.
    pdm run build-linux-exe
 
    # Test
@@ -94,7 +95,7 @@ versions (a package built on Ubuntu 24.04 works on Ubuntu 14.04 or RHEL 7).
    pdm run inspect-exe
 
 The build script is ``distribution/build-linux-package.sh``; ``distribution/peat.spec`` is
-the PyInstaller spec shared with the Windows build. If the build warns about
+the PyInstaller spec shared with the Windows and macOS builds. If the build warns about
 ``Unexpected line in ldd output``, re-run the psycopg2 reinstall the script prints.
 
 Windows executable

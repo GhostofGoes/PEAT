@@ -68,4 +68,4 @@ each function:
    troubleshooting
 
 .. note::
-   On Linux, this guide is also installed as the manual page: ``man peat``.
+   On Linux and macOS, this guide is also installed as the manual page: ``man peat``.

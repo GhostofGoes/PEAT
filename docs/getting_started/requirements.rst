@@ -74,8 +74,9 @@ Supported platforms
      - Yes (Apple Silicon and Intel)
      - Docker Desktop (untested)
      - Yes (Python 3.11 to 3.13)
-     - Fully supported. CI runs the unit tests on macOS 15 (Apple Silicon with Python 3.11
-       to 3.13, Intel with Python 3.12) and macOS 26 (Apple Silicon, Python 3.12). The
+     - Fully supported. CI runs the unit tests on macOS 15 Sequoia (Apple Silicon with
+       Python 3.11 to 3.13, Intel with Python 3.12) and macOS 26 Tahoe (Apple Silicon,
+       Python 3.12). The
        executables are built on macOS 15 and need macOS 15 or newer; older releases may
        work with the Python package but are untested. Docker Desktop runs containers in a
        Linux VM, so the container can't scan the Mac's networks (``--network host`` reaches

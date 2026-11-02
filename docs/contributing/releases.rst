@@ -59,8 +59,9 @@ workflow creates it.
 #. Verify the draft release in `Releases <https://github.com/sandialabs/PEAT/releases>`__:
 
    - The change list is correct.
-   - All expected artifacts are included: Linux executable, Windows executable, Python
-     package (sdist and wheel), docs, man page, Sneakypeat, bundles.
+   - All expected artifacts are included: Linux executable, Windows executable, macOS
+     executables (arm64 and x86_64), Python package (sdist and wheel), docs, man page,
+     Sneakypeat, bundles.
    - Download the artifacts and verify they work. They're tested in CI, but it's good to
      be sure, especially ``peat --version`` showing the release version.
 

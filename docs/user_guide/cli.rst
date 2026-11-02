@@ -21,7 +21,7 @@ Getting help
    # Version
    peat --version
 
-   # On Linux, the installed man page contains the whole user guide
+   # On Linux and macOS, the installed man page contains the whole user guide
    man peat
 
 .. only:: html

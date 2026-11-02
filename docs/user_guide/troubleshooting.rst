@@ -192,16 +192,16 @@ known issues (bugs).
 
 - MAC addresses of devices will not be resolved during a scan or pull if the device is
   behind a router or gateway (in another subnet than the system running PEAT).
-- Checking host online status with ARP or ICMP requires root (Linux) or Administrator
-  (Windows) permissions. Without them PEAT falls back to TCP connection attempts, which
+- Checking host online status with ARP or ICMP requires root (Linux and macOS) or
+  Administrator (Windows) permissions. Without them PEAT falls back to TCP connection attempts, which
   are less reliable and may be blocked by firewalls.
 - Pulls run one device at a time; very large populations take a while.
 - Only RS-232 serial connections are supported (as of 2024), and only a few modules
   support serial.
 - Broadcast scanning supports IP (layer 3) broadcasts only, and is implemented for the
   ControlLogix module.
-- Pillage runs on Linux only, requires root, and can't attach disk images from inside a
-  container.
+- Pillaging disk images runs on Linux only, requires root, and can't attach images from
+  inside a container; pillaging a directory of files also works on macOS.
 - HEAT supports a limited set of protocols and requires an Elasticsearch server to be
   configured.
 
