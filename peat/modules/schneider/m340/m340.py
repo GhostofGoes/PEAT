@@ -734,9 +734,11 @@ class M340(DeviceModule):
             dev, dev._cache.pop("m340_network_config", {})
         )
 
-        # Add the raw parsed config to dev.extra. Merge per key: the SNMP/FTP module
-        # dicts and the project file module dicts share the "module_<slot>" keys.
-        for extra_source in (net_remaining, parsed_config):
+        # Add the raw parsed config to dev.extra, without the data mapped above.
+        # Merge per key: the SNMP/FTP module dicts and the project file module
+        # dicts share the "module_<slot>" keys.
+        extra_config = m340_parse.without_mapped_network_config(parsed_config)
+        for extra_source in (net_remaining, extra_config):
             for key, value in extra_source.items():
                 if isinstance(value, dict) and isinstance(dev.extra.get(key), dict):
                     dev.extra[key] = {**dev.extra[key], **value}

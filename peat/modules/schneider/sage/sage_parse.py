@@ -507,8 +507,12 @@ def parse_ether(f_handle: IO[bytes], device_info: dict) -> None:
         ether_iter = f"entry_{entry}"
         ether_settings[ether_iter] = {}
 
-        # Save ethernet parameters including ID, Password, Name, etc
+        # Save ethernet parameters including ID, Name, etc. Never the password
+        # (a secret): only if one is set.
         for item in ether_elem.items():
+            if item[0].lower() == "password":
+                ether_settings[ether_iter]["password_set"] = bool(item[1])
+                continue
             ether_settings[ether_iter][item[0]] = item[1]
 
         # Save Routes

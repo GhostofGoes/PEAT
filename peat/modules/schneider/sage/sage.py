@@ -1143,6 +1143,11 @@ class Sage(DeviceModule):
         # Sort data for consistency
         device_info = utils.sort(device_info)
 
+        # Never write or export the account passwords (secrets) from ACCESS.XML:
+        # redacted BEFORE the temp file and parsed-config.json are written
+        if device_info.get("access_info"):
+            device_info["access_info"] = sage_parse.redact_access_info(device_info["access_info"])
+
         # Save the raw data to a temporary file for debugging purposes
         td_pth = utils.write_temp_file(device_info, "sage_raw-device-info.json")
 
@@ -1178,8 +1183,7 @@ class Sage(DeviceModule):
 
         if device_info.get("access_info"):
             sage_parse.process_access_xml(dev, device_info["access_info"])
-            # Never export the account passwords (secrets) from ACCESS.XML
-            dev.extra["access_info"] = sage_parse.redact_access_info(device_info["access_info"])
+            dev.extra["access_info"] = device_info["access_info"]  # passwords redacted above
 
         if bootline:
             sage_parse.process_bootline(dev, bootline)
@@ -1274,7 +1278,8 @@ class Sage(DeviceModule):
                 )
 
                 with tarfile.open(name=file, mode="r:gz", encoding="utf-8") as tar:
-                    tar.extractall(path=t_path)
+                    # "data" filter: no absolute paths, ".." escapes, links outside or devices
+                    tar.extractall(path=t_path, filter="data")
             except Exception as ex:
                 cls.log.debug(f"Failed to extract raw files from {file.name}: {ex}")
 

@@ -20,13 +20,23 @@ from peat.data import (
 from peat.data.data_utils import merge_models
 from peat.protocols import HTTP, clean_mac
 
-# Keys of JSON API data with secret values (Wi-Fi password, VPN credentials, ...).
-# Their values are never stored in the data model or written to files.
-SECRET_KEY_RE = re.compile(r"pass(word|phrase)?$|psk|secret|private_?key", re.IGNORECASE)
+# Keys of JSON API data with secret values (Wi-Fi password, VPN credentials, ...),
+# matched against the snake_case key name (see is_secret_key()). Their values
+# are never stored in the data model or written to files.
+SECRET_KEY_RE = re.compile(
+    r"(^|_)(pass(word|wd|phrase)?|pwd|psk|pre_?shared_?key|wpa_?key|key|secret|token"
+    r"|community|tls_?auth|private_?key)$"
+)
+
+# Values that are secrets whatever their key: PEM private keys, OpenVPN static keys
+SECRET_VALUE_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|-----BEGIN OpenVPN Static key"
+)
 
 # API data that is not copied to dev.extra (fully processed into the data
-# model elsewhere, or it holds secrets: "wifihotspot" has the Wi-Fi password)
-EXCLUDED_FROM_EXTRA = ["ssh_keys", "users", "roles", "wifihotspot"]
+# model elsewhere, or it holds secrets: "wifihotspot" has the Wi-Fi password).
+# "ntp_config" is in dev.clock.sources.
+EXCLUDED_FROM_EXTRA = ["ssh_keys", "users", "roles", "wifihotspot", "ntp_config"]
 
 # ntpq "tally code" (first character of the "remote" column) -> TimeSource.state
 NTP_TALLY_STATES = {
@@ -208,9 +218,11 @@ class TotusHTTP(HTTP):
                 # methods that work on JSON data
                 else:
                     parsed_data = response.json()
-                    # Only add some data to host.extra
+                    # Only add data to host.extra that isn't in the data model
                     if label not in EXCLUDED_FROM_EXTRA:
-                        dev.extra[label] = redact_secrets(parsed_data)
+                        unmapped = unmapped_api_data(label, redact_secrets(parsed_data))
+                        if unmapped:
+                            dev.extra[label] = unmapped
 
                 if config.DEVICE_DIR:
                     dev.write_file(
@@ -653,7 +665,7 @@ class TotusHTTP(HTTP):
 
         # NOTE: never store the Wi-Fi password
         iface.extra.update(
-            {k: v for k, v in wifihotspot.items() if not SECRET_KEY_RE.search(str(k))}
+            {k: v for k, v in redact_secrets(wifihotspot).items() if not is_secret_key(k)}
         )
 
         dev.store("interface", iface, lookup="name")
@@ -892,23 +904,66 @@ class TotusHTTP(HTTP):
 __all__ = ["TotusHTTP"]
 
 
+def is_secret_key(key: object) -> bool:
+    """
+    If a JSON API key holds a secret (:data:`SECRET_KEY_RE` on the snake_case
+    name, e.g. ``wpaKey``, ``preSharedKey``, ``tls_auth``). Public keys are not secret.
+    """
+    name = utils.convert_to_snake_case(str(key)).replace("-", "_")
+    return "public" not in name and bool(SECRET_KEY_RE.search(name))
+
+
 def redact_secrets(data):
     """
     Copy of JSON API data with the values of secret keys (passwords,
-    pre-shared keys, ...) replaced by ``"<redacted>"`` (see :data:`SECRET_KEY_RE`).
+    pre-shared keys, ...) and secret values (PEM private keys, OpenVPN static
+    keys) replaced by ``"<redacted>"`` (see :func:`is_secret_key` and
+    :data:`SECRET_VALUE_RE`).
     """
     if isinstance(data, dict):
         return {
             k: (
                 "<redacted>"
-                if SECRET_KEY_RE.search(str(k)) and isinstance(v, str) and v
+                if is_secret_key(k) and isinstance(v, str) and v
                 else redact_secrets(v)
             )
             for k, v in data.items()
         }
     if isinstance(data, list):
         return [redact_secrets(v) for v in data]
+    if isinstance(data, str) and SECRET_VALUE_RE.search(data):
+        return "<redacted>"
     return copy.copy(data)
+
+
+def unmapped_api_data(label: str, data):
+    """
+    The part of the JSON API data of ``label`` that is not mapped to the data
+    model (copied to ``dev.extra``), or :obj:`None` if everything is mapped.
+
+    - ``ntp_status``: without the NTP peers (``dev.clock.sources``)
+    - ``openvpn``: the profiles without their ``remotes`` (relationships)
+    - ``timedate``: without ``time`` (``dev.clock.time``) and ``timezone``
+      (``dev.geo.timezone``)
+    """
+    if label == "ntp_status" and isinstance(data, dict):
+        data = dict(data)
+        if isinstance(data.get("status"), dict):
+            status = {k: v for k, v in data["status"].items() if k != "peers"}
+            if status:
+                data["status"] = status
+            else:
+                data.pop("status")
+    elif label == "openvpn" and isinstance(data, dict):
+        data = dict(data)
+        if isinstance(data.get("profiles"), list):
+            data["profiles"] = [
+                {k: v for k, v in p.items() if k != "remotes"} if isinstance(p, dict) else p
+                for p in data["profiles"]
+            ]
+    elif label == "timedate" and isinstance(data, dict):
+        data = {k: v for k, v in data.items() if k not in ("time", "timezone")}
+    return data if data not in (None, {}, []) else None
 
 
 def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
@@ -924,10 +979,14 @@ def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
     if not isinstance(peer, dict):
         return None
 
-    remote = str(peer.get("remote") or "").strip()
+    # The tally code is the first character of the raw value (a blank tally =
+    # rejected peer). The letters "o" and "x" are only a tally code before an
+    # IP address: a hostname may start with them (" ozlabs.ntp.org").
+    raw = str(peer.get("remote") or "")
     tally = str(peer.get("tally") or "").strip()
-    if remote and remote[0] in NTP_TALLY_STATES:
-        tally, remote = remote[0], remote[1:].strip()
+    if raw[:1] in NTP_TALLY_STATES and (raw[0] not in "ox" or utils.is_ip(raw[1:].strip())):
+        tally, raw = raw[0], raw[1:]
+    remote = raw.strip()
     if not remote:
         return None
 

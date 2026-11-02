@@ -35,6 +35,80 @@ def test_redact_secrets():
     assert data["password"] == "hunter2"
 
 
+def test_redact_secrets_key_names_and_values():
+    data = {
+        "passwd": "a",
+        "pwd": "b",
+        "key": "c",
+        "preSharedKey": "d",
+        "wpaKey": "e",
+        "community": "f",
+        "tls_auth": "g",
+        "token": "h",
+        "pre-shared-key": "i",
+        "publicKey": "ssh-ed25519 AAAA user@host",
+        "keyboard": "us",
+        "inline": "-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----",
+        "ta": "-----BEGIN OpenVPN Static key V1-----\nabcd\n-----END OpenVPN Static key V1-----",
+        "cert": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+    }
+    redacted = totus_http.redact_secrets(data)
+    for key in ("passwd", "pwd", "key", "preSharedKey", "wpaKey", "community", "tls_auth"):
+        assert redacted[key] == "<redacted>", key
+    for key in ("token", "pre-shared-key", "inline", "ta"):
+        assert redacted[key] == "<redacted>", key
+    assert redacted["publicKey"] == data["publicKey"]
+    assert redacted["keyboard"] == "us"
+    assert redacted["cert"] == data["cert"]
+
+
+class _FakeResponse:
+    def __init__(self, data):
+        self.text = json.dumps(data)
+
+    def json(self):
+        return json.loads(self.text)
+
+
+def test_mapped_api_data_not_copied_to_extra(dev, mocker):
+    """Data moved to first-class fields is not duplicated in dev.extra."""
+    api = {
+        "ntp_config": ["192.0.2.1", "pool.ntp.org"],
+        "ntp_status": {"status": {"peers": [{"remote": "*192.0.2.1"}], "leap": "00"}},
+        "openvpn": {
+            "profiles": [
+                {
+                    "name": "site-vpn",
+                    "key": "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+                    "remotes": [{"host": "vpn.example.com", "port": 1194}],
+                }
+            ]
+        },
+        "timedate": {"timezone": "UTC", "time": "2024-05-01T10:00:00Z", "ntp": True},
+    }
+    http = TotusHTTP("192.0.2.30", 80, 1.0)
+    http.methods = {
+        "ntp_config": {"page": "ntp_config", "process_method": http.process_ntp_config},
+        "ntp_status": {"page": "ntp_status", "process_method": http.process_ntp_status},
+        "openvpn": {"page": "openvpn", "process_method": http.process_openvpn},
+        "timedate": {"page": "timedate", "process_method": http.process_timedate},
+    }
+    mocker.patch.object(http, "get", side_effect=lambda page: _FakeResponse(api[page]))
+    assert http.get_and_process_all(dev)
+
+    assert {s.address for s in dev.clock.sources} == {"192.0.2.1", "pool.ntp.org"}
+    assert "ntp_config" not in dev.extra
+    assert dev.extra["ntp_status"] == {"status": {"leap": "00"}}
+    assert dev.extra["openvpn"] == {"profiles": [{"name": "site-vpn", "key": "<redacted>"}]}
+    assert dev.extra["timedate"] == {"ntp": True}
+    assert dev.clock.time is not None
+    assert [r.remote.hostname for r in dev.relationships if r.type == "tunnel"] == [
+        "vpn.example.com"
+    ]
+    side_file = dev.get_sub_dir("http_json_data") / "openvpn.json"
+    assert "PRIVATE KEY" not in side_file.read_text()
+
+
 def test_wifi_password_not_stored(dev, mocker):
     """Bug fix: the Wi-Fi password was copied to dev.extra and the JSON file."""
     wifi = {"status": "on", "ssid": "totus", "password": "hunter2", "channel": 6}
@@ -126,6 +200,19 @@ def test_ntp_peer_to_time_source():
     assert src.selected is None
     assert src.offset is None
     assert src.extra == {"offset_raw": "abc"}
+
+
+def test_ntp_peer_hostname_starting_with_tally_letter():
+    src = totus_http.ntp_peer_to_time_source({"remote": " ozlabs.ntp.org"})
+    assert (src.address, src.state, src.selected) == ("ozlabs.ntp.org", "", None)
+    src = totus_http.ntp_peer_to_time_source({"remote": "xntp.example.com"})
+    assert (src.address, src.state) == ("xntp.example.com", "")
+    src = totus_http.ntp_peer_to_time_source({"remote": "x192.0.2.9"})
+    assert (src.address, src.state) == ("192.0.2.9", "falseticker")
+    src = totus_http.ntp_peer_to_time_source({"remote": "o192.0.2.8"})
+    assert (src.address, src.selected) == ("192.0.2.8", True)
+    src = totus_http.ntp_peer_to_time_source({"remote": "*ntp.example.com"})
+    assert (src.address, src.selected) == ("ntp.example.com", True)
 
 
 def test_timedate_clock(dev):

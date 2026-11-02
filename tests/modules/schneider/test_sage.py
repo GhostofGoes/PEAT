@@ -177,6 +177,34 @@ def test_access_xml_passwords_not_exported():
     assert "secret" not in str(redacted)
 
 
+def test_parse_never_writes_secrets(out_config):
+    """ACCESS.XML and ethernet.xml passwords never reach any output file."""
+    xml_dir = out_config / "sage_in" / "ata0a" / "xml"
+    xml_dir.mkdir(parents=True)
+    (xml_dir / "ACCESS.XML").write_bytes(
+        b'<ACCESS><USER ID="Admin" SESTIMEOUT="10"><DESC>Administrator</DESC>'
+        b'<PASSWORD>SuperSecret1!</PASSWORD><ACCESS FTP="Y" TELNET="N"/></USER></ACCESS>'
+    )
+    dev = Sage.parse(xml_dir / "ACCESS.XML")
+    assert dev.extra["access_info"]["users"][0]["password_set"] is True
+    for path in (out_config / "devices").rglob("*.json"):
+        assert "SuperSecret1!" not in path.read_text(), path
+    for path in (out_config / "temp").rglob("*"):
+        if path.is_file():
+            assert "SuperSecret1!" not in path.read_text(errors="ignore"), path
+
+
+def test_parse_ether_password_not_stored():
+    xml = b"""<ETHERNET><PORT ID="1" NAME="fei0" Password="hunter2"><ROUTES/></PORT>
+      <PORT ID="2" NAME="fei1" Password=""><ROUTES/></PORT></ETHERNET>"""
+    info = {}
+    sage_parse.parse_ether(io.BytesIO(xml), info)
+    assert "hunter2" not in str(info)
+    assert info["ethernet"]["entry_0"]["password_set"] is True
+    assert info["ethernet"]["entry_1"]["password_set"] is False
+    assert info["ethernet"]["entry_0"]["NAME"] == "fei0"
+
+
 def test_parse_ether_routes_not_aliased():
     xml = b"""<ETHERNET>
       <PORT ID="1" NAME="fei0">
@@ -472,6 +500,20 @@ def test_parse_config_tar(tmp_path):
     assert {str(f.path) for f in dev.files} == {"xml/rtusetup.xml", "isagraf/ISaGRAF.TXT"}
     assert dev.software[0].name == "ISaGRAF"
     assert dev.software[0].version == "5.21"
+
+
+@pytest.mark.usefixtures("out_config")
+def test_parse_config_tar_member_cannot_escape(tmp_path):
+    tar_path = tmp_path / "in" / "config.tar.gz"
+    tar_path.parent.mkdir()
+    rtusetup = b"<RTU_SETUP><CPU><RTU><NAME>RTU1</NAME></RTU></CPU></RTU_SETUP>"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for name, data in [("xml/rtusetup.xml", rtusetup), ("../../../../ESCAPED.txt", b"x")]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    Sage.parse(tar_path)
+    assert list(tmp_path.parent.rglob("ESCAPED.txt")) == []
 
 
 def test_record_login_default_credentials():

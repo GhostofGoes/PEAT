@@ -992,6 +992,24 @@ def redact_snmp_communities(device_info: dict) -> None:
                 net_conf["snmp_config"].pop(community, None)
 
 
+def without_mapped_network_config(device_info: dict) -> dict:
+    """
+    Copy of parsed project file data for ``dev.extra``, without the parts of
+    ``network_configurations`` that :func:`process_project_network_config` maps
+    to the data model: ``snmp_config`` (SNMP service security and manager
+    relationships) and ``ntp_srv`` (``clock.sources`` or ``clock.extra``).
+    """
+    net_confs = device_info.get("network_configurations")
+    if not isinstance(net_confs, dict):
+        return device_info
+    stripped = {}
+    for name, net_conf in net_confs.items():
+        if isinstance(net_conf, dict):
+            net_conf = {k: v for k, v in net_conf.items() if k not in ("snmp_config", "ntp_srv")}
+        stripped[name] = net_conf
+    return {**device_info, "network_configurations": stripped}
+
+
 def process_project_network_config(dev: DeviceData, network_configurations: dict) -> None:
     """
     Process the communication module configuration from the project file

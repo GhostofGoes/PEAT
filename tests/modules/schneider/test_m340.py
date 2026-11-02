@@ -179,7 +179,12 @@ def test_snmp_project_config_and_redaction():
     m340_parse.redact_snmp_communities(device_info)
     snmp_config = device_info["network_configurations"]["NOE"]["snmp_config"]
     assert not {"set", "get", "trap"} & set(snmp_config)
-    assert snmp_config["IPAddressMgr1"] == "192.0.2.161"
+    assert snmp_config["IPAddressMgr1"] == "192.0.2.161"  # parsed-config.json
+
+    # dev.extra: the mapped SNMP and NTP settings are not duplicated
+    extra = m340_parse.without_mapped_network_config(device_info)
+    assert extra["network_configurations"] == {"NOE": {"name": "NOE"}}
+    assert "snmp_config" in device_info["network_configurations"]["NOE"]  # input unchanged
 
     # Site communities -> not the factory default; small ntp_srv values are flags
     dev2 = DeviceData(ip="192.0.2.21")
