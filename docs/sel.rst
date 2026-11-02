@@ -145,7 +145,9 @@ To manually extract them without using PEAT:
 RTACs
 -----
 
-PEAT can pull data from a live RTAC (over HTTP/HTTPS and PostgreSQL), and parse an RTAC project that was exported from ACSELERATOR RTAC (SEL-5033). This section is about parsing project exports.
+PEAT can pull data from a live RTAC (over HTTP/HTTPS and PostgreSQL), and parse an RTAC project that was exported from ACSELERATOR RTAC (SEL-5033). The first sections are about parsing project exports, and the last sections are about the TLS certificate of the web interface and the hashes of the files PEAT collects.
+
+The web pull logs in with the credentials that worked during the scan (one of the ``web.users`` and ``web.passwords`` options), or with the ``web.user`` and ``web.pass`` options. RTACs don't have default credentials, so a pull with ``--skip-scan`` needs the ``web.user`` and ``web.pass`` options, otherwise the web pull is skipped.
 
 .. _sel-rtac-project-exports:
 
@@ -258,6 +260,71 @@ Limitations:
 - POUs that only have ``<ArchivedContent>`` are not converted to code.
 
 The test data for RTAC parsing is in ``tests/modules/sel/data_files/rtac/``. It has six public, openly licensed project exports (SEL-3530, SEL-3530-4 and SEL-3555, schemas 22 to 36). ``SOURCES.md`` in that directory has the source and license of each export.
+
+.. _sel-rtac-tls-certificate:
+
+RTAC TLS certificate
+^^^^^^^^^^^^^^^^^^^^
+The web interface of an RTAC uses HTTPS (HTTP on TCP port 80 redirects to port 443). Unless the owner installs their own certificate, the RTAC uses its factory-default certificate: a self-signed certificate with SEL as the organization and a Common Name like ``SEL-3530-4 RTAC``. Clients can't check such a certificate against a certificate authority, so they can't tell the real RTAC from an impostor unless they trust (pin) that exact certificate. Finding the factory-default certificate on a production RTAC is useful for defenders.
+
+PEAT gets the certificate with :func:`~peat.protocols.tls.fetch_peer_certificate`, which does one TLS handshake and closes the connection. It doesn't log in, send any HTTP requests, or verify the certificate. If the handshake fails with the default TLS settings (TLS 1.2 or newer), PEAT tries once more with a "legacy" TLS context that allows TLS 1.0 and 1.1 and weak ciphers, for older firmware. The certificate is parsed with the ``cryptography`` library (:func:`~peat.protocols.tls.parse_der_certificate`). If ``cryptography`` rejects it (it's stricter than OpenSSL, e.g. about invalid dates), PEAT parses it with the OpenSSL decoder of Python's ``ssl`` module instead, which only gives the names, serial number, version, validity dates and alternative names, and logs a warning.
+
+- During a scan, the ``SEL RTAC SSL certificate`` identification method gets the certificate. The device is an RTAC if the Common Name contains ``SEL`` and ``RTAC``.
+- During a pull, PEAT gets the certificate if the scan didn't, e.g. with ``--skip-scan``, or if the RTAC was identified by logging in to the web interface. Set the ``sel.pull_ssl_cert`` option to ``false`` to disable this.
+
+Where the results are:
+
+- ``x509``: the subject and issuer (including the distinguished names), validity dates, serial number, key algorithm and size, signature algorithm (e.g. ``SHA256-RSA``), and the subject alternative names. ``x509.hash`` is the hash of the certificate in PEM format, the same as in other PEAT modules.
+- ``extra.ssl_certificate``:
+
+  - ``fingerprints``: ``md5``, ``sha1`` and ``sha256`` are the hashes of the DER-encoded certificate. These are the fingerprints that browsers, ``openssl x509 -fingerprint``, Zeek, and Shodan show. ``spki_sha256`` is the SHA-256 hash of the public key (SubjectPublicKeyInfo), which is the same for every certificate made with the same key, so RTACs with the same ``spki_sha256`` share a key pair. The fingerprints are also added to ``related.hash``.
+  - ``default_sel_certificate``: if the certificate looks like the factory default. It's self-signed, the organization is ``Schweitzer Engineering Laboratories, Inc.``, the organizational unit is ``Automation and Integration Engineering``, and the Common Name is ``SEL-<model> RTAC``.
+  - ``self_signed``, ``ca`` (from the ``basicConstraints`` extension), ``expired``, ``not_yet_valid``, and ``days_remaining`` (days until the certificate expires, negative if it expired).
+  - ``tls_version``, ``cipher``, ``legacy_tls`` (if the legacy TLS context was needed), and ``port``.
+  - ``parser``: ``cryptography``, or ``openssl`` if the certificate could only be parsed by OpenSSL. With ``openssl``, there's no ``spki_sha256``, and ``self_signed`` only means that the issuer is the same as the subject.
+  - ``chain``: the subject, issuer and SHA-256 fingerprint of each certificate, if the RTAC sent more than one (only with Python 3.13 and newer).
+
+- The ``https`` service has ``tls_version``, ``tls_cipher``, ``tls_legacy``, ``certificate_sha256`` and ``certificate_spki_sha256`` in its ``extra``.
+- The model, from a Common Name like ``SEL-3530-4 RTAC`` (the model ``3530-4``), if the model is unknown or less specific (e.g. ``3530``). This doesn't need the factory-default certificate.
+- ``ssl-certificate.pem`` in the device's output directory, and ``ssl-certificate-chain.pem`` if the RTAC sent more than one certificate.
+
+To compare a fingerprint with the certificate of an RTAC without PEAT:
+
+.. code-block:: bash
+
+   openssl s_client -connect 192.0.2.20:443 < /dev/null | openssl x509 -noout -fingerprint -sha256
+
+The test data is the factory-default certificate of a SEL-3530-4 (``tests/protocols/data_files/sel_3530_certificate.cert``).
+
+RTAC file hashes
+^^^^^^^^^^^^^^^^
+The files that the RTAC pull downloads or writes, and the files in a parsed project export tarball, are hashed and added to ``files`` (and the hashes to ``related.hash``). The hashes are calculated from the data in memory, so the files are recorded even if file output is disabled. ``local_path`` is only set to a file that has the same contents as the data that was hashed.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Files
+     - ``extra.source``
+     - ``extra.transport``
+   * - Files in the file repository of the web interface (``download.sel``)
+     - ``web_download``
+     - ``http`` or ``https``
+   * - ``raw-pulled-postgres-config.txt`` and ``pulled-postgres-config.json`` (tables read from the PostgreSQL database)
+     - ``command_output``
+     - ``postgres``
+   * - ``ssl-certificate.pem`` and ``ssl-certificate-chain.pem``
+     - ``tls_certificate``
+     - ``tls``
+   * - ``pulled-web-config.json`` and ``logic.st`` (made by PEAT)
+     - ``derived``
+     -
+   * - ``extracted_files/<member>`` (files in a parsed tarball)
+     - ``parse_input``
+     -
+
+Repository files also have ``extra.listed_size``, the size in the file listing of the web interface, and their modification time from the listing. Files in a tarball have ``extra.archive`` (the name of the tarball), their path in the tarball as the ``path``, and their modification time from the tarball (if it is set and valid).
+
+The hashes of repository files are of the bytes the RTAC sent. The web pages and the Sequence of Events log (``soe.csv``) that are saved to ``http_files/`` are not hashed by the RTAC module.
 
 Developer notes on SEL communications
 -------------------------------------

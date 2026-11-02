@@ -549,6 +549,11 @@ device_options:
     # SELRTAC: If the pull should collect data via Postgres
     pull_postgres: true
 
+    # SELRTAC: If the pull should get the TLS certificate of the web server (HTTPS),
+    # if it wasn't already collected during the scan. This is a single TLS handshake
+    # (two if the RTAC only supports TLS 1.0 or 1.1), which doesn't log in.
+    pull_ssl_cert: true
+
     # SELRTAC: enable "monitoring"
     # This regularly pulls device data and compares the pulls over time
     # NOTE: this feature was a initial proof of concept and may not work anymore

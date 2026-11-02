@@ -83,6 +83,11 @@ HTTP
    :members:
    :private-members:
 
+TLS
+^^^
+.. automodule:: peat.protocols.tls
+   :members:
+
 MySQL
 ^^^^^
 .. automodule:: peat.protocols.mysql
