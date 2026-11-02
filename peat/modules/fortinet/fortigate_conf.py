@@ -630,10 +630,9 @@ def process_fg_log(log_conf: dict[str, dict], dev: DeviceData) -> None:
         if remote.ip:
             dev.related.ip.add(remote.ip)
 
+        # reliable: RFC 6587 (TCP), legacy-reliable: RFC 3195 (BEEP over TCP)
         mode = str(sls.get("mode", "")).lower()
-        transport = "udp" if mode in ("udp", "legacy-reliable") else ""
-        if mode == "reliable":
-            transport = "tcp"
+        transport = {"udp": "udp", "reliable": "tcp", "legacy-reliable": "tcp"}.get(mode, "")
 
         extra = {"setting": section}
         for key in ("mode", "facility", "format", "enc-algorithm"):

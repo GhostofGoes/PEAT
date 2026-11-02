@@ -359,6 +359,25 @@ def test_port_settings_dnp3_relationships(p5_dev):
     assert tcp.id != udp.id
 
 
+def test_port_settings_dnp3_session_count():
+    """EDNP is "Enable DNP Sessions (0-5)" on SEL-751/351 class relays."""
+    settings = {"IPADDR": "192.0.2.10/24", "EDNP": "2", "DNPNUM": "20000", "DNPADR": "10"}
+    for n in (1, 2, 3):
+        settings |= {f"DNPIP{n}": f"192.0.2.5{n}", f"DNPTR{n}": "TCP", f"REPADR{n}": str(n)}
+    dev = _dev()
+    process_port_settings("5", settings, dev)
+    (svc,) = [s for s in dev.service if s.protocol == "dnp3"]
+    assert svc.enabled is True
+    assert svc.extra["sessions"] == 2
+    enabled = {r.remote.ip: r.enabled for r in _rels(dev, "dnp3")}
+    assert enabled == {"192.0.2.51": True, "192.0.2.52": True, "192.0.2.53": False}
+
+    dev = _dev()
+    process_port_settings("5", settings | {"EDNP": "0"}, dev)
+    assert [s.enabled for s in dev.service if s.protocol == "dnp3"] == [False]
+    assert {r.enabled for r in _rels(dev, "dnp3")} == {False}
+
+
 def test_port_settings_modbus_c37_sntp(p5_dev):
     (mb,) = _rels(p5_dev, "modbus_tcp")
     assert (mb.direction, mb.transport, mb.local.port) == ("ingress", "tcp", 502)

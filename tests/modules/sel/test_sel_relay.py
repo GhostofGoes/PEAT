@@ -356,7 +356,8 @@ def test_pull_files_merges_downloads(mocker, tmp_path):
                 "name": "SET_1.TXT",
                 "data": local.read_text(),
                 "raw_path": "SETTINGS SET_1.TXT",
-                "device_path": PurePosixPath("/SETTINGS/SET_1.TXT"),
+                # download_files() drops the directory of Telnet/serial paths
+                "device_path": PurePosixPath("/SET_1.TXT"),
                 "local_path": local,
             }
         }
@@ -373,6 +374,10 @@ def test_pull_files_merges_downloads(mocker, tmp_path):
     assert set1.size == len(local.read_text())
     assert set1.category == {"settings", "configuration"}
     assert set1.mtime is None  # local copy metadata is not the device's (R32)
+    assert not [f for f in dev.files if f.path.as_posix() == "/SET_1.TXT"]
+    assert dev._cache["all_files"]["SET_1.TXT"]["device_path"] == PurePosixPath(
+        "/SETTINGS/SET_1.TXT"
+    )
 
 
 @pytest.mark.parametrize(

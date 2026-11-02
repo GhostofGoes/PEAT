@@ -220,9 +220,11 @@ def enumerate_device_modules(
 
 def extract_info_response(
     info: ENIPListIdentityResponse | GetAttributesAllResponse,
-) -> dict[str, int | str]:
+) -> dict[str, int | str | None]:
     """
     Extract metadata from response to ``ListIdentity`` or ``GetAttributesAll``.
+
+    ``state`` is :obj:`None` if the response has no state attribute.
     """
     # Only extract slot metadata if it exists (for GetAttributesAllResponse)
     if not hasattr(info, "productName") or not info.productName:
@@ -241,7 +243,9 @@ def extract_info_response(
         "serial_number": info.serialNumber,
         "firmware_version": info.MajorFirmwareVersion,
         "firmware_revision": info.MinorFirmwareVersion,
-        "state": int(info.state),
+        # A Get_Attributes_All reply often ends after the product name: the
+        # state byte is then missing (scapy would read its default, 0 "Nonexistent")
+        "state": int(info.state) if "state" in info.fields else None,
         "status": int(scapy_human_field(info, "status")),
     }
 

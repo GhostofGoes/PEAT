@@ -142,6 +142,24 @@ def _cip_values(product_type: str, status: int, state: int, serial: int) -> dict
     }
 
 
+def test_extract_info_response_without_state_byte():
+    import struct
+
+    from peat.modules.rockwell.ab_scan import extract_info_response
+    from peat.protocols.enip.enip_packets import GetAttributesAllResponse
+
+    name = b"1756-IB16"
+    raw = struct.pack("<HHHBBHIB", 1, 0x07, 1, 3, 1, 0x0060, 0x1, len(name)) + name
+    info = extract_info_response(GetAttributesAllResponse(raw))
+    assert info["state"] is None  # not "0" (Nonexistent)
+    mod = DeviceData()
+    ControlLogix._annotate_clx_values(mod, info)
+    assert mod.status == ""
+    assert not [i for i in mod.indicators if i.name == "cip_state"]
+
+    assert extract_info_response(GetAttributesAllResponse(raw + b"\x03"))["state"] == 3
+
+
 def test_controllogix_process_fingerprint(mocker, tmp_path):
     mocker.patch.object(DeviceData, "write_file", return_value=tmp_path / "x.json")
     dev = DeviceData(ip="192.0.2.10")

@@ -1341,11 +1341,19 @@ def _add_time_source(dev: DeviceData, source: TimeSource) -> None:
 
 
 def _dnp3_relationships(
-    settings: dict, svc: Service, iface: Interface, dev: DeviceData
+    settings: dict,
+    svc: Service,
+    iface: Interface,
+    dev: DeviceData,
+    sessions: int | None = None,
 ) -> list[Relationship]:
     """
     DNP3 master sessions (``DNPIP{n}``, ``DNPTR{n}``, ``REPADR{n}``, ...) ->
     one ``communicates_with`` relationship per configured master.
+
+    ``sessions`` is the number of enabled DNP3 sessions when ``EDNP`` is a
+    session count (SEL-751/351 class relays, ``0-5``/``0-6``): sessions above
+    the count are configured but disabled.
     """
     relationships = []
 
@@ -1402,7 +1410,11 @@ def _dnp3_relationships(
                     # "DNP Address to Report to (0-65519)"
                     protocol_address=_str_setting(settings, f"REPADR{idx}"),
                 ),
-                enabled=svc.enabled if svc.enabled is not None else True,
+                enabled=(
+                    idx <= sessions
+                    if sessions is not None
+                    else (svc.enabled if svc.enabled is not None else True)
+                ),
                 evidence={"config"},
                 extra=extra,
             )
@@ -1793,7 +1805,14 @@ def process_port_settings(
             if settings.get("DNPMAP"):
                 svc.extra["session_map"] = _getv(settings["DNPMAP"])
 
-            relationships.extend(_dnp3_relationships(settings, svc, iface, dev))
+            # "Enable DNP Sessions (0-5)": EDNP is a session count on some relays
+            sessions = None
+            if raw_enable.isdigit():
+                sessions = int(raw_enable)
+                svc.enabled = sessions > 0
+                svc.extra["sessions"] = sessions
+
+            relationships.extend(_dnp3_relationships(settings, svc, iface, dev, sessions))
 
         elif protocol == "modbus":
             if iface.type == "ethernet":

@@ -274,6 +274,12 @@ def pull_files(
                 handle_download_errors=dev.options["sel"].get("handle_download_errors", True),
             )
 
+            # Path on the device from the listing directory: Telnet and serial paths
+            # ("SETTINGS SET_1.TXT") and old FTP names (after "cd") don't have it
+            base = PurePosixPath("/") if dirname == "/" else PurePosixPath(f"/{dirname}")
+            for file_dict in downloaded.values():
+                file_dict["device_path"] = base / file_dict["name"]
+
             all_files.update(downloaded)
 
             # Restore directory location

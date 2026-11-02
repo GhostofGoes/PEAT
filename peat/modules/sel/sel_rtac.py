@@ -69,7 +69,7 @@ from peat import (
 from peat.consts import DeviceError
 from peat.data.data_utils import merge_models
 from peat.data.models import User
-from peat.data.validators import validate_hash
+from peat.data.validators import validate_hash, validate_ip
 from peat.protocols import HTTP
 
 from .rtac_parse import (
@@ -180,9 +180,20 @@ def rtac_config_relationships(config: dict) -> list[Relationship]:
 
     for table, (protocol, local_role, remote_role) in RTAC_ETHERNET_CLIENT_TABLES.items():
         for row in (config.get(table) or {}).values():
-            ip = str(row.get("server_ip_address") or "").strip()
-            if not ip or ip == "0.0.0.0":
+            raw_address = str(row.get("server_ip_address") or "").strip()
+            if not raw_address or raw_address == "0.0.0.0":
                 continue
+            # Never fail on a non-IP value: a hostname, or kept as the raw address
+            try:
+                ip, address, hostname = validate_ip(raw_address), "", ""
+            except ValueError:
+                ip, address = "", raw_address
+                hostname = (
+                    raw_address
+                    if re.fullmatch(r"[A-Za-z0-9.-]+", raw_address)
+                    and re.search(r"[A-Za-z]", raw_address)
+                    else ""
+                )
             name, rem = _remote(row)
             local_tcp = _int_or_none(row.get("local_tcp_port")) or None  # 0 = any
             local_udp = _int_or_none(row.get("local_udp_port")) or None
@@ -205,6 +216,8 @@ def rtac_config_relationships(config: dict) -> list[Relationship]:
                     ),
                     remote=RelationshipEndpoint(
                         ip=ip,
+                        address=address,
+                        hostname=hostname,
                         port=_int_or_none(row.get("server_ip_port")),
                         name=name,
                         role=remote_role,
@@ -1205,8 +1218,12 @@ class SELRTAC(DeviceModule):
                     dev.related.user.add(eth_settings["ssh_username"])
 
         # Configured client connections and remote devices -> relationships
-        for rel in rtac_config_relationships(config):
-            dev.store("relationships", rel)
+        # (never lose the config files below or leave the connection open)
+        try:
+            for rel in rtac_config_relationships(config):
+                dev.store("relationships", rel)
+        except Exception as ex:
+            cls.log.warning(f"Failed to map RTAC configuration to relationships: {ex}")
 
         # config is large and leads to excessive-sized device-data-summary.json
 

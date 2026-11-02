@@ -7,6 +7,7 @@ single large file with a custom format.
 """
 
 import functools
+import ipaddress
 import re
 from datetime import timedelta
 from pathlib import PurePosixPath
@@ -508,8 +509,9 @@ def parse_fg_top(lines: list[str]) -> tuple[timedelta | None, list[HostProcess]]
                  miglogd      191      S       0.3     6.3
                ipshelper      164      S <     0.3     1.2
 
-    Process rows are ``name pid state [<] cpu% memory%``. ``<`` marks a high
-    priority process.
+    Process rows are ``name pid state [<] cpu% memory% [cpu core]``. ``<`` marks
+    a high priority process. FortiOS 7.x on multi-core units appends the CPU core
+    the process runs on (``extra["cpu_core"]``).
 
     Returns:
         The run time (uptime) of the system and the processes
@@ -518,7 +520,7 @@ def parse_fg_top(lines: list[str]) -> tuple[timedelta | None, list[HostProcess]]
     processes = []
     row_re = re.compile(
         r"^(?P<name>\S+)\s+(?P<pid>\d+)\s+(?P<state>[A-Za-z])\s+(?P<flags>[<N]\s+)?"
-        r"(?P<cpu>\d+(?:\.\d+)?)\s+(?P<mem>\d+(?:\.\d+)?)\s*$"
+        r"(?P<cpu>\d+(?:\.\d+)?)\s+(?P<mem>\d+(?:\.\d+)?)(?:\s+(?P<cpu_core>\d+))?\s*$"
     )
 
     for line in lines:
@@ -538,6 +540,8 @@ def parse_fg_top(lines: list[str]) -> tuple[timedelta | None, list[HostProcess]]
             extra["high_priority"] = True
         elif flags == "N":
             extra["low_priority"] = True
+        if match["cpu_core"] is not None:
+            extra["cpu_core"] = int(match["cpu_core"])
 
         memory_percent = float(match["mem"])
         processes.append(
@@ -564,6 +568,13 @@ def process_fg_top(lines: list[str], dev: DeviceData) -> None:
 
     for process in processes:
         dev.store("processes", process)
+
+    # Rows in an unknown format ("name pid ..."): keep at least the process name
+    parsed = {p.name for p in processes}
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].isdigit() and parts[0] not in parsed:
+            dev.related.process.add(parts[0])
 
 
 def process_fg_sys_flash_list(lines: list[str], dev: DeviceData) -> None:
@@ -622,6 +633,18 @@ def process_fg_arp_list(lines: list[str], dev: DeviceData) -> None:
         mac = entry["mac"]
         if mac == "00:00:00:00:00:00" or not utils.is_mac(mac):
             mac = ""
+
+        # Not a neighbor: the root VDOM placeholder (0.0.0.0), the limited
+        # broadcast address, multicast addresses, and entries with a broadcast
+        # or multicast MAC (e.g. a subnet broadcast address with ff:ff:ff:ff:ff:ff)
+        ip_obj = ipaddress.ip_address(entry["ip"])
+        if (
+            ip_obj.is_unspecified
+            or ip_obj.is_multicast
+            or entry["ip"] == "255.255.255.255"
+            or (mac and int(mac[:2], 16) & 1)  # I/G bit: multicast or broadcast MAC
+        ):
+            continue
 
         state = ""
         extra = {}
@@ -769,6 +792,15 @@ def nic_statistics(info: dict[str, str]) -> NetworkStatistics:
     return stats
 
 
+def _nic_bool(value: str, iface: Interface, key: str) -> bool | None:
+    """up/down value of a NIC status key; unknown values are kept in ``extra``."""
+    try:
+        return consts.str_to_bool(value)
+    except ValueError:
+        iface.extra[key.replace(" ", "_")] = value
+        return None
+
+
 def process_fg_interfaces(db_log: dict[str, list[str]], dev: DeviceData) -> None:
     log.debug("Processing Fortigate interface information from debug log")
 
@@ -835,12 +867,12 @@ def process_fg_interfaces(db_log: dict[str, list[str]], dev: DeviceData) -> None
             # Administrative status up/down ("admin" or "state")
             for key in ("admin", "state"):
                 if info.get(key):
-                    ifaces[nic].enabled = consts.str_to_bool(info[key])
+                    ifaces[nic].enabled = _nic_bool(info[key], ifaces[nic], key)
                     break
             # Link status: "netdev status" and "link_status" I think roughly align
             for key in ("netdev status", "link"):
                 if info.get(key):
-                    ifaces[nic].connected = consts.str_to_bool(info[key])
+                    ifaces[nic].connected = _nic_bool(info[key], ifaces[nic], key)
                     break
 
             for key in ("speed_setting", "speed"):
@@ -920,7 +952,10 @@ def process_fg_debug_log(db_log: dict[str, list[str]], dev: DeviceData) -> None:
             log.exception(f"Failed to process fortigate debug log section '{section}': {ex}")
 
     # Process interface information
-    process_fg_interfaces(db_log, dev)
+    try:
+        process_fg_interfaces(db_log, dev)
+    except Exception as ex:
+        log.exception(f"Failed to process fortigate debug log interface information: {ex}")
 
     # TODO: "diagnose test update info"
     #   => Logs

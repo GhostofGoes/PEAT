@@ -248,6 +248,20 @@ def test_fortigate_log_destinations():
     assert syslog[0].evidence == {"config"}
 
 
+@pytest.mark.parametrize(
+    ("mode", "transport"),
+    [("udp", "udp"), ("reliable", "tcp"), ("legacy-reliable", "tcp"), ("", "")],
+)
+def test_fortigate_syslog_mode_transport(mode, transport):
+    conf = SYNTHETIC_CONF.replace(
+        "    set mode reliable\n", f"    set mode {mode}\n" if mode else ""
+    )
+    dev = DeviceData()
+    process_fg_conf(fg_conf_to_dict(conf), dev)
+    (syslog,) = _rels(dev, protocol="syslog")
+    assert syslog.transport == transport
+
+
 def test_fortigate_static_routes():
     routes = {r.destination: r for r in _dev().routes}
     assert set(routes) == {"0.0.0.0/0", "203.0.113.0/24"}

@@ -129,6 +129,35 @@ def test_rtac_config_relationships():
     assert "192.0.2.41" in dev.related.ip
 
 
+def test_rtac_config_relationships_non_ip_server_address():
+    config = {
+        "remote_devices": {
+            1: {"remote_device_id": 1, "name": "RELAY_A"},
+            2: {"remote_device_id": 2, "name": "RELAY_B"},
+            3: {"remote_device_id": 3, "name": "RELAY_C"},
+        },
+        "dnp_client_ethernet_settings": {
+            1: {"remote_device_id": 1, "server_ip_address": "relay1.substation.local"},
+            2: {"remote_device_id": 2, "server_ip_address": "10.0.0.1/24"},
+            3: {"remote_device_id": 3, "server_ip_address": "010.000.000.003"},
+        },
+    }
+    dev = DeviceData(ip="192.0.2.5")
+    for rel in rtac_config_relationships(config):
+        dev.store("relationships", rel)
+    by_name = {r.remote.name: r for r in dev.relationships}
+    assert (by_name["RELAY_A"].remote.ip, by_name["RELAY_A"].remote.hostname) == (
+        "",
+        "relay1.substation.local",
+    )
+    assert (by_name["RELAY_B"].remote.ip, by_name["RELAY_B"].remote.address) == (
+        "",
+        "10.0.0.1/24",
+    )
+    assert by_name["RELAY_B"].remote.hostname == ""
+    assert by_name["RELAY_C"].remote.ip == "10.0.0.3"
+
+
 def test_maincontroller_tasks():
     xml = """<Export><MainController>
       <MainTask><Interval>10</Interval><Priority>1</Priority></MainTask>

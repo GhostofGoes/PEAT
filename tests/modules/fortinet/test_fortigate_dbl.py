@@ -270,6 +270,60 @@ def test_process_fg_debug_log():
     assert len([r for r in dev.relationships if r.type == "neighbor_of"]) == 3
 
 
+def test_arp_list_skips_placeholder_broadcast_and_multicast_entries():
+    lines = [
+        "index=14 ifname=root 0.0.0.0 00:00:00:00:00:00 state=00000040 use=4294 ref=0",
+        "index=5 ifname=port1 192.0.2.1 00:09:0f:00:00:01 state=00000002 use=170 ref=3",
+        "index=5 ifname=port1 192.0.2.255 ff:ff:ff:ff:ff:ff state=00000040 use=29 ref=1",
+        "index=5 ifname=port1 224.0.0.5 01:00:5e:00:00:05 state=00000040 use=29 ref=1",
+        "index=5 ifname=port1 255.255.255.255 00:00:00:00:00:00 state=00000040 use=1 ref=1",
+        "index=9 ifname=tun1 10.255.0.2 00:00:00:00:00:00 state=00000040 use=1 ref=1",
+    ]
+    dev = DeviceData()
+    fortigate_dbl.process_fg_arp_list(lines, dev)
+    dev.annotate()
+    assert sorted(r.remote.ip for r in dev.relationships) == ["10.255.0.2", "192.0.2.1"]
+    assert "0.0.0.0" not in dev.related.ip
+    assert sorted(dev.related.ip) == ["10.255.0.2", "192.0.2.1"]
+
+
+def test_parse_fg_top_cpu_core_column():
+    top = (
+        "Run Time:  13 days, 3 hours and 10 minutes\n"
+        "0U, 0N, 0S, 100I, 0WA, 0HI, 0SI, 0ST; 7962T, 5281F\n"
+        "          newcli    27744      R       0.1     0.2    0\n"
+        "         sslvpnd      249      S <     0.1     0.6    1\n"
+        "         oddproc      300      S       x       y\n"
+    )
+    run_time, processes = parse_fg_top(top.splitlines())
+    assert run_time == timedelta(days=13, hours=3, minutes=10)
+    procs = {p.name: p for p in processes}
+    assert set(procs) == {"newcli", "sslvpnd"}
+    assert procs["newcli"].extra == {"state_code": "R", "cpu_core": 0}
+    assert procs["sslvpnd"].extra == {"state_code": "S", "high_priority": True, "cpu_core": 1}
+    assert procs["sslvpnd"].memory_percent == 0.6
+
+    dev = DeviceData()
+    fortigate_dbl.process_fg_top(top.splitlines(), dev)
+    assert len(dev.processes) == 2
+    # rows in an unknown format still give the process name
+    assert dev.related.process == {"newcli", "sslvpnd", "oddproc"}
+
+
+def test_nic_unknown_status_values_do_not_abort():
+    dev = DeviceData()
+    db_log = {
+        "get hardware nic port1": ["Name: port1", "State: up", "Link: unknown", "Speed: 1000full"],
+        "get hardware nic port2": NIC_DOC_FORMAT.splitlines(),
+    }
+    process_fg_debug_log(db_log, dev)
+    ifaces = {i.name: i for i in dev.interface}
+    assert ifaces["port1"].enabled is True
+    assert ifaces["port1"].connected is None
+    assert ifaces["port1"].extra["link"] == "unknown"
+    assert ifaces["port2"].connected is True
+
+
 def test_crashlog_reason():
     assert crashlog_reason("*** signal 6 (Aborted) received ***") == "signal 6 (Aborted)"
     assert crashlog_reason("application httpsd") == ""
