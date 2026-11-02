@@ -1,0 +1,1 @@
+SEL: files with the same name in different relay directories (e.g. ``EVENTS/HISTORY.TXT`` and ``REPORTS/HISTORY.TXT`` on the 700G) no longer overwrite each other, the recorded local path of a download is now always the file that was written, Telnet/serial downloads keep their directory in the device path, and ``.TXT`` files that aren't valid UTF-8 are no longer dropped.
