@@ -10,14 +10,27 @@ Authors
 """
 
 import re
+import tarfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from datetime import datetime
-from pathlib import PurePath, PurePosixPath
+from datetime import UTC, datetime
+from pathlib import Path, PurePath, PurePosixPath
 from typing import IO, Any, Final
 
 from peat import DeviceData, log, utils
-from peat.data.models import Event, Interface, User
+from peat.data.models import (
+    Event,
+    File,
+    Indicator,
+    Interface,
+    Package,
+    Relationship,
+    RelationshipEndpoint,
+    Route,
+    Service,
+    TimeSource,
+    User,
+)
 
 ElasticType = None | int | bool | str | float
 
@@ -55,8 +68,16 @@ def _store_dict_items(elem_tree: ET.Element, element_dict: dict[str, ElasticType
                 element_dict[item[0]] = item[1]
 
 
+def _is_placeholder(text: str | None) -> bool:
+    """
+    If a configuration value is the factory placeholder (``ChangeMe``) that
+    should have been replaced when the RTU was commissioned.
+    """
+    return bool(text) and text.strip().lower() == "changeme"
+
+
 def _parse_element_into_dict(element: ET.Element, info: dict, key_map: dict) -> None:
-    if element.tag in key_map and element.text and element.text.lower() != "changeme":
+    if element.tag in key_map and element.text and not _is_placeholder(element.text):
         info[key_map[element.tag]] = element.text.strip()
 
 
@@ -120,6 +141,20 @@ def process_access_xml(dev: DeviceData, info: dict) -> None:
         dev.store("users", user)
 
 
+def redact_access_info(info: dict) -> dict:
+    """
+    Copy of the ``ACCESS.XML`` data without the account passwords
+    (``password_set`` says if one was configured).
+    """
+    redacted = {**info, "users": []}
+    for user_info in info.get("users", []):
+        user_copy = {k: v for k, v in user_info.items() if k != "password"}
+        if "password" in user_info:
+            user_copy["password_set"] = bool(user_info["password"])
+        redacted["users"].append(user_copy)
+    return redacted
+
+
 def parse_rtu_setup(f_handle: IO[bytes], device_info: dict) -> None:
     """
     Parse XML tree from ``rtusetup.xml``.
@@ -129,6 +164,8 @@ def parse_rtu_setup(f_handle: IO[bytes], device_info: dict) -> None:
         device_info: dictionary of keys and values for target device
     """
     info = {}
+    # Names of fields still set to the "ChangeMe" placeholder
+    placeholders = []
 
     root = ET.fromstring(f_handle.read())
 
@@ -157,6 +194,8 @@ def parse_rtu_setup(f_handle: IO[bytes], device_info: dict) -> None:
         rtu = rtu[0]
 
         for elem in rtu:
+            if _is_placeholder(elem.text):
+                placeholders.append(f"RTU/{elem.tag}")
             _parse_element_into_dict(elem, info, rtu_key_map)
 
         vxworks = rtu.findall("VXWORKS")
@@ -164,7 +203,10 @@ def parse_rtu_setup(f_handle: IO[bytes], device_info: dict) -> None:
             log.warning("No 'VXWORKS' element found in rtusetup.xml")
         else:
             for elem in vxworks[0]:
-                if not elem.text or elem.text == "ChangeMe":
+                if _is_placeholder(elem.text):
+                    placeholders.append(f"RTU/VXWORKS/{elem.tag}")
+                    continue
+                if not elem.text:
                     continue
 
                 if elem.tag == "VXCREATED":
@@ -178,7 +220,10 @@ def parse_rtu_setup(f_handle: IO[bytes], device_info: dict) -> None:
         log.warning("No 'CONFIG' element found in rtusetup.xml")
     else:
         for elem in config_tree[0]:
-            if not elem.text or elem.text == "ChangeMe":
+            if _is_placeholder(elem.text):
+                placeholders.append(f"CONFIG/{elem.tag}")
+                continue
+            if not elem.text:
                 continue
 
             if elem.tag == "NAME":
@@ -192,6 +237,9 @@ def parse_rtu_setup(f_handle: IO[bytes], device_info: dict) -> None:
                 info["config_timestamp"] = fw_date.isoformat(sep="-")
             elif elem.tag == "REVISION":
                 info["config_revision"] = elem.text
+
+    if placeholders:
+        info["placeholders"] = sorted(set(placeholders))
 
     device_info["rtusetup_info"] = info
 
@@ -428,6 +476,16 @@ def process_bootline(dev: DeviceData, data: dict[str, str]) -> None:
 
     if data.get("gateway_ip") and utils.is_ip(data["gateway_ip"]):
         dev.related.ip.add(data["gateway_ip"])
+        # The boot line gateway ("g=") is the default gateway of the network stack
+        dev.store(
+            "routes",
+            Route(
+                destination="0.0.0.0/0",
+                gateway=data["gateway_ip"],
+                type="static",
+                description="VxWorks boot line gateway (g=)",
+            ),
+        )
 
     if data.get("raw_bootline"):
         dev.firmware.extra["bootline"] = data["raw_bootline"]
@@ -444,9 +502,8 @@ def parse_ether(f_handle: IO[bytes], device_info: dict) -> None:
     """
     ether_settings = {}
     root = ET.fromstring(f_handle.read())
-    entry = 0
 
-    for ether_elem in root:
+    for entry, ether_elem in enumerate(root):
         ether_iter = f"entry_{entry}"
         ether_settings[ether_iter] = {}
 
@@ -460,21 +517,21 @@ def parse_ether(f_handle: IO[bytes], device_info: dict) -> None:
             log.warning("Failed to find 'ROUTES' element in ether_elem")
             continue
 
-        routes = ether_elem.findall("ROUTES")[0]
-        routes_settings = {}
-
-        for route in routes:
+        for route in routes_elem[0]:
             route_fields = route.items()
+            if not route_fields:
+                continue
 
             # Route_ID uses first route field which is value of ID
             route_id = route_fields[0][1]
 
+            # One dict per route (a single shared dict made every
+            # route a copy of the last one)
+            routes_settings = {}
             for field in route_fields[1:]:
                 routes_settings[field[0]] = _convert_to_elastic(field[1])
 
             ether_settings[ether_iter][f"route_{route_id}"] = routes_settings
-
-        entry += 1
 
     device_info["ethernet"] = ether_settings
 
@@ -1248,12 +1305,12 @@ def process_ipcom_syslog(dev: DeviceData, events: list[dict]) -> None:
             outcome="failure" if "error" in e_dict["level"].lower() else "unknown",
             provider=dev.ip,
             type={"connection"},
+            log_level=e_dict["level"].lower(),
             extra={
                 "raw_task": e_dict["raw_task"],
                 "short_task_name": e_dict["short_task_name"],
                 "task_id": e_dict["task_id"],
                 "service_name": e_dict["service_name"],
-                "level": e_dict["level"].lower(),
             },
         )
 
@@ -1325,6 +1382,8 @@ def parse_logfiles(f_handle: IO[bytes], device_info: dict) -> None:
             # USERLOG.LOG
             if pairs.get("TYPE"):
                 event["message"] = f"{pairs['TYPE']} {pairs['TXT']}"
+                event["log_type"] = pairs["TYPE"]
+                event["reason"] = pairs.get("TXT", "")
 
                 # logged in => 192.0.2.1-TSHELL, Admin, LCL_DB
                 # logged out => 192.0.2.1-TSHELL, Admin
@@ -1346,6 +1405,13 @@ def parse_logfiles(f_handle: IO[bytes], device_info: dict) -> None:
             if pairs.get("VAL"):
                 event["extra"]["VAL"] = int(pairs["VAL"])
                 event["message"] = pairs["PN"]
+                # Point name of the status point that changed state
+                event["reason"] = pairs["PN"]
+                # 1 = point set (asserted), 0 = point cleared
+                if event["extra"]["VAL"] == 1:
+                    event["action"] = "set"
+                elif event["extra"]["VAL"] == 0:
+                    event["action"] = "clear"
                 # This seems to always be "RTU Internal Status"
                 event["extra"]["DN"] = pairs["DN"]
                 if pairs["DN"] != "RTU Internal Status":
@@ -1386,6 +1452,7 @@ def parse_logfiles(f_handle: IO[bytes], device_info: dict) -> None:
 def process_logfile_events(dev: DeviceData, events: list[dict]) -> None:
     for e_dict in events:
         event = Event(
+            action=e_dict.get("action", ""),
             created=utils.parse_date(e_dict["timestamp"]),
             dataset="logfiles",
             kind={"event"},
@@ -1393,11 +1460,12 @@ def process_logfile_events(dev: DeviceData, events: list[dict]) -> None:
             module="Sage",
             original=e_dict["original"],
             provider=dev.ip,
+            reason=e_dict.get("reason", ""),
             sequence=e_dict["id"],
             extra={**e_dict["extra"]},
         )
 
-        if event.extra.get("TYPE"):  # USERLOG.LOG
+        if e_dict.get("log_type"):  # USERLOG.LOG
             event.dataset = "userlog"
         elif event.extra.get("DN"):  # soelog.txt
             event.dataset = "soelog"
@@ -1408,8 +1476,8 @@ def process_logfile_events(dev: DeviceData, events: list[dict]) -> None:
 
         lower_msg = event.original.lower()
 
-        if event.extra.get("TYPE"):
-            e_type = event.extra["TYPE"].lower()
+        if e_dict.get("log_type"):
+            e_type = e_dict["log_type"].lower()
 
             event.action = e_type.replace(" ", "-")
 
@@ -1456,6 +1524,615 @@ def process_logfile_events(dev: DeviceData, events: list[dict]) -> None:
             event.type.add("connection")
 
         dev.store("event", event)
+
+
+# --------------------------------------------------------------------------- #
+# Processing of parsed configuration into the data model
+#
+# NOTE: there are no public samples of the Sage XML configuration files. The
+# attribute names of routes (ethernet.xml), time settings (time.xml), LEDs
+# (leds.xml) and serial ports (xml/port*.xml) are matched by label (substring
+# of the attribute name), and values are validated before use. Attributes that
+# are not recognized are kept in the "extra" fields, and the full parsed data
+# stays in "parsed-config.json".
+# --------------------------------------------------------------------------- #
+
+
+def _find_attr(
+    attrs: dict, needles: tuple[str, ...], exclude: tuple[str, ...] = ()
+) -> tuple[str, Any]:
+    """
+    Find the first attribute whose (uppercase) name contains one of ``needles``
+    and none of ``exclude``, with a non-empty value.
+
+    Returns:
+        Tuple of ``(attribute name, value)``, or ``("", None)`` if not found
+    """
+    for key, value in attrs.items():
+        u_key = str(key).upper()
+        if any(n in u_key for n in needles) and not any(x in u_key for x in exclude):
+            if value is not None and value != "" and not isinstance(value, dict):
+                return key, value
+    return "", None
+
+
+def _flag(value: Any) -> bool | None:
+    """Convert a parsed flag (``True``/``False``, ``Y``/``N``, ``1``/``0``) to a bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().upper() in ("Y", "YES", "TRUE", "ON", "ENABLED"):
+        return True
+    if isinstance(value, str) and value.strip().upper() in ("N", "NO", "FALSE", "OFF", "DISABLED"):
+        return False
+    return None
+
+
+def routes_from_ethernet(ether_settings: dict) -> list[Route]:
+    """
+    Convert the routes parsed from ``ethernet.xml`` (``device_info["ethernet"]``,
+    see :func:`parse_ether`) into :class:`~peat.data.models.Route` objects.
+
+    Routes without a recognizable destination are skipped.
+    """
+    routes = []
+
+    for entry in ether_settings.values():
+        if not isinstance(entry, dict):
+            continue
+
+        for key, attrs in entry.items():
+            if not key.startswith("route_") or not isinstance(attrs, dict):
+                continue
+
+            used = set()
+            dest_key, dest = _find_attr(
+                attrs, ("DEST", "NET", "TARGET", "ADDR"), ("MASK", "GATE", "GW", "HOP")
+            )
+            mask_key, mask = _find_attr(attrs, ("MASK",))
+            gw_key, gateway = _find_attr(attrs, ("GATE", "GW", "ROUTER", "HOP"))
+            metric_key, metric = _find_attr(attrs, ("METRIC", "COST"))
+            enabled_key, enabled = _find_attr(attrs, ("ENAB", "ACTIVE"))
+
+            if dest is None or not utils.is_ip(str(dest).split("/")[0]):
+                log.debug(f"Skipping Sage route {key} without a destination: {attrs}")
+                continue
+
+            destination = str(dest)
+            used.add(dest_key)
+            if mask is not None and "/" not in destination and utils.is_ip(str(mask)):
+                destination = f"{destination} {mask}"
+                used.add(mask_key)
+
+            route = Route(destination=destination, type="static")
+
+            if gateway is not None and utils.is_ip(str(gateway)):
+                route.gateway = str(gateway)
+                used.add(gw_key)
+            if isinstance(metric, int) and metric >= 0:
+                route.metric = metric
+                used.add(metric_key)
+            if _flag(enabled) is not None:
+                route.enabled = _flag(enabled)
+                used.add(enabled_key)
+
+            route.extra["route_id"] = key.partition("_")[2]
+            for a_key, a_value in attrs.items():
+                if a_key not in used and a_value not in (None, ""):
+                    route.extra[a_key] = a_value
+
+            routes.append(route)
+
+    return routes
+
+
+# Time source protocol names (time.xml labels) -> TimeSource.protocol
+_TIME_PROTOCOLS: Final[dict[str, str]] = {
+    "SNTP": "sntp",
+    "NTP": "ntp",
+    "GPS": "gps",
+    "IRIG": "irig_b",
+    "PTP": "ptp",
+    "1588": "ptp",
+}
+
+
+def _time_protocol(label: str) -> str:
+    u_label = str(label).upper()
+    for needle, proto in _TIME_PROTOCOLS.items():
+        if needle in u_label:
+            return proto
+    return ""
+
+
+def _walk_leaves(data: dict, path: tuple[str, ...] = ()):
+    for key, value in data.items():
+        if isinstance(value, dict):
+            yield from _walk_leaves(value, (*path, str(key)))
+        else:
+            yield (*path, str(key)), value
+
+
+def clock_from_time_settings(
+    time_settings: dict | None, gps_settings: dict | None
+) -> dict[str, Any]:
+    """
+    Extract time synchronization settings from ``time.xml``
+    (``device_info["time_settings"]`` and ``device_info["gps_settings"]``).
+
+    Returns:
+        dict with ``sources`` (list of :class:`~peat.data.models.TimeSource`),
+        and optionally ``source`` (active source protocol) and ``utc_offset``
+    """
+    results: dict[str, Any] = {"sources": []}
+    time_settings = time_settings or {}
+    gps_settings = gps_settings or {}
+
+    # Network time servers: IP addresses under a SNTP/NTP label,
+    # in configuration order (first = priority 1)
+    servers = [
+        ("/".join(path), str(value))
+        for path, value in _walk_leaves(time_settings)
+        if utils.is_ip(str(value))
+        and _time_protocol("/".join(path)) in ("sntp", "ntp")
+        and str(value) not in ("0.0.0.0", "255.255.255.255")  # unset server
+    ]
+    for priority, (label, address) in enumerate(servers, start=1):
+        results["sources"].append(
+            TimeSource(
+                protocol=_time_protocol(label),
+                address=address,
+                priority=priority,
+                extra={"setting": label},
+            )
+        )
+
+    # Hardware sources with an enable flag (GPS receiver, IRIG-B input)
+    for path, value in _walk_leaves(time_settings):
+        label = "/".join(path)
+        proto = _time_protocol(label)
+        if proto in ("gps", "irig_b", "ptp") and "ENAB" in label.upper():
+            if _flag(value) is not None:
+                results["sources"].append(
+                    TimeSource(protocol=proto, enabled=_flag(value), extra={"setting": label})
+                )
+
+    if gps_settings and not any(src.protocol == "gps" for src in results["sources"]):
+        gps = TimeSource(protocol="gps")
+        _, enabled = _find_attr(gps_settings, ("ENAB",))
+        if _flag(enabled) is not None:
+            gps.enabled = _flag(enabled)
+        results["sources"].append(gps)
+
+    # Active/selected time source, e.g. SOURCE="GPS"
+    _, source = _find_attr(time_settings, ("SOURCE", "SRC"))
+    if isinstance(source, str):
+        proto = _time_protocol(source)
+        if proto:
+            results["source"] = proto
+        elif source.strip().upper() in ("INTERNAL", "LOCAL", "NONE", "RTC"):
+            results["source"] = "internal"
+
+    # UTC offset, only if already in "+HH:MM" form (units of numeric values are unknown)
+    _, offset = _find_attr(time_settings, ("UTC", "OFFSET", "TZ"))
+    if isinstance(offset, str) and re.fullmatch(r"[+-]\d{2}:\d{2}", offset.strip()):
+        results["utc_offset"] = offset.strip()
+
+    return results
+
+
+def process_time_settings(dev: DeviceData, device_info: dict) -> None:
+    """
+    Store the time settings from ``time.xml`` in
+    :attr:`DeviceData.clock <peat.data.models.DeviceData.clock>`.
+    """
+    clock_info = clock_from_time_settings(
+        device_info.get("time_settings"), device_info.get("gps_settings")
+    )
+
+    for src in clock_info["sources"]:
+        existing = next(
+            (
+                s
+                for s in dev.clock.sources
+                if (s.protocol, s.address, s.port) == (src.protocol, src.address, src.port)
+            ),
+            None,
+        )
+        if existing is None:
+            dev.clock.sources.append(src)
+
+    if clock_info.get("source") and not dev.clock.source:
+        dev.clock.source = clock_info["source"]
+    if clock_info.get("utc_offset") and not dev.clock.utc_offset:
+        dev.clock.utc_offset = clock_info["utc_offset"]
+
+
+def indicators_from_leds(leds: dict) -> list[Indicator]:
+    """
+    Convert the LED configuration from ``leds.xml`` (``device_info["leds"]``,
+    see :func:`parse_leds`) into LED :class:`~peat.data.models.Indicator`
+    definitions (configuration only, no live state).
+    """
+    indicators = []
+
+    for group, group_leds in leds.items():
+        if not isinstance(group_leds, dict):
+            continue
+
+        for key, attrs in group_leds.items():
+            if not isinstance(attrs, dict):
+                continue
+
+            used = set()
+            ind = Indicator(type="led", name=str(key))
+            if str(key).isdigit():
+                ind.position = str(key)
+
+            label_key, label = _find_attr(attrs, ("DESC", "LABEL", "TEXT", "NAME"))
+            if label is not None:
+                ind.label = str(label)
+                used.add(label_key)
+
+            # Point or logic driving the LED
+            eq_key, equation = _find_attr(attrs, ("PNT", "POINT", "LOGIC", "EQU", "SOURCE"))
+            if equation is not None:
+                ind.equation = str(equation)
+                used.add(eq_key)
+
+            color_key, color = _find_attr(attrs, ("COLOR", "COLOUR"))
+            if isinstance(color, str):
+                ind.color = color
+                used.add(color_key)
+
+            cat_key, category = _find_attr(attrs, ("CATEGORY", "FUNC", "TYPE"))
+            if isinstance(category, str):
+                ind.category = category
+                used.add(cat_key)
+
+            if group.upper() not in ("LEDS", "LED"):
+                ind.extra["group"] = group
+            for a_key, a_value in attrs.items():
+                if a_key not in used and a_value not in (None, ""):
+                    ind.extra[a_key] = a_value
+
+            indicators.append(ind)
+
+    return indicators
+
+
+def canonical_port_protocol(name: str) -> str:
+    """
+    Canonical (PEAT) protocol name for a Sage serial port protocol type,
+    e.g. ``DNP3`` -> ``dnp3``, ``MODBUS`` -> ``modbus_rtu`` (serial).
+    """
+    u_name = str(name).strip().upper()
+    if "DNP" in u_name:
+        return "dnp3"
+    if "MODBUS" in u_name or "MBUS" in u_name:
+        return "modbus_rtu"
+    if "IEC" in u_name and "101" in u_name:
+        return "iec101"
+    if "IEC" in u_name and "103" in u_name:
+        return "iec103"
+    return re.sub(r"[^a-z0-9]+", "_", u_name.lower()).strip("_")
+
+
+# Per-protocol roles (docs/data_model.rst): (local master side, local slave side)
+_PROTOCOL_ROLES: Final[dict[str, tuple[str, str]]] = {
+    "dnp3": ("master", "outstation"),
+    "modbus_rtu": ("client", "server"),
+    "iec101": ("controlling_station", "controlled_station"),
+    "iec103": ("controlling_station", "controlled_station"),
+}
+
+
+def _port_roles(proto_name: str, protocol: dict, canonical: str) -> tuple[str, str]:
+    """``(local role, remote role)`` from the protocol type or a MODE/ROLE attribute."""
+    _, mode = _find_attr(protocol, ("MODE", "ROLE"), ("BAUD",))
+    text = f"{proto_name} {mode if isinstance(mode, str) else ''}".upper()
+    master_role, slave_role = _PROTOCOL_ROLES.get(canonical, ("master", "slave"))
+
+    if re.search(r"MASTER|CLIENT|(?:^|[_\s])M(?:$|[_\s])", text):
+        return master_role, slave_role
+    if re.search(r"SLAVE|OUTSTATION|SERVER|(?:^|[_\s])S(?:$|[_\s])", text):
+        return slave_role, master_role
+    return "", ""
+
+
+def process_ports(dev: DeviceData, ports: dict) -> None:
+    """
+    Process serial port configurations from ``xml/port*.xml``
+    (``device_info["ports"]``, see :func:`parse_port`) into serial
+    :class:`~peat.data.models.Interface`, :class:`~peat.data.models.Service`
+    and configured :class:`~peat.data.models.Relationship` objects.
+    """
+    for port_key, settings in ports.items():
+        if not isinstance(settings, dict):
+            continue
+
+        port_name = port_key.partition("_")[2] or port_key
+        iface = Interface(name=port_name, type="serial")
+
+        comm = settings.get("comm_settings") or {}
+        used = set()
+        baud_key, baud = _find_attr(comm, ("BAUD",))
+        if isinstance(baud, int) and baud > 0:
+            iface.baudrate = baud
+            used.add(baud_key)
+
+        parity_key, parity = _find_attr(comm, ("PARITY",))
+        parity_map = {"N": "none", "NONE": "none", "E": "even", "EVEN": "even"}
+        parity_map.update({"O": "odd", "ODD": "odd"})
+        if parity is False:  # "N" is converted to False by the parser
+            iface.parity = "none"
+            used.add(parity_key)
+        elif isinstance(parity, str) and parity.strip().upper() in parity_map:
+            iface.parity = parity_map[parity.strip().upper()]
+            used.add(parity_key)
+
+        data_key, data_bits = _find_attr(comm, ("DATA",), ("STOP",))
+        if isinstance(data_bits, int) and 4 <= data_bits <= 9:
+            iface.data_bits = data_bits
+            used.add(data_key)
+
+        stop_key, stop_bits = _find_attr(comm, ("STOP",))
+        if isinstance(stop_bits, int) and 0 <= stop_bits <= 2:
+            iface.stop_bits = stop_bits
+            used.add(stop_key)
+
+        unused_comm = {k: v for k, v in comm.items() if k not in used}
+        if unused_comm:
+            iface.extra["comm_settings"] = unused_comm
+        for key, value in settings.items():
+            if key not in ("protocol", "comm_settings") and value not in (None, ""):
+                iface.extra[key] = value
+
+        protocol = settings.get("protocol")
+        if not isinstance(protocol, dict) or not protocol.get("name"):
+            dev.store("interface", iface, lookup="name")
+            continue
+
+        proto_name = str(protocol["name"])
+        canonical = canonical_port_protocol(proto_name)
+        local_role, remote_role = _port_roles(proto_name, protocol, canonical)
+        iface.application = canonical
+        dev.store("interface", iface, lookup="name")
+
+        svc = Service(
+            protocol=canonical,
+            role=local_role,
+            listen_interface=port_name,
+            extra={k: v for k, v in protocol.items() if k != "name"},
+        )
+        svc.extra["protocol_type"] = proto_name
+        dev.store(
+            "service",
+            svc,
+            lookup={"protocol": canonical, "listen_interface": port_name},
+            interface_lookup={"name": port_name},
+        )
+
+        # Configured peer: protocol address of the other end of the link
+        if remote_role in ("master", "client", "controlling_station"):
+            remote_needles: tuple[str, ...] = ("MASTER", "REMOTE", "DEST")
+            local_needles: tuple[str, ...] = ("SLAVE", "LOCAL", "OWN", "RTU", "STATION")
+        else:
+            remote_needles = ("SLAVE", "REMOTE", "DEST", "OUTSTATION")
+            local_needles = ("MASTER", "LOCAL", "OWN", "RTU", "SOURCE", "SRC")
+
+        address_needles = ("ADDR", "ADR")
+        remote_addr = next(
+            (
+                v
+                for k, v in protocol.items()
+                if any(n in k.upper() for n in remote_needles)
+                and any(a in k.upper() for a in address_needles)
+                and isinstance(v, (int, str))
+                and not isinstance(v, bool)
+                and str(v) != ""
+            ),
+            None,
+        )
+        if remote_addr is None:
+            continue
+
+        local_addr = next(
+            (
+                v
+                for k, v in protocol.items()
+                if any(n in k.upper() for n in local_needles)
+                and any(a in k.upper() for a in address_needles)
+                and isinstance(v, (int, str))
+                and not isinstance(v, bool)
+                and str(v) != ""
+            ),
+            None,
+        )
+
+        dev.store(
+            "relationships",
+            Relationship(
+                type="communicates_with",
+                protocol=canonical,
+                medium="serial",
+                local=RelationshipEndpoint(
+                    serial_port=port_name,
+                    role=local_role,
+                    protocol_address=str(local_addr) if local_addr is not None else "",
+                ),
+                remote=RelationshipEndpoint(
+                    protocol_address=str(remote_addr),
+                    role=remote_role,
+                ),
+                evidence={"config"},
+            ),
+        )
+
+
+def netstat_has_task_ids(output: str) -> bool:
+    """
+    If ``netstat`` output has the columns parsed by
+    :class:`~peat.parsing.command_parsers.NetstatSocketsVxWorksParser`
+    (``Prot Recv-Q Send-Q Local Address Foreign Address (state) TID``),
+    i.e. the header names the owning task ID column.
+    """
+    for line in (output or "").splitlines():
+        cols = line.upper().split()
+        if "RECV-Q" in cols and "SEND-Q" in cols:
+            return "TID" in cols
+    return False
+
+
+def isagraf_package(isagraf: dict) -> Package | None:
+    """ISaGRAF runtime version (``ISaGRAF.TXT``) as a software package."""
+    if not isagraf or not isagraf.get("version"):
+        return None
+    return Package(
+        name="ISaGRAF",
+        version=str(isagraf["version"]),
+        category="plc_runtime",
+        description=isagraf.get("note", ""),
+    )
+
+
+def file_categories(path: str | PurePath) -> set[str]:
+    """
+    Categories (:attr:`File.category <peat.data.models.File.category>`)
+    of a file on a Sage, based on its path.
+    """
+    p_str = PurePosixPath(str(path).replace("\\", "/")).as_posix().lower()
+    name = p_str.rsplit("/", 1)[-1]
+
+    if name.endswith(".scp") or "/scripts/" in f"/{p_str}":
+        return {"script"}
+    if name in ("syslog.log", "userlog.log", "soelog.txt") or re.fullmatch(
+        r"syslog(\.\d+)?", name
+    ):
+        return {"log"}
+    if name.endswith((".crt", ".cer", ".pem")):
+        return {"certificate"}
+    if name.endswith(".key"):
+        return {"key"}
+    if name == "vxworks":
+        return {"firmware"}
+    if name.endswith((".tar.gz", ".tgz")) and "config" in name:
+        return {"configuration", "backup"}
+    if name.endswith((".xml", ".cfg", ".conf")) or name == "isagraf.txt":
+        return {"configuration"}
+    return set()
+
+
+def _mode_from_permissions(perms: str) -> str:
+    """``rwxr-xr--`` or ``-rwxr-xr--`` -> ``0754`` (empty string if unparsable)."""
+    perms = str(perms).strip()
+    if len(perms) == 10:
+        perms = perms[1:]
+    if len(perms) != 9 or any(c not in "rwxsStT-" for c in perms):
+        return ""
+    value = 0
+    for i, char in enumerate(perms):
+        if char != "-" and char not in "ST":
+            value |= 1 << (8 - i)
+    return f"{value:04o}"
+
+
+def listing_to_files(
+    listing: list[dict], local_dir: Path | None = None, downloaded: set[str] | None = None
+) -> list[File]:
+    """
+    Convert a FTP file listing (:meth:`~peat.protocols.FTP.rdir` metadata)
+    into :class:`~peat.data.models.File` objects.
+
+    Args:
+        listing: file metadata dicts (``type``, ``permissions``, ``size``,
+            ``modified``, ``name``, ``path``)
+        local_dir: directory the files were downloaded to (``local_dir/<path>``)
+        downloaded: device paths of files that were downloaded
+    """
+    files = []
+
+    for entry in listing:
+        if not entry.get("path"):
+            continue
+        f_type = entry.get("type", "")
+        file = File(
+            path=PurePosixPath(entry["path"]),
+            name=entry.get("name", ""),
+            type=f_type if f_type in ("file", "dir", "symlink") else "",
+            peat_module="Sage",
+            category=file_categories(entry["path"]) if f_type != "dir" else set(),
+        )
+        if isinstance(entry.get("size"), int) and f_type != "dir":
+            file.size = entry["size"]
+        if isinstance(entry.get("modified"), datetime):
+            file.mtime = entry["modified"]  # device-local time (naive)
+        mode = _mode_from_permissions(entry.get("permissions", ""))
+        if mode:
+            file.mode = mode
+        if local_dir is not None and downloaded and entry["path"] in downloaded:
+            local_path = Path(local_dir, entry["path"].lstrip("/"))
+            if local_path.is_file():
+                file.local_path = local_path
+        files.append(file)
+
+    return files
+
+
+def sftp_attrs_to_file(folder: str, attrs: Any, local_dir: Path | None = None) -> File:
+    """
+    Convert a :class:`paramiko.SFTPAttributes` (from
+    ``sftp_recursive_file_walk()``) into a :class:`~peat.data.models.File`.
+    """
+    path = f"{folder}/{attrs.filename}"
+    file = File(
+        path=PurePosixPath(path),
+        name=attrs.filename,
+        type="file",
+        peat_module="Sage",
+        category=file_categories(path),
+    )
+    if getattr(attrs, "st_size", None) is not None:
+        file.size = attrs.st_size
+    if getattr(attrs, "st_mtime", None) is not None:
+        file.mtime = datetime.fromtimestamp(attrs.st_mtime, tz=UTC)
+    longname = getattr(attrs, "longname", "") or ""
+    mode = _mode_from_permissions(longname.split()[0] if longname.split() else "")
+    if mode:
+        file.mode = mode
+    if local_dir is not None:
+        local_path = Path(local_dir, path.lstrip("/"))
+        if local_path.is_file():
+            file.local_path = local_path
+    return file
+
+
+def tar_member_to_file(member: tarfile.TarInfo, archive_name: str) -> File:
+    """A member of a Sage configuration/firmware archive as a :class:`~peat.data.models.File`."""
+    if member.isdir():
+        f_type = "dir"
+    elif member.issym():
+        f_type = "symlink"
+    else:
+        f_type = "file"
+
+    file = File(
+        path=PurePosixPath(member.name),
+        name=PurePosixPath(member.name).name,
+        type=f_type,
+        peat_module="Sage",
+        mode=f"{member.mode & 0o7777:04o}",
+        category=file_categories(member.name) if f_type == "file" else set(),
+        extra={"archive": archive_name},
+    )
+    if f_type == "file":
+        file.size = member.size
+    if member.mtime:
+        file.mtime = datetime.fromtimestamp(member.mtime, tz=UTC)
+    if f_type == "symlink" and member.linkname:
+        file.target_path = PurePosixPath(member.linkname)
+    return file
 
 
 def parse_file(path: PurePath, f_handle: IO[bytes], device_info: dict) -> bool:

@@ -41,9 +41,9 @@ from peat import (
     utils,
 )
 from peat.data.data_utils import merge_models
-from peat.data.models import Memory
+from peat.data.models import Memory, Service, ServiceSecurity
 from peat.file_signature import FileSignature
-from peat.parsing.command_parsers import ArpParser, IfconfigParser
+from peat.parsing.command_parsers import ArpParser, IfconfigParser, NetstatSocketsVxWorksParser
 from peat.protocols import FTP, HTTP
 
 from . import sage_parse
@@ -52,14 +52,19 @@ from .sage_commands import (
     find_duplicate_memory_reads,
     mark_duplicate_tasks,
     parse_ipf,
+    parse_ipversion,
+    parse_openssl_version,
     parse_sysvar_list,
     parse_user_list,
     parse_vxworks_version,
+    process_software_versions,
     process_sysvar_list,
+    process_tasks,
     process_user_list,
     process_vxworks_version,
     save_memory_reads_to_disk,
 )
+from .sage_defaults import SAGE_KNOWN_DEFAULTS
 from .sage_http import SageHTTP
 from .sage_ssh import SageSSH
 from .sage_telnet import SageTelnet
@@ -304,6 +309,32 @@ class Sage(DeviceModule):
             "timeout": 30.0,
         },
     }
+    # Factory default password of the "Admin" account (all authenticated services)
+    factory_default_credentials = {("Admin", "Telvent1!")}
+    known_defaults = SAGE_KNOWN_DEFAULTS
+
+    @classmethod
+    def _record_login(cls, dev: DeviceData, protocol: str, user: str, password: str) -> None:
+        """
+        Record what a SUCCESSFUL login says about the service in
+        ``Service.security`` (never the credential itself).
+
+        ``default_credentials`` is only set to :obj:`True` when the credential that
+        worked is a factory default. Only one credential is tried per service, so it
+        is never set to :obj:`False`.
+        """
+        security = ServiceSecurity(authentication_required=True)
+        if cls.is_factory_default_credential(user, password):
+            security.default_credentials = True
+
+        port = dev.options.get(protocol, {}).get("port")
+        svc = Service(protocol=protocol, port=port, security=security)
+        dev.store(
+            "service",
+            svc,
+            lookup={"protocol": protocol, "port": port} if port else "protocol",
+            interface_lookup={"ip": dev.ip} if dev.ip else None,
+        )
 
     @classmethod
     def _verify_ftp(cls, dev: DeviceData) -> bool:
@@ -346,6 +377,7 @@ class Sage(DeviceModule):
                     return False
 
                 dev._cache["sage_ftp_fingerprinted"] = True
+                cls._record_login(dev, "ftp", username, password)
         except Exception as ex:
             cls.log.debug(f"Failed to verify {dev.ip} via FTP: {ex}")
             return False
@@ -406,6 +438,7 @@ class Sage(DeviceModule):
             dev._cache[f"sage_{protocol}_session"] = conn
             exit_handler.register(dev._cache[f"sage_{protocol}_session"].disconnect, "CONNECTION")
             dev._cache[f"sage_{protocol}_fingerprinted"] = True
+            cls._record_login(dev, protocol, username, password)
 
             return True
         except Exception as ex:
@@ -617,8 +650,10 @@ class Sage(DeviceModule):
                 meta_files = client.sftp_recursive_file_walk(filesystem)
                 cls.log.debug(f"Found the following directories {meta_files.keys()}")
                 json_format = []
+                sftp_files = []
                 for folder in meta_files:
                     for fl in meta_files[folder]:
+                        sftp_files.append((folder, fl))
                         file_stats = {
                             "name": fl.filename,
                             "permissions": fl.longname.split()[0],
@@ -639,6 +674,14 @@ class Sage(DeviceModule):
                 )
                 # TODO: return what files were downloaded
                 client.sftp_download_files(local_dir=sftp_dir, files=json_format)
+
+                # File inventory, with the local copies of downloaded files
+                for folder, fl in sftp_files:
+                    dev.store(
+                        "files",
+                        sage_parse.sftp_attrs_to_file(folder, fl, local_dir=sftp_dir),
+                        lookup="path",
+                    )
         except Exception as ex:
             cls.log.error(f"Failed to pull SFTP from {dev.ip}: {ex}")
             return False
@@ -661,7 +704,8 @@ class Sage(DeviceModule):
                 username = dev.options["ftp"]["user"]
                 password = dev.options["ftp"]["pass"]
 
-                ftp.login(username, password)
+                if ftp.login(username, password):
+                    cls._record_login(dev, "ftp", username, password)
                 dev.related.user.add(username)
 
                 ftp_dir = dev.get_sub_dir("ftp_files")
@@ -703,6 +747,13 @@ class Sage(DeviceModule):
 
                     # TODO: return what files were downloaded
                     ftp.download_files(local_dir=ftp_dir, files=to_download)
+
+                    # File inventory, with the local copies of downloaded files
+                    downloaded = {f["path"] for f in to_download}
+                    for file_obj in sage_parse.listing_to_files(
+                        listing[1], local_dir=ftp_dir, downloaded=downloaded
+                    ):
+                        dev.store("files", file_obj, lookup="path")
         except Exception as ex:
             cls.log.error(f"Failed to pull FTP from {dev.ip}:{port}: {ex}")
             return False
@@ -743,6 +794,10 @@ class Sage(DeviceModule):
                 http.get_session_cookie(
                     uname=dev.options["web"]["user"], pword=dev.options["web"]["pass"]
                 )
+                if http.cookies.get("SESSIONID"):
+                    cls._record_login(
+                        dev, web_protocol, dev.options["web"]["user"], dev.options["web"]["pass"]
+                    )
                 http.get_config_filename()
 
                 config_data = http.download_config_file()
@@ -818,6 +873,7 @@ class Sage(DeviceModule):
                 cls.log.error(f"Failed to pull {protocol} from {dev.ip}: login failed")
                 return {}
             dev.related.user.add(username)
+            cls._record_login(dev, protocol, username, password)
 
         if protocol == "ssh":
             if "sftp" in dev.options["sage"]["pull_methods"]:
@@ -864,37 +920,25 @@ class Sage(DeviceModule):
         if config.DEVICE_DIR:
             save_memory_reads_to_disk(dev, tasks)
 
+        # Task list (name, priority, state, stack usage) -> dev.processes
+        process_tasks(tasks, dev)
+
         # Add memory reads to PEAT data model
+        # NOTE: task metadata (entry, stack usage, status, etc.) is in dev.processes
         for task in tasks.values():
             mem = Memory(
                 address=task["TID"].replace("0x", "").upper(),
-                created=task["memory_read_time"],
+                created=task.get("memory_read_time"),
                 dataset="task_memory_reads",
                 device=dev.ip,
                 process=task["NAME"],
                 size=int(task["SIZE"]),
-                value=task["memory_hex"].upper(),
+                value=task.get("memory_hex", "").upper(),
                 extra={
-                    "task_name": task["NAME"],
-                    "task_entry": task["ENTRY"],
-                    "task_id": task["TID"],
-                    # current number of bytes of stack in use
-                    "current_bytes_used": int(task["CUR"]),
-                    # highest number of bytes of stack which have been in use
-                    "highest_bytes_used": int(task["HIGH"]),
-                    # the difference between the stack size and the
-                    # highest number of bytes which have been in use
-                    "margin_diff_size_and_highest": int(task["MARGIN"]),
                     # The shell command PEAT executed
                     "raw_query": task["d_query"],
-                    "status": task.get("STATUS", ""),
-                    "process": task.get("PROCESS", ""),
-                    "options": task.get("OPTIONS", ""),
                 },
             )
-
-            if "PRI" in task:
-                mem.extra["priority"] = int(task["PRI"])
 
             mem.annotate(dev)
             dev.memory.append(mem)
@@ -947,7 +991,11 @@ class Sage(DeviceModule):
         # Contains
         # "@(#) IPCOM $Name: VXWORKS_ITER32_2015032510 $ - INTERPEAK_COPYRIGHT_STRING"
         # and similar
-        conn.cmd_query("ipversion")
+        ipversion_response = conn.cmd_query("ipversion")
+        try:
+            process_software_versions(dev, components=parse_ipversion(ipversion_response))
+        except Exception as ex:
+            cls.log.warning(f"Failed to parse 'ipversion': {ex}")
 
         # Contains many OS parameters of possible future use
         # System variables:
@@ -963,7 +1011,10 @@ class Sage(DeviceModule):
         # Show IPCRYPTO version
         # Contains "OpenSSL 1.0.1k 8 Jan 2015" or similar
         ipcrypto_ver_response = conn.cmd_query("ipcrypto_ver")
-        dev.extra["openssl_version"] = ipcrypto_ver_response
+        try:
+            process_software_versions(dev, openssl=parse_openssl_version(ipcrypto_ver_response))
+        except Exception as ex:
+            cls.log.warning(f"Failed to parse 'ipcrypto_ver': {ex}")
 
         # Contains "No SSH clients connected" or list of connected users if SSH enabled.
         # Contains "Cmd: 'ipssh_list' not found." if SSH disabled
@@ -981,8 +1032,13 @@ class Sage(DeviceModule):
 
         # Current time on system.
         # Can be used to tell if system time is off
+        observed = utils.utc_now()
         date_response = conn.cmd_query("date")
-        dev.extra["current_time"] = utils.parse_date(date_response)
+        device_time = utils.parse_date(date_response)
+        if device_time:
+            # Device-local time; stays naive unless the device reports a timezone
+            dev.clock.time = device_time
+            dev.clock.observed = observed
 
         # Shows all user accounts added to system.
         # Could be used to identify extra user accounts
@@ -1007,7 +1063,12 @@ class Sage(DeviceModule):
         # TODO: resolve task ID to the process name and add to the Service object
         # TODO: netstat -s: networking statistics, broken down by Ip, Icmp, Tcp, Udp, Sctp
         netstat_response = conn.cmd_query("netstat")
-        dev.extra["netstat_output"] = netstat_response
+        if sage_parse.netstat_has_task_ids(netstat_response):
+            # Same columns as "netstat -anP" (incl. the owning task ID)
+            if not NetstatSocketsVxWorksParser.parse_and_process(netstat_response, dev):
+                dev.extra["netstat_output"] = netstat_response
+        else:
+            dev.extra["netstat_output"] = netstat_response
 
         # TODO:
         # netstat -r: routing table
@@ -1031,6 +1092,7 @@ class Sage(DeviceModule):
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData:
         device_info = {}
+        archive_files = []  # File objects for members of a tar archive
 
         is_tar_file = False
         if file.is_file() and any(e in file.name.lower() for e in [".tar.gz", ".tgz"]):
@@ -1041,6 +1103,7 @@ class Sage(DeviceModule):
                 device_info["existing_files"] = []
                 for member in tar.getmembers():
                     device_info["existing_files"].append(member.name)
+                    archive_files.append(sage_parse.tar_member_to_file(member, file.name))
                     f_handle = tar.extractfile(member)
 
                     if f_handle:
@@ -1105,12 +1168,18 @@ class Sage(DeviceModule):
             dev = datastore.get(file_basename, "id")
 
         if device_info.get("rtusetup_info"):
+            # Fields still set to "ChangeMe" (checked by the known-default baseline)
+            placeholders = device_info["rtusetup_info"].pop("placeholders", [])
+            if placeholders:
+                dev.extra["rtusetup_placeholders"] = placeholders
             sage_parse.process_rtusetup_info(dev, device_info["rtusetup_info"])
-            dev.extra["rtusetup_info"] = device_info["rtusetup_info"]
+            if device_info["rtusetup_info"]:
+                dev.extra["rtusetup_info"] = device_info["rtusetup_info"]
 
         if device_info.get("access_info"):
             sage_parse.process_access_xml(dev, device_info["access_info"])
-            dev.extra["access_info"] = device_info["access_info"]
+            # Never export the account passwords (secrets) from ACCESS.XML
+            dev.extra["access_info"] = sage_parse.redact_access_info(device_info["access_info"])
 
         if bootline:
             sage_parse.process_bootline(dev, bootline)
@@ -1133,6 +1202,33 @@ class Sage(DeviceModule):
 
         if device_info.get("vxworks_script"):
             dev.extra["vxworks_startup_script"] = device_info["vxworks_script"]
+
+        # Configured static routes (ethernet.xml)
+        if device_info.get("ethernet"):
+            for route in sage_parse.routes_from_ethernet(device_info["ethernet"]):
+                dev.store("routes", route)
+
+        # Time synchronization settings (time.xml)
+        if device_info.get("time_settings") or device_info.get("gps_settings"):
+            sage_parse.process_time_settings(dev, device_info)
+
+        # LED definitions (leds.xml)
+        if device_info.get("leds"):
+            for indicator in sage_parse.indicators_from_leds(device_info["leds"]):
+                dev.store("indicators", indicator)
+
+        # Serial ports, their protocols and configured peers (xml/port*.xml)
+        if device_info.get("ports"):
+            sage_parse.process_ports(dev, device_info["ports"])
+
+        # ISaGRAF soft logic runtime (ISaGRAF.TXT)
+        isagraf = sage_parse.isagraf_package(device_info.get("isagraf", {}))
+        if isagraf:
+            dev.store("software", isagraf)
+
+        # Files in a configuration/firmware archive
+        for archive_file in archive_files:
+            dev.store("files", archive_file, lookup="path")
 
         # TODO: extract SSL certificates and private keys
         #   parse into data model, use code from http module

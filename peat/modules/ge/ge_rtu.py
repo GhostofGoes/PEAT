@@ -16,6 +16,7 @@ from peat import (
     state,
     utils,
 )
+from peat.data.models import NetworkStatistics
 
 
 # TODO: record all data sent and received via telnet
@@ -375,6 +376,14 @@ class GERTU(DeviceModule):
         data = tn.get_internet_stats()
         rtu_data["inet_tcp"] = parse_internet_stats_menu(data)
 
+        # Per-protocol device statistics (IP/UDP/TCP)
+        for kind in ["ip", "udp", "tcp"]:
+            if rtu_data.get(f"inet_{kind}"):
+                dev.store(
+                    "protocol_statistics",
+                    internet_stats_to_statistics(rtu_data[f"inet_{kind}"], kind),
+                )
+
         # Get Error Logs
         tn.navigate_menus(cls.menu_nav_errorlog)
         data = tn.get_data_erroruser_logs(True)
@@ -399,6 +408,9 @@ class GERTU(DeviceModule):
             "digital_output",
             "analog_input",
             "analog_output",
+            "inet_ip",  # dev.protocol_statistics
+            "inet_udp",
+            "inet_tcp",
         ]:
             if extra_key in dev.extra:
                 del dev.extra[extra_key]
@@ -418,12 +430,15 @@ class GERTU(DeviceModule):
     @classmethod
     def process_error_log(cls, dev: DeviceData, data: dict[str, str]) -> None:
         for seq, log_text in data.items():
+            code, reason = split_error_log_entry(log_text)
             event = Event(
                 category={"host"},
+                code=code,
                 dataset="error_log",
                 kind={"event"},
                 module=cls.__name__ if not dev._module else dev._module.__name__,
                 original=log_text,
+                reason=reason,
                 sequence=int(seq),
             )
 
@@ -748,6 +763,92 @@ def parse_userlog_menu(data: str) -> dict:
             position += 1
 
     return {str(i): v for i, v in userlog.items()}
+
+
+def split_error_log_entry(log_text: str) -> tuple[str, str]:
+    """
+    Split an error log entry (``XXXX N0: <text>``, as delimited by
+    :func:`parse_errorlog_menu`) into its 4-character error code and the
+    remaining text.
+
+    Returns:
+        Tuple of ``(code, reason)``. The code is empty if the entry does not
+        start with a 4-character code.
+    """
+    match = re.match(r"\s*([A-Za-z0-9]{4})\s+(.*)", log_text or "", re.DOTALL)
+    if not match:
+        return "", (log_text or "").strip().strip(",").strip()
+    return match.group(1), match.group(2).strip().strip(",").strip()
+
+
+# Counter names of the "Internet Statistics" menus (MIB-II style, normalized to
+# lowercase alphanumerics, without the "ip"/"udp"/"tcp" prefix) -> NetworkStatistics
+# field. The menu headers are not documented: unknown counters go to "extra".
+_INET_STAT_FIELDS: dict[str, dict[str, tuple[str, str]]] = {
+    "ip": {
+        "inreceives": ("ingress", "packets"),
+        "indiscards": ("ingress", "dropped"),
+        "inunknownprotos": ("ingress", "unknown_protocols"),
+        "outrequests": ("egress", "packets"),
+        "outdiscards": ("egress", "dropped"),
+    },
+    "udp": {
+        "indatagrams": ("ingress", "packets"),
+        "inerrors": ("ingress", "errors"),
+        "outdatagrams": ("egress", "packets"),
+    },
+    "tcp": {
+        "insegs": ("ingress", "packets"),
+        "inerrs": ("ingress", "errors"),
+        "inerrors": ("ingress", "errors"),
+        "outsegs": ("egress", "packets"),
+        "currestab": ("connections", "active"),
+        "attemptfails": ("connections", "failed"),
+        "estabresets": ("connections", "resets"),
+    },
+}
+
+
+def _normalize_stat_key(key: str, kind: str) -> str:
+    norm = re.sub(r"[^a-z0-9]", "", str(key).lower())
+    if norm.startswith(kind) and norm != kind:
+        norm = norm[len(kind) :]
+    return norm
+
+
+def internet_stats_to_statistics(stats: dict[str, str], kind: str) -> NetworkStatistics:
+    """
+    Convert parsed "Internet Statistics" menu values (:func:`parse_internet_stats_menu`)
+    into a :class:`~peat.data.models.NetworkStatistics` entry for
+    ``DeviceData.protocol_statistics`` (``type="ipv4"`` for IP,
+    ``transport="udp"``/``"tcp"``).
+
+    Values are cast to integers. Counters without a field, and values that
+    are not integers, are kept in ``extra`` (lowercase snake_case keys).
+    """
+    kind = kind.lower()
+    result = NetworkStatistics(timestamp=utils.utc_now())
+    if kind == "ip":
+        result.type = "ipv4"
+    else:
+        result.transport = kind
+
+    field_map = _INET_STAT_FIELDS.get(kind, {})
+    for key, raw_value in stats.items():
+        value: int | str
+        try:
+            value = int(str(raw_value).strip())
+        except ValueError:
+            value = str(raw_value).strip()
+
+        target = field_map.get(_normalize_stat_key(key, kind))
+        if target and isinstance(value, int) and value >= 0:
+            setattr(getattr(result, target[0]), target[1], value)
+        else:
+            extra_key = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+            result.extra[extra_key or str(key)] = value
+
+    return result
 
 
 def parse_internet_stats_menu(data: str) -> dict:

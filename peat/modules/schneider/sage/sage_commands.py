@@ -18,10 +18,10 @@ import binascii
 import re
 import string
 import time
-from typing import Any
+from typing import Any, Final
 
 from peat import DeviceData, DeviceError, ParseError, config, consts, log, state, utils
-from peat.data.models import User
+from peat.data.models import HostProcess, Package, User
 
 from . import sage_parse
 
@@ -282,6 +282,108 @@ def parse_check_stack_response(check_stack_response: str) -> dict[str, Any]:
     return tasks
 
 
+# VxWorks task STATUS words (``checkStack``/``ti``/``i`` output) -> HostProcess.state.
+# Modifiers such as "+T" (timeout) or "+S" (suspended) are dropped from the state,
+# the raw value is kept in HostProcess.extra["state_code"].
+TASK_STATES: Final[dict[str, str]] = {
+    "READY": "ready",
+    "PEND": "pended",
+    "DELAY": "delayed",
+    "SUSPEND": "suspended",
+    "STOP": "stopped",
+}
+
+
+def task_state(status: str) -> str:
+    """
+    Normalize a VxWorks task status (e.g. ``PEND+T``) to a lowercase state
+    (e.g. ``pended``). Unknown statuses are lowercased as-is.
+    """
+    base = str(status).strip().upper().split("+")[0]
+    if not base:
+        return ""
+    return TASK_STATES.get(base, base.lower())
+
+
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(str(value).strip(), 0)
+    except (TypeError, ValueError):
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+
+def tasks_to_processes(tasks: dict[str, Any]) -> list[HostProcess]:
+    """
+    Convert the TID-indexed task dict (from :func:`parse_check_stack_response`
+    and :func:`parse_ti_response`) into :class:`~peat.data.models.HostProcess`
+    objects (``type="task"``, ``pid`` = TID as an integer).
+
+    Args:
+        tasks: Parsed tasks, keyed by TID (hex string, e.g. ``0x1234abc``)
+
+    Returns:
+        One HostProcess per task with a valid TID
+    """
+    processes = []
+
+    for tid, task in tasks.items():
+        task_id = str(task.get("TID", tid)).strip()
+        try:
+            pid = int(task_id, 16)
+        except ValueError:
+            log.warning(f"Skipping task with invalid TID '{task_id}'")
+            continue
+
+        extra = {"task_id": task_id}
+        for key, extra_key in [
+            ("ENTRY", "entry"),
+            ("OPTIONS", "options"),
+            ("PROCESS", "rtp"),  # VxWorks RTP the task belongs to, e.g. "kernel"
+        ]:
+            if task.get(key):
+                extra[extra_key] = str(task[key]).strip()
+
+        # Stack usage in bytes, from "checkStack"
+        for key, extra_key in [
+            ("SIZE", "stack_size"),
+            ("CUR", "stack_current"),
+            ("HIGH", "stack_high"),
+            ("MARGIN", "stack_margin"),
+        ]:
+            if key in task:
+                value = _to_int(task[key])
+                # e.g. MARGIN can be "OVERFLOW"
+                extra[extra_key] = value if value is not None else str(task[key])
+
+        if task.get("STATUS"):
+            extra["state_code"] = str(task["STATUS"]).strip()
+
+        processes.append(
+            HostProcess(
+                name=str(task.get("NAME", "")).strip(),
+                pid=pid,
+                type="task",
+                priority=_to_int(task["PRI"]) if "PRI" in task else None,
+                state=task_state(task.get("STATUS", "")),
+                extra=extra,
+            )
+        )
+
+    return processes
+
+
+def process_tasks(tasks: dict[str, Any], dev: DeviceData) -> None:
+    """
+    Store the Sage (VxWorks) task list in
+    :attr:`DeviceData.processes <peat.data.models.DeviceData.processes>`.
+    """
+    for proc in tasks_to_processes(tasks):
+        dev.store("processes", proc)
+
+
 def mark_duplicate_tasks(tasks: dict[str, Any]) -> None:
     """
     Mark the tasks as duplicate if duplicates exist.
@@ -342,7 +444,7 @@ def convert_memory_reads_to_hex_strings(tasks: dict[str, Any]) -> None:
             t_dict["memory_hex"] = ""
             t_dict["memory_bytes"] = b""
             log.error(f"Error converting hex for task id '{task_id}': {ex}")
-            return
+            continue  # the remaining tasks still get converted
 
         try:
             t_dict["memory_bytes"] = binascii.unhexlify(t_dict["memory_hex"])
@@ -539,6 +641,87 @@ def process_vxworks_version(data: dict[str, str], dev: DeviceData) -> None:
             dev.os.timestamp = ts
 
     sage_parse.process_bootline(dev, data)
+
+
+def parse_openssl_version(data: str) -> dict[str, str]:
+    """
+    Parse output of ``ipcrypto_ver`` on the Sage.
+
+    Example: ``OpenSSL 1.0.1k 8 Jan 2015``
+
+    Returns:
+        dict with ``name``, ``version`` and ``build_date`` (if present), or an
+        empty dict if the output has no OpenSSL version.
+    """
+    match = re.search(
+        r"(?P<name>OpenSSL)\s+(?P<version>\d[\w.\-]*)(?:\s+(?P<build_date>\d{1,2}\s+\w{3}\s+\d{4}))?",
+        data or "",
+        re.ASCII,
+    )
+    if not match:
+        return {}
+
+    return {k: v for k, v in match.groupdict().items() if v}
+
+
+def parse_ipversion(data: str) -> list[dict[str, str]]:
+    """
+    Parse output of ``ipversion`` on the Sage (Interpeak/IPCOM product versions
+    of the VxWorks network stack).
+
+    Example line: ``@(#) IPCOM $Name: VXWORKS_ITER32_2015032510 $ - INTERPEAK_COPYRIGHT_STRING``
+
+    Returns:
+        list of dicts with ``name`` and ``version``
+    """
+    components = []
+    seen = set()
+
+    for match in re.finditer(
+        r"@\(#\)\s*(?P<name>[\w.\-]+)\s+\$Name:\s*(?P<version>[^$]*?)\s*\$",
+        data or "",
+        re.ASCII,
+    ):
+        name = match.group("name").strip()
+        version = match.group("version").strip()
+        if (name, version) in seen:
+            continue
+        seen.add((name, version))
+        components.append({"name": name, "version": version})
+
+    return components
+
+
+def process_software_versions(
+    dev: DeviceData,
+    openssl: dict[str, str] | None = None,
+    components: list[dict[str, str]] | None = None,
+) -> None:
+    """
+    Store OpenSSL (``ipcrypto_ver``) and IPCOM component (``ipversion``) versions in
+    :attr:`DeviceData.software <peat.data.models.DeviceData.software>`.
+    """
+    if openssl and openssl.get("name"):
+        pkg = Package(
+            name=openssl["name"],
+            version=openssl.get("version", ""),
+            category="library",
+            description="IPCRYPTO (OpenSSL) library of the VxWorks network stack",
+        )
+        if openssl.get("build_date"):
+            pkg.extra["build_date"] = openssl["build_date"]
+        dev.store("software", pkg)
+
+    for comp in components or []:
+        dev.store(
+            "software",
+            Package(
+                name=comp["name"],
+                version=comp.get("version", ""),
+                category="os_component",
+                vendor="Wind River Systems",
+            ),
+        )
 
 
 def parse_sysvar_list(data: str) -> dict[str, str]:

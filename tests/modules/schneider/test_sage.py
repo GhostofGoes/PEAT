@@ -1,0 +1,511 @@
+"""
+Tests for the Sage RTU module with synthetic inputs.
+
+The command outputs follow the formats documented in the code comments of
+``peat/modules/schneider/sage/`` and the VxWorks shell reference (``checkStack``,
+``ti``). The XML files are synthetic: there are no public Sage configuration
+samples, so attribute names are representative, not captured from a device.
+"""
+
+import io
+import tarfile
+from datetime import UTC, datetime
+from pathlib import PurePosixPath
+
+import pytest
+
+from peat import DeviceData, Sage, config, datastore
+from peat.data.baseline import compare_device, split_path
+from peat.modules.schneider.sage import sage_commands, sage_parse
+
+CHECK_STACK = """\
+NAME         ENTRY        TID        SIZE   CUR  HIGH  MARGIN
+------------ ------------ -------- ----- ----- ----- ------
+tExcTask     excTask      0x1c3fa40   7984   224   696   7288
+tShell0      shellTask    0x1d02b10  20000  1240  4096  OVERFLOW
+INTERRUPT                             5000     0   512   4488
+"""
+
+TI_EXC = """\
+  NAME         ENTRY       TID    PRI   STATUS      PC       SP     ERRNO  DELAY
+---------- ------------ -------- --- ---------- -------- -------- ------- -----
+tExcTask   excTask      1c3fa40    0 PEND+T       2a3b4c  1c3f900       0     0
+stack: base 0x1c3fa40  end 0x1c3db00  size 7984  high 696  margin 7288
+task entry : excTask
+process    : kernel
+options    : 0x1005
+"""
+
+
+@pytest.fixture
+def out_config(mocker, tmp_path):
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    return tmp_path
+
+
+def _tasks() -> dict:
+    tasks = sage_commands.parse_check_stack_response(CHECK_STACK)
+    assert sage_commands.parse_ti_response(TI_EXC, tasks["0x1c3fa40"])
+    return tasks
+
+
+def test_task_state():
+    assert sage_commands.task_state("PEND+T") == "pended"
+    assert sage_commands.task_state("READY") == "ready"
+    assert sage_commands.task_state("DELAY") == "delayed"
+    assert sage_commands.task_state("SUSPEND") == "suspended"
+    assert sage_commands.task_state("WEIRD") == "weird"
+    assert sage_commands.task_state("") == ""
+
+
+def test_tasks_to_processes():
+    procs = {p.name: p for p in sage_commands.tasks_to_processes(_tasks())}
+    assert set(procs) == {"tExcTask", "tShell0"}
+
+    exc = procs["tExcTask"]
+    assert exc.type == "task"
+    assert exc.pid == 0x1C3FA40
+    assert exc.priority == 0
+    assert exc.state == "pended"
+    assert exc.extra["task_id"] == "0x1c3fa40"
+    assert exc.extra["state_code"] == "PEND+T"
+    assert exc.extra["entry"] == "excTask"
+    assert exc.extra["rtp"] == "kernel"
+    assert exc.extra["options"] == "0x1005"
+    assert exc.extra["stack_size"] == 7984
+    assert exc.extra["stack_high"] == 696
+    assert exc.extra["stack_margin"] == 7288
+
+    shell = procs["tShell0"]
+    assert shell.priority is None
+    assert shell.state == ""
+    assert shell.extra["stack_margin"] == "OVERFLOW"
+
+
+def test_process_tasks_store_and_related():
+    dev = DeviceData()
+    sage_commands.process_tasks(_tasks(), dev)
+    sage_commands.process_tasks(_tasks(), dev)  # second pull merges
+    assert len(dev.processes) == 2
+    assert {"tExcTask", "tShell0"} <= dev.related.process
+
+
+def test_convert_memory_reads_continues_after_bad_task():
+    tasks = {
+        "0x1": {"d_response": "0x00001000  zzzzzzzzzzzzzzzz  *................*"},
+        "0x2": {"d_response": '0x00002000  0011223344556677  *.."3DUfw*'},
+    }
+    sage_commands.convert_memory_reads_to_hex_strings(tasks)
+    assert tasks["0x1"]["memory_hex"] == ""
+    assert tasks["0x2"]["memory_hex"] == "0011223344556677"
+    assert tasks["0x2"]["memory_bytes"] == bytes.fromhex("0011223344556677")
+
+
+def test_software_versions():
+    assert sage_commands.parse_openssl_version("OpenSSL 1.0.1k 8 Jan 2015\n") == {
+        "name": "OpenSSL",
+        "version": "1.0.1k",
+        "build_date": "8 Jan 2015",
+    }
+    assert sage_commands.parse_openssl_version("Cmd: 'ipcrypto_ver' not found.") == {}
+
+    ipversion = (
+        "@(#) IPCOM $Name: VXWORKS_ITER32_2015032510 $ - INTERPEAK_COPYRIGHT_STRING\n"
+        "@(#) IPNET $Name: VXWORKS_ITER32_2015032510 $ - INTERPEAK_COPYRIGHT_STRING\n"
+        "@(#) IPCOM $Name: VXWORKS_ITER32_2015032510 $ - INTERPEAK_COPYRIGHT_STRING\n"
+    )
+    components = sage_commands.parse_ipversion(ipversion)
+    assert components == [
+        {"name": "IPCOM", "version": "VXWORKS_ITER32_2015032510"},
+        {"name": "IPNET", "version": "VXWORKS_ITER32_2015032510"},
+    ]
+
+    dev = DeviceData()
+    sage_commands.process_software_versions(
+        dev, openssl=sage_commands.parse_openssl_version("OpenSSL 1.0.1k 8 Jan 2015")
+    )
+    sage_commands.process_software_versions(dev, components=components)
+    pkgs = {p.name: p for p in dev.software}
+    assert pkgs["OpenSSL"].version == "1.0.1k"
+    assert pkgs["OpenSSL"].category == "library"
+    assert pkgs["OpenSSL"].type == ""
+    assert pkgs["IPCOM"].category == "os_component"
+
+    isagraf = sage_parse.isagraf_package({"version": "5.21", "note": "Soft Logic Controller"})
+    assert isagraf.name == "ISaGRAF"
+    assert isagraf.category == "plc_runtime"
+    assert sage_parse.isagraf_package({}) is None
+
+
+def test_rtusetup_placeholders():
+    xml = b"""<RTU_SETUP><CPU>
+      <RTU><NAME>ChangeMe</NAME><SERIALNUM>12345</SERIALNUM><TYPE>3030M</TYPE>
+        <VXWORKS><VXVERSION>changeme</VXVERSION><VXCREATED>Jan 21 2011</VXCREATED></VXWORKS>
+      </RTU>
+      <CONFIG><NAME>cfg-1</NAME><REVISION>ChangeMe</REVISION></CONFIG>
+    </CPU></RTU_SETUP>"""
+    info = {}
+    sage_parse.parse_rtu_setup(io.BytesIO(xml), info)
+    rtu = info["rtusetup_info"]
+    assert rtu["placeholders"] == ["CONFIG/REVISION", "RTU/NAME", "RTU/VXWORKS/VXVERSION"]
+    assert "name" not in rtu
+    assert rtu["serial_number"] == "12345"
+    assert rtu["config_version"] == "cfg-1"
+
+
+def test_access_xml_passwords_not_exported():
+    xml = b"""<ACCESS>
+      <USER ID="Admin" SESTIMEOUT="30"><DESC>Administrator</DESC><PASSWORD>secret</PASSWORD>
+        <ACCESS FTP="Y" TELNET="N"/></USER>
+      <USER ID="viewer"><ACCESS FTP="N"/></USER>
+    </ACCESS>"""
+    info = {}
+    sage_parse.parse_access_xml(io.BytesIO(xml), info)
+    redacted = sage_parse.redact_access_info(info["access_info"])
+    assert redacted["users"][0]["password_set"] is True
+    assert "password" not in redacted["users"][0]
+    assert "password_set" not in redacted["users"][1]
+    assert info["access_info"]["users"][0]["password"] == "secret"  # input unchanged
+    assert "secret" not in str(redacted)
+
+
+def test_parse_ether_routes_not_aliased():
+    xml = b"""<ETHERNET>
+      <PORT ID="1" NAME="fei0">
+        <ROUTES>
+          <ROUTE ID="1" DEST="10.1.0.0" MASK="255.255.0.0" GATEWAY="192.0.2.1"/>
+          <ROUTE ID="2" DEST="198.51.100.0" MASK="255.255.255.0" GATEWAY="192.0.2.2" METRIC="2"/>
+          <ROUTE ID="3" DEST="" MASK="" GATEWAY=""/>
+        </ROUTES>
+      </PORT>
+      <PORT ID="2" NAME="fei1"/>
+      <PORT ID="3" NAME="fei2"><ROUTES/></PORT>
+    </ETHERNET>"""
+    info = {}
+    sage_parse.parse_ether(io.BytesIO(xml), info)
+    entry = info["ethernet"]["entry_0"]
+    assert entry["route_1"]["DEST"] == "10.1.0.0"
+    assert entry["route_2"]["DEST"] == "198.51.100.0"
+    assert entry["route_1"] is not entry["route_2"]
+    # an element without routes no longer shifts/overwrites the following entries
+    assert set(info["ethernet"]) == {"entry_0", "entry_1", "entry_2"}
+
+    routes = sage_parse.routes_from_ethernet(info["ethernet"])
+    assert [(r.destination, r.gateway, r.metric) for r in routes] == [
+        ("10.1.0.0/16", "192.0.2.1", None),
+        ("198.51.100.0/24", "192.0.2.2", 2),
+    ]
+    assert all(r.type == "static" for r in routes)
+    assert routes[0].extra["route_id"] == "1"
+
+    dev = DeviceData()
+    for route in routes:
+        dev.store("routes", route)
+    dev.populate_fields()
+    gateways = {r.remote.ip for r in dev.relationships if r.type == "routes_via"}
+    assert gateways == {"192.0.2.1", "192.0.2.2"}
+
+
+def test_bootline_default_route():
+    dev = DeviceData()
+    sage_parse.process_bootline(
+        dev,
+        sage_parse.bootline_parse(
+            "ata=0,0(0,0)host:/ata0a/vxWorks e=192.0.2.10:ffffff00 g=192.0.2.1 tn=sage"
+        ),
+    )
+    assert dev.interface[0].ip == "192.0.2.10"
+    assert dev.interface[0].subnet_mask == "255.255.255.0"
+    assert len(dev.routes) == 1
+    assert dev.routes[0].destination == "0.0.0.0/0"
+    assert dev.routes[0].gateway == "192.0.2.1"
+
+
+def test_time_settings():
+    xml = b"""<ROOT>
+      <TIME SOURCE="GPS" UTCOFFSET="-07:00">
+        <SNTP SERVER1="192.0.2.50" SERVER2="192.0.2.51" SERVER3="0.0.0.0" ENABLED="Y"/>
+        <IRIG ENABLED="N"/>
+      </TIME>
+      <GBLFRZ INTERVAL="60"/>
+      <GPS PORT="3" BAUD="9600"/>
+    </ROOT>"""
+    info = {}
+    sage_parse.parse_time(io.BytesIO(xml), info)
+    clock = sage_parse.clock_from_time_settings(info["time_settings"], info["gps_settings"])
+    by_proto = {}
+    for src in clock["sources"]:
+        by_proto.setdefault(src.protocol, []).append(src)
+    assert [(s.address, s.priority) for s in by_proto["sntp"]] == [
+        ("192.0.2.50", 1),
+        ("192.0.2.51", 2),
+    ]
+    assert by_proto["irig_b"][0].enabled is False
+    assert by_proto["gps"][0].address == ""
+    assert clock["source"] == "gps"
+    assert clock["utc_offset"] == "-07:00"
+
+    dev = DeviceData()
+    sage_parse.process_time_settings(dev, info)
+    sage_parse.process_time_settings(dev, info)  # idempotent
+    assert len(dev.clock.sources) == 4
+    assert dev.clock.source == "gps"
+    dev.populate_fields()
+    synced = {r.remote.ip for r in dev.relationships if r.type == "syncs_time_from"}
+    assert synced == {"192.0.2.50", "192.0.2.51"}
+
+    # Unknown layouts produce nothing (no guessing)
+    empty = sage_parse.clock_from_time_settings({"MODE": 1}, {})
+    assert empty == {"sources": []}
+
+
+def test_led_definitions():
+    xml = b"""<ROOT><LEDS>
+      <LED NUM="1" DESC="COMM FAIL" PNT="RTU_STS_12" COLOR="RED" BLINK="Y"/>
+      <LED NUM="2" DESC="TIME SYNC"/>
+    </LEDS></ROOT>"""
+    info = {}
+    sage_parse.parse_leds(io.BytesIO(xml), info)
+    leds = {i.name: i for i in sage_parse.indicators_from_leds(info["leds"])}
+    assert leds["1"].type == "led"
+    assert leds["1"].label == "COMM FAIL"
+    assert leds["1"].equation == "RTU_STS_12"
+    assert leds["1"].color == "red"
+    assert leds["1"].position == "1"
+    assert leds["1"].extra == {"BLINK": True}
+    assert leds["1"].state == ""
+    assert leds["1"].timestamp is None
+    assert leds["2"].label == "TIME SYNC"
+
+
+def test_serial_ports():
+    xml = b"""<PORT VER="1" PNT="COM2" NAME="SCADA">
+      <PROTOCOL TYPE="DNP3_S">
+        <COMM BAUD="9600" PARITY="N" DATABITS="8" STOPBITS="1" RTS="Y"/>
+        <DNP3_S RTU_ADDR="10" MASTER_ADDR="3" CONFIRM="Y"/>
+      </PROTOCOL>
+    </PORT>"""
+    unused = b"""<PORT VER="1" PNT="COM3"><PROTOCOL TYPE="NONE"/></PORT>"""
+    info = {}
+    sage_parse.parse_port(io.BytesIO(xml), info)
+    sage_parse.parse_port(io.BytesIO(unused), info)
+
+    dev = DeviceData()
+    sage_parse.process_ports(dev, info["ports"])
+
+    ifaces = {i.name: i for i in dev.interface}
+    com2 = ifaces["COM2"]
+    assert com2.type == "serial"
+    assert com2.application == "dnp3"
+    assert (com2.baudrate, com2.parity, com2.data_bits, com2.stop_bits) == (9600, "none", 8, 1)
+    assert com2.extra["comm_settings"] == {"RTS": True}
+    assert com2.extra["NAME"] == "SCADA"
+    assert com2.services[0].protocol == "dnp3"
+    assert ifaces["COM3"].application == ""
+
+    svc = dev.service[0]
+    assert svc.protocol == "dnp3"
+    assert svc.role == "outstation"
+    assert svc.listen_interface == "COM2"
+    assert svc.port is None
+
+    rel = dev.relationships[0]
+    assert rel.protocol == "dnp3"
+    assert rel.medium == "serial"
+    assert rel.local.serial_port == "COM2"
+    assert rel.local.role == "outstation"
+    assert rel.local.protocol_address == "10"
+    assert rel.remote.role == "master"
+    assert rel.remote.protocol_address == "3"
+    assert rel.evidence == {"config"}
+
+    assert sage_parse.canonical_port_protocol("MODBUS_M") == "modbus_rtu"
+    assert sage_parse.canonical_port_protocol("IEC101") == "iec101"
+    assert sage_parse.canonical_port_protocol("Conitel 2020") == "conitel_2020"
+
+
+def _log(lines: list[str]) -> io.BytesIO:
+    return io.BytesIO("\n".join(lines).encode())
+
+
+def test_log_events_reason_action():
+    info = {}
+    sage_parse.parse_logfiles(
+        _log(
+            [
+                '<REC ID="5" DT="01/01/2025" TM="00:00:00.000" VAL="1" '
+                'PN="TIME SRC FAIL" DN="RTU Internal Status"/>',
+                '<REC ID="6" DT="01/01/2025" TM="00:00:05.000" VAL="0" '
+                'PN="TIME SRC FAIL" DN="RTU Internal Status"/>',
+                '<REC ID="7" DT="01/01/2025" TM="00:00:06.000" TYPE="Logged In" '
+                'TXT="192.0.2.20-FTP, Admin, LCL_DB"/>',
+            ]
+        ),
+        info,
+    )
+    dev = DeviceData(ip="192.0.2.10")
+    sage_parse.process_logfile_events(dev, info["raw_events"])
+    events = {e.sequence: e for e in dev.event}
+
+    assert events[5].reason == "TIME SRC FAIL"
+    assert events[5].action == "set"
+    assert events[5].dataset == "soelog"
+    assert events[6].action == "clear"
+    assert events[7].reason == "192.0.2.20-FTP, Admin, LCL_DB"
+    assert events[7].dataset == "userlog"
+    assert events[7].action == "logged-in"
+    assert "authentication" in events[7].category
+
+
+def test_ipcom_syslog_log_level():
+    info = {}
+    sage_parse.parse_ipcom_syslog(
+        _log(["Jan 01 00:00:01: iptelnets[0x1d02b10]: Error: ipcom_telnet: login failed"]),
+        info,
+    )
+    dev = DeviceData(ip="192.0.2.10")
+    sage_parse.process_ipcom_syslog(dev, info["ipcom_syslog_events"])
+    event = dev.event[0]
+    assert event.log_level == "error"
+    assert "level" not in event.extra
+    assert event.extra["task_id"] == "0x1d02b10"
+
+
+def test_netstat_has_task_ids():
+    with_tid = (
+        "INET sockets\n"
+        "Prot Recv-Q Send-Q Local Address         Foreign Address       (state)      TID\n"
+        "TCP       0      0 0.0.0.0.23            0.0.0.0.*             LISTEN       0x1d02b10\n"
+    )
+    without_tid = (
+        "INET sockets\n"
+        "Prot Recv-Q Send-Q Local Address         Foreign Address       (state)\n"
+        "TCP       0      0 0.0.0.0.23            0.0.0.0.*             LISTEN\n"
+    )
+    assert sage_parse.netstat_has_task_ids(with_tid)
+    assert not sage_parse.netstat_has_task_ids(without_tid)
+    assert not sage_parse.netstat_has_task_ids("")
+
+
+def test_file_inventory():
+    assert sage_parse.file_categories("/ata0a/scripts/startup.scp") == {"script"}
+    assert sage_parse.file_categories("/ata0a/Webfiles/LOGS/SYSLOG.LOG") == {"log"}
+    assert sage_parse.file_categories("/ata0a/ipcom/syslog.0") == {"log"}
+    assert sage_parse.file_categories("/ata0a/Webfiles/xml/port1.xml") == {"configuration"}
+    assert sage_parse.file_categories("/ata0a/ssl/cert/server.crt") == {"certificate"}
+    assert sage_parse.file_categories("/ata0a/ssl/private/server.key") == {"key"}
+    assert sage_parse.file_categories("/ata0a/vxWorks") == {"firmware"}
+    assert sage_parse.file_categories("/ata0a/readme.bin") == set()
+
+    modified = datetime(2011, 1, 21, 0, 0)
+    listing = [
+        {
+            "type": "file",
+            "permissions": "rwxrwxrwx",
+            "size": 437,
+            "modified": modified,
+            "name": "startup.scp",
+            "path": "/ata0a/scripts/startup.scp",
+            "parent": "/ata0a/scripts/",
+        },
+        {
+            "type": "dir",
+            "permissions": "rwxr-xr-x",
+            "size": 8192,
+            "modified": modified,
+            "name": "scripts",
+            "path": "/ata0a/scripts",
+            "parent": "/ata0a/",
+        },
+    ]
+    files = sage_parse.listing_to_files(listing)
+    assert files[0].path == PurePosixPath("/ata0a/scripts/startup.scp")
+    assert files[0].mode == "0777"
+    assert files[0].size == 437
+    assert files[0].mtime == modified
+    assert files[0].category == {"script"}
+    assert files[0].local_path is None
+    assert files[1].type == "dir"
+    assert files[1].size is None
+    assert files[1].mode == "0755"
+
+    member = tarfile.TarInfo("xml/port1.xml")
+    member.size = 120
+    member.mode = 0o644
+    member.mtime = 1_700_000_000
+    tar_file = sage_parse.tar_member_to_file(member, "RTU_Config.tar.gz")
+    assert tar_file.path == PurePosixPath("xml/port1.xml")
+    assert tar_file.mode == "0644"
+    assert tar_file.mtime == datetime.fromtimestamp(1_700_000_000, tz=UTC)
+    assert tar_file.category == {"configuration"}
+    assert tar_file.extra == {"archive": "RTU_Config.tar.gz"}
+
+    dev = DeviceData()
+    dev.store("files", files[0], lookup="path")
+    dev.store("files", files[0].copy(deep=True), lookup="path")
+    assert len(dev.files) == 1
+
+
+@pytest.mark.usefixtures("out_config")
+def test_parse_config_tar(tmp_path):
+    rtusetup = b"<RTU_SETUP><CPU><RTU><NAME>ChangeMe</NAME></RTU></CPU></RTU_SETUP>"
+    isagraf = b"ISaGRAF 5.21\r\n"
+    tar_path = tmp_path / "RTU_Config.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for name, data in [("xml/rtusetup.xml", rtusetup), ("isagraf/ISaGRAF.TXT", isagraf)]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = 1_700_000_000
+            tar.addfile(info, io.BytesIO(data))
+
+    dev = Sage.parse(tar_path)
+    assert dev.extra["rtusetup_placeholders"] == ["RTU/NAME"]
+    assert "rtusetup_info" not in dev.extra
+    assert {str(f.path) for f in dev.files} == {"xml/rtusetup.xml", "isagraf/ISaGRAF.TXT"}
+    assert dev.software[0].name == "ISaGRAF"
+    assert dev.software[0].version == "5.21"
+
+
+def test_record_login_default_credentials():
+    dev = DeviceData(ip="192.0.2.10")
+    Sage._record_login(dev, "telnet", "admin", "Telvent1!")
+    svc = dev.retrieve("service", {"protocol": "telnet"})
+    assert svc.port == 23
+    assert svc.security.default_credentials is True
+    assert svc.security.authentication_required is True
+
+    dev2 = DeviceData(ip="192.0.2.11")
+    Sage._record_login(dev2, "ftp", "Admin", "site-password")
+    svc2 = dev2.retrieve("service", {"protocol": "ftp"})
+    assert svc2.security.default_credentials is None  # only one credential was tried
+
+
+def test_known_defaults():
+    baselines = Sage.get_known_defaults()
+    assert [b.id for b in baselines] == ["sage-vendor-recommended"]
+    baseline = baselines[0]
+    assert baseline.kind == "vendor_recommended"
+    assert baseline.expected is None
+    ids = [r.id for r in baseline.rules]
+    assert len(ids) == len(set(ids))
+    for rule in baseline.rules:
+        assert split_path(rule.path)
+
+    dev = DeviceData(ip="192.0.2.10", type="RTU")
+    dev.description.vendor.id = "Schneider"
+    Sage._record_login(dev, "telnet", "Admin", "Telvent1!")
+    dev.extra["rtusetup_placeholders"] = ["RTU/NAME"]
+    results = {f.rule_id: f for f in compare_device(dev, baseline)}
+    assert results["sage.service.telnet.absent"].result == "fail"
+    assert results["sage.service.ftp.absent"].result == "pass"
+    assert results["sage.accounts.default-credentials"].result == "fail"
+    assert results["sage.accounts.default-credentials"].alert
+    assert results["sage.settings.placeholders"].result == "fail"
