@@ -58,7 +58,7 @@ def _module_info(iec_62439: dict | None = None) -> dict:
             "bridgePrior": "32768",
             "rstpNeighbourPortA": "0x00098e0a0b0c",
             "rstpNeighbourPortB": "0x000000000000",
-            "channel": "2",
+            "channel": "1",  # the index of the table is 0..1: Ch2
             "txPacket": "11",
             "rxPacket": "12",
             "filterCrcErrCnt": "1",
@@ -112,7 +112,8 @@ def test_process_snmp_data_rstp():
     assert ch1.redundancy.partner == "00:09:8E:0A:0B:0C"
     assert ch2.redundancy.role == "alternate"
     assert ch2.redundancy.partner == ""
-    # SipOptical table row of channel 2
+    # SipOptical table row of channel index 1 (Ch2)
+    assert ch1.statistics.ingress.packets is None
     assert ch2.statistics.ingress.packets == 12
     assert ch2.statistics.egress.packets == 11
     assert ch2.statistics.ingress.crc_errors == 1
@@ -145,6 +146,43 @@ def test_process_snmp_data_rstp():
     }
     assert unmapped["sip_ethernet"] == {"modCPUload": "12", "mallocSize": "2048"}
     assert unmapped["sip_optical"] == {"opMode": "switch", "bridgePrior": "32768"}
+
+
+def test_process_snmp_data_optical_channel_0():
+    info = _module_info()
+    info["sip_optical"]["channel"] = "0"
+    dev = DeviceData(ip="192.0.2.60")
+    unmapped = siprotec.process_snmp_data(dev, info, {}, timestamp=T0)
+    ifaces = {i.name: i for i in dev.interface}
+    assert ifaces["Ch1"].statistics.ingress.packets == 12
+    assert ifaces["Ch1"].description.model == "AFBR-5803"
+    assert ifaces["Ch1"].extra["transceiver"] == {"temperature": "41.5 C"}
+    assert ifaces["Ch2"].statistics.ingress.packets is None
+    assert ifaces["Ch2"].description.model == ""
+    assert unmapped["sip_optical"] == {"opMode": "switch", "bridgePrior": "32768"}
+
+
+def test_process_snmp_data_optical_channel_unknown():
+    info = _module_info()
+    info["sip_optical"]["channel"] = "2"  # not a channel index of the MIB (0..1)
+    dev = DeviceData(ip="192.0.2.60")
+    unmapped = siprotec.process_snmp_data(dev, info, {}, timestamp=T0)
+    ifaces = {i.name: i for i in dev.interface}
+    assert ifaces["Ch1"].statistics.ingress.packets is None
+    assert ifaces["Ch2"].statistics.ingress.packets is None
+    # The row is kept in extra
+    assert unmapped["sip_optical"] == {
+        "opMode": "switch",
+        "bridgePrior": "32768",
+        "channel": "2",
+        "txPacket": "11",
+        "rxPacket": "12",
+        "filterCrcErrCnt": "1",
+        "filterLenErrCnt": "0",
+        "vendor": "Avago",
+        "partNo": "AFBR-5803",
+        "temperature": "41.5 C",
+    }
 
 
 def test_process_snmp_data_prp():

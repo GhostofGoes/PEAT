@@ -568,6 +568,17 @@ def _sip_ethernet_statistics(sip_eth: dict, timestamp: datetime) -> NetworkStati
     return stats if found else None
 
 
+def _optical_channel(sip_optical: dict) -> int | None:
+    """
+    Position of the channel (0 = ``Ch1``, 1 = ``Ch2``) of the ``SipOptical``
+    table row: the ``channel`` index of the table is 0..1 in the MIB.
+    NOTE: snmp_walk() keys values by column name, so only the last row of the
+    table (the "channel" column says which) is known.
+    """
+    chan_num = _int(sip_optical.get("channel"))
+    return chan_num if chan_num in (0, 1) else None
+
+
 def _channel_interfaces(
     sip_eth: dict, sip_optical: dict, iec_62439: dict, timestamp: datetime
 ) -> tuple[list[Interface], Redundancy | None]:
@@ -589,11 +600,10 @@ def _channel_interfaces(
             iface.extra["optical_rx_level_mv"] = opt_level
         channels.append(iface)
 
-    # SipOptical per-channel table. NOTE: snmp_walk() keys values by column name,
-    # so only the last row of the table (the "channel" column says which) is known.
-    chan_num = _int(sip_optical.get("channel"))
-    if chan_num in (1, 2):
-        iface = channels[chan_num - 1]
+    # SipOptical per-channel table
+    chan_num = _optical_channel(sip_optical)
+    if chan_num is not None:
+        iface = channels[chan_num]
         stats = NetworkStatistics(
             timestamp=timestamp,
             ingress=NetworkTraffic(
@@ -810,7 +820,8 @@ def process_snmp_data(
     if master in ("primary", "secondary") and not dev.clock.source:
         dev.clock.source = "sntp"
 
-    # Unmapped SipEthernet resources and SipOptical RSTP bridge settings stay in extra
+    # Unmapped SipEthernet resources and SipOptical RSTP bridge settings stay in
+    # extra, and the SipOptical table row if its channel is unknown
     rest_eth = {
         k: v
         for k, v in sip_eth.items()
@@ -818,10 +829,12 @@ def process_snmp_data(
     }
     if rest_eth:
         unmapped["sip_ethernet"] = rest_eth
+    optical_mapped = _optical_channel(sip_optical) is not None
     rest_optical = {
         k: v
         for k, v in sip_optical.items()
-        if k not in _SIP_OPTICAL_TABLE and k not in ("rstpNeighbourPortA", "rstpNeighbourPortB")
+        if not (optical_mapped and k in _SIP_OPTICAL_TABLE)
+        and k not in ("rstpNeighbourPortA", "rstpNeighbourPortB")
     }
     if rest_optical:
         unmapped["sip_optical"] = rest_optical

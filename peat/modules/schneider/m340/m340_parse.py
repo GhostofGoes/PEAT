@@ -712,14 +712,14 @@ def get_type_string(var_type: str, sceptre: bool) -> str:
 DEFAULT_SNMP_COMMUNITIES: Final[frozenset[str]] = frozenset({"public", "private"})
 
 # Keys of the SNMP/FTP module dicts (m340_pull) that move to the data model
+# (the services are those of the device, the other keys those of the module)
+_SERVICE_KEYS: Final[tuple[str, ...]] = ("port_502", "web_server", "smtp_server")
 _MOVED_MODULE_KEYS: Final[tuple[str, ...]] = (
     "module_status",
     "mac_address",
     "fw_id",
     "hardware_id",
-    "port_502",
-    "web_server",
-    "smtp_server",
+    *_SERVICE_KEYS,
 )
 
 
@@ -876,18 +876,54 @@ def smtp_service(smtp: dict, timestamp=None) -> tuple[Service, Relationship | No
     return svc, rel
 
 
-def _find_module(dev: DeviceData, module_info: dict) -> DeviceData | None:
+def _slot(module_info: dict) -> str:
     slot = module_info.get("slot")
-    if slot is not None and str(slot) != "":
-        for mod in dev.module:
-            if mod.slot == str(slot):
-                return mod
-    product = _text(module_info.get("device", "")) or _text(module_info.get("model_name", ""))
-    if product:
-        for mod in dev.module:
-            if mod.description.product and mod.description.product == product:
-                return mod
-    return None
+    return str(slot) if slot is not None else ""
+
+
+def _product(module_info: dict) -> str:
+    return _text(module_info.get("device", "")) or _text(module_info.get("model_name", ""))
+
+
+def _match_modules(dev: DeviceData, entries: dict[str, dict]) -> dict[str, DeviceData | None]:
+    """
+    The module in ``dev.module`` that each module entry (``module_<slot>``,
+    ``device_<n>``) of the network-pulled data describes.
+
+    An entry matches the module in its slot. Otherwise, it matches by its
+    product (the ``Device`` of ``DINF``, the SNMP model name) only if exactly
+    one of the other modules has that product and no other entry has it. This
+    never mixes up the data of two modules of the same product (e.g. two
+    ``BMX NOE 0100`` in a rack).
+
+    Returns:
+        Entry key -> matched module, or :obj:`None` if no module matches (a
+        new module is created). Entries without a slot that match more than
+        one module, or that have neither a slot nor a product, are left out
+        (their data stays in ``dev.extra``).
+    """
+    matched: dict[str, DeviceData | None] = {}
+    by_product: dict[str, list[str]] = {}
+    for key, info in entries.items():
+        slot = _slot(info)
+        if not slot and not _product(info):
+            continue
+        matched[key] = next((m for m in dev.module if slot and m.slot == slot), None)
+        if matched[key] is None and _product(info):
+            by_product.setdefault(_product(info), []).append(key)
+
+    slot_matched = {id(m) for m in matched.values() if m is not None}
+    for product, keys in by_product.items():
+        candidates = [
+            m for m in dev.module if m.description.product == product and id(m) not in slot_matched
+        ]
+        if len(candidates) == 1 and len(keys) == 1:
+            matched[keys[0]] = candidates[0]
+        elif candidates:
+            for key in keys:
+                if not _slot(entries[key]):
+                    del matched[key]
+    return matched
 
 
 def process_network_config(dev: DeviceData, net_config: dict) -> dict:
@@ -899,6 +935,8 @@ def process_network_config(dev: DeviceData, net_config: dict) -> dict:
     - Port 502 (Modbus/TCP), web (HTTP) and SMTP counters -> ``Service.statistics``
     - LED table -> live LED :class:`~peat.data.models.Indicator` on the module
     - module status/MAC/firmware (SNMP, ``DINF``) -> ``dev.module[slot]``
+      (the module in the slot, or the only module with the product: see
+      ``_match_modules()``)
 
     Returns:
         The data that was not mapped, to be merged into ``dev.extra``
@@ -908,13 +946,17 @@ def process_network_config(dev: DeviceData, net_config: dict) -> dict:
 
     timestamp = utils.utc_now()
     remaining = {}
+    module_entries = {
+        key: value
+        for key, value in net_config.items()
+        if isinstance(value, dict) and (key.startswith("module_") or key.startswith("device_"))
+    }
+    matched_modules = _match_modules(dev, module_entries)
 
     for key, value in net_config.items():
         if key == "firmware_version":
             continue  # in dev.firmware.version (and the SNMP module's firmware)
-        if not isinstance(value, dict) or not (
-            key.startswith("module_") or key.startswith("device_")
-        ):
+        if key not in module_entries:
             remaining[key] = value
             continue
 
@@ -940,7 +982,15 @@ def process_network_config(dev: DeviceData, net_config: dict) -> dict:
             if rel:
                 dev.store("relationships", rel)
 
-        module = _find_module(dev, module_info)
+        if key not in matched_modules:
+            # The module can't be told apart from other modules with the same
+            # product: keep its data (MAC, firmware ID, ...) in dev.extra
+            unmapped = {k: v for k, v in module_info.items() if k not in _SERVICE_KEYS}
+            if unmapped:
+                remaining[key] = unmapped
+            continue
+
+        module = matched_modules[key]
         new_module = module is None
         if new_module:
             module = DeviceData()

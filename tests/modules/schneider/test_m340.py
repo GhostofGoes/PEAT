@@ -147,6 +147,59 @@ def test_process_network_config_creates_missing_module():
     assert dev.module[0].health == "normal"
 
 
+def _two_noe_dinf_entries() -> dict:
+    # DINF entries have no slot: two modules of the same product
+    return {
+        "device_0": {
+            "fw_loc": "0",
+            "hardware_id": "0x0102",
+            "fw_id": "0x0A21",
+            "device": "BMX NOE 0100",
+            "mac_address": "00:80:F4:0A:0B:0C",
+        },
+        "device_1": {
+            "fw_loc": "0",
+            "hardware_id": "0x0103",
+            "fw_id": "0x0B30",
+            "device": "BMX NOE 0100",
+            "mac_address": "00:80:F4:0A:0B:0D",
+        },
+    }
+
+
+def test_process_network_config_same_product_modules_in_project():
+    dev = DeviceData(ip="192.0.2.20")
+    for slot in ("2", "3"):
+        noe = DeviceData(slot=slot)
+        noe.description.product = "BMX NOE 0100"
+        dev.store("module", noe, lookup="slot")
+
+    remaining = m340_parse.process_network_config(dev, _two_noe_dinf_entries())
+
+    # Which DINF entry is which slot is unknown: no module gets the data of
+    # another one, and the data of both stays in dev.extra
+    assert [(m.slot, m.mac, m.firmware.id, m.hardware.id) for m in dev.module] == [
+        ("2", "", "", ""),
+        ("3", "", "", ""),
+    ]
+    assert remaining == _two_noe_dinf_entries()
+
+
+def test_process_network_config_same_product_modules_pulled_only():
+    dev = DeviceData(ip="192.0.2.20")
+    remaining = m340_parse.process_network_config(dev, _two_noe_dinf_entries())
+
+    # Each DINF entry is its own module
+    assert [(m.description.product, m.mac, m.firmware.id, m.hardware.id) for m in dev.module] == [
+        ("BMX NOE 0100", "00:80:F4:0A:0B:0C", "0x0A21", "0x0102"),
+        ("BMX NOE 0100", "00:80:F4:0A:0B:0D", "0x0B30", "0x0103"),
+    ]
+    assert remaining == {
+        "device_0": {"fw_loc": "0", "device": "BMX NOE 0100"},
+        "device_1": {"fw_loc": "0", "device": "BMX NOE 0100"},
+    }
+
+
 def test_snmp_project_config_and_redaction():
     device_info = {
         "network_configurations": {

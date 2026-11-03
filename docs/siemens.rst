@@ -82,7 +82,9 @@ pools) and the RSTP bridge settings are kept in ``extra.module_<sysName>``.
 
 .. note::
   ``snmp_walk()`` keys the values of a walk by object name, so only the last row of the
-  ``SipOptical`` per-channel table (the ``channel`` column says which channel) is available.
+  ``SipOptical`` per-channel table is available. Its ``channel`` index (``0`` or ``1`` in the
+  MIB) says which channel it is: ``0`` is ``Ch1`` and ``1`` is ``Ch2``. A row with another
+  index is kept in ``extra.module_<sysName>.sip_optical``.
 
 .. note::
   The SNMP functionality currently does not work reliably on the 7SJ64, since the SNMP server and configuration varies significantly between the 7SJ61 and 7SJ64. Development was started on a 7SJ61, and due to time constraints we were not able to debug and modify the functionality to work reliably on the 7SJ64.
