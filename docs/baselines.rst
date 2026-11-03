@@ -167,7 +167,7 @@ Parse summaries and ``device-data-summary.json`` files do not have all device da
 ------------------------
 Creates baselines from device data. With ``--scope device`` (default), one baseline per device; with ``--scope device_type``, one profile of all the given devices (which must have the same vendor and model). Options: ``--kind`` (default ``first_observed``), ``--baseline-id``, ``--baseline-name``, ``--baseline-version`` (default ``1``), ``--author`` (default: the OS user name) and ``--description``. The baselines are written to ``-w/--write-file`` (a JSON list if there are several), or to ``<run dir>/baselines/baseline-<device id>.json``. ``-E`` also prints them.
 
-Default IDs are ``<device id>@<observation time>`` (e.g. ``192.0.2.10@20261030T120000Z``) and ``<vendor>-<model>-typical``. A device baseline applies to the device with the same ``id`` (normally its IP address, else its host name, name or MAC address); edit the ``selector`` to match on other fields, e.g. the serial number.
+Default IDs are ``<device id>@<observation time>`` (e.g. ``192.0.2.10@20261030T120000Z``) and ``<vendor>-<model>-typical`` (e.g. ``SEL-2032-typical``, with the case of the vendor ID and model). A device baseline applies to the device with the same ``id`` (normally its IP address, else its host name, name or MAC address); edit the ``selector`` to match on other fields, e.g. the serial number.
 
 ``peat baseline-compare``
 -------------------------
@@ -264,6 +264,10 @@ Example KQL queries:
 
    # Settings changed from the factory default
    event.action : baseline-changed-from-default
+
+   # Units that differ from a "typical SEL-2032" profile (baseline.id is case-sensitive:
+   # the default ID <vendor>-<model>-typical keeps the case of the vendor ID and model)
+   baseline.id : "SEL-2032-typical" and baseline.finding.result : fail
 
 
 Python API

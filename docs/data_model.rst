@@ -57,7 +57,7 @@ Modules MUST aggregate high-volume observations (log lines, connection logs, ARP
 
 Dates and times
 ---------------
-Times reported by a device without a timezone ("naive" datetimes) are device-local time, the same convention as ``Event.created``: modules store them as reported (they never guess UTC). When the device's timezone is known (``DeviceData.geo.timezone``), annotation localizes the times of the new models (relationships, processes, time sources, statistics) with it, otherwise they are assumed to be UTC. ``Clock.time`` uses ``Clock.utc_offset`` when it is set. Times observed by PEAT itself (``NetworkStatistics.timestamp``, ``Indicator.timestamp``, ``Clock.observed``) MUST be timezone-aware UTC (``utils.utc_now()``). Sorting compares naive and aware datetimes safely (naive values are compared as UTC).
+Times reported by a device without a timezone ("naive" datetimes) are device-local time, the same convention as ``Event.created``: modules store them as reported (they never guess UTC). When the device's timezone is known (``DeviceData.geo.timezone``), annotation localizes the times of the new models (relationships, processes, time sources, statistics) with it (resolved with the system time zone database, else with the one bundled with ``python-dateutil``, e.g. on Windows), otherwise they are assumed to be UTC. ``Clock.time`` uses ``Clock.utc_offset`` when it is set. Times observed by PEAT itself (``NetworkStatistics.timestamp``, ``Indicator.timestamp``, ``Clock.observed``) MUST be timezone-aware UTC (``utils.utc_now()``). Sorting compares naive and aware datetimes safely (naive values are compared as UTC).
 
 Secrets
 -------
@@ -144,7 +144,7 @@ The identity of a relationship is the *edge*, not how it was observed. ``Relatio
 - the remote identity: ``remote.ip``, else ``remote.mac``, ``remote.hostname``, ``remote.name``, ``remote.address``;
 - ``local.id`` (the module, for relationships stored on ``DeviceData.module``) and ``local.serial_port``;
 - ``local.interface``, only for ``tunnel`` relationships (two tunnels to one gateway over different local interfaces are two relationships);
-- the protocol addresses and VLAN, only for L2/serial edges without an IP and port;
+- the protocol addresses, only for edges without a remote IP and server port, and the VLAN, only for edges without a remote IP (L2 and serial edges);
 - ``reference`` (IEC 61850 stream reference).
 
 ``transport``, ``local.interface`` (except for tunnels), ``local.ip``, roles and ``direction`` are attributes that merge. A configured DNP3 master and the socket-table sessions from it are therefore ONE record with ``evidence={"config", "netstat"}``. Several logical peers configured behind one edge (e.g. remote devices behind one gateway IP address and port) are also one relationship: modules combine them before storing it (e.g. ``extra["remote_devices"]`` of SEL RTAC client connections).
