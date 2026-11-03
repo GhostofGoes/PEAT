@@ -8,6 +8,7 @@ and all data is synthetic.
 
 import json
 import threading
+import time
 
 import paramiko
 import pytest
@@ -92,6 +93,16 @@ def _relay_lines(relay: FakeSELRelay) -> list[str]:
     passwords = {p for p in relay.passwords.values() if p}
     lines = [line.decode("latin-1") for line in relay.lines]
     return [line for line in lines if line and line not in passwords]
+
+
+def _wait_until(condition, timeout: float = 5.0) -> bool:
+    """Wait for the fake RTAC's and relay's threads to catch up (slow CI runners)."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.01)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +302,9 @@ def test_sel_server_session(rtac_server, transport):
     rtac = server.rtacs[0]
     relay = rtac.relays[1]
     # The RTAC's dialog: ACC, WHO, PORT 1, and QUI after the termination string
-    assert rtac.commands == ["ACC", "WHO", "PORT 1", "QUI"]
+    assert _wait_until(lambda: rtac.commands == ["ACC", "WHO", "PORT 1", "QUI"]), rtac.commands
     # The relay got QUIT (level 0), not EXIT
-    assert _relay_lines(relay)[-1] == "quit"
+    assert _wait_until(lambda: _relay_lines(relay)[-1:] == ["quit"]), _relay_lines(relay)
     assert "exit" not in _relay_lines(relay)
     # The termination string came after the idle time, and ended the connection
     assert rtac.terminations == 1
@@ -630,12 +641,13 @@ def test_access_point_raw_tcp_passes_0xff(rtac_server):
         tn.comm.write_raw(b"\xff\r\n")
 
     rtac = server.rtacs[0]
+    # The relay gets QUIT last (the RTAC forwards it on another thread)
+    assert _wait_until(lambda: _relay_lines(relay)[-1:] == ["quit"]), _relay_lines(relay)
     assert b"\xff\r\n" in rtac.received
     assert b"\xff\xff" not in rtac.received
     # An access point has no SEL server dialog or termination string
     assert rtac.commands == []
     assert rtac.terminations == 0
-    assert _relay_lines(relay)[-1] == "quit"
 
 
 def test_access_point_with_rtac_login(rtac_server):
