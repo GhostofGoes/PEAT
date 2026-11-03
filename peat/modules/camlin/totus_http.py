@@ -1047,7 +1047,9 @@ def store_time_source(dev: DeviceData, source: TimeSource) -> None:
 def openvpn_remote_relationship(profile: dict, remote: dict) -> Relationship | None:
     """
     ``Relationship(type="tunnel", protocol="openvpn")`` to an OpenVPN server
-    configured as a ``remote`` of an OpenVPN (client) profile.
+    configured as a ``remote`` of an OpenVPN (client) profile. The ``proto`` of
+    the remote is the ``transport`` (``udp``/``tcp``), and is kept in
+    ``extra["proto"]`` if it says more (e.g. ``udp6``, ``tcp-client``).
     """
     host = str(remote.get("host") or "").strip()
     if not host:
@@ -1063,21 +1065,22 @@ def openvpn_remote_relationship(profile: dict, remote: dict) -> Relationship | N
     if port is not None and 0 < port <= 65535:
         endpoint.port = port
 
-    transport = str(remote.get("proto") or remote.get("protocol") or "").lower()
-    transport = {"tcp-client": "tcp", "udp4": "udp", "tcp4-client": "tcp"}.get(
-        transport, transport
-    )
+    # OpenVPN "--proto": udp, udp4, udp6, tcp-client, tcp4-client, tcp6-client, ...
+    proto = str(remote.get("proto") or remote.get("protocol") or "").strip()
+    transport = proto.lower()[:3] if proto.lower()[:3] in ("tcp", "udp") else ""
 
     rel = Relationship(
         type="tunnel",
         protocol="openvpn",
-        transport=transport if transport in ("tcp", "udp") else "",
+        transport=transport,
         direction="egress",  # the device connects to its configured remotes
         local=RelationshipEndpoint(role="client"),
         remote=endpoint,
         evidence={"config"},
     )
 
+    if proto and proto.lower() != transport:
+        rel.extra["proto"] = proto  # e.g. the IP version of udp6, or an unknown value
     name = profile.get("name") or profile.get("id")
     if name not in (None, ""):
         rel.extra["profile"] = str(name)

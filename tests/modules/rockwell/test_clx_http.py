@@ -211,6 +211,37 @@ def test_clxhttp_process_network():
     assert "192.0.2.1" in dev.related.ip
 
 
+def test_clxhttp_process_network_address_bound_listeners():
+    dev = DeviceData(ip="192.0.2.10")
+    dev.store("interface", Interface(name="Ethernet Port 1", ip="192.0.2.10"))
+    info = {
+        "udp_table": [
+            {"Local Address": "0.0.0.0", "Local Port": "2222"},
+            {"Local Address": "192.0.2.10", "Local Port": "161"},
+            {"Local Address": "192.0.2.10", "Local Port": "bogus"},
+        ],
+        "tcp_connections": [
+            {
+                "Local Address": "192.0.2.10",
+                "Local Port": "80",
+                "Remote Address": "0.0.0.0",
+                "Remote Port": "0",
+                "State": "LISTEN",
+            },
+        ],
+    }
+    ClxHTTP.process_network(dev, info)
+
+    services = {(s.port, s.transport, s.listen_address) for s in dev.service}
+    assert services == {
+        (2222, "udp", ""),
+        (161, "udp", "192.0.2.10"),
+        (80, "tcp", "192.0.2.10"),
+    }
+    assert {s.port for s in dev.interface[0].services} == {80, 161}
+    assert not dev.relationships
+
+
 def test_clxhttp_process_network_subnet_mask_and_unknown_interface():
     dev = DeviceData(ip="192.0.2.10")
     dev.store("interface", Interface(name="SNMP iface", ip="192.0.2.10", mac="00:00:BC:00:00:0B"))

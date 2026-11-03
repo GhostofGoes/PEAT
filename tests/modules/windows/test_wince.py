@@ -143,3 +143,15 @@ def test_helpers():
     proc = wince.process_from_pillage({"Process Name": "x.exe", "PID": "abc"})
     assert proc.pid is None
     assert proc.extra == {"pid_raw": "abc"}
+
+
+def test_extra_keys():
+    """Multi-word keys of the pillage results are snake_case extra keys."""
+    proc = wince.process_from_pillage(
+        {"Process Name": "x.exe", "Base Address": "0x10000", "HeapSize": 4, "CPU Time": 1}
+    )
+    assert proc.extra == {"base_address": "0x10000", "heap_size": 4, "cpu_time": 1}
+    file_obj = wince.file_from_pillage(
+        {"Name": "\\A\\b.txt", "Type": "File", "Last Write Time": "t", "Size (KB)": 1}
+    )
+    assert file_obj.extra == {"last_write_time": "t", "size_kb": 1}

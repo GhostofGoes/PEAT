@@ -404,12 +404,15 @@ class ClxHTTP(HTTP):
 
     @classmethod
     def _make_svc(cls, dev: DeviceData, svc_info: dict, transport: str) -> None:
-        port = svc_info.get("Local Port")
+        port = _to_counter(svc_info.get("Local Port"))
 
-        if not port:
+        if not port or port > 65535:
             return
 
-        port = int(port)
+        # Address the socket is bound to, if it is bound to one (not 0.0.0.0)
+        listen_address = str(svc_info.get("Local Address") or "").strip()
+        if not utils.is_ip(listen_address) or listen_address in ("0.0.0.0", "::"):
+            listen_address = ""
 
         _protocol_lookups = {
             68: "bootp",
@@ -443,9 +446,17 @@ class ClxHTTP(HTTP):
             # service because the matching logic is flawed and thinks
             # it's a duplicate or something.
             new_service = Service(
-                port=port, protocol=protocol_name, status="open", transport=transport
+                port=port,
+                protocol=protocol_name,
+                status="open",
+                transport=transport,
+                listen_address=listen_address,
             )
-            dev.store("service", new_service)
+            dev.store(
+                "service",
+                new_service,
+                interface_lookup={"ip": listen_address} if listen_address else None,
+            )
 
     @classmethod
     def statistics_from_table(
@@ -506,6 +517,7 @@ class ClxHTTP(HTTP):
         - ``ip_statistics``, ``icmp_statistics``, ``tcp_statistics``,
           ``udp_statistics``: ``DeviceData.protocol_statistics``
         - ``udp_table`` and LISTEN rows of ``tcp_connections``: ``Service``
+          (with the ``listen_address`` of sockets bound to one address)
         - other ``tcp_connections`` rows: ``Relationship`` (``evidence={"netstat"}``)
         - ``arp_table``: ``Relationship(type="neighbor_of", evidence={"arp"})``
         - ``ip_routes``: ``Route`` (and subnet masks of the interfaces)
@@ -596,19 +608,14 @@ class ClxHTTP(HTTP):
                     setattr(stats, key, value)
                 dev.store("protocol_statistics", stats)
 
-        # udp_table: listening ports (0.0.0.0-only), infer service names
+        # udp_table: listening ports, infer service names
         for udp in info.get("udp_table", []):
             dev.related.ip.add(udp.get("Local Address"))
 
-            if udp.get("Local Address") == "0.0.0.0" and udp.get("Local Port"):
+            if udp.get("Local Port"):
                 cls._make_svc(dev, udp, "udp")
-            elif udp.get("Local Port"):
-                try:
-                    dev.related.ports.add(int(udp["Local Port"]))
-                except Exception:
-                    pass
 
-        # tcp_connections: listening ports (0.0.0.0-only), infer service names
+        # tcp_connections: listening ports, infer service names
         # The services are added BEFORE the connections, so Relationship.annotate()
         # can infer the direction of the connections from the listening ports.
         connections = []
@@ -616,7 +623,7 @@ class ClxHTTP(HTTP):
             dev.related.ip.add(conn.get("Local Address"))
             dev.related.ip.add(conn.get("Remote Address"))
 
-            if conn.get("State") == "LISTEN" and conn.get("Local Address") == "0.0.0.0":
+            if conn.get("State") == "LISTEN":
                 cls._make_svc(dev, conn, "tcp")
                 continue
 
@@ -625,8 +632,7 @@ class ClxHTTP(HTTP):
                     dev.related.ports.add(int(conn["Local Port"]))
                 except Exception:
                     pass
-            if conn.get("State") != "LISTEN":
-                connections.append(conn)
+            connections.append(conn)
 
         # Other tcp_connections rows: one relationship per peer and server port,
         # "count" is the number of connections in the table.

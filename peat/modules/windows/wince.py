@@ -8,6 +8,7 @@ Authors
 """
 
 import json
+import re
 from pathlib import Path, PureWindowsPath
 
 from peat import DeviceData, DeviceModule, Interface, Service, datastore, utils
@@ -29,6 +30,15 @@ def _first(data: dict, keys: tuple[str, ...]) -> object:
         if data.get(key) not in (None, ""):
             return data[key]
     return None
+
+
+def _extra_key(key: object) -> str:
+    """
+    snake_case ``extra`` key for a key of the pillage results, which are
+    words separated by spaces (e.g. ``Base Address`` -> ``base_address``).
+    """
+    words = [utils.convert_to_snake_case(w) for w in re.split(r"[^0-9A-Za-z]+", str(key))]
+    return "_".join(w for w in words if w) or str(key)
 
 
 def _to_port(value: object) -> int | None:
@@ -66,7 +76,7 @@ def process_from_pillage(proc_info: dict) -> HostProcess | None:
     used_keys = {"Process Name", *_PID_KEYS, *_EXECUTABLE_KEYS}
     for key, value in proc_info.items():
         if key not in used_keys and value not in (None, "", []):
-            proc.extra[utils.convert_to_snake_case(key)] = value
+            proc.extra[_extra_key(key)] = value
 
     return proc
 
@@ -101,7 +111,7 @@ def file_from_pillage(file_info: dict, device_id: str = "") -> File | None:
 
     for key, value in file_info.items():
         if key not in ("Name", "Type", "SHA256") and value not in (None, ""):
-            file_obj.extra[utils.convert_to_snake_case(key)] = value
+            file_obj.extra[_extra_key(key)] = value
 
     return file_obj
 

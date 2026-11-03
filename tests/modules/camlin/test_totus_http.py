@@ -321,6 +321,27 @@ def test_openvpn_relationships(dev):
     assert "vpn.example.com" in dev.related.hosts
 
 
+@pytest.mark.parametrize(
+    ("proto", "transport", "extra_proto"),
+    [
+        ("udp", "udp", None),
+        ("TCP", "tcp", None),
+        ("udp4", "udp", "udp4"),
+        ("udp6", "udp", "udp6"),
+        ("tcp-client", "tcp", "tcp-client"),
+        ("tcp6-client", "tcp", "tcp6-client"),
+        ("sctp", "", "sctp"),
+    ],
+)
+def test_openvpn_remote_proto(proto, transport, extra_proto):
+    rel = totus_http.openvpn_remote_relationship(
+        {"name": "p"}, {"host": "192.0.2.1", "proto": proto}
+    )
+    assert rel.transport == transport
+    assert rel.extra.get("proto") == extra_proto
+    assert rel.extra["profile"] == "p"
+
+
 def test_dnp3_channels(dev):
     TotusHTTP.process_dnp3_channels(
         dev,
