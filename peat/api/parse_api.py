@@ -101,10 +101,18 @@ def parse(
     parse_results = []
     parsed_devices = []
 
-    # Devices that existed before this parse. Devices created during the parse
-    # (e.g. one device per IED in an IEC 61850 SCD file, or the extra devices
-    # created by multi-device modules) are pushed to Elasticsearch as well.
-    existing = {id(d) for d in datastore.objects}
+    # Devices created by a successful parse of a file besides the device it returned
+    # (e.g. one device per IED in an IEC 61850 SCD file) are pushed to Elasticsearch
+    # as well. Devices left behind by a failed parse are not: their files are not
+    # exported either.
+    created: set[int] = set()
+
+    def _parse_file(source: Path | str, dev_cls: type[DeviceModule]) -> DeviceData | None:
+        before = {id(d) for d in datastore.objects}
+        parsed = parse_data(source, dev_cls)
+        if parsed is not None:
+            created.update(id(d) for d in datastore.objects if id(d) not in before)
+        return parsed
 
     # Iterate over the user-provided path arguments
     # TODO: breakup this logic a bit
@@ -125,7 +133,7 @@ def parse(
             or Path(path).is_file()
             or (Path(path).is_dir() and resolved_types[0].can_parse_dir)
         ):
-            dev = parse_data(path, resolved_types[0])
+            dev = _parse_file(path, resolved_types[0])
 
             parsed_devices.append(dev)
             parse_results.append(
@@ -160,7 +168,7 @@ def parse(
 
             for dev_cls in resolved_types:
                 for file_path in find_parsable_files(all_files, dev_cls):
-                    dev = parse_data(file_path, dev_cls)
+                    dev = _parse_file(file_path, dev_cls)
 
                     parsed_devices.append(dev)
                     parse_results.append(
@@ -179,7 +187,7 @@ def parse(
     if state.elastic:
         for d_dev in datastore.objects:
             # skip any not part of this parse (neither parsed nor created by it)
-            if d_dev not in parsed_devices and id(d_dev) in existing:
+            if d_dev not in parsed_devices and id(d_dev) not in created:
                 log.trace(f"Skipping device not part of parse: {d_dev.get_id()}")
                 continue
             d_dev.export_to_elastic()

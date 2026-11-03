@@ -135,3 +135,61 @@ def test_parse_api_pushes_devices_created_during_parse(test_dir, tmp_path, mocke
     assert summary["num_parse_successes"] == 1
     assert sorted(pushed) == ["192.0.2.10", "192.0.2.11"]
     assert old_dev.ip not in pushed
+
+
+def _push_config(tmp_path, mocker) -> list[str]:
+    """Output to tmp_path, an empty datastore, and a fake Elasticsearch push."""
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    mocker.patch.dict(state["CONFIG"], {"elastic": mocker.MagicMock(), "error": False})
+    pushed = []
+    mocker.patch.object(
+        DeviceData,
+        "export_to_elastic",
+        autospec=True,
+        side_effect=lambda dev, *args, **kwargs: pushed.append(dev.get_id()) or True,  # noqa: ARG005
+    )
+    return pushed
+
+
+def test_parse_api_does_not_push_devices_of_failed_parses(test_dir, tmp_path, mocker):
+    """Devices left behind by a failed parse are not pushed (their files aren't written)."""
+    pushed = _push_config(tmp_path, mocker)
+
+    def fake_parse_data(source, dev_cls):  # noqa: ARG001
+        if source.name == "dnp3-client.xml":
+            datastore.get("failed_1", "id")  # created, then the parse fails
+            return None
+        datastore.get("192.0.2.11")  # created as a side effect of a successful parse
+        return datastore.get("192.0.2.10")
+
+    mocker.patch("peat.api.parse_api.parse_data", side_effect=fake_parse_data)
+    data = test_dir / "modules" / "sandia" / "data_files"
+    summary = parse(
+        [data / "bp" / "dnp3-client.xml", data / "ep" / "bacnet-client.xml"], ["SCEPTRE"]
+    )
+    assert summary["num_parse_successes"] == 1
+    assert summary["num_parse_failures"] == 1
+    assert "failed_1" in [d.get_id() for d in datastore.objects]
+    assert sorted(pushed) == ["192.0.2.10", "192.0.2.11"]
+
+
+def test_parse_api_does_not_push_device_of_failed_sel_cid_parse(tmp_path, mocker):
+    """SELRelay creates the device of a CID file before it fails to parse the file."""
+    pushed = _push_config(tmp_path, mocker)
+    cid = tmp_path / "in" / "SET_61850.CID"
+    cid.parent.mkdir()
+    cid.write_bytes(b"")
+
+    summary = parse([cid], ["SELRelay"])
+    assert summary["num_parse_failures"] == 1
+    assert [d.get_id() for d in datastore.objects] == ["selrelay_set_61850"]
+    assert pushed == []
