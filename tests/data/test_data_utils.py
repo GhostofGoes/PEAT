@@ -244,6 +244,27 @@ def test_dedupe_model_list():
     assert iface.services == [Service(port=80, protocol="http")]
 
 
+def test_dedupe_model_list_keeps_services_of_other_transports():
+    """tcp/20000 and udp/20000 are two services; one transport is merged (R5-2)."""
+    tcp = Service(port=20000, transport="tcp", status="open")
+    udp = Service(port=20000, transport="udp", status="open")
+    assert dedupe_model_list([tcp, udp]) == [tcp, udp]
+
+    deduped = dedupe_model_list(
+        [
+            Service(port=20000, transport="tcp", status="open"),
+            Service(port=20000, transport="udp", status="open"),
+            Service(port=20000, transport="tcp", process_name="dnp3d"),
+        ]
+    )
+    assert deduped == [
+        Service(port=20000, transport="tcp", status="open", process_name="dnp3d"),
+        Service(port=20000, transport="udp", status="open"),
+    ]
+    # a service without a transport is still merged into one with the same port
+    assert len(dedupe_model_list([Service(port=20000), tcp, udp])) == 2
+
+
 def test_merge_models():
     """assert there are no duplicates in various places."""
     assert merge_models(None, None) is None

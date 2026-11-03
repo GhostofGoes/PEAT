@@ -503,6 +503,7 @@ from peat.data.models import (  # noqa: E402
     TimeSource,
     User,
     Vlan,
+    move_out_of_range_ints,
     process_file,
 )
 from peat.data.validators import ECS_EVENT_VALUES  # noqa: E402
@@ -648,6 +649,93 @@ def test_routes_via_one_store_per_gateway(mocker):
         "wireless",
     )
     assert edges["198.51.100.1"].evidence == {"config", "routing_table"}
+
+
+def test_no_derived_relationships_to_the_device_itself():
+    """
+    Route gateways and time sources that are a loopback address or an address
+    of the device are not peers; the routes and time sources are kept (R5-5).
+    """
+    dev = DeviceData(ip="192.0.2.10", module=[DeviceData(slot="1", ip="203.0.113.10")])
+    dev.store("interface", Interface(name="port1", ip="192.0.2.10"))
+    dev.store("interface", Interface(name="port2", ip="198.51.100.10"))
+    for destination, gateway in [
+        ("192.0.2.0/24", "192.0.2.10"),  # connected route via the device's own IP
+        ("198.51.100.0/24", "198.51.100.10"),  # via the IP of another interface
+        ("203.0.113.0/24", "203.0.113.10"),  # via the IP of a module
+        ("127.0.0.1/32", "127.0.0.1"),  # GE UR lo0 route
+        ("127.0.0.0/8", "127.0.0.2"),
+        ("::1/128", "::1"),
+        ("0.0.0.0/0", "192.0.2.1"),
+    ]:
+        dev.store("routes", Route(destination=destination, gateway=gateway))
+    for address in ["127.127.1.0", "127.127.22.0", "192.0.2.10", "::1", "192.0.2.5"]:
+        dev.clock.sources.append(TimeSource(protocol="ntp", address=address))
+
+    dev.populate_fields()
+    assert {(r.type, r.remote.ip) for r in dev.relationships} == {
+        ("routes_via", "192.0.2.1"),
+        ("syncs_time_from", "192.0.2.5"),
+    }
+    assert len(dev.routes) == 7
+    assert len(dev.clock.sources) == 5
+
+
+def _ints_outside_es_long(doc, path: str = "") -> list[str]:
+    if isinstance(doc, dict):
+        return [p for k, v in doc.items() for p in _ints_outside_es_long(v, f"{path}.{k}")]
+    if isinstance(doc, list):
+        return [p for v in doc for p in _ints_outside_es_long(v, f"{path}[]")]
+    if isinstance(doc, int) and not isinstance(doc, bool) and not -(2**63) <= doc < 2**63:
+        return [path]
+    return []
+
+
+def test_integers_elasticsearch_cannot_hold_move_to_extra():
+    """
+    Integers outside the range of their Elasticsearch type move to
+    ``extra["out_of_range"]`` as text in annotate(); the items are kept (R5-10).
+    """
+    big = 2**64
+    dev = DeviceData(ip="192.0.2.10")
+    proc = HostProcess(name="dropbear", pid=big, priority=-(2**63) - 1, threads_count=4)
+    proc.parent.pid = big
+    dev.store("processes", proc)
+    assert (proc.pid, proc.priority, proc.parent.pid, proc.threads_count) == (None, None, None, 4)
+    assert proc.extra["out_of_range"] == {
+        "pid": str(big),
+        "priority": str(-(2**63) - 1),
+        "parent.pid": str(big),
+    }
+
+    # Added without store(): annotated by export()/elastic()
+    dev.service.append(Service(port=22, transport="tcp", process_pid=big))
+    dev.routes.append(Route(destination="0.0.0.0/0", gateway="192.0.2.1", metric=big))
+    dev.clock.sources.append(TimeSource(protocol="ntp", address="192.0.2.5", priority=big))
+    dev.logic.tasks.append(LogicTask(name="main", priority=big, scan_count=2**63 - 1))
+    dev.software.append(Package(name="runtime", size=big))
+    dev.relationships.append(
+        Relationship(remote=RelationshipEndpoint(ip="192.0.2.9"), count=big, evidence={"log"})
+    )
+
+    assert _ints_outside_es_long(dev.elastic()) == []
+    assert _ints_outside_es_long(dev.export()) == []
+    assert dev.service[0].extra == {"out_of_range": {"process_pid": str(big)}}
+    assert dev.routes[0].extra == {"out_of_range": {"metric": str(big)}}
+    assert dev.routes[0].gateway == "192.0.2.1"
+    assert dev.clock.sources[0].extra == {"out_of_range": {"priority": str(big)}}
+    assert dev.logic.tasks[0].extra == {"out_of_range": {"priority": str(big)}}
+    assert dev.logic.tasks[0].scan_count == 2**63 - 1  # the largest long is kept
+    assert dev.software[0].extra == {"out_of_range": {"size": str(big)}}
+    assert dev.relationships[0].count is None
+    assert dev.relationships[0].extra == {"out_of_range": {"count": str(big)}}
+    assert [p.name for p in dev.processes] == ["dropbear"]
+
+    # Fields with a smaller Elasticsearch type (elastic_type) use its range
+    iface = Interface(name="eth0", mtu=2**31, speed=2**31 - 1)
+    move_out_of_range_ints(iface, iface.extra)
+    assert (iface.mtu, iface.speed) == (None, 2**31 - 1)
+    assert iface.extra == {"out_of_range": {"mtu": str(2**31)}}
 
 
 class _CountingList(list):

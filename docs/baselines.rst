@@ -58,7 +58,7 @@ Snapshots and rules
 
 Baselines that captured the complete device state also report new values (e.g. an ``os.name`` the snapshot does not have) and the items of lists the snapshot does not have (e.g. the first user or service of a device that had none) as ``unexpected``: ``first_observed`` and ``previous_observed`` baselines, and baselines with ``complete: true`` (:attr:`Baseline.complete <peat.data.models.Baseline.complete>`). ``peat baseline-create`` (:func:`~peat.api.baseline_api.create_baseline`) sets ``complete`` for the baselines it creates with the kinds ``first_observed``, ``previous_observed`` and ``approved``, and the flag stays when the ``kind`` of a saved baseline is changed. Other baselines (``engineer_provided``, ``vendor_recommended`` and ``factory_default`` snapshots, and hand-written baselines without ``complete: true``) only check the values they specify, so a partial "golden" snapshot can hold just the settings that matter. They still report new items of the lists they have.
 
-List items are aligned by their identity, e.g. services by protocol and port, users by name, files by path (``LIST_KEYS`` in :mod:`peat.data.baseline`), so the order of items never matters. Items without identity values (e.g. an interface with neither name nor address) are aligned by the values that are compared, never by ignored values such as their ``statistics``. A list that only one side has (empty lists are not exported) is compared item by item with an empty list, so each item is reported on its own and the noise rules below apply (e.g. a device whose only ARP neighbor is gone has no findings).
+List items are aligned by their identity, e.g. services by protocol, port and transport, users by name, files by path (``LIST_KEYS`` in :mod:`peat.data.baseline`), so the order of items never matters. Items without identity values (e.g. an interface with neither name nor address) are aligned by the values that are compared, never by ignored values such as their ``statistics``. A list that only one side has (empty lists are not exported) is compared item by item with an empty list, so each item is reported on its own and the noise rules below apply (e.g. a device whose only ARP neighbor is gone has no findings).
 
 **Rules** (``rules``, :class:`~peat.data.models.BaselineRule`): constraints a snapshot cannot express, such as absence, negation, membership, patterns or ranges. Every enabled rule produces one finding with ``result`` ``pass``, ``fail``, ``unknown`` (no value to check) or ``error`` (e.g. a non-numeric value for ``min``), and ``difference: mismatch`` when it fails. A rule has a ``path``, an ``operator`` and a ``value``, plus ``id``, ``name``, ``category``, ``severity`` (default ``medium``), ``alert``, ``reason``, ``reference`` and ``standards``. ``reason`` may use ``{expected}``, ``{actual}`` and ``{path}``.
 
@@ -76,7 +76,7 @@ Paths address the exported device data (the same structure as ``device-data-full
    iec61850.publications[type=GOOSE].security
    clock.utc_offset
 
-Finding paths of snapshot differences use the identity of list items, e.g. ``service[protocol=http,port=80]`` or ``files[path=/SETTINGS/SET_1.TXT].hash.sha256``. File paths are always compared and written with ``/`` separators, whatever the OS that created the baseline or the device data (e.g. a baseline created on Linux can be compared on Windows).
+Finding paths of snapshot differences use the identity of list items (only its non-empty fields), e.g. ``service[protocol=http,port=80,transport=tcp]`` or ``files[path=/SETTINGS/SET_1.TXT].hash.sha256``. File paths are always compared and written with ``/`` separators, whatever the OS that created the baseline or the device data (e.g. a baseline created on Linux can be compared on Windows).
 
 Rule operators
 --------------
@@ -191,10 +191,10 @@ Example output:
 .. code-block:: text
 
    Device 192.0.2.10 (baselines: 192.0.2.10@20261030T120000Z)
-   SEVERITY  RESULT   DIFFERENCE  PATH                            REASON
-   high      fail     change      firmware.version                firmware.version changed compared to baseline '192.0.2.10 first_observed'
-   medium    fail     missing     service[protocol=ftp,port=21]   service[protocol=ftp,port=21] missing compared to baseline '192.0.2.10 first_observed'
-   medium    fail     unexpected  service[protocol=http,port=80]  service[protocol=http,port=80] unexpected compared to baseline '192.0.2.10 first_observed'
+   SEVERITY  RESULT   DIFFERENCE  PATH                                          REASON
+   high      fail     change      firmware.version                              firmware.version changed compared to baseline '192.0.2.10 first_observed'
+   medium    fail     missing     service[protocol=ftp,port=21,transport=tcp]   service[protocol=ftp,port=21,transport=tcp] missing compared to baseline '192.0.2.10 first_observed'
+   medium    fail     unexpected  service[protocol=http,port=80,transport=tcp]  service[protocol=http,port=80,transport=tcp] unexpected compared to baseline '192.0.2.10 first_observed'
    192.0.2.10: 3 findings, 3 failed, 0 passed (max severity: high)
 
 Exit codes (of all ``baseline-*`` commands; ``3`` only of ``baseline-compare``):

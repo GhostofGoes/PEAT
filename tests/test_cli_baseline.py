@@ -173,13 +173,16 @@ def test_run_baseline_create_and_compare(tmp_path, run_dir, capsys):
     out = capsys.readouterr().out
     assert "SEVERITY  RESULT   DIFFERENCE  PATH" in out
     assert "firmware.version" in out
-    assert "service[protocol=http,port=80]" in out
+    assert "service[protocol=http,port=80,transport=tcp]" in out
     assert "192.0.2.10: 2 findings, 2 failed, 0 passed (max severity: high)" in out
 
     findings = json.loads(
         (run_dir / "devices" / "192.0.2.10" / "baseline-findings.json").read_text()
     )
-    assert {f["path"] for f in findings} == {"firmware.version", "service[protocol=http,port=80]"}
+    assert {f["path"] for f in findings} == {
+        "firmware.version",
+        "service[protocol=http,port=80,transport=tcp]",
+    }
     summary = json.loads((run_dir / "summaries" / "baseline-summary.json").read_text())
     assert summary["devices"][0]["summary"]["max_severity"] == "high"
     assert summary["devices"][0]["source"] == second.resolve().as_posix()

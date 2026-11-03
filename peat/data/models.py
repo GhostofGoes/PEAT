@@ -93,6 +93,9 @@ PurePath.__modify_schema__ = __pathlib_modify_schema__
 # --------------------------------------------------------------------------- #
 MAX_ES_LONG = 2**63 - 1
 
+# Largest value of the smaller Elasticsearch integer types (by ``elastic_type``)
+_ES_INT_MAX = {"byte": 2**7 - 1, "short": 2**15 - 1, "integer": 2**31 - 1}
+
 NE107_HEALTH = Literal[
     "normal", "failure", "check_function", "out_of_specification", "maintenance_required", ""
 ]
@@ -231,6 +234,24 @@ def _is_unicast_mac(mac: str) -> bool:
         return not (int(mac[:2], 16) & 1)
     except (ValueError, TypeError):
         return False
+
+
+def move_out_of_range_ints(model: BaseModel, extra: dict, prefix: str = "") -> None:
+    """
+    Integer fields of ``model`` that their Elasticsearch type can't hold (``long``
+    unless the field sets a smaller ``elastic_type``, e.g. ``integer``) move to
+    ``extra["out_of_range"]["<prefix><field>"]`` as text and become :obj:`None`:
+    a single out-of-range value rejects the whole document (e.g. a corrupted PID
+    or route metric read from a device). Fields of sub-models are not checked.
+    """
+    for name, field in model.__fields__.items():
+        value = getattr(model, name)
+        if not isinstance(value, int) or isinstance(value, bool) or not field.allow_none:
+            continue
+        limit = _ES_INT_MAX.get(field.field_info.extra.get("elastic_type"), MAX_ES_LONG)
+        if not -limit - 1 <= value <= limit:
+            extra.setdefault("out_of_range", {})[f"{prefix}{name}"] = str(value)
+            setattr(model, name, None)
 
 
 def numeric_severity(value: str | int | None) -> int | None:
@@ -1134,6 +1155,9 @@ class LogicTask(BaseModel):
     _sort_by_fields: tuple[str] = PrivateAttr(default=("name",))
     _dedupe_key: tuple[str] = PrivateAttr(default=("name",))
 
+    def annotate(self, dev: DeviceData | None = None) -> None:  # noqa: ARG002
+        move_out_of_range_ints(self, self.extra)  # e.g. a corrupted priority
+
 
 class Logic(BaseModel):
     """
@@ -1239,6 +1263,8 @@ class Logic(BaseModel):
     def annotate(self, dev: DeviceData | None = None):
         if self.original and not _all_hashes_set(self.hash):
             self.hash = Hash.parse_obj(utils.gen_hashes(self.original))
+        for task in self.tasks:
+            task.annotate(dev)
         if dev:
             _add_hashes_to_related(dev, self.hash)
 
@@ -1694,11 +1720,7 @@ class NetworkStatistics(BaseModel):
             ("egress.", self.egress),
             ("connections.", self.connections),
         ):
-            for name in model.__fields__:
-                value = getattr(model, name)
-                if isinstance(value, int) and not isinstance(value, bool) and value > MAX_ES_LONG:
-                    self.extra.setdefault("out_of_range", {})[f"{prefix}{name}"] = str(value)
-                    setattr(model, name, None)
+            move_out_of_range_ints(model, self.extra, prefix)
 
 
 class ServiceSecurity(BaseModel):
@@ -1991,9 +2013,10 @@ class Service(BaseModel):
         default=("port", "protocol", "transport", "status", "enabled")
     )
 
-    # Services with the same protocol AND port are the same service when
-    # deduplicating/merging lists (store() keeps its ["protocol", "port"] lookup)
-    _dedupe_key: tuple[str] = PrivateAttr(default=("protocol", "port"))
+    # Services with the same protocol, port AND transport are the same service
+    # when deduplicating/merging lists (tcp/53 and udp/53 stay apart). store()
+    # keeps its ["protocol", "port"] lookup.
+    _dedupe_key: tuple[str] = PrivateAttr(default=("protocol", "port", "transport"))
 
     # Validators
     _clean_protocol = validator("protocol", allow_reuse=True)(clean_protocol)
@@ -2028,6 +2051,7 @@ class Service(BaseModel):
                 self.security.encrypted = False
 
         self.statistics.annotate(dev)
+        move_out_of_range_ints(self, self.extra)  # e.g. a corrupted process_pid
 
         if dev:
             active = self.enabled or self.status in ["open", "verified"] or not self.status
@@ -3678,6 +3702,7 @@ class Route(BaseModel):
             return ""
 
     def annotate(self, dev: DeviceData | None = None) -> None:
+        move_out_of_range_ints(self, self.extra)  # e.g. a corrupted metric
         if dev and self.gateway and self.gateway not in ("0.0.0.0", "::"):
             dev.related.ip.add(self.gateway)
         mac = self.extra.get("gateway_mac", "")
@@ -3745,6 +3770,7 @@ class TimeSource(BaseModel):
 
     def annotate(self, dev: DeviceData | None = None) -> None:
         self.last_sync = _utc(self.last_sync, _dev_tz(dev)) if self.last_sync else None
+        move_out_of_range_ints(self, self.extra)
         if dev and self.address:
             if utils.is_ip(self.address):
                 dev.related.ip.add(self.address)
@@ -4172,6 +4198,7 @@ class Relationship(BaseModel):
         if any(not isinstance(e, str) or e != e.strip().lower() for e in self.evidence):
             self.evidence = {str(e).strip().lower() for e in self.evidence if str(e).strip()}
         self._infer(dev)
+        move_out_of_range_ints(self, self.extra)  # count
         # ALWAYS recompute: a copied/edited record must never keep a stale id
         raw = "|".join("" if p is None else str(p) for p in self.key())
         new_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -4555,6 +4582,9 @@ class HostProcess(BaseModel):
         if not self.name and self.executable:
             self.name = self.executable.replace("\\", "/").rsplit("/", 1)[-1]
         self.start = _utc(self.start, _dev_tz(dev)) if self.start else None
+        # e.g. a corrupted PID in a process or socket table
+        move_out_of_range_ints(self, self.extra)
+        move_out_of_range_ints(self.parent, self.extra, "parent.")
         if dev:
             if self.name:
                 dev.related.process.add(self.name)
@@ -4646,6 +4676,9 @@ class Package(BaseModel):
 
     _sort_by_fields: tuple[str] = PrivateAttr(default=("name", "version", "path"))
     _dedupe_key: tuple[str] = PrivateAttr(default=("name", "version", "path"))
+
+    def annotate(self, dev: DeviceData | None = None) -> None:  # noqa: ARG002
+        move_out_of_range_ints(self, self.extra)  # size
 
 
 class Asset(BaseModel):
@@ -5188,7 +5221,7 @@ class BaselineFinding(BaseModel):
 
     Examples
 
-    - ``service[protocol=ftp,port=21].enabled``
+    - ``service[protocol=ftp,port=21,transport=tcp].enabled``
     - ``firmware.version``
     """
 
@@ -7197,11 +7230,39 @@ class DeviceData(BaseModel):
                     self.store("relationships", rel)  # annotate() recomputes the id
                 mod.relationships.clear()
 
+    def _own_ips(self) -> set[str]:
+        """IP addresses of this device (device, interfaces, modules and their interfaces)."""
+        ips = {self.ip} | {i.ip for i in self.interface}
+        for mod in self.module:
+            ips |= {mod.ip} | {i.ip for i in mod.interface}
+        ips.discard("")
+        return ips
+
     def _derive_relationships(self) -> None:
-        """Relationships implied by time sources and route next hops (idempotent)."""
+        """
+        Relationships implied by time sources and route next hops (idempotent).
+
+        The device itself is not a peer: no relationship is derived to a
+        loopback address (e.g. a ``lo0`` route via ``127.0.0.1``, or an NTP
+        reference clock ``127.127.x.y``) or to an address of the device (e.g. a
+        directly connected route via the device's own IP). The routes and time
+        sources themselves are kept as reported.
+        """
+        own_ips = self._own_ips()
+
+        def is_self(ip: str) -> bool:
+            if ip in own_ips:
+                return True
+            try:
+                return ipaddress.ip_address(ip).is_loopback
+            except ValueError:
+                return False
+
         for src in self.clock.sources:
             is_ip = utils.is_ip(src.address)
             if not src.address or not (is_ip or src.protocol in ("ntp", "sntp")):
+                continue
+            if is_ip and is_self(src.address):
                 continue
             net = src.protocol in ("ntp", "sntp")
             # SNTP/NTP broadcast/multicast mode: the server sends unsolicited (ingress)
@@ -7229,6 +7290,8 @@ class DeviceData(BaseModel):
         gateways: dict[str, str] = {}
         for route in self.routes:
             if route.gateway and route.gateway not in ("0.0.0.0", "::"):
+                if is_self(route.gateway):
+                    continue
                 if not gateways.get(route.gateway):
                     gateways[route.gateway] = route.interface
         for gateway, interface in gateways.items():

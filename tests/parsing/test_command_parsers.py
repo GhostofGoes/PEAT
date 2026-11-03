@@ -659,6 +659,91 @@ def test_netstat_sessions_with_itself_are_not_relationships(assert_no_errors):
     assert_no_errors()
 
 
+@pytest.mark.parametrize(
+    ("parser", "data"),
+    [
+        (
+            command_parsers.NetstatLinuxParser,
+            "Proto Recv-Q Send-Q Local Address  Foreign Address  State   PID/Program name\n"
+            "tcp        0      0 0.0.0.0:53     0.0.0.0:*        LISTEN  301/dnsmasq\n"
+            "tcp        0      0 0.0.0.0:20000  0.0.0.0:*        LISTEN  412/dnp3d\n"
+            "udp        0      0 0.0.0.0:53     0.0.0.0:*                301/dnsmasq\n"
+            "udp        0      0 0.0.0.0:20000  0.0.0.0:*                412/dnp3d\n",
+        ),
+        (
+            command_parsers.NetstatSocketsVxWorksParser,
+            "INET sockets\n"
+            "Prot   Recv-Q Send-Q Local Address    Foreign Address  State   TID\n"
+            "TCP         0      0 0.0.0.0.53       0.0.0.0.*        LISTEN  0x1c80000\n"
+            "TCP         0      0 0.0.0.0.20000    0.0.0.0.*        LISTEN  0x1c90000\n"
+            "UDP         0      0 0.0.0.0.53       0.0.0.0.*                0x1c80000\n"
+            "UDP         0      0 0.0.0.0.20000    0.0.0.0.*                0x1c90000\n",
+        ),
+    ],
+)
+def test_netstat_tcp_and_udp_listeners_on_one_port_are_exported(parser, data, assert_no_errors):
+    """tcp/N and udp/N are two services in export() and elastic(), not one (R5-2)."""
+    dev = DeviceData(id="test_netstat_tcp_udp", ip="192.0.2.20")
+    parser.process(parser.parse(data), dev)
+    expected = {(53, "tcp"), (53, "udp"), (20000, "tcp"), (20000, "udp")}
+    assert {(s.port, s.transport) for s in dev.service} == expected
+
+    exported = dev.export()["service"]
+    assert len(exported) == 4
+    assert {(s["port"], s["transport"]) for s in exported} == expected
+    assert {(s["port"], s["transport"]) for s in dev.elastic()["service"]} == expected
+    assert_no_errors()
+
+
+def test_out_of_range_pid_and_metric_never_reach_elasticsearch(assert_no_errors):
+    """A corrupted PID or route metric does not reject the host document (R5-10)."""
+    big = "99999999999999999999"
+    netstat = (
+        "Proto Recv-Q Send-Q Local Address  Foreign Address  State   PID/Program name\n"
+        "tcp        0      0 0.0.0.0:80     0.0.0.0:*        LISTEN  640/lighttpd\n"
+        f"tcp        0      0 0.0.0.0:22     0.0.0.0:*        LISTEN  {big}/dropbear\n"
+    )
+    route = (
+        f"default via 192.0.2.1 dev eth0 metric {big}\n"
+        "192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.20\n"
+    )
+    dev = DeviceData(id="test_out_of_range", ip="192.0.2.20")
+    parser = command_parsers.NetstatLinuxParser
+    parser.process(parser.parse(netstat), dev)
+    command_parsers.IpRouteParser.process(command_parsers.IpRouteParser.parse(route), dev)
+
+    doc = dev.elastic()
+    ints = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            ints.append(value)
+
+    walk(doc)
+    assert ints
+    assert all(-(2**63) <= v < 2**63 for v in ints)
+
+    # The process, service and route are still stored, with the raw value in extra
+    procs = {p.name: p for p in dev.processes}
+    assert set(procs) == {"lighttpd", "dropbear"}
+    assert procs["dropbear"].pid is None
+    assert procs["dropbear"].extra["out_of_range"] == {"pid": big}
+    assert procs["lighttpd"].pid == 640
+    ssh = dev.retrieve("service", {"port": 22})
+    assert ssh.process_pid is None
+    assert ssh.extra["out_of_range"] == {"process_pid": big}
+    default = {r.destination: r for r in dev.routes}["0.0.0.0/0"]
+    assert (default.gateway, default.metric) == ("192.0.2.1", None)
+    assert default.extra["out_of_range"] == {"metric": big}
+    assert_no_errors()
+
+
 def test_ip_route_parser_multipath_and_junk_lines():
     data = (
         "default proto static metric 100\n"

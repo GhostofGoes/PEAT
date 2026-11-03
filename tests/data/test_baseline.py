@@ -167,7 +167,7 @@ def test_resolve_path():
     doc = bl.device_to_doc(sel_relay())
     assert bl.resolve_path(doc, "firmware.version") == [("firmware.version", "R516")]
     assert bl.resolve_path(doc, "service[protocol=telnet].port") == [
-        ("service[protocol=telnet,port=23].port", 23)
+        ("service[protocol=telnet,port=23,transport=tcp].port", 23)
     ]
     ports = [v for _, v in bl.resolve_path(doc, "service[*].port")]
     assert sorted(ports) == [21, 23, 102, 20000]
@@ -480,8 +480,8 @@ def test_snapshot_differences():
     findings = bl.compare_device(_exported(cur), baseline, timestamp=T1)
     diffs = _diffs(findings)
     assert ("change", "firmware.version") in diffs
-    assert ("unexpected", "service[protocol=http,port=80]") in diffs
-    assert ("missing", "service[protocol=ftp,port=21]") in diffs
+    assert ("unexpected", "service[protocol=http,port=80,transport=tcp]") in diffs
+    assert ("missing", "service[protocol=ftp,port=21,transport=tcp]") in diffs
     assert ("change", "iec61850.publications[type=GOOSE,ld_inst=PRO,name=gcbTrip].conf_rev") in (
         diffs
     )
@@ -497,7 +497,7 @@ def test_snapshot_differences():
     assert fw.actual == "R517"
     assert fw.reason == "firmware.version changed compared to baseline 'relay-1 first pull'"
     assert not fw.rule_id
-    http = by_path["service[protocol=http,port=80]"]
+    http = by_path["service[protocol=http,port=80,transport=tcp]"]
     assert http.category == "ports_services"
     assert json.loads(http.actual)["protocol"] == "http"
 
@@ -532,7 +532,7 @@ def test_snapshot_observed_vs_partial_kinds():
     # ... but new list items are always reported
     partial.expected.store("service", Service(protocol="telnet", port=23))
     diffs = _diffs(bl.compare_device(cur, partial))
-    assert ("unexpected", "service[protocol=ftp,port=21]") in diffs
+    assert ("unexpected", "service[protocol=ftp,port=21,transport=tcp]") in diffs
     assert ("change", "firmware.version") in diffs
 
 
@@ -821,8 +821,8 @@ def test_device_type_profile_compares_wildcard_and_loopback_listen_addresses():
         expected=bl.device_type_profile(loopback),
     )
     assert bl.compare_device(unit(3, "127.0.0.1"), profile) == []
-    ssh = "service[protocol=ssh,port=22].listen_address"
-    http = "module[slot=1].service[protocol=http,port=80].listen_address"
+    ssh = "service[protocol=ssh,port=22,transport=tcp].listen_address"
+    http = "module[slot=1].service[protocol=http,port=80,transport=tcp].listen_address"
     # loopback -> all addresses: the services are now exposed on the network
     assert _diffs(bl.compare_device(unit(3, "0.0.0.0"), profile)) == {
         ("change", ssh),
@@ -1168,7 +1168,7 @@ def test_device_type_profile_of_several_units():
     odd = _unit(5, firmware="R999")
     odd.store("service", Service(protocol="http", port=80))
     assert _diffs(bl.compare_device(odd, baseline)) == {
-        ("unexpected", "service[protocol=http,port=80]")
+        ("unexpected", "service[protocol=http,port=80,transport=tcp]")
     }
 
 

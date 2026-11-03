@@ -148,6 +148,19 @@ def test_process_pages():
 
 
 @pytest.mark.usefixtures("out_config")
+def test_lo0_route_is_not_a_routes_via_relationship():
+    """The lo0 route via 127.0.0.1 is kept, but the relay does not route via itself (R5-5)."""
+    dev = DeviceData(ip="192.0.2.30")
+    GERelay._process_pages(dev, _page_tables())
+    exported = dev.export()
+
+    routes_via = [r for r in exported["relationships"] if r["type"] == "routes_via"]
+    assert {r["remote"]["ip"] for r in routes_via} == {"192.0.2.1"}
+    assert len(exported["routes"]) == 3
+    assert {r.destination: r.gateway for r in dev.routes}["127.0.0.1/32"] == "127.0.0.1"
+
+
+@pytest.mark.usefixtures("out_config")
 def test_baseline_ignores_arp_host_routes():
     """An expired ARP-cloned host route (MAC next hop) is not a missing route (R3-16)."""
     from peat.data.baseline import compare_device

@@ -39,7 +39,7 @@ Identity, merging and deduplication
    :header: "Model", "Identity fields", "Notes"
 
    ":class:`~peat.data.models.Interface`", "``name``", "``store()`` also matches ``mac``, ``ip``, ``serial_port``, ``id``"
-   ":class:`~peat.data.models.Service`", "``protocol``, ``port``", ""
+   ":class:`~peat.data.models.Service`", "``protocol``, ``port``, ``transport``", "``store()`` matches ``protocol`` and ``port`` only; ``tcp/53`` and ``udp/53`` are two services"
    ":class:`~peat.data.models.Relationship`", "``id``", "computed by ``annotate()`` from the edge (see below)"
    ":class:`~peat.data.models.NetworkStatistics`", "``interface``, ``type``, ``transport``, ``protocol``", "``protocol_statistics`` entries"
    ":class:`~peat.data.models.Route`", "``destination``, ``gateway``, ``interface``", ""
@@ -113,8 +113,8 @@ Relationship types
 - ``communicates_with``: configured or observed protocol session (the default). ``direction`` says who initiates. Allow-listed masters/clients are ``communicates_with`` with ``extra["allow_list"] = True``.
 - ``allows_client``: pure access-list entry without a protocol session (e.g. an IP access-control table).
 - ``neighbor_of``: ARP/ND/LLDP/CDP/FDB neighbor.
-- ``routes_via``: route next hop (derived automatically from ``DeviceData.routes``).
-- ``syncs_time_from``: time server (derived automatically from ``DeviceData.clock.sources``).
+- ``routes_via``: route next hop (derived automatically from ``DeviceData.routes``, except next hops that are a loopback address or an address of the device, e.g. a ``lo0`` route via ``127.0.0.1``).
+- ``syncs_time_from``: time server (derived automatically from ``DeviceData.clock.sources``, except loopback addresses, e.g. the NTP reference clocks ``127.127.x.y``, and addresses of the device).
 - ``logs_to``: syslog server or log collector.
 - ``authenticates_with``, ``depends_on`` (DNS, OCSP, KDC, I/O provider, ...), ``tunnel``.
 - ``physical_link``: serial, backplane or point-to-point link.

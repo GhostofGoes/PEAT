@@ -422,7 +422,7 @@ def test_create_save_load_compare(tmp_path):
     findings = api.compare_to_baseline(current, [reloaded])
     assert {(f.difference, f.path) for f in findings} == {
         ("change", "firmware.version"),
-        ("unexpected", "service[protocol=http,port=80]"),
+        ("unexpected", "service[protocol=http,port=80,transport=tcp]"),
     }
     assert current.baseline_findings == findings
     assert all(f.baseline_id == baseline.id for f in findings)
@@ -523,7 +523,7 @@ def test_complete_baselines_report_new_values(tmp_path):
     new = {
         ("unexpected", "os"),
         ("unexpected", "users[name=backdoor]"),
-        ("unexpected", "service[protocol=telnet,port=23]"),
+        ("unexpected", "service[protocol=telnet,port=23,transport=tcp]"),
     }
 
     def diffs(baseline: Baseline) -> set:
@@ -614,7 +614,7 @@ def test_cip010_review_ignores_values_instead_of_deleting_them(tmp_path):
     assert diffs(changed, approved_copy()) == {
         ("change", "description.model"),
         ("change", "service[protocol=goose].enabled"),
-        ("change", "service[protocol=telnet,port=23].enabled"),
+        ("change", "service[protocol=telnet,port=23,transport=tcp].enabled"),
     }
     # ignore patterns have no selectors: they exempt a field of all items of a list
     ignored = approved_copy(ignore=["description.model", "service.enabled"])
@@ -659,7 +659,7 @@ def test_create_device_type_baseline():
     odd.store("service", Service(protocol="http", port=80))
     findings = api.compare_to_baseline(odd, baseline)
     assert [(f.difference, f.path) for f in findings] == [
-        ("unexpected", "service[protocol=http,port=80]")
+        ("unexpected", "service[protocol=http,port=80,transport=tcp]")
     ]
 
     single = api.create_baseline(units[0], scope="device_type", baseline_id="one")

@@ -234,8 +234,8 @@ VOLATILE_ROUTE_TYPES = frozenset({"cache"})
 #                    ("all", fields)   = tuple of all fields identifies the item
 LIST_KEYS: dict[str, tuple[str, tuple[str, ...]]] = {
     "interface": ("first", ("name", "serial_port", "ip", "mac", "id")),
-    "service": ("all", ("protocol", "port")),
-    "services": ("all", ("protocol", "port")),
+    "service": ("all", ("protocol", "port", "transport")),
+    "services": ("all", ("protocol", "port", "transport")),
     "users": ("first", ("name", "id")),
     "files": ("first", ("path", "name")),
     "ssh_keys": ("all", ("type", "user", "host", "id")),
