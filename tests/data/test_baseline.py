@@ -16,6 +16,7 @@ from peat.data.models import (
     Relationship,
     RelationshipEndpoint,
     Service,
+    TimeSource,
 )
 from peat.data.validators import ECS_EVENT_VALUES
 
@@ -985,6 +986,54 @@ def test_snapshot_operating_mode_change_is_high():
     cur.key_switch = "PROG"
     (finding,) = bl.compare_device(_exported(cur), _snapshot(dev))
     assert (finding.path, finding.severity, finding.category) == ("key_switch", "high", "settings")
+
+
+def _clock_device(source: str, raw: str = "", selected: bool | None = None) -> DeviceData:
+    """A device with a configured (default), live (``raw``) or selected time source."""
+    dev = DeviceData(ip="192.0.2.40", id="192.0.2.40")
+    dev.clock.source = source
+    if raw:
+        dev.clock.extra["time_source_raw"] = raw  # e.g. the SEL STA "Time Source"
+    dev.clock.sources = [TimeSource(protocol="gps", enabled=True, selected=selected)]
+    return dev
+
+
+def test_snapshot_compares_a_configured_time_source_but_not_a_live_one():
+    """A configured source selection is compared, the live active source is not (R4-0)."""
+    # configured, e.g. the Sage time.xml SOURCE
+    (finding,) = bl.compare_device(
+        _exported(_clock_device("internal")), _snapshot(_clock_device("gps"))
+    )
+    assert (finding.difference, finding.path) == ("change", "clock.source")
+    assert (finding.expected, finding.actual) == ("gps", "internal")
+    assert "source" in bl.device_to_doc(_clock_device("gps"))["clock"]
+
+    # live: reported by the device (SEL STA) or the protocol of the selected source
+    for base, cur in (
+        (_clock_device("gps", raw="GPS"), _clock_device("internal", raw="Internal")),
+        (_clock_device("gps", selected=True), _clock_device("", selected=False)),
+    ):
+        assert "source" not in bl.device_to_doc(base)["clock"]
+        assert bl.compare_device(_exported(cur), _snapshot(base)) == []
+        # also not against an expected value of a hand-written snapshot
+        written = Baseline(id="b", kind="engineer_provided", expected=_clock_device("gps"))
+        assert bl.compare_device(_exported(cur), written) == []
+
+    # the modules of a device
+    base, cur = _clock_device("gps"), _clock_device("gps")
+    base.module = [DeviceData(slot="1", clock=_clock_device("irig_b", raw="IRIG-B").clock)]
+    cur.module = [DeviceData(slot="1", clock=_clock_device("internal", raw="Internal").clock)]
+    assert bl.compare_device(_exported(cur), _snapshot(base)) == []
+    base.module[0].clock.extra = cur.module[0].clock.extra = {}  # configured
+    assert _diffs(bl.compare_device(_exported(cur), _snapshot(base))) == {
+        ("change", "module[slot=1].clock.source")
+    }
+
+    # rules check the live value
+    rule = BaselineRule(path="clock.source", operator="equals", value="gps", severity="high")
+    lost = _clock_device("internal", raw="Internal")
+    (finding,) = bl.compare_device(_exported(lost), Baseline(id="r", rules=[rule]))
+    assert (finding.result, finding.actual) == ("fail", "internal")
 
 
 def test_selector_mismatch_has_no_findings():

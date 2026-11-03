@@ -432,6 +432,29 @@ def test_time_settings():
     assert empty == {"sources": []}
 
 
+def test_baseline_reports_a_configured_time_source_change():
+    """The time.xml SOURCE is configuration, not a live value (R4-0)."""
+    from peat.api.baseline_api import create_baseline
+
+    def rtu(source: str) -> DeviceData:
+        xml = f"""<ROOT><TIME SOURCE="{source}" UTCOFFSET="-07:00">
+          <SNTP SERVER1="192.0.2.50" ENABLED="Y"/><IRIG ENABLED="Y"/>
+        </TIME><GBLFRZ INTERVAL="60"/><GPS PORT="3" BAUD="9600"/></ROOT>""".encode()
+        info = {}
+        sage_parse.parse_time(io.BytesIO(xml), info)
+        dev = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+        sage_parse.process_time_settings(dev, info)
+        return dev
+
+    gps, internal = rtu("GPS"), rtu("INTERNAL")
+    assert (gps.clock.source, internal.clock.source) == ("gps", "internal")
+    for kind in ("first_observed", "approved", "engineer_provided"):
+        baseline = create_baseline(gps, kind=kind)
+        assert compare_device(rtu("GPS"), baseline) == []
+        findings = compare_device(internal, baseline, include_passed=False)
+        assert [(f.difference, f.path) for f in findings] == [("change", "clock.source")]
+
+
 def test_led_definitions():
     xml = b"""<ROOT><LEDS>
       <LED NUM="1" DESC="COMM FAIL" PNT="RTU_STS_12" COLOR="RED" BLINK="Y"/>

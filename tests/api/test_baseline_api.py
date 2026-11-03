@@ -574,6 +574,53 @@ def test_complete_baselines_report_new_values(tmp_path):
     ]
 
 
+def test_cip010_review_ignores_values_instead_of_deleting_them(tmp_path):
+    """
+    The complete approved copy reports values deleted from its snapshot as
+    unexpected: values that should not be enforced are ignored instead (R4-18).
+    """
+    reviewed = DeviceData(ip="192.0.2.20", id="192.0.2.20")
+    reviewed.description.vendor.id = "SEL"
+    reviewed.description.model = "351S"
+    reviewed.store("service", Service(protocol="goose", enabled=True))
+    reviewed.store("service", Service(protocol="telnet", port=23, transport="tcp", enabled=True))
+
+    def approved_copy(**changes) -> Baseline:
+        path = api.save_baselines(api.create_baseline(reviewed), tmp_path / "review.json")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.update(kind="approved", **changes)  # "complete" stays true
+        path.write_text(json.dumps(data), encoding="utf-8")
+        (approved,) = api.load_baselines(path)
+        assert approved.complete
+        return approved
+
+    def diffs(dev: DeviceData, baseline: Baseline) -> set:
+        return {
+            (f.difference, f.path) for f in api.compare_to_baseline(dev, baseline, store=False)
+        }
+
+    deleted = approved_copy()
+    deleted.expected.description.model = ""
+    deleted.expected.service = [s for s in deleted.expected.service if s.protocol != "goose"]
+    assert diffs(reviewed, deleted) == {
+        ("unexpected", "description.model"),
+        ("unexpected", "service[protocol=goose]"),
+    }
+
+    changed = reviewed.copy(deep=True)
+    changed.description.model = "351"
+    for svc in changed.service:
+        svc.enabled = False
+    assert diffs(changed, approved_copy()) == {
+        ("change", "description.model"),
+        ("change", "service[protocol=goose].enabled"),
+        ("change", "service[protocol=telnet,port=23].enabled"),
+    }
+    # ignore patterns have no selectors: they exempt a field of all items of a list
+    ignored = approved_copy(ignore=["description.model", "service.enabled"])
+    assert diffs(changed, ignored) == set()
+
+
 def _unit(n: int, firmware: str = "R516") -> DeviceData:
     dev = sel_relay()
     dev.ip = f"192.0.2.{20 + n}"
@@ -618,6 +665,42 @@ def test_create_device_type_baseline():
     single = api.create_baseline(units[0], scope="device_type", baseline_id="one")
     assert single.provenance.device_id == "192.0.2.20"
     assert single.ignore == []
+
+
+def test_device_type_baseline_of_devices_without_vendor_id():
+    """Devices without a vendor ID (SCL IEDs) are of one type by vendor name (R4-20)."""
+
+    def ied(n: int, manufacturer: str) -> DeviceData:
+        dev = DeviceData(ip=f"192.0.2.{30 + n}", id=f"192.0.2.{30 + n}", name=f"PROT{n}")
+        dev.description.vendor.name = manufacturer
+        dev.description.model = "PR-100"
+        return dev
+
+    with pytest.raises(PeatError, match="got: acme pr-100, other corp pr-100"):
+        api.create_baseline([ied(1, "ACME"), ied(2, "OTHER Corp")], scope="device_type")
+
+    profile = api.create_baseline([ied(1, "ACME"), ied(2, "ACME")], scope="device_type")
+    assert (profile.id, profile.name) == ("ACME-PR-100-typical", "Typical ACME PR-100")
+    assert profile.selector == BaselineSelector(model="PR-100")
+    assert "description.vendor.name" not in profile.ignore
+    assert api.compare_to_baseline(ied(3, "ACME"), profile, store=False) == []
+    findings = api.compare_to_baseline(ied(4, "THIRD Inc"), profile, store=False)
+    assert [(f.difference, f.path) for f in findings] == [("change", "description.vendor.name")]
+
+    # the selector matches the vendor ID only if every device has one
+    with_id = ied(5, "ACME")
+    with_id.description.vendor.id = "ACME"
+    assert api.create_baseline([with_id, ied(6, "ACME")], scope="device_type").selector == (
+        BaselineSelector(model="PR-100")
+    )
+    assert api.create_baseline(with_id, scope="device_type").selector == (
+        BaselineSelector(vendor_id="ACME", model="PR-100")
+    )
+    # a vendor name alone does not select devices
+    nameless = ied(7, "ACME")
+    nameless.description.model = ""
+    with pytest.raises(PeatError, match="no vendor ID or model"):
+        api.create_baseline(nameless, scope="device_type")
 
 
 def test_load_baselines_errors(tmp_path, caplog):

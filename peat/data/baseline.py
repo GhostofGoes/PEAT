@@ -85,9 +85,8 @@ _VOLATILE_IGNORE: tuple[str, ...] = (
     "clock.observed",
     "clock.offset",
     "clock.last_sync",
-    # the protocol of the ACTIVE time source (e.g. irig_b -> internal when the
-    # IRIG-B signal is lost) and the sync state; the configured sources are compared
-    "clock.source",
+    # the sync state; the active time source "clock.source" is only compared if it
+    # is configured (device_to_doc() drops it if the device reports it live)
     "clock.synchronized",
     "clock.sources.offset",
     "clock.sources.last_sync",
@@ -321,10 +320,60 @@ def device_to_doc(dev: DeviceData) -> dict:
     whichever OS created the baseline or the device data.
 
     The logic and firmware files of the device and its modules have no location
-    values if they are only a file on the PEAT host (:func:`_without_host_file_paths`).
+    values if they are only a file on the PEAT host (:func:`_without_host_file_paths`),
+    and the device and its modules have no ``clock.source`` if they report their
+    active time source live (:func:`_without_live_time_source`).
     """
+    return _without_live_time_source(_device_doc(dev))
+
+
+def _device_doc(dev: DeviceData) -> dict:
+    """:func:`device_to_doc` with the live time source (rules check it)."""
     raw = strip_key(dev.dict(exclude_defaults=True), "original", ("files", "module"))
     return _without_host_file_paths(strip_empty_and_private(consts.convert(_posix_paths(raw))))
+
+
+def _reports_live_time_source(doc: dict) -> bool:
+    """
+    If the ``clock.source`` of a device document is the live, active time source
+    the device reports: the SEL ``STA`` "Time Source" (``clock.extra``
+    ``time_source_raw``), or the protocol of the ``selected`` time source
+    (:meth:`Clock.annotate <peat.data.models.Clock.annotate>`, e.g. the selected
+    peer of ``ntpq`` or the SIPROTEC SNTP clock master). A device that reports
+    which source is selected (``selected`` is ``true`` or ``false``) reports it live,
+    also when no source is selected (e.g. no ``ntpq`` peer is selected).
+    """
+    clock = doc.get("clock")
+    if not isinstance(clock, dict):
+        return False
+    extra = clock.get("extra")
+    if isinstance(extra, dict) and "time_source_raw" in extra:
+        return True
+    return any(
+        isinstance(s, dict) and isinstance(s.get("selected"), bool)
+        for s in clock.get("sources") or []
+    )
+
+
+def _without_live_time_source(doc: dict) -> dict:
+    """
+    ``doc`` (a device document) without the ``clock.source`` of the device and its
+    modules that report it live (:func:`_reports_live_time_source`): it changes when a
+    source is lost (e.g. ``irig_b`` becomes ``internal`` when the IRIG-B signal is
+    lost). A configured source selection (e.g. the Sage ``time.xml`` ``SOURCE``) is
+    kept and compared. Returns a new dict, ``doc`` is not modified.
+    """
+    clock = doc.get("clock")
+    if isinstance(clock, dict) and "source" in clock and _reports_live_time_source(doc):
+        doc = {**doc, "clock": {k: v for k, v in clock.items() if k != "source"}}
+    if isinstance(doc.get("module"), list):
+        doc = {
+            **doc,
+            "module": [
+                _without_live_time_source(m) if isinstance(m, dict) else m for m in doc["module"]
+            ],
+        }
+    return doc
 
 
 # File values that describe a file on the PEAT host, not on the device
@@ -928,7 +977,8 @@ def compare_device(
     if not baseline.selector.matches(dev):
         return []
     ts = timestamp or datetime.now(UTC)
-    doc = device_to_doc(dev)
+    rule_doc = _device_doc(dev)  # rules may check the live time source
+    doc = _without_live_time_source(rule_doc)
     common = {
         "baseline_id": baseline.id,
         "baseline_name": baseline.name,
@@ -940,7 +990,7 @@ def compare_device(
     for rule in baseline.rules:
         if not rule.enabled:
             continue
-        result, actual = evaluate_rule(doc, rule)
+        result, actual = evaluate_rule(rule_doc, rule)
         if result == "pass" and not include_passed:
             continue
         failed = result == "fail"
@@ -973,6 +1023,14 @@ def compare_device(
             + tuple(baseline.ignore)
             + tuple(getattr(dev, "_cache", {}).get("omitted_keys", ()))
         )
+        # a live time source of the device is not compared with an expected one
+        # either (e.g. of a hand-written snapshot)
+        if _reports_live_time_source(doc):
+            ignore += ("clock.source",)
+        if any(
+            isinstance(m, dict) and _reports_live_time_source(m) for m in doc.get("module", [])
+        ):
+            ignore += ("module.clock.source",)
         expected_doc, actual_doc = device_to_doc(baseline.expected), doc
         if baseline.scope == "device_type":
             # strip per-unit identity BEFORE aligning list items, so list keys that use

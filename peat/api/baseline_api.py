@@ -346,7 +346,9 @@ def create_baseline(
       (per-unit identity removed; with several devices, only what all of them
       share), the values that differ between the devices are added to ``ignore``
       (:func:`~peat.data.baseline.varying_paths`), and the selector matches the
-      ``vendor_id`` and ``model`` of the devices.
+      ``vendor_id`` and ``model`` of the devices. Devices without a vendor ID (e.g.
+      the IEDs of SCL files) must have the same vendor name: the selector then
+      matches the model only, and the vendor name is compared as a value.
 
     The selector values are escaped, so glob characters in them (``*``, ``?``,
     ``[``) match only themselves. Baselines of the kinds ``first_observed``,
@@ -357,8 +359,9 @@ def create_baseline(
     the other kinds only check what they specify.
 
     Defaults: ID ``<device id>@<observed time>`` (device) or
-    ``<vendor>-<model>-typical`` (device type), name ``<device id> <kind>``
-    (device) or ``Typical <vendor> <model>`` (device type). The provenance records
+    ``<vendor>-<model>-typical`` (device type, vendor ID or else vendor name),
+    name ``<device id> <kind>`` (device) or ``Typical <vendor> <model>`` (device
+    type). The provenance records
     the creation time, author (default: the OS user name), observation time (the
     ``created`` time of the loaded device data file, if known), source device and
     file (with its SHA-256), PEAT run ID and PEAT version.
@@ -442,14 +445,22 @@ def create_baseline(
             )
             selector = BaselineSelector()
     elif scope == "device_type":
-        types = {(d.description.vendor.id.lower(), d.description.model.lower()) for d in devices}
+        # the vendor of devices without a vendor ID (e.g. the IEDs of SCL files) is
+        # their vendor name (manufacturer)
+        types = {(_vendor(d).lower(), d.description.model.lower()) for d in devices}
         if len(types) > 1:
             found = ", ".join(sorted(f"{v or '?'} {m or '?'}" for v, m in types))
             raise PeatError(
                 f"A 'device_type' baseline is created from devices of ONE "
                 f"vendor and model, got: {found}"
             )
-        vendor_id = devices[0].description.vendor.id
+        # the selector matches the vendor ID only if every device has one
+        vendor_id = (
+            devices[0].description.vendor.id
+            if all(d.description.vendor.id for d in devices)
+            else ""
+        )
+        vendor = _vendor(devices[0])
         model = devices[0].description.model
         if not vendor_id and not model:
             raise PeatError(
@@ -464,9 +475,9 @@ def create_baseline(
         for path in varying_paths(devices):
             if path not in ignore:
                 ignore.append(path)
-        type_name = "-".join(p for p in (vendor_id, model) if p).replace(" ", "-")
+        type_name = "-".join(p for p in (vendor, model) if p).replace(" ", "-")
         baseline_id = baseline_id or f"{type_name}-typical"
-        name = name or " ".join(p for p in ("Typical", vendor_id, model) if p)
+        name = name or " ".join(p for p in ("Typical", vendor, model) if p)
         selector = BaselineSelector(vendor_id=_glob_escape(vendor_id), model=_glob_escape(model))
         observed = [d._cache["observed"] for d in devices if d._cache.get("observed")]
         if observed:
@@ -508,6 +519,11 @@ def create_baseline(
 
     log.debug(f"Created {scope} baseline '{baseline.id}' ({kind})")
     return baseline
+
+
+def _vendor(dev: DeviceData) -> str:
+    """The vendor ID of a device, or its vendor name if it has no vendor ID."""
+    return dev.description.vendor.id or dev.description.vendor.name
 
 
 def _glob_escape(value: str) -> str:
