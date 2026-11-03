@@ -992,12 +992,27 @@ def redact_snmp_communities(device_info: dict) -> None:
                 net_conf["snmp_config"].pop(community, None)
 
 
+# Keys of a "snmp_config" that process_project_network_config() maps to the data
+# model (SNMP service security, manager relationships) or that are secrets
+# (the community strings)
+MAPPED_SNMP_CONFIG_KEYS: Final[tuple[str, ...]] = (
+    "IPAddressMgr1",
+    "IPAddressMgr2",
+    "authentication",
+    "get",
+    "set",
+    "trap",
+)
+
+
 def without_mapped_network_config(device_info: dict) -> dict:
     """
     Copy of parsed project file data for ``dev.extra``, without the parts of
     ``network_configurations`` that :func:`process_project_network_config` maps
-    to the data model: ``snmp_config`` (SNMP service security and manager
-    relationships) and ``ntp_srv`` (``clock.sources`` or ``clock.extra``).
+    to the data model: the ``snmp_config`` keys in :data:`MAPPED_SNMP_CONFIG_KEYS`
+    (SNMP service security and manager relationships) and a non-zero
+    ``ntp_srv`` (``clock.sources`` or ``clock.extra``). The other settings,
+    e.g. the SNMP ``manager`` flag, stay.
     """
     net_confs = device_info.get("network_configurations")
     if not isinstance(net_confs, dict):
@@ -1005,7 +1020,15 @@ def without_mapped_network_config(device_info: dict) -> dict:
     stripped = {}
     for name, net_conf in net_confs.items():
         if isinstance(net_conf, dict):
-            net_conf = {k: v for k, v in net_conf.items() if k not in ("snmp_config", "ntp_srv")}
+            remaining = {k: v for k, v in net_conf.items() if k not in ("snmp_config", "ntp_srv")}
+            snmp = net_conf.get("snmp_config")
+            if isinstance(snmp, dict):
+                snmp = {k: v for k, v in snmp.items() if k not in MAPPED_SNMP_CONFIG_KEYS}
+            if snmp:
+                remaining["snmp_config"] = snmp
+            if "ntp_srv" in net_conf and not _int(net_conf["ntp_srv"]):
+                remaining["ntp_srv"] = net_conf["ntp_srv"]  # not mapped (no server)
+            net_conf = remaining
         stripped[name] = net_conf
     return {**device_info, "network_configurations": stripped}
 

@@ -62,6 +62,46 @@ def test_redact_secrets_key_names_and_values():
     assert redacted["cert"] == data["cert"]
 
 
+def test_redact_secrets_non_string_values_and_suffixed_names():
+    data = {
+        "community": ["public", "s3cret2"],
+        "password": 123456,
+        "passwords": ["a1"],
+        "password1": "p1",
+        "password_2": "p2",
+        "communityString": "s3cret",
+        "communities": {"read": "r0"},
+        "snmp": {"community_string": "y"},
+        "key1": "wep-key",
+        "passwordRequired": True,
+        "psk": False,
+        "password_set": "yes",
+        "token": None,
+        "secret": [],
+    }
+    redacted = totus_http.redact_secrets(data)
+    for key in (
+        "community",
+        "password",
+        "passwords",
+        "password1",
+        "password_2",
+        "communityString",
+        "communities",
+        "key1",
+    ):
+        assert redacted[key] == "<redacted>", key
+    assert redacted["snmp"] == {"community_string": "<redacted>"}
+    for secret in ("s3cret", "123456", "a1", "p1", "p2", "r0", "wep-key"):
+        assert secret not in str(redacted), secret
+    # Flags and empty values are not secrets
+    assert redacted["passwordRequired"] is True
+    assert redacted["psk"] is False
+    assert redacted["password_set"] == "yes"
+    assert redacted["token"] is None
+    assert redacted["secret"] == []
+
+
 class _FakeResponse:
     def __init__(self, data):
         self.text = json.dumps(data)
@@ -213,6 +253,19 @@ def test_ntp_peer_hostname_starting_with_tally_letter():
     assert (src.address, src.selected) == ("192.0.2.8", True)
     src = totus_http.ntp_peer_to_time_source({"remote": "*ntp.example.com"})
     assert (src.address, src.selected) == ("ntp.example.com", True)
+
+
+def test_ntp_peer_refclock_tally():
+    """ntpq (without -n) shows reference clocks by name: "o" + "PPS(0)" is a selected PPS peer."""
+    pps = "PPS(0)"
+    src = totus_http.ntp_peer_to_time_source({"remote": f"o{pps}"})
+    assert (src.address, src.state, src.selected) == ("PPS(0)", "active", True)
+    src = totus_http.ntp_peer_to_time_source({"remote": "xGPS_NMEA(0)"})
+    assert (src.address, src.state, src.selected) == ("GPS_NMEA(0)", "falseticker", False)
+    src = totus_http.ntp_peer_to_time_source({"remote": "*SHM(0)"})
+    assert (src.address, src.selected) == ("SHM(0)", True)
+    src = totus_http.ntp_peer_to_time_source({"remote": " LOCAL(0)"})
+    assert (src.address, src.state, src.selected) == ("LOCAL(0)", "", None)
 
 
 def test_timedate_clock(dev):

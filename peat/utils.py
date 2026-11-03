@@ -14,7 +14,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
-from pathlib import Path
+from pathlib import Path, PurePath
 from traceback import format_exc
 from typing import Any
 
@@ -753,6 +753,30 @@ def write_file(
     return True
 
 
+def safe_join(base: Path, rel_path: str | PurePath) -> Path:
+    """
+    Join a relative path, e.g. a file path reported by a device, to a base
+    directory without the result leaving that directory.
+
+    Empty, ``.`` and ``..`` components and any root are dropped (``/`` and
+    ``\\`` both separate components), so both ``../../etc/x`` and ``/etc/x``
+    become ``<base>/etc/x``.
+
+    Args:
+        base: Directory the result must stay in
+        rel_path: Path to put under ``base``
+
+    Returns:
+        The joined path (``base`` itself if ``rel_path`` has no usable components)
+    """
+    parts = [p for p in re.split(r"[\\/]+", str(rel_path)) if p not in ("", ".", "..")]
+    path = Path(base, *parts)
+    if not path.is_relative_to(base):
+        # A component with a drive ("C:") switches drives on Windows
+        path = Path(base, *(consts.sanitize_filename(p) for p in parts))
+    return path
+
+
 def dup_path(file: Path) -> Path:
     """
     Handle duplicate files by adding a '.<num>' to the name.
@@ -821,6 +845,19 @@ def utc_now() -> datetime:
     Further reading: https://blog.miguelgrinberg.com/post/it-s-time-for-a-change-datetime-utcnow-is-now-deprecated
     """
     return datetime.now(UTC)
+
+
+def utc_from_timestamp(timestamp: float | None) -> datetime | None:
+    """
+    Timezone-aware UTC :class:`datetime.datetime` of a POSIX timestamp, or
+    :obj:`None` if it is unset or out of range (e.g. a corrupt or crafted file time).
+    """
+    if timestamp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=UTC)
+    except (OverflowError, OSError, TypeError, ValueError):
+        return None
 
 
 def time_now() -> str:

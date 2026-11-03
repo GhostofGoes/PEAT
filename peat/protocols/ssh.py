@@ -18,7 +18,7 @@ from typing import Any
 import paramiko
 
 import peat
-from peat import CommError, log
+from peat import CommError, log, utils
 
 
 class SSH:
@@ -227,7 +227,8 @@ class SSH:
         failed = 0
 
         for entry in files:
-            save_path = Path(local_dir, entry["path"].lstrip("/"))
+            # The path comes from the device: keep it under local_dir ("../" etc.)
+            save_path = utils.safe_join(local_dir, entry["path"])
             Path(save_path.parent).mkdir(parents=True, exist_ok=True)
 
             if save_path.exists():

@@ -246,6 +246,10 @@ Credentials and secrets
        svc.security.default_credentials = True
    dev.store("service", svc)
 
+File paths from a device
+------------------------
+File names and paths reported by a device (e.g. a FTP listing) are untrusted. :meth:`DeviceData.write_file <peat.data.models.DeviceData.write_file>` keeps them inside the output directory (``..`` components and a leading ``/`` are dropped). To build a local path from a device path yourself, use :func:`peat.utils.safe_join`, never ``Path(local_dir, device_path)``. Convert device file times with :func:`peat.utils.utc_from_timestamp`, which returns ``None`` instead of raising for a corrupt or crafted time.
+
 .. _declaring-known-defaults:
 
 Declaring known defaults

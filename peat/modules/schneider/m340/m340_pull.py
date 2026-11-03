@@ -183,7 +183,8 @@ def _get_snmp_metadata(
         "error_count": ("4.1.3833.1.9.1.1.1.5.0", int),
         "last_error": ("4.1.3833.1.9.1.1.1.6.0", int),
         "last_mail_elapsed_time": ("4.1.3833.1.9.1.1.1.7.0", int),
-        "link_service_status": ("4.1.3833.1.9.1.1.1.8.0", str),
+        # INTEGER: 1 = SMTP server unreachable, 2 = reachable
+        "link_service_status": ("4.1.3833.1.9.1.1.1.8.0", int),
         # The number of time that the link to the SMTP server has been detected down.
         "server_check_fail_count": ("4.1.3833.1.9.1.1.1.9.0", int),
     }
@@ -197,7 +198,8 @@ def _get_snmp_metadata(
         # modbusThroughGatewayAndUnite(5) -- MODBUS through Gateway and UNITE protocol
         # modbusDirectAndUnite(6)         -- MODBUS direct and UNITE protocol
         "supported_protocol": ("4.1.3833.1.2.2.0", int),
-        "service_status": ("4.1.3833.1.2.1.0", str),
+        # INTEGER: 2 = operational
+        "service_status": ("4.1.3833.1.2.1.0", int),
         # 1=disabled, 2=enabled
         "port_security": ("4.1.3833.1.2.3.0", int),
         "max_connections": ("4.1.3833.1.2.4.0", int),

@@ -281,6 +281,12 @@ def test_rtac_tar_member_file():
     assert f.size == 3
     assert f.mtime is None
 
+    # A corrupt or crafted member time is skipped instead of aborting the parse
+    info.mtime = 10**15
+    assert rtac_tar_member_file(info).mtime is None
+    info.mtime = 1_700_000_000
+    assert rtac_tar_member_file(info).mtime.year == 2023
+
 
 def test_rtac_known_defaults_and_credentials():
     (baseline,) = SELRTAC.get_known_defaults()

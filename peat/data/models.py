@@ -6482,7 +6482,9 @@ class DeviceData(BaseModel):
         if not out_dir:
             out_dir = self.get_out_dir()
 
-        full_path = out_dir / filename
+        # File names can come from a device (e.g. a FTP listing): a root or ".."
+        # components must not put the file outside of out_dir.
+        full_path = utils.safe_join(out_dir, filename)
 
         utils.write_file(
             data=data,

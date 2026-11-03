@@ -181,10 +181,20 @@ def test_snmp_project_config_and_redaction():
     assert not {"set", "get", "trap"} & set(snmp_config)
     assert snmp_config["IPAddressMgr1"] == "192.0.2.161"  # parsed-config.json
 
-    # dev.extra: the mapped SNMP and NTP settings are not duplicated
+    # dev.extra: the mapped SNMP and NTP settings are not duplicated, the
+    # unmapped ones (the SNMP "manager" flag) stay
     extra = m340_parse.without_mapped_network_config(device_info)
-    assert extra["network_configurations"] == {"NOE": {"name": "NOE"}}
-    assert "snmp_config" in device_info["network_configurations"]["NOE"]  # input unchanged
+    assert extra["network_configurations"] == {
+        "NOE": {"name": "NOE", "snmp_config": {"manager": 1}}
+    }
+    assert "IPAddressMgr1" in device_info["network_configurations"]["NOE"]["snmp_config"]
+
+    # A zero ntp_srv (no NTP server) isn't mapped either
+    zero_ntp = {"network_configurations": {"NOE": {"ntp_srv": 0, "snmp_config": {"get": "x"}}}}
+    m340_parse.redact_snmp_communities(zero_ntp)
+    assert m340_parse.without_mapped_network_config(zero_ntp)["network_configurations"] == {
+        "NOE": {"ntp_srv": 0}
+    }
 
     # Site communities -> not the factory default; small ntp_srv values are flags
     dev2 = DeviceData(ip="192.0.2.21")
@@ -215,6 +225,26 @@ def test_snmp_led_walk_tolerates_missing_column(mocker):
     assert module_info["led_0"] == {"name": "RUN", "state": 1}
     assert module_info["led_1"] == {"name": "ERR"}
     assert "led_2" not in module_info
+
+
+def test_snmp_integer_service_status(mocker):
+    """Port 502 and SMTP link status are INTEGERs: value_string "2" is decoded."""
+    snmp = MagicMock()
+
+    def _get(identity, single_query=True, query_limit=None):  # noqa: ARG001
+        return [{"value_string": "2", "value_encoded": 2}] if single_query else []
+
+    snmp.get.side_effect = _get
+    mocker.patch.object(m340_pull, "SNMP", return_value=snmp)
+    module_info, _system = m340_pull._get_snmp_metadata("192.0.2.20", max_failures=100)
+
+    assert module_info["port_502"]["service_status"] == "operational"
+    assert m340_parse.port_502_service(module_info["port_502"]).enabled is True
+    smtp = module_info["smtp_server"]
+    assert smtp["link_service_status"] == "reachable"
+    svc, rel = m340_parse.smtp_service(smtp)
+    assert svc.extra["link_service_status"] == "reachable"
+    assert rel is None  # "2" is not a usable server address
 
 
 def test_ftp_default_credentials():

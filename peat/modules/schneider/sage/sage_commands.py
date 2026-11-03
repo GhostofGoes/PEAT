@@ -566,7 +566,7 @@ def parse_vxworks_version(data: str) -> dict[str, str]:
     - vxworks_version
     - wind_version
     - timestamp
-    - raw_bootline
+    - raw_bootline (with the boot host password redacted)
     - ata
     - host
     - ethernet_ip
@@ -614,6 +614,8 @@ def parse_vxworks_version(data: str) -> dict[str, str]:
 
             # leverage existing bootline parser from sage_parse
             if key == "raw_bootline":
+                # Never keep the boot host password (pw=) of the boot line
+                results[key] = sage_parse.redact_bootline(results[key])
                 results.update(sage_parse.bootline_parse(regex_results[key]))
         else:
             results[key] = ""

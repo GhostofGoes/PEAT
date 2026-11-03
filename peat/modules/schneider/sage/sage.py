@@ -1240,8 +1240,9 @@ class Sage(DeviceModule):
         #   device_info["ike"]["cert"]
         #   device_info["ike"]["telvent_cert_auth"]
         #   device_info["server_certificate"]
-        #   device_info["ike"]["privkey"]
-        #   device_info["server_private_key"]
+        # The private keys are secrets: only their presence is recorded
+        #   device_info["ike"]["privkey_present"]
+        #   device_info["server_private_key_present"]
 
         # Infer and populate fields in data model
         cls.update_dev(dev)
@@ -1273,15 +1274,22 @@ class Sage(DeviceModule):
                 file_basename = file.stem.replace(".tar", "").replace(".gz", "")
                 t_path = dev.get_sub_dir(f"{file_basename}_raw_files")
 
-                cls.log.debug(
-                    f"Extracting raw files from {file.name} to {t_path.parent.name}/{t_path.name}"
-                )
-
-                with tarfile.open(name=file, mode="r:gz", encoding="utf-8") as tar:
-                    # "data" filter: no absolute paths, ".." escapes, links outside or devices
-                    tar.extractall(path=t_path, filter="data")
+                # "data" filter: no absolute paths, ".." escapes, links outside or devices.
+                # Python before 3.11.4 has no extraction filters: never extract unfiltered.
+                if not hasattr(tarfile, "data_filter"):
+                    cls.log.warning(
+                        f"Not extracting raw files from {file.name}: this version of "
+                        "Python has no safe tar extraction filter (needs 3.11.4 or newer)"
+                    )
+                else:
+                    cls.log.debug(
+                        f"Extracting raw files from {file.name} to "
+                        f"{t_path.parent.name}/{t_path.name}"
+                    )
+                    with tarfile.open(name=file, mode="r:gz", encoding="utf-8") as tar:
+                        tar.extractall(path=t_path, filter="data")
             except Exception as ex:
-                cls.log.debug(f"Failed to extract raw files from {file.name}: {ex}")
+                cls.log.warning(f"Failed to extract raw files from {file.name}: {ex}")
 
         return dev
 

@@ -23,9 +23,12 @@ from peat.protocols import HTTP, clean_mac
 # Keys of JSON API data with secret values (Wi-Fi password, VPN credentials, ...),
 # matched against the snake_case key name (see is_secret_key()). Their values
 # are never stored in the data model or written to files.
+# Plural, numbered and "_string"/"_hash" forms count too ("passwords", "password1",
+# "community_string"). A bare or suffixed "key" is redacted as well: it can be a
+# Wi-Fi (WPA/WEP) key or a VPN key, and there are no API samples to tell them apart.
 SECRET_KEY_RE = re.compile(
-    r"(^|_)(pass(word|wd|phrase)?|pwd|psk|pre_?shared_?key|wpa_?key|key|secret|token"
-    r"|community|tls_?auth|private_?key)$"
+    r"(^|_)((pass(word|wd|phrase)?|pwd|psk|pre_?shared_?key|wpa_?key|secret|token"
+    r"|communit(y|ies)|tls_?auth|private_?key)(s|_?\d+|_string|_hash)?|key(_?\d+)?)$"
 )
 
 # Values that are secrets whatever their key: PEM private keys, OpenVPN static keys
@@ -37,6 +40,9 @@ SECRET_VALUE_RE = re.compile(
 # model elsewhere, or it holds secrets: "wifihotspot" has the Wi-Fi password).
 # "ntp_config" is in dev.clock.sources.
 EXCLUDED_FROM_EXTRA = ["ssh_keys", "users", "roles", "wifihotspot", "ntp_config"]
+
+# ntpq name of a reference clock (without -n), e.g. "PPS(0)", "GPS_NMEA(0)", "SHM(0)"
+NTP_REFCLOCK_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\(\d+\)$")
 
 # ntpq "tally code" (first character of the "remote" column) -> TimeSource.state
 NTP_TALLY_STATES = {
@@ -919,12 +925,18 @@ def redact_secrets(data):
     pre-shared keys, ...) and secret values (PEM private keys, OpenVPN static
     keys) replaced by ``"<redacted>"`` (see :func:`is_secret_key` and
     :data:`SECRET_VALUE_RE`).
+
+    Any non-empty value of a secret key is redacted, including numbers, lists
+    and objects. Booleans (e.g. a "password enabled" flag) are kept.
     """
     if isinstance(data, dict):
         return {
             k: (
                 "<redacted>"
-                if is_secret_key(k) and isinstance(v, str) and v
+                if is_secret_key(k)
+                and not isinstance(v, bool)
+                and v is not None
+                and v not in ("", [], {})
                 else redact_secrets(v)
             )
             for k, v in data.items()
@@ -981,10 +993,14 @@ def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
 
     # The tally code is the first character of the raw value (a blank tally =
     # rejected peer). The letters "o" and "x" are only a tally code before an
-    # IP address: a hostname may start with them (" ozlabs.ntp.org").
+    # IP address or a reference clock name (e.g. "o" before "PPS(0)"): a hostname
+    # may start with them (" ozlabs.ntp.org").
     raw = str(peer.get("remote") or "")
     tally = str(peer.get("tally") or "").strip()
-    if raw[:1] in NTP_TALLY_STATES and (raw[0] not in "ox" or utils.is_ip(raw[1:].strip())):
+    rest = raw[1:].strip()
+    if raw[:1] in NTP_TALLY_STATES and (
+        raw[0] not in "ox" or utils.is_ip(rest) or NTP_REFCLOCK_RE.match(rest)
+    ):
         tally, raw = raw[0], raw[1:]
     remote = raw.strip()
     if not remote:

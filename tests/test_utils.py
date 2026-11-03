@@ -1,6 +1,6 @@
 import json
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from platform import python_version
 
@@ -267,6 +267,32 @@ def test_utc_now():
     Not really a comprehensive test, but ensures it's timezone-aware and UTC.
     """
     assert str(utils.utc_now().tzinfo) == "UTC"
+
+
+def test_utc_from_timestamp():
+    assert utils.utc_from_timestamp(0) == datetime(1970, 1, 1, tzinfo=UTC)
+    assert utils.utc_from_timestamp(1_700_000_000).tzinfo == UTC
+    # Out of range (corrupt or crafted file times) or unset: None, not an exception
+    assert utils.utc_from_timestamp(10**15) is None
+    assert utils.utc_from_timestamp(float("nan")) is None
+    assert utils.utc_from_timestamp(None) is None
+
+
+@pytest.mark.parametrize(
+    ("rel_path", "expected"),
+    [
+        ("a/b.txt", ("a", "b.txt")),
+        ("/etc/passwd", ("etc", "passwd")),
+        ("../../../../escaped.txt", ("escaped.txt",)),
+        ("a/../../b/./c", ("a", "b", "c")),
+        ("..\\..\\win.ini", ("win.ini",)),
+        ("..", ()),
+    ],
+)
+def test_safe_join(tmp_path, rel_path, expected):
+    result = utils.safe_join(tmp_path, rel_path)
+    assert result == Path(tmp_path, *expected)
+    assert result.is_relative_to(tmp_path)
 
 
 def test_time_now():

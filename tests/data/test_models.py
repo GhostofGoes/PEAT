@@ -251,6 +251,26 @@ def test_device_data_write_file(mocker, tmp_path):
     assert sub_result.is_file()
 
 
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("../../../../escaped.txt", "escaped.txt"),
+        ("ok/../../escaped.txt", "escaped.txt"),
+        ("/tmp/escaped.txt", "tmp/escaped.txt"),
+    ],
+)
+def test_device_data_write_file_stays_in_out_dir(mocker, tmp_path, filename, expected):
+    """File names from a device (FTP listing) can't write outside of the output directory."""
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path / "devices"})
+    dev = DeviceData(id="write_test")
+    out_dir = dev.get_sub_dir("ftp_files")
+
+    result = dev.write_file("x", filename=filename, out_dir=out_dir)
+    assert result == out_dir / expected
+    assert result.read_text() == "x"
+    assert list(tmp_path.rglob("escaped.txt")) == [result]
+
+
 @pytest.mark.parametrize("typ", ["logic", "firmware", "boot_firmware"])
 def test_device_data_file_read_original(datapath, text_data, typ):
     dev = DeviceData()

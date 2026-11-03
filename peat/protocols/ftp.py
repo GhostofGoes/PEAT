@@ -495,7 +495,8 @@ class FTP:
         failed = 0
 
         for entry in to_download:
-            save_path = Path(local_dir, entry["path"].lstrip("/"))
+            # The path comes from the device: keep it under local_dir ("../" etc.)
+            save_path = utils.safe_join(local_dir, entry["path"])
             if save_path.exists():
                 self.log.warning(f"{save_path} already exists, new file: {entry}")
             try:

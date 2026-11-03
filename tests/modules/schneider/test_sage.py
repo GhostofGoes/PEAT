@@ -11,6 +11,7 @@ import io
 import tarfile
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -192,6 +193,76 @@ def test_parse_never_writes_secrets(out_config):
     for path in (out_config / "temp").rglob("*"):
         if path.is_file():
             assert "SuperSecret1!" not in path.read_text(errors="ignore"), path
+
+
+def _write_tar(tar_path, members: dict[str, bytes], mtime: int = 1_700_000_000) -> None:
+    with tarfile.open(tar_path, "w:gz", format=tarfile.GNU_FORMAT) as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = mtime
+            tar.addfile(info, io.BytesIO(data))
+
+
+def test_parse_archive_never_writes_keys_or_bootline_password(out_config):
+    """The private keys and the VxWorks boot line password never reach any output."""
+    tar_path = out_config / "in" / "config.tar.gz"
+    tar_path.parent.mkdir()
+    server_key = b"-----BEGIN PRIVATE KEY-----\nServerKeyMaterial\n-----END PRIVATE KEY-----\n"
+    ike_key = b"-----BEGIN RSA PRIVATE KEY-----\nIkeKeyMaterial\n-----END RSA PRIVATE KEY-----\n"
+    _write_tar(
+        tar_path,
+        {
+            "bootline.xml": b'<BOOT><BOOTLINE h="192.0.2.2" e="192.0.2.50:ffffff00" '
+            b'g="192.0.2.1" u="target" pw="BootPw123" tn="sage" f="0x8"/></BOOT>',
+            "ssl/server.key": server_key,
+            "ike/priv0.key": ike_key,
+        },
+    )
+    dev = Sage.parse(tar_path)
+
+    bootline = dev.extra["bootline_from_xml"]
+    assert "pw" not in bootline
+    assert bootline["password_set"] is True
+    assert bootline["u"] == "target"
+    assert "BootPw123" not in str(dev.export())
+
+    secrets = ("BootPw123", "ServerKeyMaterial", "IkeKeyMaterial")
+    written = list((out_config / "devices").rglob("*.json"))
+    written += [p for p in (out_config / "temp").rglob("*") if p.is_file()]
+    assert any(p.name == "parsed-config.json" for p in written)
+    for path in written:
+        text = path.read_text(errors="ignore")
+        for secret in secrets:
+            assert secret not in text, (secret, path)
+    parsed = next(p for p in written if p.name == "parsed-config.json").read_text()
+    assert '"server_private_key_present": true' in parsed
+    assert '"privkey_present": true' in parsed
+
+
+def test_bootline_password_redacted():
+    raw = "ata=0,0(0,0)host:/ata0a/vxWorks e=192.0.2.10:ffffff00 u=target pw=Secr3t tn=sage"
+    info = sage_parse.bootline_parse(raw)
+    assert "pw" not in info
+    assert info["password_set"] is True
+    assert "Secr3t" not in str(info)
+    assert sage_parse.bootline_parse({"pw": "", "tn": "sage"}) == {
+        "password_set": False,
+        "target_name": "sage",
+    }
+
+    version = sage_commands.parse_vxworks_version(
+        "VxWorks (for Sage) version 6.9.\nKernel: WIND version 2.13.\n"
+        f"Made on Jan 21 2015, 10:00:00.\nBoot line:\n{raw}"
+    )
+    assert version["raw_bootline"].endswith("u=target pw=<redacted> tn=sage")
+    assert version["password_set"] is True
+    assert "Secr3t" not in str(version)
+
+    dev = DeviceData()
+    sage_parse.process_bootline(dev, {"raw_bootline": raw})
+    assert "Secr3t" not in dev.firmware.extra["bootline"]
+    assert "pw=<redacted>" in dev.firmware.extra["bootline"]
 
 
 def test_parse_ether_password_not_stored():
@@ -547,6 +618,58 @@ def test_parse_config_tar_member_cannot_escape(tmp_path):
             tar.addfile(info, io.BytesIO(data))
     Sage.parse(tar_path)
     assert list(tmp_path.parent.rglob("ESCAPED.txt")) == []
+
+
+@pytest.mark.usefixtures("out_config")
+def test_parse_config_tar_out_of_range_mtime(tmp_path):
+    """A corrupt member time no longer aborts the parse of the whole archive."""
+    tar_path = tmp_path / "in" / "config.tar.gz"
+    tar_path.parent.mkdir()
+    rtusetup = b"<RTU_SETUP><CPU><RTU><NAME>ChangeMe</NAME></RTU></CPU></RTU_SETUP>"
+    _write_tar(tar_path, {"xml/rtusetup.xml": rtusetup}, mtime=10**15)
+
+    dev = Sage.parse(tar_path)
+    assert dev.extra["rtusetup_placeholders"] == ["RTU/NAME"]
+    assert [str(f.path) for f in dev.files] == ["xml/rtusetup.xml"]
+    assert dev.files[0].mtime is None
+
+    member = tarfile.TarInfo("x.xml")
+    member.mtime = 10**15
+    assert sage_parse.tar_member_to_file(member, "a.tar.gz").mtime is None
+    attrs = SimpleNamespace(filename="x.xml", st_size=1, st_mtime=10**15, longname="")
+    assert sage_parse.sftp_attrs_to_file("/ata0a", attrs).mtime is None
+
+
+def test_parse_config_tar_without_extraction_filter(out_config, monkeypatch):
+    """Without the tarfile "data" filter (Python < 3.11.4) nothing is extracted unfiltered."""
+    tar_path = out_config / "in" / "config.tar.gz"
+    tar_path.parent.mkdir()
+    rtusetup = b"<RTU_SETUP><CPU><RTU><NAME>RTU1</NAME></RTU></CPU></RTU_SETUP>"
+    _write_tar(tar_path, {"xml/rtusetup.xml": rtusetup})
+    monkeypatch.delattr(tarfile, "data_filter")
+
+    dev = Sage.parse(tar_path)
+    assert dev.files
+    assert list((out_config / "devices").rglob("*_raw_files")) == []
+
+
+def test_downloaded_file_local_path_stays_in_download_dir(tmp_path):
+    """A device path with ".." gets the local path that the download actually used."""
+    ftp_dir = tmp_path / "ftp_files"
+    (ftp_dir / "etc").mkdir(parents=True)
+    (ftp_dir / "etc" / "hostname").write_text("x")
+    outside = tmp_path / "etc"
+    outside.mkdir()
+    (outside / "hostname").write_text("y")
+
+    device_path = "/../../etc/hostname"
+    listing = [{"type": "file", "name": "hostname", "path": device_path}]
+    files = sage_parse.listing_to_files(listing, local_dir=ftp_dir, downloaded={device_path})
+    assert files[0].local_path == ftp_dir / "etc" / "hostname"
+
+    attrs = SimpleNamespace(filename="hostname", st_size=1, st_mtime=None, longname="")
+    sftp_file = sage_parse.sftp_attrs_to_file("/../../etc", attrs, local_dir=ftp_dir)
+    assert sftp_file.local_path == ftp_dir / "etc" / "hostname"
 
 
 def test_record_login_default_credentials():

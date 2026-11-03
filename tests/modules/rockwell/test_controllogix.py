@@ -125,6 +125,34 @@ def test_controllogix_ftp_files(mocker):
     assert ftp.security.encrypted is False
 
 
+@pytest.mark.usefixtures("out_config")
+def test_controllogix_ftp_file_cannot_escape(mocker, tmp_path):
+    """A device file name with "../" is written inside of ftp_files, nowhere else."""
+    listing = (
+        ["escaped.txt"],
+        [
+            {
+                "type": "file",
+                "permissions": "rw-r--r--",
+                "size": 10,
+                "modified": datetime(2011, 1, 21),
+                "name": "escaped.txt",
+                "path": "../../../../escaped.txt",
+                "parent": "",
+            }
+        ],
+    )
+    mocker.patch.object(FakeFTP, "LISTING", listing)
+    mocker.patch("peat.modules.rockwell.controllogix.FTP", FakeFTP)
+    dev = datastore.get("192.0.2.10")
+
+    assert ControlLogix.pull_ftp(dev) is True
+    ftp_dir = dev.get_sub_dir("ftp_files")
+    written = list(tmp_path.rglob("escaped.txt"))
+    assert written == [ftp_dir / "escaped.txt"]
+    assert dev.files[0].local_path == ftp_dir / "escaped.txt"
+
+
 class FakeSNMP:
     """Stand-in for peat.protocols.SNMP with one EN2T interface."""
 

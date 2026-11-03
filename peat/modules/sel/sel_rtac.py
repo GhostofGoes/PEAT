@@ -44,7 +44,6 @@ import re
 import tarfile
 import xml.etree.ElementTree as ET
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import Literal
@@ -337,8 +336,10 @@ def rtac_tar_member_file(member: tarfile.TarInfo) -> File:
         peat_module="SELRTAC",
         category={"configuration", "project"},
     )
-    if member.mtime:
-        file_obj.mtime = datetime.fromtimestamp(member.mtime, tz=UTC)
+    # Out-of-range times (corrupt or crafted archive) are skipped, not fatal
+    mtime = utils.utc_from_timestamp(member.mtime) if member.mtime else None
+    if mtime:
+        file_obj.mtime = mtime
     return file_obj
 
 

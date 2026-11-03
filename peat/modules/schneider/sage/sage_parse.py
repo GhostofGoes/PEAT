@@ -13,7 +13,7 @@ import re
 import tarfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePath, PurePosixPath
 from typing import IO, Any, Final
 
@@ -353,10 +353,25 @@ def parse_time(f_handle: IO[bytes], device_info: dict) -> None:
     parse_gps_elements(gps, device_info)
 
 
+# VxWorks boot line keys with the password of the boot host (FTP) user
+BOOTLINE_PASSWORD_KEYS: Final[tuple[str, ...]] = ("pw", "passwd", "password")
+
+
+def redact_bootline(raw: str) -> str:
+    """
+    VxWorks boot line string with the value of the boot host password
+    (``pw=``) replaced by ``<redacted>``.
+    """
+    return re.sub(r"(\bpw=)\S+", r"\1<redacted>", raw, flags=re.IGNORECASE)
+
+
 def bootline_parse(bootline: str | dict) -> dict[str, str]:
     """
     Parse useful information out of vxworks bootline string,
     which is embedded in ``bootline.xml``.
+
+    The boot host password (``pw``) is a secret: it is never returned, only
+    ``password_set`` (if a non-empty password is configured).
     """
     if isinstance(bootline, str):
         bootline_dict = {}
@@ -391,8 +406,13 @@ def bootline_parse(bootline: str | dict) -> dict[str, str]:
     info = {}
 
     for key, value in bootline_dict.items():
+        if str(key).lower() in BOOTLINE_PASSWORD_KEYS:
+            info["password_set"] = bool(str(value or "").strip())
+            continue
         if key in _key_map:
             key = _key_map[key]
+        if isinstance(value, str):
+            value = redact_bootline(value)
         info[key] = _convert_to_elastic(value)
 
     # Handle if in format "192.0.2.1:ffffff00"
@@ -488,7 +508,7 @@ def process_bootline(dev: DeviceData, data: dict[str, str]) -> None:
         )
 
     if data.get("raw_bootline"):
-        dev.firmware.extra["bootline"] = data["raw_bootline"]
+        dev.firmware.extra["bootline"] = redact_bootline(data["raw_bootline"])
 
 
 def parse_ether(f_handle: IO[bytes], device_info: dict) -> None:
@@ -597,8 +617,9 @@ def parse_vxworks_script(f_handle: IO[bytes], device_info: dict) -> None:
 
 
 def parse_private_key(f_handle: IO[bytes], device_info: dict) -> None:
-    key_data = f_handle.read().decode("utf-8")
-    device_info["server_private_key"] = key_data
+    # Secret: only record that the key is there, never its contents
+    key_data = f_handle.read()
+    device_info["server_private_key_present"] = bool(key_data.strip())
 
 
 def parse_certificate(f_handle: IO[bytes], device_info: dict) -> None:
@@ -633,8 +654,9 @@ def parse_ike_privkey(f_handle: IO[bytes], device_info: dict) -> None:
     if "ike" not in device_info:
         device_info["ike"] = {}
 
-    ca_data = f_handle.read().decode("utf-8")
-    device_info["ike"]["privkey"] = ca_data
+    # Secret: only record that the key is there, never its contents
+    key_data = f_handle.read()
+    device_info["ike"]["privkey_present"] = bool(key_data.strip())
 
 
 def parse_ike_cert(f_handle: IO[bytes], device_info: dict) -> None:
@@ -2087,7 +2109,8 @@ def listing_to_files(
         if mode:
             file.mode = mode
         if local_dir is not None and downloaded and entry["path"] in downloaded:
-            local_path = Path(local_dir, entry["path"].lstrip("/"))
+            # Same location as FTP.download_files() (kept inside local_dir)
+            local_path = utils.safe_join(local_dir, entry["path"])
             if local_path.is_file():
                 file.local_path = local_path
         files.append(file)
@@ -2110,14 +2133,16 @@ def sftp_attrs_to_file(folder: str, attrs: Any, local_dir: Path | None = None) -
     )
     if getattr(attrs, "st_size", None) is not None:
         file.size = attrs.st_size
-    if getattr(attrs, "st_mtime", None) is not None:
-        file.mtime = datetime.fromtimestamp(attrs.st_mtime, tz=UTC)
+    mtime = utils.utc_from_timestamp(getattr(attrs, "st_mtime", None))
+    if mtime:
+        file.mtime = mtime
     longname = getattr(attrs, "longname", "") or ""
     mode = _mode_from_permissions(longname.split()[0] if longname.split() else "")
     if mode:
         file.mode = mode
     if local_dir is not None:
-        local_path = Path(local_dir, path.lstrip("/"))
+        # Same location as SSH.sftp_download_files() (kept inside local_dir)
+        local_path = utils.safe_join(local_dir, path)
         if local_path.is_file():
             file.local_path = local_path
     return file
@@ -2143,8 +2168,10 @@ def tar_member_to_file(member: tarfile.TarInfo, archive_name: str) -> File:
     )
     if f_type == "file":
         file.size = member.size
-    if member.mtime:
-        file.mtime = datetime.fromtimestamp(member.mtime, tz=UTC)
+    # Out-of-range times (corrupt or crafted archive) are skipped, not fatal
+    mtime = utils.utc_from_timestamp(member.mtime) if member.mtime else None
+    if mtime:
+        file.mtime = mtime
     if f_type == "symlink" and member.linkname:
         file.target_path = PurePosixPath(member.linkname)
     return file
