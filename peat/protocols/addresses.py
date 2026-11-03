@@ -27,8 +27,18 @@ ADDR_RANGE_REGEX = re.compile(
 def address_to_pathname(address: str) -> str:
     """
     Converts a address or other host identifier to a suitable filepath name.
+
+    The result is always one name inside the parent directory, also for
+    identifiers that come from device data (e.g. an IED name in an SCL file):
+    ``/`` and ``\\`` are replaced, a name of only dots (``.``, ``..``) has its
+    dots replaced, and a Windows drive prefix (``d:``) has its colon replaced.
     """
-    return address.strip().lower().replace("/", "_").replace(" ", "_")
+    name = address.strip().lower().replace("/", "_").replace("\\", "_").replace(" ", "_")
+    if not name.strip("."):  # "." or "..": the directory itself or its parent
+        name = name.replace(".", "_")
+    if name[1:2] == ":":  # "d:x" is relative to the current directory of drive D: (Windows)
+        name = f"{name[0]}_{name[2:]}"
+    return name
 
 
 @lru_cache(maxsize=2048)

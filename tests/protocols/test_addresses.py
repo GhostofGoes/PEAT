@@ -1,10 +1,12 @@
 import unittest
 from ipaddress import AddressValueError, IPv4Address, IPv4Network
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
 from peat import PeatError
 from peat.protocols import (
+    address_to_pathname,
     clean_ipv4,
     clean_mac,
     expand_commas_and_clean_strings,
@@ -339,3 +341,40 @@ def test_sort_ips_mixed_families_never_raises():
         "2001:db8::50",
         "x",
     ]
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("192.0.2.20", "192.0.2.20"),
+        (" Relay 1 ", "relay_1"),
+        ("PROT1", "prot1"),
+        ("00:11:22:33:44:55", "00:11:22:33:44:55"),
+        ("fe80::1", "fe80::1"),
+        ("relay..1", "relay..1"),
+        ("a/b", "a_b"),
+        ("a\\b", "a_b"),
+        ("..", "__"),
+        (".", "_"),
+        ("...", "___"),
+        ("../x", ".._x"),
+        ("..\\..\\x", ".._.._x"),
+        ("d:x", "d_x"),
+        ("C:\\x", "c__x"),
+    ],
+)
+def test_address_to_pathname(address, expected):
+    assert address_to_pathname(address) == expected
+
+
+@pytest.mark.parametrize(
+    "address", ["..", ".", "...", " .. ", "../..", "..\\..\\x", "/etc", "\\\\h\\s", "d:x", "C:\\x"]
+)
+def test_address_to_pathname_stays_in_directory(address):
+    """A device ID (e.g. an IED name from an SCL file) never leaves the devices directory."""
+    name = address_to_pathname(address)
+    for base in (PurePosixPath("/out/devices"), PureWindowsPath("C:/out/devices")):
+        joined = base / name
+        assert joined.parent == base, (address, joined)
+        assert joined.name == name
+        assert name not in ("", ".", "..")
