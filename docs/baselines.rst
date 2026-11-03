@@ -250,6 +250,7 @@ Change management workflow (NERC CIP-010)
       peat baseline-compare -b relay-1-approved.json --known-defaults --fail-on medium -e http://localhost:9200 peat_results/<run>/
 
 #. After an approved change, create a new baseline version from the pull that reflects the change.
+#. After a PEAT upgrade, re-create or re-approve the baselines from a pull made with the new PEAT version before using ``--fail-on`` again: device data of different PEAT versions can differ in shape (e.g. a new PEAT version reads new fields or list items, such as the tasks of a PLC program, or no longer reports some), and these differences are reported as deviations of an unchanged device.
 
 
 Elasticsearch

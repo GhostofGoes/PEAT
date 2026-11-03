@@ -7488,7 +7488,7 @@ class BaselineProvenance(BaseModel):
     """When the source device state was observed (the pull/parse time)."""
 
     run_id: constr(strip_whitespace=True) = ""
-    """PEAT run ID that produced the source data."""
+    """PEAT run ID of the run that created the baseline."""
 
     peat_version: constr(strip_whitespace=True) = ""
     """PEAT version that created the baseline."""
