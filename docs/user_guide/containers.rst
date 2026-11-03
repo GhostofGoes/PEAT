@@ -161,37 +161,15 @@ Inside the container PEAT is installed in ``/PEAT`` with its virtual environment
 pillage output to ``/pillage_results``), and the ``PEAT_IN_CONTAINER`` environment variable
 is set, which PEAT records in its logs (``peat.containerized``).
 
-Docker refresher
-================
-Images are the built artifact (``ghcr.io/sandialabs/peat``); containers are running (or
-stopped) instances of an image created by ``docker run``.
+Offline systems
+===============
+Save the image to a file on a connected system and load it on the isolated one:
 
 .. code-block:: bash
 
-   # Images
-   docker pull ghcr.io/sandialabs/peat:latest   # Download or update
-   docker load -i peat_docker_image.tar          # Load from a file (offline systems)
-   docker images                                 # List
-   docker rmi <image-id>                         # Delete
-   docker image prune                            # Clean up dangling layers
+   docker save ghcr.io/sandialabs/peat:latest -o peat_docker_image.tar
+   docker load -i peat_docker_image.tar
 
-   # Containers
-   docker ps                                     # Running
-   docker ps -a                                  # Running and stopped
-   docker logs -f <container>                    # Follow a container's output
-   docker rm -f <container>                      # Delete
-   docker container prune                        # Delete all stopped containers
-   docker system prune                           # Clean up images, containers, networks, volumes
-
-Further reading:
-
-- `Docker documentation <https://docs.docker.com/>`__ and the
-  `Docker Engine install guide <https://docs.docker.com/engine/install/>`__
-- `Docker volumes <https://docs.docker.com/engine/storage/volumes/>`__
-- `Start containers automatically <https://docs.docker.com/engine/containers/start-containers-automatically/>`__
-- `Compose file reference <https://docs.docker.com/reference/compose-file/>`__
-- `lazydocker <https://github.com/jesseduffield/lazydocker>`__, a terminal UI for
-  monitoring containers and images
-- `Podman documentation <https://docs.podman.io/en/latest/>`__
-
+For Docker itself, see the `Docker documentation <https://docs.docker.com/>`__ (or the
+`Podman documentation <https://docs.podman.io/en/latest/>`__).
 Building the image yourself is covered in :doc:`/contributing/building`.

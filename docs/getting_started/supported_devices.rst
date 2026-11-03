@@ -74,8 +74,7 @@ you'd like supported, `open an issue <https://github.com/sandialabs/PEAT/issues>
       The TCP/IP protocols and ports PEAT uses to communicate with devices
 
    :doc:`/reference/devices/index`
-      In-depth reference pages for specific device families (SEL, Siemens, OpenPLC, and
-      MySQL servers)
+      In-depth reference pages for specific device families (SEL, Siemens, and OpenPLC)
 
    :doc:`/reference/example_artifacts`
       Where to find example files for testing PEAT's parsers

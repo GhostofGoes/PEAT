@@ -145,150 +145,168 @@ Example Output:
 
 Basic status information dictates the core operational state of the PLC.
 
-.. code-block:: json
+.. dropdown:: Example: PLC Status & Run Mode
+   :icon: code
 
-    "type": "PLC",
-    "run_mode": "RUNNING",
-    "status": "Online",
-    "os": {
-        "full": "Autonomy Logic, Inc. OpenPLC Runtime v4 v4.1.7",
-        "name": "OpenPLC Runtime v4",
-        "vendor": {
-            "name": "Autonomy Logic, Inc."
-        },
-        "version": "v4.1.7"
-    }
+   .. code-block:: json
+
+       "type": "PLC",
+       "run_mode": "RUNNING",
+       "status": "Online",
+       "os": {
+           "full": "Autonomy Logic, Inc. OpenPLC Runtime v4 v4.1.7",
+           "name": "OpenPLC Runtime v4",
+           "vendor": {
+               "name": "Autonomy Logic, Inc."
+           },
+           "version": "v4.1.7"
+       }
 
 2. User Information
 -------------------
 
 The ``users`` array contains all registered accounts pulled from the runtime.
 
-.. code-block:: json
+.. dropdown:: Example: User Information
+   :icon: code
 
-    "users": [
-        {
-            "id": "1",
-            "name": "admin"
-        }
-    ]
+   .. code-block:: json
+
+       "users": [
+           {
+               "id": "1",
+               "name": "admin"
+           }
+       ]
 
 3. Timing Statistics
 --------------------
 
 When statistics are included in the status pull, PEAT nests this performance data under the ``extra`` object.
 
-.. code-block:: json
+.. dropdown:: Example: Timing Statistics
+   :icon: code
 
-    "extra": {
-        "timing_stats": {
-            "tasks": [
-                {
-                    "cycle_latency_avg": 0,
-                    "cycle_latency_max": 0,
-                    "cycle_latency_min": 9223372036854775807,
-                    "cycle_time_avg": 0,
-                    "cycle_time_max": 0,
-                    "cycle_time_min": 9223372036854775807,
-                    "name": "TASK0",
-                    "overruns": 0,
-                    "scan_count": 1,
-                    "scan_time_avg": 0,
-                    "scan_time_max": 0,
-                    "scan_time_min": 9223372036854775807
-                }
-            ]
-        }
-    }
+   .. code-block:: json
+
+       "extra": {
+           "timing_stats": {
+               "tasks": [
+                   {
+                       "cycle_latency_avg": 0,
+                       "cycle_latency_max": 0,
+                       "cycle_latency_min": 9223372036854775807,
+                       "cycle_time_avg": 0,
+                       "cycle_time_max": 0,
+                       "cycle_time_min": 9223372036854775807,
+                       "name": "TASK0",
+                       "overruns": 0,
+                       "scan_count": 1,
+                       "scan_time_avg": 0,
+                       "scan_time_max": 0,
+                       "scan_time_min": 9223372036854775807
+                   }
+               ]
+           }
+       }
 
 4. File Extraction (Runtime, Compilation, & Plugin Logs)
 --------------------------------------------------------
 
 The raw ``openplc_runtime.log``, ``compilation_status.log``, and ``plugin_command.json`` are also dumped independently.
 
-.. code-block:: json
+.. dropdown:: Example: File Extraction (Runtime, Compilation, & Plugin Logs)
+   :icon: code
 
-   "files": [
-        {
-            "description": "Last Compilation Status",
-            "device": "192.168.10.20",
-            "extension": "log",
-            "name": "compilation_status.log"
-        },
-        {
-            "description": "Output for ethercat plugin (status)",
-            "device": "192.168.10.20",
-            "extension": "json",
-            "mime_type": "application/json",
-            "name": "ethercat_status.json"
-        },
-        {
-            "description": "Runtime Logs",
-            "device": "192.168.10.20",
-            "extension": "log",
-            "name": "openplc_runtime.log"
-        }
-   ]
+   .. code-block:: json
+
+      "files": [
+           {
+               "description": "Last Compilation Status",
+               "device": "192.168.10.20",
+               "extension": "log",
+               "name": "compilation_status.log"
+           },
+           {
+               "description": "Output for ethercat plugin (status)",
+               "device": "192.168.10.20",
+               "extension": "json",
+               "mime_type": "application/json",
+               "name": "ethercat_status.json"
+           },
+           {
+               "description": "Runtime Logs",
+               "device": "192.168.10.20",
+               "extension": "log",
+               "name": "openplc_runtime.log"
+           }
+      ]
 
 5. Runtime Events
 -----------------
 
 PEAT parses the raw text logs from the runtime endpoint, standardizing them into the ``event`` timeline.
 
-.. code-block:: json
+.. dropdown:: Example: Runtime Events
+   :icon: code
 
-   "event": [
-        {
-            "created": "2026-07-02 19:11:08+00:00",
-            "dataset": "runtime",
-            "id": "29",
-            "kind": [
-                "event"
-            ],
-            "message": "Native plugin './build/plugins/libs7comm_plugin.so' symbols loaded successfully",
-            "module": "OpenPLCv4",
-            "provider": "192.168.10.20",
-            "severity": "INFO",
-            "timezone": "UTC"
-        }
+   .. code-block:: json
+
+      "event": [
+           {
+               "created": "2026-07-02 19:11:08+00:00",
+               "dataset": "runtime",
+               "id": "29",
+               "kind": [
+                   "event"
+               ],
+               "message": "Native plugin './build/plugins/libs7comm_plugin.so' symbols loaded successfully",
+               "module": "OpenPLCv4",
+               "provider": "192.168.10.20",
+               "severity": "INFO",
+               "timezone": "UTC"
+           }
 
 6. Plugin Status (e.g., ``ethercat``)
 -------------------------------------
 
 Outputs from specific queried plugins (like ``ethercat``) are captured in their native format and nested under ``extra.plugin_status``.
 
-.. code-block:: json
+.. dropdown:: Example: Plugin Status (e.g., ``ethercat``)
+   :icon: code
 
-   "extra": {
-       "plugin_status": {
-           "ethercat": {
-                "masters": [
-                    {
-                        "expected_wkc": 0,
-                        "metrics": {
-                            "avg_cycle_us": 0,
-                            "avg_latency_us": 0,
-                            "avg_period_us": 0,
-                            "consecutive_wkc_errors": 0,
-                            "cycle_count": 0,
-                            "exchange_skips": 0,
-                            "max_cycle_us": 0,
-                            "max_exchange_us": 0,
-                            "max_latency_us": 0,
-                            "max_period_us": 0,
-                            "min_cycle_us": 0,
-                            "min_exchange_us": 0,
-                            "min_latency_us": 0,
-                            "min_period_us": 0,
-                            "noframe_count": 0,
-                            "recovery_attempts": 0,
-                            "wkc_error_count": 0
-                        },
-                        "name": "default",
-                        "plugin_state": "IDLE",
-                        "slave_count": 0
-                    }
-                ]
-            }
-        }
-    }
+   .. code-block:: json
+
+      "extra": {
+          "plugin_status": {
+              "ethercat": {
+                   "masters": [
+                       {
+                           "expected_wkc": 0,
+                           "metrics": {
+                               "avg_cycle_us": 0,
+                               "avg_latency_us": 0,
+                               "avg_period_us": 0,
+                               "consecutive_wkc_errors": 0,
+                               "cycle_count": 0,
+                               "exchange_skips": 0,
+                               "max_cycle_us": 0,
+                               "max_exchange_us": 0,
+                               "max_latency_us": 0,
+                               "max_period_us": 0,
+                               "min_cycle_us": 0,
+                               "min_exchange_us": 0,
+                               "min_latency_us": 0,
+                               "min_period_us": 0,
+                               "noframe_count": 0,
+                               "recovery_attempts": 0,
+                               "wkc_error_count": 0
+                           },
+                           "name": "default",
+                           "plugin_state": "IDLE",
+                           "slave_count": 0
+                       }
+                   ]
+               }
+           }
+       }

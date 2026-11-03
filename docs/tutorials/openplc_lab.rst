@@ -82,10 +82,13 @@ credentials. The scan summary now contains the device with its OS name and versi
 complete scan summary of an OpenPLC instance looks like is
 ``examples/example-openplc-scan-summary.json``:
 
-.. literalinclude:: ../../examples/example-openplc-scan-summary.json
-   :language: json
-   :lines: 1-40
-   :caption: First 40 lines of ``examples/example-openplc-scan-summary.json``
+.. dropdown:: First 40 lines of ``examples/example-openplc-scan-summary.json``
+   :icon: code
+
+   .. literalinclude:: ../../examples/example-openplc-scan-summary.json
+      :language: json
+      :lines: 1-40
+      :caption: First 40 lines of ``examples/example-openplc-scan-summary.json``
 
 Step 4: pull
 ============

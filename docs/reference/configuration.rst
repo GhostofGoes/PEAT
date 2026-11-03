@@ -38,10 +38,14 @@ variable with a ``PEAT_`` prefix (``PEAT_OUT_DIR``). The attribute documentation
 
 YAML configuration reference
 ============================
-.. literalinclude:: ../../examples/peat-config.yaml
-   :name: PEAT YAML configuration reference
-   :language: yaml
-   :linenos:
+.. dropdown:: ``examples/peat-config.yaml``, the annotated reference configuration
+   :icon: file-code
+   :open:
+
+   .. literalinclude:: ../../examples/peat-config.yaml
+      :name: PEAT YAML configuration reference
+      :language: yaml
+      :linenos:
 
 .. _pillage-config:
 

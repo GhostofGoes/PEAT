@@ -143,14 +143,9 @@ the time, which makes for defensible provenance.
 
 Windows notes
 =============
-- Run as Administrator for ARP/ICMP host checks, broadcast scans, and MAC addresses.
-  As a normal user, add ``-Y`` for known addresses that don't answer the TCP check.
-- The ``cmd`` prompt works, but colors render poorly; use PowerShell or Windows Terminal,
-  or ``--no-color``.
-- Paths: ``.\peat.exe parse -d m340 'C:\Projects\Station.apx'``. For binary project files,
-  pass the path rather than piping with ``Get-Content``.
-- Results are in ``.\peat_results\`` under the folder you ran from, and the log file in
-  ``peat_results\<run>\logs\peat.log``. ``Get-Content -Wait`` follows it live.
+- Administrator rights, Npcap, terminal choice, paths, and following the log are covered
+  once in the :ref:`Windows notes <windows-usage>` of the user guide.
+- Results are in ``.\peat_results\`` under the folder you ran from.
 - A Windows laptop usually also has the vendors' project files from past work on it.
   ``peat parse`` reads many of them directly (see :doc:`/user_guide/parse`), and on
   Linux, :doc:`pillage <engineering_workstation>` finds them.

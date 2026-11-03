@@ -165,9 +165,13 @@ Notes and limitations
 
 Examples
 ========
-The complete list of pillage examples from ``peat pillage --examples``:
+The complete cheat sheet from ``peat pillage --examples``, which largely repeats the examples
+above:
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: pillage_examples = """
-   :end-before: """  # End pillage examples
+.. dropdown:: All ``peat pillage`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: pillage_examples = """
+      :end-before: """  # End pillage examples

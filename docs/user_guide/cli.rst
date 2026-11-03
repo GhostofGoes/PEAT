@@ -183,15 +183,22 @@ Timeouts and threads
 
 Windows notes
 =============
-Run PEAT in an **Administrator** PowerShell terminal or script. Running as a standard user
-restricts certain Windows networking APIs, which affects :term:`ICMP` and :term:`ARP` host
-checks, broadcast scanning, and network sniffing, so scans are slower and less reliable.
-Install `Npcap <https://npcap.com/>`__ for raw-socket features (it comes with Wireshark).
-PEAT also runs in a legacy ``cmd`` terminal, but colors and formatting may not render well.
-
-Paths work the same as elsewhere on Windows: ``peat parse -d m340 'C:\Projects\Station.apx'``.
-Note that PowerShell's ``Get-Content`` can't pipe binary files; use a path argument or
-file redirection (``<``) for binary project files.
+- **Run as Administrator** (an Administrator PowerShell terminal or script) for scans and
+  pulls. A standard user can't use the Windows networking APIs that :term:`ICMP` and
+  :term:`ARP` host checks, broadcast scanning, :term:`MAC` address resolution, and network
+  sniffing need, so scans are slower and less reliable. For known addresses that don't
+  answer the TCP fallback check, add ``-Y`` (``--assume-online``).
+- **Install** `Npcap <https://npcap.com/>`__ for the raw-socket features (it comes with
+  Wireshark). The other permission requirements are listed in the
+  :ref:`system requirements <permissions>`.
+- **Use PowerShell or Windows Terminal.** PEAT runs in a legacy ``cmd`` window, but colors
+  and formatting render poorly there; pass ``--no-color`` if needed, or customize a color
+  with Loguru's ``LOGURU_<LEVEL>_COLOR`` environment variables (see
+  :doc:`/contributing/logging`).
+- **Paths** work as elsewhere on Windows: ``peat parse -d m340 'C:\Projects\Station.apx'``.
+  PowerShell's ``Get-Content`` can't pipe binary files, so pass a path argument or use
+  file redirection (``<``) for binary project files.
+- **Follow a run's log** with ``Get-Content -Wait peat_results\<run>\logs\peat.log``.
 
 Exit codes and output streams
 =============================

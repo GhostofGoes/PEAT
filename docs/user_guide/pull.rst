@@ -191,9 +191,13 @@ Pulling from many devices
 
 Examples
 ========
-The complete list of pull examples from ``peat pull --examples``:
+The complete cheat sheet from ``peat pull --examples``, which largely repeats the examples
+above:
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: pull_examples = """
-   :end-before: """  # End pull examples
+.. dropdown:: All ``peat pull`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: pull_examples = """
+      :end-before: """  # End pull examples

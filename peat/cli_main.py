@@ -699,8 +699,7 @@ variables were configured, e.g. `OUT_DIR`, `ELASTIC_DIR` or `LOG_DIR`.
             ...
         peat_metadata/
             peat_configuration.yaml
-            peat_configuration.json
-            peat_state.json
+            peat_state.yaml
         summaries/
             scan-summary.json
             pull-summary.json

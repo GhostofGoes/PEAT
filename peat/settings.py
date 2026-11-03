@@ -283,8 +283,9 @@ class Configuration(SettingsManager):
     Files that may be created in this directory include:
 
     - peat_configuration.yaml
-    - peat_configuration.json
-    - peat_state.json
+    - peat_state.yaml
+    - peat_configuration.json and peat_state.json, when saved from the Python API
+        with ``save_json=True``
     - Copy of the config file used for the run,
         if applicable (e.g. ``-c my-config.yaml``)
 

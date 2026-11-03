@@ -235,9 +235,13 @@ Scanning considerations
 
 Examples
 ========
-The complete list of scan examples from ``peat scan --examples``:
+The complete cheat sheet from ``peat scan --examples``, which largely repeats the examples
+above:
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: scan_examples = """
-   :end-before: """  # End scan_examples
+.. dropdown:: All ``peat scan`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: scan_examples = """
+      :end-before: """  # End scan_examples

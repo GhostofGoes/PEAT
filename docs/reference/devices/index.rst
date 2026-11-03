@@ -15,7 +15,6 @@ and the summary table of supported devices is on
    sel
    siemens
    openplc
-   mysql
 
 Modules without a dedicated page are documented by their class docstrings in
 :doc:`/developer/device_modules` and their options in the

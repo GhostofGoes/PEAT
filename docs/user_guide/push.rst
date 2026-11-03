@@ -91,9 +91,13 @@ reflected in PEAT's exit code.
 
 Examples
 ========
-The complete list of push examples from ``peat push --examples``:
+The complete cheat sheet from ``peat push --examples``, which largely repeats the examples
+above:
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: push_examples = """
-   :end-before: """  # End push examples
+.. dropdown:: All ``peat push`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: push_examples = """
+      :end-before: """  # End push examples

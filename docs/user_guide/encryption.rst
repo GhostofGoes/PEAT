@@ -110,22 +110,37 @@ Handling passwords
 
 Examples
 ========
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: encrypt_config_examples = """
-   :end-before: """  # End encrypt-config examples
+The complete cheat sheets from ``--examples`` for each command:
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: decrypt_config_examples = """
-   :end-before: """  # End decrypt-config examples
+.. dropdown:: All ``peat encrypt-config`` examples
+   :icon: terminal
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: encrypt_results_examples = """
-   :end-before: """  # End encrypt-results examples
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: encrypt_config_examples = """
+      :end-before: """  # End encrypt-config examples
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: decrypt_results_examples = """
-   :end-before: """  # End decrypt-results examples
+.. dropdown:: All ``peat decrypt-config`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: decrypt_config_examples = """
+      :end-before: """  # End decrypt-config examples
+
+.. dropdown:: All ``peat encrypt-results`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: encrypt_results_examples = """
+      :end-before: """  # End encrypt-results examples
+
+.. dropdown:: All ``peat decrypt-results`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: decrypt_results_examples = """
+      :end-before: """  # End decrypt-results examples
+

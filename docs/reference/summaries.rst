@@ -26,8 +26,11 @@ to the ``peat-scan-summaries`` index. The Python API returns it from
 
 Example (a scan of one Schneider ION power meter):
 
-.. literalinclude:: ../../examples/example-scan-summary.json
-   :language: json
+.. dropdown:: Example scan summary (``examples/example-scan-summary.json``)
+   :icon: code
+
+   .. literalinclude:: ../../examples/example-scan-summary.json
+      :language: json
 
 .. _pull-summary:
 
@@ -46,10 +49,13 @@ device data (``pull_results``) is printed to the terminal with ``-E``.
 
 Example (an OpenPLC Runtime v4 pull):
 
-.. literalinclude:: ../../examples/example-openplc-pull-summary.json
-   :language: json
-   :lines: 1-80
-   :caption: First 80 lines of ``examples/example-openplc-pull-summary.json``
+.. dropdown:: Example pull summary (first 80 lines of ``examples/example-openplc-pull-summary.json``)
+   :icon: code
+
+   .. literalinclude:: ../../examples/example-openplc-pull-summary.json
+      :language: json
+      :lines: 1-80
+      :caption: First 80 lines of ``examples/example-openplc-pull-summary.json``
 
 .. _parse-summary:
 
@@ -68,8 +74,11 @@ The result of ``peat parse``. Written to ``summaries/parse-summary.json`` and th
 Example (the fictional AwesomeTool module from the
 :doc:`module developer guide </developer/module_developer_guide>`):
 
-.. literalinclude:: ../../examples/example-parse-summary.json
-   :language: json
+.. dropdown:: Example parse summary (``examples/example-parse-summary.json``)
+   :icon: code
+
+   .. literalinclude:: ../../examples/example-parse-summary.json
+      :language: json
 
 Device data in summaries
 ========================

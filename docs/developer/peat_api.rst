@@ -5,25 +5,43 @@ The general :term:`API` provides a generalized interface to execute the PEAT "ve
 
 High-level API
 ==============
+The entry point of each command, followed by the helper functions of its module.
+
+Scan
+----
 .. automodule:: peat.api.scan_api
-   :members: scan
-   :noindex:
+   :members:
+   :undoc-members:
 
+Pull
+----
 .. automodule:: peat.api.pull_api
-   :members: pull
-   :noindex:
+   :members:
+   :undoc-members:
 
+Push
+----
 .. automodule:: peat.api.push_api
-   :members: push
-   :noindex:
+   :members:
+   :undoc-members:
 
+Parse
+-----
 .. automodule:: peat.api.parse_api
-   :members: parse
-   :noindex:
+   :members:
+   :undoc-members:
 
+Pillage
+-------
 .. automodule:: peat.api.pillage_api
-   :members: pillage
-   :noindex:
+   :members:
+   :undoc-members:
+
+HEAT
+----
+.. automodule:: peat.api.heat_api
+   :members:
+   :undoc-members:
 
 .. _configuration-api:
 

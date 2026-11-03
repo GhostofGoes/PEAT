@@ -180,10 +180,13 @@ Example terminal output from running the included example module:
 
 The results in ``device-data-full.json``:
 
-.. literalinclude:: ../../examples/example_peat_module/awesome_output_expected_device-data-full.json
-   :name: awesome_module_output_example
-   :caption: Output of the example PEAT module AwesomeTool
-   :language: json
+.. dropdown:: ``device-data-full.json`` produced by the example module
+   :icon: code
+
+   .. literalinclude:: ../../examples/example_peat_module/awesome_output_expected_device-data-full.json
+      :name: awesome_module_output_example
+      :caption: Output of the example PEAT module AwesomeTool
+      :language: json
 
 To try the scan and pull paths, serve the example directory over HTTP and point PEAT at
 it:

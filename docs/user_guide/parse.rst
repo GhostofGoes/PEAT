@@ -115,7 +115,7 @@ are parsed with the :doc:`container <containers>`, and it's handy in pipelines:
    peat parse -q -E -d selrtac ./soe.csv | jq '.event | length'
 
 On Windows, ``Get-Content file | peat parse ...`` works for text files but not binary
-project files; use a path argument or ``<`` redirection for those.
+project files (see the :ref:`Windows notes <windows-usage>`).
 
 Results
 =======
@@ -150,9 +150,13 @@ Tips
 
 Examples
 ========
-The complete list of parse examples from ``peat parse --examples``:
+The complete cheat sheet from ``peat parse --examples``, which largely repeats the examples
+above:
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: parse_examples = """
-   :end-before: """  # End parse examples
+.. dropdown:: All ``peat parse`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: parse_examples = """
+      :end-before: """  # End parse examples

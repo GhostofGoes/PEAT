@@ -149,9 +149,8 @@ A parse produces nothing or odd results
 
 Windows: colors and formatting look wrong
 -----------------------------------------
-Use PowerShell or Windows Terminal rather than ``cmd``. Disable colors with ``--no-color``
-or customize a problematic color with Loguru's ``LOGURU_<LEVEL>_COLOR`` environment
-variables (see :doc:`/contributing/logging`).
+Use PowerShell or Windows Terminal rather than ``cmd``, or pass ``--no-color``; see the
+:ref:`Windows notes <windows-usage>`.
 
 macOS: the executable is blocked by Gatekeeper
 ----------------------------------------------

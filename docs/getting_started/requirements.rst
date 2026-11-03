@@ -137,6 +137,8 @@ encryption commands) do not require network access.
 - **Elasticsearch/OpenSearch** (optional): connectivity to the server on its HTTP(S) port
   (9200 by default) if results are exported with ``-e``.
 
+.. _permissions:
+
 Permissions and system configuration
 ====================================
 - A terminal is required to run PEAT. On Windows, PowerShell is preferred. PEAT runs in a

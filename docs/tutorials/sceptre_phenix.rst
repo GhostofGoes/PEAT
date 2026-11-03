@@ -151,9 +151,13 @@ The **topology** describes the VMs and networks. Each node has an image, hardwar
 interfaces on named VLANs; the VLAN IDs are allocated automatically. The ``peat`` node
 carries the two injections:
 
-.. literalinclude:: ../../examples/phenix/peat-bennu-topology.yaml
-   :language: yaml
-   :start-at: apiVersion:
+.. dropdown:: ``examples/phenix/peat-bennu-topology.yaml``
+   :icon: file-code
+   :open:
+
+   .. literalinclude:: ../../examples/phenix/peat-bennu-topology.yaml
+      :language: yaml
+      :start-at: apiVersion:
 
 The **scenario** attaches apps to the topology's nodes. The ``sceptre`` app (from
 `sceptre-phenix-apps <https://github.com/sandialabs/sceptre-phenix-apps>`__, included in
@@ -165,9 +169,13 @@ hand-written ``injects/override/rtu-1_config.xml`` and ``rtu-2_config.xml`` inst
 generated configurations (the app's own point numbering would differ); those are the files
 PEAT ships as examples:
 
-.. literalinclude:: ../../examples/phenix/peat-bennu-scenario.yaml
-   :language: yaml
-   :start-at: apiVersion:
+.. dropdown:: ``examples/phenix/peat-bennu-scenario.yaml``
+   :icon: file-code
+   :open:
+
+   .. literalinclude:: ../../examples/phenix/peat-bennu-scenario.yaml
+      :language: yaml
+      :start-at: apiVersion:
 
 When an RTU boots, the generated start-up script copies the installed field device binary
 and ``/etc/sceptre/config.xml`` into the ``sceptre`` user's home directory, which is also

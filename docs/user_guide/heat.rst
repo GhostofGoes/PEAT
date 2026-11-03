@@ -182,9 +182,13 @@ Limitations
 
 Examples
 ========
-The complete list of HEAT examples from ``peat heat --examples``:
+The complete cheat sheet from ``peat heat --examples``, which largely repeats the examples
+above:
 
-.. literalinclude:: ../../peat/cli_args.py
-   :language: bash
-   :start-after: heat_examples = """
-   :end-before: """  # End HEAT examples
+.. dropdown:: All ``peat heat`` examples
+   :icon: terminal
+
+   .. literalinclude:: ../../peat/cli_args.py
+      :language: bash
+      :start-after: heat_examples = """
+      :end-before: """  # End HEAT examples
