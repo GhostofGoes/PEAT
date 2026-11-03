@@ -109,7 +109,7 @@ def test_rtac_config_relationships():
     assert dnp.evidence == {"config"}
 
     sel = by_name["SEL_751_FDR2"]
-    assert (sel.protocol, sel.local.role, sel.remote.role) == ("sel", "client", "server")
+    assert (sel.protocol, sel.local.role, sel.remote.role) == ("sel", "master", "outstation")
 
     tunnel = by_name["Eng_Access_40"]
     assert tunnel.type == "tunnel"
@@ -124,9 +124,78 @@ def test_rtac_config_relationships():
     assert serial.medium == "rs_485"
     assert serial.local.serial_port == "/dev/ttyS2"
     assert serial.local.role == "master"
+    assert serial.direction == "egress"
 
     assert len(dev.relationships) == 5
     assert "192.0.2.41" in dev.related.ip
+
+
+def test_rtac_config_relationships_devices_behind_one_gateway():
+    config = {
+        "remote_devices": {
+            1: {"remote_device_id": 1, "name": "MeterA", "model": "PM8000"},
+            2: {
+                "remote_device_id": 2,
+                "name": "MeterB",
+                "model": "ION7650",
+                "manufacturer": "Schneider",
+            },
+            3: {"remote_device_id": 3, "name": "RELAY_1", "model": "751"},
+        },
+        "modbus_ethernet_settings": {
+            1: {"remote_device_id": 1, "server_ip_address": "10.0.0.50", "server_ip_port": 502},
+            2: {"remote_device_id": 2, "server_ip_address": "10.0.0.50", "server_ip_port": 502},
+        },
+        "dnp_client_ethernet_settings": {
+            1: {"remote_device_id": 3, "server_ip_address": "10.0.0.50", "server_ip_port": 20000},
+        },
+    }
+    rels = rtac_config_relationships(config)
+    assert len(rels) == 2
+    dev = DeviceData(ip="192.0.2.5")
+    for rel in rels:
+        dev.store("relationships", rel)
+    dev.populate_fields()
+    assert len(dev.relationships) == 2
+
+    by_port = {r.remote.port: r for r in dev.relationships}
+    gateway = by_port[502]
+    assert (gateway.remote.ip, gateway.protocol) == ("10.0.0.50", "modbus_tcp")
+    assert gateway.remote.name == ""  # two devices: no single name
+    assert gateway.extra == {
+        "remote_devices": [
+            {"name": "MeterA", "model": "PM8000"},
+            {"name": "MeterB", "model": "ION7650", "manufacturer": "Schneider"},
+        ]
+    }
+    assert (gateway.local.role, gateway.remote.role) == ("client", "server")
+
+    relay = by_port[20000]  # one device on another port of the same IP
+    assert relay.remote.name == "RELAY_1"
+    assert relay.extra == {"remote_model": "751"}
+
+
+def test_rtac_config_relationships_serial_roles():
+    config = {
+        "remote_devices": {
+            1: {"remote_device_id": 1, "name": "RTU_101"},
+            2: {"remote_device_id": 2, "name": "METER_RTU"},
+        },
+        "serial_ports": {
+            1: {"serial_port_id": 1, "device_file": "/dev/ttyS1", "serial_port_type_id": 232},
+            2: {"serial_port_id": 2, "device_file": "/dev/ttyS2"},
+        },
+        "iec60870_serial_ports": {1: {"serial_port_id": 1, "remote_device_id": 1}},
+        "modbus_serial_ports": {1: {"serial_port_id": 2, "remote_device_id": 2}},
+    }
+    by_name = {r.remote.name: r for r in rtac_config_relationships(config)}
+    iec = by_name["RTU_101"]
+    assert iec.protocol == "iec101"
+    assert (iec.local.role, iec.remote.role) == ("controlling_station", "controlled_station")
+    assert (iec.direction, iec.medium) == ("egress", "rs_232")
+    mb = by_name["METER_RTU"]
+    assert (mb.protocol, mb.local.role, mb.remote.role) == ("modbus_rtu", "client", "server")
+    assert mb.direction == "egress"
 
 
 def test_rtac_config_relationships_non_ip_server_address():

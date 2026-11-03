@@ -1831,6 +1831,9 @@ _PROTOCOL_ROLES: Final[dict[str, tuple[str, str]]] = {
     "iec103": ("controlling_station", "controlled_station"),
 }
 
+# Roles of the side that polls/initiates (Relationship.direction "egress" when local)
+_POLLING_ROLES: Final[frozenset[str]] = frozenset({"master", "client", "controlling_station"})
+
 
 def _port_roles(proto_name: str, protocol: dict, canonical: str) -> tuple[str, str]:
     """``(local role, remote role)`` from the protocol type or a MODE/ROLE attribute."""
@@ -1919,7 +1922,7 @@ def process_ports(dev: DeviceData, ports: dict) -> None:
         )
 
         # Configured peer: protocol address of the other end of the link
-        if remote_role in ("master", "client", "controlling_station"):
+        if remote_role in _POLLING_ROLES:
             remote_needles: tuple[str, ...] = ("MASTER", "REMOTE", "DEST")
             local_needles: tuple[str, ...] = ("SLAVE", "LOCAL", "OWN", "RTU", "STATION")
         else:
@@ -1955,12 +1958,20 @@ def process_ports(dev: DeviceData, ports: dict) -> None:
             None,
         )
 
+        # The master/client side polls: "egress" when it is the local device
+        direction = ""
+        if local_role in _POLLING_ROLES:
+            direction = "egress"
+        elif remote_role in _POLLING_ROLES:
+            direction = "ingress"
+
         dev.store(
             "relationships",
             Relationship(
                 type="communicates_with",
                 protocol=canonical,
                 medium="serial",
+                direction=direction,
                 local=RelationshipEndpoint(
                     serial_port=port_name,
                     role=local_role,

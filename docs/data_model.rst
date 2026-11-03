@@ -83,6 +83,7 @@ Protocol names
    "``modbus_tcp``", "Modbus TCP", "tcp/502", "``client`` / ``server``"
    "``modbus_rtu``", "Modbus RTU (serial)", "serial", "``client`` / ``server``"
    "``dnp3``", "DNP3", "tcp or udp/20000, serial", "``master`` / ``outstation``"
+   "``iec101``, ``iec103``", "IEC 60870-5-101, IEC 60870-5-103", "serial", "``controlling_station`` / ``controlled_station``"
    "``iec104``", "IEC 60870-5-104", "tcp/2404", "``controlling_station`` / ``controlled_station``"
    "``c37_118``", "IEEE C37.118 synchrophasors", "tcp or udp/4712", "``pmu`` / ``pdc``"
    "``mms``", "IEC 61850 MMS (client/server, reports)", "tcp/102", "``client`` / ``server``"
@@ -99,10 +100,11 @@ Protocol names
    "``syslog``", "Syslog", "udp or tcp/514", "``log_server``"
    "``http``, ``https``", "HTTP(S)", "tcp/80, tcp/443", "``client`` / ``server``"
    "``ssh``, ``telnet``, ``ftp``", "SSH, Telnet, FTP", "tcp/22, tcp/23, tcp/21", "``client`` / ``server``"
+   "``gdoi``, ``ocsp``, ``scep``", "GDOI key distribution, OCSP, SCEP (certificate services)", "udp/848, HTTP", "``gdoi_kdc``, ``ocsp_responder``, ``scep_server``"
 
 Known spelling variants are normalized automatically: ``c37.118`` -> ``c37_118``, ``iec_104`` / ``iec60870_5_104`` -> ``iec104`` (``peat.data.validators.PROTOCOL_ALIASES``), and a :class:`~peat.data.models.Service` with ``protocol="modbus"`` and ``transport="tcp"`` becomes ``modbus_tcp``. ``cip`` and ``enip`` are different services and are not merged.
 
-Other roles: ``client``, ``server``, ``peer``, ``gateway``, ``time_server``, ``log_server``, ``auth_server``, ``dns_server``, ``snmp_manager``, ``parent``, ``child``, ``engineering_access``.
+Other roles: ``client``, ``server``, ``peer``, ``gateway``, ``time_server``, ``log_server``, ``auth_server``, ``dns_server``, ``smtp_server``, ``snmp_manager``, ``parent``, ``child``, ``engineering_access``, ``io_provider`` (I/O data source), ``gdoi_kdc`` (GDOI key server), ``ocsp_responder``, ``scep_server``.
 
 Relationship types
 ------------------
@@ -141,10 +143,11 @@ The identity of a relationship is the *edge*, not how it was observed. ``Relatio
 - ``protocol``, only if no port is known;
 - the remote identity: ``remote.ip``, else ``remote.mac``, ``remote.hostname``, ``remote.name``, ``remote.address``;
 - ``local.id`` (the module, for relationships stored on ``DeviceData.module``) and ``local.serial_port``;
+- ``local.interface``, only for ``tunnel`` relationships (two tunnels to one gateway over different local interfaces are two relationships);
 - the protocol addresses and VLAN, only for L2/serial edges without an IP and port;
 - ``reference`` (IEC 61850 stream reference).
 
-``transport``, ``local.interface``, ``local.ip``, roles and ``direction`` are attributes that merge. A configured DNP3 master and the socket-table sessions from it are therefore ONE record with ``evidence={"config", "netstat"}``.
+``transport``, ``local.interface`` (except for tunnels), ``local.ip``, roles and ``direction`` are attributes that merge. A configured DNP3 master and the socket-table sessions from it are therefore ONE record with ``evidence={"config", "netstat"}``. Several logical peers configured behind one edge (e.g. remote devices behind one gateway IP address and port) are also one relationship: modules combine them before storing it (e.g. ``extra["remote_devices"]`` of SEL RTAC client connections).
 
 When fields are empty, ``Relationship.annotate()`` infers them:
 

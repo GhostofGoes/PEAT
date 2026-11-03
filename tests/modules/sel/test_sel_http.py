@@ -102,8 +102,31 @@ def test_aggregate_logon_relationships():
     assert rel.protocol == "https"
     assert rel.count == 2
     assert rel.first_seen == rel.last_seen == T0
-    assert rel.extra == {"logon_successes": 1, "logon_failures": 1, "logon_service": "web"}
+    assert rel.extra == {"logon_successes": 1, "logon_failures": 1, "logon_services": ["web"]}
     assert aggregate_logon_relationships([]) == []
+
+
+def test_aggregate_logon_relationships_unmapped_services_share_one_edge():
+    # A failed logon (no service) and a logon via a service without a known
+    # protocol have the same relationship identity: store() would merge them
+    logons = [
+        {"ip": "192.0.2.5", "outcome": "failure", "timestamp": T0},
+        {"ip": "192.0.2.5", "service": "telnet", "outcome": "success", "timestamp": T0},
+        {"ip": "192.0.2.5", "service": "serial", "outcome": "success", "timestamp": T0},
+    ]
+    rels = aggregate_logon_relationships(logons)
+    assert len(rels) == 1
+    dev = DeviceData(ip="192.0.2.10")
+    for rel in rels:
+        dev.store("relationships", rel)
+    (rel,) = dev.relationships
+    assert rel.protocol == ""
+    assert rel.count == 3
+    assert rel.extra == {
+        "logon_successes": 2,
+        "logon_failures": 1,
+        "logon_services": ["serial", "telnet"],
+    }
 
 
 def test_post_summary_indicators():

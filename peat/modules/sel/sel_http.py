@@ -2221,7 +2221,7 @@ def process_soe_csv(text: str, dev: DeviceData) -> list[dict]:
       ``extra["application"]`` = the application name
     - ``priority`` -> ``severity``
     - logons and failed logons with a source IP are aggregated per (source IP,
-      service) into ``communicates_with`` relationships (``evidence={"log"}``,
+      protocol) into ``communicates_with`` relationships (``evidence={"log"}``,
       ``first_seen``/``last_seen``/``count``), see
       :func:`aggregate_logon_relationships`
 
@@ -2515,11 +2515,15 @@ def _soe_event(raw: dict, original: str, sequence: int, dev: DeviceData) -> tupl
 def aggregate_logon_relationships(logons: list[dict]) -> list[Relationship]:
     """
     Aggregate logon observations (``{ip, service, outcome, timestamp, user}``) per
-    (source IP, service) into one inbound ``communicates_with``
+    (source IP, protocol) into one inbound ``communicates_with``
     :class:`~peat.data.models.Relationship` each, with ``first_seen``,
     ``last_seen`` and ``count`` (``evidence={"log"}``). The service names of the
     RTAC log map to protocols with :data:`SOE_LOGON_PROTOCOLS` (``Web`` ->
-    ``https``, ``ODBC`` -> ``postgres``).
+    ``https``, ``ODBC`` -> ``postgres``). Logons without a mapped service (e.g.
+    failed logons, which name no service) have no protocol and are one
+    relationship per source IP, because ``store()`` would merge them anyway
+    (:meth:`~peat.data.models.Relationship.key`). The raw service names are in
+    ``extra["logon_services"]``.
     """
     groups = {}  # type: dict[tuple[str, str], dict]
     for logon in logons:
@@ -2528,9 +2532,19 @@ def aggregate_logon_relationships(logons: list[dict]) -> list[Relationship]:
             continue
         service = str(logon.get("service", "")).lower()
         group = groups.setdefault(
-            (ip, service), {"count": 0, "times": [], "successes": 0, "failures": 0, "users": set()}
+            (ip, SOE_LOGON_PROTOCOLS.get(service, "")),
+            {
+                "count": 0,
+                "times": [],
+                "successes": 0,
+                "failures": 0,
+                "users": set(),
+                "services": set(),
+            },
         )
         group["count"] += 1
+        if service:
+            group["services"].add(service)
         if logon.get("timestamp") is not None:
             group["times"].append(logon["timestamp"])
         if logon.get("outcome") == "success":
@@ -2541,20 +2555,20 @@ def aggregate_logon_relationships(logons: list[dict]) -> list[Relationship]:
             group["users"].add(logon["user"])
 
     relationships = []
-    for (ip, service), group in groups.items():
+    for (ip, protocol), group in groups.items():
         extra = {
             "logon_successes": group["successes"],
             "logon_failures": group["failures"],
         }
-        if service:
-            extra["logon_service"] = service
+        if group["services"]:
+            extra["logon_services"] = sorted(group["services"])
         if group["users"]:
             extra["users"] = sorted(group["users"])
         times = sorted(group["times"], key=lambda t: (t.tzinfo is not None, t))
         relationships.append(
             Relationship(
                 type="communicates_with",
-                protocol=SOE_LOGON_PROTOCOLS.get(service, ""),
+                protocol=protocol,
                 direction="ingress",
                 remote=RelationshipEndpoint(ip=ip),
                 evidence={"log"},

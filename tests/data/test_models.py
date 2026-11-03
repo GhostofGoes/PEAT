@@ -855,6 +855,38 @@ def test_relationship_identity():
     assert exported[0]["type"] == "communicates_with"
 
 
+def test_relationship_identity_tunnels_per_local_interface():
+    # Two IPsec tunnels to one gateway over two WAN links are two edges
+    dev = DeviceData(ip="192.0.2.1")
+    for iface in ("wan1", "wan2", "wan1"):
+        dev.store(
+            "relationships",
+            Relationship(
+                type="tunnel",
+                protocol="ipsec",
+                local=RelationshipEndpoint(interface=iface),
+                remote=RelationshipEndpoint(ip="203.0.113.1", role="peer"),
+                evidence={"config"},
+            ),
+        )
+    assert sorted(r.local.interface for r in dev.relationships) == ["wan1", "wan2"]
+    assert len({r.id for r in dev.relationships}) == 2
+
+    # Other types: local.interface is an attribute that merges
+    other = DeviceData(ip="192.0.2.1")
+    for iface in ("eth0", ""):
+        other.store(
+            "relationships",
+            Relationship(
+                type="neighbor_of",
+                local=RelationshipEndpoint(interface=iface),
+                remote=RelationshipEndpoint(ip="192.0.2.7"),
+                evidence={"arp"},
+            ),
+        )
+    assert [r.local.interface for r in other.relationships] == ["eth0"]
+
+
 def test_relationship_medium_vocabulary():
     dev = DeviceData(ip="192.0.2.40")
     dev.store("interface", Interface(name="port1", type="physical", ip="192.0.2.40"))

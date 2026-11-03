@@ -307,6 +307,27 @@ def test_fortigate_ntp_ipsec_ha():
     assert len(dev.routes) == 2
 
 
+def test_fortigate_ipsec_tunnels_over_two_wan_links():
+    conf = """\
+config vpn ipsec phase1-interface
+    edit "hq-wan1"
+        set interface "wan1"
+        set remote-gw 203.0.113.1
+    next
+    edit "hq-wan2"
+        set interface "wan2"
+        set remote-gw 203.0.113.1
+    next
+end
+"""
+    dev = DeviceData()
+    process_fg_conf(fg_conf_to_dict(conf), dev)
+    tunnels = {r.local.interface: r for r in _rels(dev, type="tunnel")}
+    assert set(tunnels) == {"wan1", "wan2"}
+    assert tunnels["wan2"].extra["tunnel_name"] == "hq-wan2"
+    assert tunnels["wan1"].id != tunnels["wan2"].id
+
+
 def test_fortigate_conf_without_global_or_admin():
     dev = DeviceData()
     process_fg_conf(fg_conf_to_dict("config system dns\n    set primary 192.0.2.53\nend\n"), dev)

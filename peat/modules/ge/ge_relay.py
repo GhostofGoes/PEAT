@@ -33,6 +33,14 @@ SECURITY_SERVER_ROLES = {
     "SCEP Server IP": "scep_server",
 }
 
+# Role of a security server -> protocol of the relationship. Without a port, the
+# protocol is part of the relationship identity: servers on one host stay separate.
+SECURITY_SERVER_PROTOCOLS = {
+    "gdoi_kdc": "gdoi",
+    "ocsp_responder": "ocsp",
+    "scep_server": "scep",
+}
+
 # TODO: these devices may support HTTPS in some cases, should we handle that somehow?
 # TODO: make a "GEHTTP" subclass of HTTP to more cleanly implement custom functionality
 
@@ -561,7 +569,8 @@ GERelay.ip_methods = [
 def security_server_relationship(row: dict) -> Relationship | None:
     """
     GDOI key server, OCSP responder or SCEP server configured on the
-    "Administrator" Modbus map page as a ``depends_on`` relationship.
+    "Administrator" Modbus map page as a ``depends_on`` relationship
+    (``protocol`` ``gdoi``, ``ocsp`` or ``scep``).
     """
     role = SECURITY_SERVER_ROLES.get(row.get("name", ""))
     value = str(row.get("value", "")).strip()
@@ -569,6 +578,7 @@ def security_server_relationship(row: dict) -> Relationship | None:
         return None
     return Relationship(
         type="depends_on",
+        protocol=SECURITY_SERVER_PROTOCOLS[role],
         remote=RelationshipEndpoint(ip=value, role=role),
         evidence={"config"},
     )

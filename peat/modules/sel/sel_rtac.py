@@ -111,11 +111,20 @@ def config_change_alert(changed_paths: list[str], module: str = "SELRTAC") -> di
 # serial_ports.serial_port_type_id -> Interface.type / Relationship.medium
 RTAC_SERIAL_TYPES = {"232": "rs_232", "422": "rs_422", "485": "rs_485"}
 
-# Postgres client settings table -> (protocol, local role, remote role)
+# Postgres client settings table -> protocol
 RTAC_ETHERNET_CLIENT_TABLES = {
-    "dnp_client_ethernet_settings": ("dnp3", "master", "outstation"),
-    "sel_client_ethernet_settings": ("sel", "client", "server"),
-    "modbus_ethernet_settings": ("modbus_tcp", "client", "server"),
+    "dnp_client_ethernet_settings": "dnp3",
+    "sel_client_ethernet_settings": "sel",
+    "modbus_ethernet_settings": "modbus_tcp",
+}
+
+# Protocol -> (RTAC role, remote device role), the protocol's own terms (docs/data_model.rst)
+RTAC_PROTOCOL_ROLES = {
+    "dnp3": ("master", "outstation"),
+    "sel": ("master", "outstation"),
+    "modbus_tcp": ("client", "server"),
+    "modbus_rtu": ("client", "server"),
+    "iec101": ("controlling_station", "controlled_station"),
 }
 
 # "<prefix>_serial_ports" postgres table -> protocol
@@ -145,13 +154,18 @@ def rtac_config_relationships(config: dict) -> list[Relationship]:
 
     - ``dnp_client_ethernet_settings``, ``sel_client_ethernet_settings``,
       ``modbus_ethernet_settings`` -> ``communicates_with`` (``egress``, the RTAC is
-      the master/client) to ``server_ip_address``:``server_ip_port``; the device
-      name and model come from ``remote_devices`` (joined on ``remote_device_id``)
+      the master/client, roles from :data:`RTAC_PROTOCOL_ROLES`) to
+      ``server_ip_address``:``server_ip_port``; the device name and model come from
+      ``remote_devices`` (joined on ``remote_device_id``). Several remote devices
+      behind one address and port (e.g. meters behind a Modbus gateway) are one
+      relationship (one edge, see :meth:`~peat.data.models.Relationship.key`)
+      without ``remote.name``, with the devices in ``extra["remote_devices"]``
+      (``name``, ``model``, ``manufacturer``)
     - ``*_serial_ports`` and ``serial_port_connections`` rows that name a serial
       port and a remote device -> serial ``communicates_with`` relationships
-      (``medium`` from the port's ``serial_port_type_id``). The column names of
-      these tables are not verified against an RTAC; rows without a serial port
-      or a remote device are skipped.
+      (``egress``, ``medium`` from the port's ``serial_port_type_id``). The column
+      names of these tables are not verified against an RTAC; rows without a serial
+      port or a remote device are skipped.
     - ``Eng_Access_*`` remote devices (engineering access passthrough) -> ``tunnel``
     - other remote devices -> ``communicates_with`` with only the remote name
 
@@ -178,7 +192,10 @@ def rtac_config_relationships(config: dict) -> list[Relationship]:
         rem = devices_by_id.get(str(rid), {}) if rid is not None else {}
         return str(rem.get("name") or ""), rem
 
-    for table, (protocol, local_role, remote_role) in RTAC_ETHERNET_CLIENT_TABLES.items():
+    # Relationship.key() -> (relationship, remote devices behind that edge)
+    edges = {}  # type: dict[tuple, tuple[Relationship, list[dict[str, str]]]]
+    for table, protocol in RTAC_ETHERNET_CLIENT_TABLES.items():
+        local_role, remote_role = RTAC_PROTOCOL_ROLES[protocol]
         for row in (config.get(table) or {}).values():
             raw_address = str(row.get("server_ip_address") or "").strip()
             if not raw_address or raw_address == "0.0.0.0":
@@ -200,34 +217,50 @@ def rtac_config_relationships(config: dict) -> list[Relationship]:
             transport = str(row.get("transport") or row.get("transport_protocol") or "").lower()
             if transport not in ("tcp", "udp"):
                 transport = "udp" if local_udp and not local_tcp else "tcp"
-            extra = {}
-            if rem.get("model"):
-                extra["remote_model"] = rem["model"]
-            if rem.get("manufacturer"):
-                extra["remote_manufacturer"] = rem["manufacturer"]
-            relationships.append(
-                Relationship(
-                    type="communicates_with",
-                    protocol=protocol,
-                    transport=transport,
-                    direction="egress",
-                    local=RelationshipEndpoint(
-                        port=local_tcp if transport == "tcp" else local_udp, role=local_role
-                    ),
-                    remote=RelationshipEndpoint(
-                        ip=ip,
-                        address=address,
-                        hostname=hostname,
-                        port=_int_or_none(row.get("server_ip_port")),
-                        name=name,
-                        role=remote_role,
-                    ),
-                    evidence={"config"},
-                    extra=extra,
-                )
+            rel = Relationship(
+                type="communicates_with",
+                protocol=protocol,
+                transport=transport,
+                direction="egress",
+                local=RelationshipEndpoint(
+                    port=local_tcp if transport == "tcp" else local_udp, role=local_role
+                ),
+                remote=RelationshipEndpoint(
+                    ip=ip,
+                    address=address,
+                    hostname=hostname,
+                    port=_int_or_none(row.get("server_ip_port")),
+                    role=remote_role,
+                ),
+                evidence={"config"},
             )
+            # store() merges every row to the same address and port into one
+            # record, so combine them here and keep every remote device
+            _, devices = edges.setdefault(rel.key(), (rel, []))
+            device = {
+                key: str(value)
+                for key, value in (
+                    ("name", name),
+                    ("model", rem.get("model")),
+                    ("manufacturer", rem.get("manufacturer")),
+                )
+                if value not in (None, "")
+            }
+            if device and device not in devices:
+                devices.append(device)
             if name:
                 connected.add(name)
+
+    for rel, devices in edges.values():
+        if len(devices) == 1:
+            rel.remote.name = devices[0].get("name", "")
+            if devices[0].get("model"):
+                rel.extra["remote_model"] = devices[0]["model"]
+            if devices[0].get("manufacturer"):
+                rel.extra["remote_manufacturer"] = devices[0]["manufacturer"]
+        elif devices:  # e.g. meters behind a Modbus gateway
+            rel.extra["remote_devices"] = devices
+        relationships.append(rel)
 
     # Serial client connections (column names unverified, see docstring)
     serial_tables = {
@@ -248,19 +281,17 @@ def rtac_config_relationships(config: dict) -> list[Relationship]:
             extra = {}
             if rem.get("model"):
                 extra["remote_model"] = rem["model"]
+            local_role, remote_role = RTAC_PROTOCOL_ROLES.get(protocol, ("client", "server"))
             relationships.append(
                 Relationship(
                     type="communicates_with",
                     protocol=protocol,
                     medium=rtac_serial_type(port_row.get("serial_port_type_id")),
+                    direction="egress",  # the RTAC polls its remote devices
                     local=RelationshipEndpoint(
-                        interface=device_file,
-                        serial_port=device_file,
-                        role="master" if protocol == "dnp3" else "client",
+                        interface=device_file, serial_port=device_file, role=local_role
                     ),
-                    remote=RelationshipEndpoint(
-                        name=name, role="outstation" if protocol == "dnp3" else "server"
-                    ),
+                    remote=RelationshipEndpoint(name=name, role=remote_role),
                     evidence={"config"},
                     extra=extra,
                 )

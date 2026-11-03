@@ -378,6 +378,44 @@ def test_port_settings_dnp3_session_count():
     assert {r.enabled for r in _rels(dev, "dnp3")} == {False}
 
 
+def test_port_settings_dnp3_sessions_from_one_master():
+    """Two sessions with one master IP are one edge: both sessions are kept."""
+    settings = {"IPADDR": "192.0.2.10/24", "EDNP": "3", "DNPNUM": "20000", "DNPADR": "10"}
+    settings |= {"DNPIP1": "192.0.2.51", "DNPTR1": "TCP", "REPADR1": "1", "DNPMAP1": "1"}
+    settings |= {"DNPIP2": "192.0.2.51", "DNPTR2": "TCP", "REPADR2": "2", "DNPMAP2": "2"}
+    settings |= {"DNPIP3": "192.0.2.53", "DNPTR3": "UDP", "REPADR3": "3"}
+    dev = _dev()
+    process_port_settings("5", settings, dev)
+    dev.populate_fields()
+    rels = {r.remote.ip: r for r in _rels(dev, "dnp3")}
+    assert set(rels) == {"192.0.2.51", "192.0.2.53"}
+
+    shared = rels["192.0.2.51"]
+    assert shared.remote.protocol_address == ""  # the sessions report to different addresses
+    assert (shared.transport, shared.enabled) == ("tcp", True)
+    assert shared.extra == {
+        "sessions": [
+            {
+                "station_num": 1,
+                "session_map": "1",
+                "remote_protocol_address": "1",
+                "transport": "tcp",
+                "enabled": True,
+            },
+            {
+                "station_num": 2,
+                "session_map": "2",
+                "remote_protocol_address": "2",
+                "transport": "tcp",
+                "enabled": True,
+            },
+        ]
+    }
+    single = rels["192.0.2.53"]
+    assert single.remote.protocol_address == "3"
+    assert single.extra == {"station_num": 3}
+
+
 def test_port_settings_modbus_c37_sntp(p5_dev):
     (mb,) = _rels(p5_dev, "modbus_tcp")
     assert (mb.direction, mb.transport, mb.local.port) == ("ingress", "tcp", 502)

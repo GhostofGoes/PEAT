@@ -1354,6 +1354,12 @@ def _dnp3_relationships(
     ``sessions`` is the number of enabled DNP3 sessions when ``EDNP`` is a
     session count (SEL-751/351 class relays, ``0-5``/``0-6``): sessions above
     the count are configured but disabled.
+
+    Several sessions with one master IP address are one edge
+    (:meth:`~peat.data.models.Relationship.key`): they are combined into one
+    relationship (enabled if any session is) with the settings of each session in
+    ``extra["sessions"]`` (incl. ``remote_protocol_address``, ``transport`` and
+    ``enabled``).
     """
     relationships = []
 
@@ -1420,7 +1426,33 @@ def _dnp3_relationships(
             )
         )
 
-    return relationships
+    by_master = {}  # type: dict[str, list[Relationship]]
+    for rel in relationships:
+        by_master.setdefault(rel.remote.ip, []).append(rel)
+
+    combined = []
+    for rels in by_master.values():
+        rel = rels[0]
+        if len(rels) > 1:
+            rel.extra = {
+                "sessions": [
+                    {
+                        **r.extra,
+                        "remote_protocol_address": r.remote.protocol_address,
+                        "transport": r.transport,
+                        "enabled": r.enabled,
+                    }
+                    for r in rels
+                ]
+            }
+            rel.enabled = any(r.enabled for r in rels)
+            if len({r.remote.protocol_address for r in rels}) > 1:
+                rel.remote.protocol_address = ""
+            if len({r.transport for r in rels}) > 1:
+                rel.transport = ""
+        combined.append(rel)
+
+    return combined
 
 
 def _modbus_relationships(settings: dict, svc: Service, iface: Interface) -> list[Relationship]:

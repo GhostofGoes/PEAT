@@ -3870,15 +3870,16 @@ class RelationshipEndpoint(BaseModel):
     """
     Role of this side, lowercase. Use the protocol's own terms:
 
-    - DNP3: ``master`` / ``outstation``
+    - DNP3 and SEL ASCII/Fast Message: ``master`` / ``outstation``
     - Modbus (TCP and RTU): ``client`` / ``server``
-    - IEC 60870-5-104: ``controlling_station`` / ``controlled_station``
+    - IEC 60870-5-101/103/104: ``controlling_station`` / ``controlled_station``
     - IEC 61850: ``publisher`` / ``subscriber`` (GOOSE/SV), ``client`` / ``server`` (MMS)
     - CIP: ``originator``/``target`` (connections), ``scanner``/``adapter`` (I/O)
     - C37.118: ``pmu`` / ``pdc``
     - other: ``client``, ``server``, ``peer``, ``gateway``, ``time_server``, ``log_server``,
-      ``auth_server``, ``dns_server``, ``snmp_manager``, ``parent``, ``child``,
-      ``engineering_access``
+      ``auth_server``, ``dns_server``, ``smtp_server``, ``snmp_manager``, ``parent``,
+      ``child``, ``engineering_access``, ``io_provider``, ``gdoi_kdc``,
+      ``ocsp_responder``, ``scep_server``
     """
 
     _validate_ip = validator("ip", allow_reuse=True)(validate_ip)
@@ -4047,10 +4048,15 @@ class Relationship(BaseModel):
         """
         Identity of the relationship = the EDGE, not how it was observed:
         ``(type, server port, protocol if no port, remote identity, local sub-device id,
-        local serial port, protocol addresses and VLAN only for L2/serial edges, stream
-        reference)``. Attributes that only some sources know (``transport``,
-        ``protocol`` when a port is known, ``local.interface``, ``local.ip``, client
-        port, roles, ``direction``) are NOT part of the identity; they merge.
+        local serial port, local interface only for tunnels, protocol addresses and VLAN
+        only for L2/serial edges, stream reference)``. Attributes that only some sources
+        know (``transport``, ``protocol`` when a port is known, ``local.interface`` of
+        other types, ``local.ip``, client port, roles, ``direction``) are NOT part of the
+        identity; they merge.
+
+        Modules that configure several logical peers behind one edge (e.g. remote
+        devices behind one gateway IP and port) MUST combine them into one
+        relationship before calling ``store()``.
         """
         server_port = self.server_port()
         no_ip_port = not self.remote.ip and server_port is None
@@ -4068,6 +4074,9 @@ class Relationship(BaseModel):
             remote_identity,
             self.local.id,
             self.local.serial_port,
+            # Tunnels over different underlay interfaces to one gateway are different edges
+            # (tunnels come from configurations only, never from socket tables or logs)
+            self.local.interface if self.type == "tunnel" else "",
             self.local.protocol_address if no_ip_port else "",
             self.remote.protocol_address if no_ip_port else "",
             "" if self.remote.ip else self.vlan.id,

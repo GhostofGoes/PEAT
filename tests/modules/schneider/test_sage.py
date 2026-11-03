@@ -353,9 +353,42 @@ def test_serial_ports():
     assert rel.local.protocol_address == "10"
     assert rel.remote.role == "master"
     assert rel.remote.protocol_address == "3"
+    assert rel.direction == "ingress"  # the remote master polls
     assert rel.evidence == {"config"}
 
     assert sage_parse.canonical_port_protocol("MODBUS_M") == "modbus_rtu"
+
+
+@pytest.mark.parametrize(
+    ("proto_type", "attrs", "roles", "direction"),
+    [
+        ("MODBUS_M", 'SLAVE_ADDR="7"', ("client", "server"), "egress"),
+        (
+            "IEC101_MASTER",
+            'REMOTE_ADDR="7"',
+            ("controlling_station", "controlled_station"),
+            "egress",
+        ),
+        (
+            "IEC101_SLAVE",
+            'MASTER_ADDR="7"',
+            ("controlled_station", "controlling_station"),
+            "ingress",
+        ),
+        ("CONITEL", 'REMOTE_ADDR="7"', ("", ""), ""),
+    ],
+)
+def test_serial_port_relationship_direction(proto_type, attrs, roles, direction):
+    xml = f"""<PORT VER="1" PNT="COM4"><PROTOCOL TYPE="{proto_type}">
+        <COMM BAUD="9600"/><{proto_type} {attrs}/></PROTOCOL></PORT>""".encode()
+    info = {}
+    sage_parse.parse_port(io.BytesIO(xml), info)
+    dev = DeviceData()
+    sage_parse.process_ports(dev, info["ports"])
+    (rel,) = dev.relationships
+    assert (rel.local.role, rel.remote.role) == roles
+    assert rel.remote.protocol_address == "7"
+    assert rel.direction == direction
     assert sage_parse.canonical_port_protocol("IEC101") == "iec101"
     assert sage_parse.canonical_port_protocol("Conitel 2020") == "conitel_2020"
 

@@ -87,6 +87,18 @@ def _page_tables() -> dict:
     }
 
 
+def test_security_servers_on_one_host_stay_separate():
+    dev = DeviceData(ip="192.0.2.30")
+    for name in ("GDOI KDC IP", "OCSP Server IP", "SCEP Server IP"):
+        dev.store(
+            "relationships",
+            ge_relay.security_server_relationship({"name": name, "value": "10.0.0.5"}),
+        )
+    roles = {r.protocol: r.remote.role for r in dev.relationships}
+    assert roles == {"gdoi": "gdoi_kdc", "ocsp": "ocsp_responder", "scep": "scep_server"}
+    assert ge_relay.security_server_relationship({"name": "Other", "value": "10.0.0.5"}) is None
+
+
 @pytest.mark.usefixtures("out_config")
 def test_process_pages():
     dev = DeviceData(ip="192.0.2.30")
@@ -122,7 +134,9 @@ def test_process_pages():
     assert arp.remote.mac == "00:11:22:33:44:55"
     assert arp.evidence == {"arp"}
     assert rels[("depends_on", "192.0.2.50")].remote.role == "gdoi_kdc"
+    assert rels[("depends_on", "192.0.2.50")].protocol == "gdoi"
     assert rels[("depends_on", "192.0.2.52")].remote.role == "scep_server"
+    assert rels[("depends_on", "192.0.2.52")].protocol == "scep"
     assert ("depends_on", "0.0.0.0") not in rels
 
     event = dev.event[0]
