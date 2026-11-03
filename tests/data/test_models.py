@@ -1471,3 +1471,49 @@ def test_export_to_files_and_full_json_roundtrip(tmp_path):
     assert not BaselineSelector(vendor_id="Siemens").matches(dev)
     assert BaselineSelector(vendor_id="sel", model="351*").matches(dev)
     assert BaselineSelector().is_default_selector()
+
+
+def test_port_102_protocol_is_not_inferred():
+    """R2-26: tcp/102 carries IEC 61850 MMS and Siemens S7comm: no "mms" from the port."""
+    hmi = DeviceData(ip="192.168.0.20")
+    hmi.store(
+        "relationships",
+        Relationship(
+            transport="tcp",
+            evidence={"netstat"},
+            local=RelationshipEndpoint(ip="192.168.0.20", port=49200),
+            remote=RelationshipEndpoint(ip="192.168.0.1", port=102),
+        ),
+    )
+    hmi.populate_fields()
+    rel = hmi.relationships[0]
+    assert (rel.direction, rel.protocol) == ("egress", "")
+    assert "mms" not in hmi.related.protocols
+
+    # the device's own mms service still names the protocol of ingress sessions
+    ied = DeviceData(ip="192.0.2.10")
+    ied.store("service", Service(protocol="mms", port=102, transport="tcp", status="open"))
+    ied.store(
+        "relationships",
+        Relationship(
+            transport="tcp",
+            evidence={"netstat"},
+            local=RelationshipEndpoint(port=102),
+            remote=RelationshipEndpoint(ip="192.0.2.50", port=50000),
+        ),
+    )
+    assert (ied.relationships[0].direction, ied.relationships[0].protocol) == ("ingress", "mms")
+
+
+def test_elastic_host_doc_has_annotated_values_without_export():
+    """R2-45: "peat pull" builds host documents before export() annotates the models."""
+    dev = DeviceData(ip="192.0.2.10")
+    dev.clock.observed = T0
+    dev.clock.time = T0 + timedelta(seconds=30)
+    dev.clock.sources.append(TimeSource(protocol="sntp", address="192.0.2.1", selected=True))
+    dev.purge_duplicates(force=True)
+    host = dev.gen_elastic_content()["host"]
+    assert host["clock"]["offset"] == 30.0
+    assert host["clock"]["source"] == "sntp"
+    assert "192.0.2.1" in host["related"]["ip"]
+

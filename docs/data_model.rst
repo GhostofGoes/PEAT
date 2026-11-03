@@ -51,7 +51,7 @@ Identity, merging and deduplication
    ":class:`~peat.data.models.Vlan`", "``id``", ""
    ":class:`~peat.data.models.BaselineFinding`", "``baseline_id``, ``rule_id``, ``path``", "a re-compare replaces the finding"
 
-Some time-varying models are "newest wins" instead of "first wins": a newer :class:`~peat.data.models.NetworkStatistics` sample (``timestamp``) replaces the older sample wholesale (counters of different samples are never mixed); newer :class:`~peat.data.models.Indicator` readings (``timestamp``) and :class:`~peat.data.models.Clock` readings (``observed``) overwrite older values (an unknown newer ``state`` and a missing newer device ``time``/``offset`` also replace the older ones, and the newer ``Clock.sources`` win). Modules MUST set these timestamps with ``utils.utc_now()``. Relationships aggregate their observations: ``evidence`` is the union, ``first_seen`` the minimum, ``last_seen`` the maximum and ``count`` the maximum.
+Some time-varying models are "newest wins" instead of "first wins": a newer :class:`~peat.data.models.NetworkStatistics` sample (``timestamp``) replaces the older sample wholesale (counters of different samples are never mixed); newer :class:`~peat.data.models.Indicator` readings (``timestamp``) and :class:`~peat.data.models.Clock` readings (``observed``) overwrite older values, and the newer ``Clock.sources`` win. The reading of the newer ``Indicator`` (``state``, ``value``, ``health``, ``blink_rate``; its ``extra`` keys win) and the device ``time``/``offset`` of the newer ``Clock`` are kept even when empty (e.g. an unknown ``state``), whichever of the two was stored first; configured fields such as ``label``, ``latched`` or ``equation`` still fill gaps. Modules MUST set these timestamps with ``utils.utc_now()``. Relationships aggregate their observations: ``evidence`` is the union, ``first_seen`` the minimum, ``last_seen`` the maximum and ``count`` the maximum.
 
 Modules MUST aggregate high-volume observations (log lines, connection logs, ARP refreshes) per peer before calling ``store()`` (one ``store()`` per relationship with ``count``/``first_seen``/``last_seen``).
 
@@ -151,7 +151,7 @@ When fields are empty, ``Relationship.annotate()`` infers them:
 - ``transport`` from protocols that use one transport only (e.g. ``modbus_tcp`` -> ``tcp``, ``snmp`` -> ``udp``);
 - ``direction``: ``ingress`` if the local port is a port the device listens on (its own services), else ``egress`` if the remote port is well-known (below 1024 or a known OT port) and the local port is not, else ``ingress`` in the opposite case. A non-standard server port on both sides stays ``""``;
 - the local port of an ``ingress`` record that names only the protocol (e.g. from a log line), from the device's own service;
-- ``protocol`` and ``transport`` from the device's own service on the server port, else ``protocol`` from the well-known port;
+- ``protocol`` and ``transport`` from the device's own service on the server port, else ``protocol`` from the well-known port (not for TCP port 102, which carries both IEC 61850 MMS and Siemens S7comm);
 - ``local.interface`` from ``local.ip``, and ``medium`` from the local interface's ``type``.
 
 Modules that know the direction or protocol set them explicitly. Relationships of modules (``DeviceData.module``) are moved to the parent device by ``populate_fields()``, keeping the module's identity in ``local.id``/``local.ip``/``local.name``.

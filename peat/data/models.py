@@ -104,7 +104,8 @@ WELL_KNOWN_PORTS: dict[int, str] = {
     25: "smtp",
     53: "dns",
     80: "http",
-    102: "mms",
+    # NOTE: tcp/102 (ISO-TSAP, RFC 1006) is shared by IEC 61850 MMS and Siemens
+    # S7comm, so its protocol is not inferred from the port alone
     123: "ntp",
     161: "snmp",
     162: "snmp",
@@ -6336,6 +6337,9 @@ class DeviceData(BaseModel):
         """
         self.populate_fields()
         self.purge_duplicates()
+        # Same derived values as export() (e.g. Clock.offset), which may not
+        # have run yet (e.g. "peat pull" pushes before the files are exported)
+        self.annotate_edge_cases()
 
         # We don't use self.export() here because consts.convert() transforms objects
         # like datetime() into strings. The PeatSerializer Elasticsearch serializer

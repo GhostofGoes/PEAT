@@ -728,6 +728,7 @@ class Elastic:
                 config.ELASTIC_EVENTS_INDEX,
                 config.ELASTIC_MEMORY_INDEX,
                 config.ELASTIC_FILES_INDEX,
+                config.ELASTIC_RELATIONSHIPS_INDEX,
             )
         ):
             doc = {

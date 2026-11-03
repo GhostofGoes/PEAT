@@ -667,3 +667,54 @@ def test_sort_model_list_mixed_naive_aware_datetimes():
     ]
     sort_model_list(events)
     assert [e.action for e in events] == ["a", "b", "c"]
+
+
+def test_merge_models_newer_clock_sample_wins_in_both_directions():
+    """R2-1: a newer destination keeps its own device time and offset."""
+    old = Clock(time=T0 + timedelta(seconds=10), observed=T0, synchronized=True)
+    old.annotate()
+    assert old.offset == 10.0
+    new = Clock(time=T1 + timedelta(seconds=5), observed=T1)
+    merge_models(new, old)
+    new.annotate()
+    assert (new.time, new.offset, new.observed) == (T1 + timedelta(seconds=5), 5.0, T1)
+    assert new.synchronized is True  # not bound to "observed": still fills the gap
+
+    # a newer sample without a device time does not take the older time/offset
+    new = Clock(observed=T1)
+    merge_models(new, old)
+    new.annotate()
+    assert (new.time, new.offset, new.observed) == (None, None, T1)
+
+
+def _older_alarm() -> Indicator:
+    return Indicator(
+        name="ALARM",
+        type="led",
+        state="blinking",
+        health="failure",
+        blink_rate=2.0,
+        latched=True,
+        label="ALARM",
+        extra={"state": 3, "oid_index": 2},
+        timestamp=T0,
+    )
+
+
+def _newer_alarm() -> Indicator:
+    return Indicator(name="ALARM", type="led", state="unknown", extra={"state": 5}, timestamp=T1)
+
+
+@pytest.mark.parametrize("newer_is_dest", [False, True])
+def test_merge_models_newer_indicator_reading_wins_in_both_directions(newer_is_dest):
+    """R2-2: no reading field of an older Indicator reading fills the newer one."""
+    if newer_is_dest:
+        dst, src = _newer_alarm(), _older_alarm()
+    else:
+        dst, src = _older_alarm(), _newer_alarm()
+    merge_models(dst, src)
+    assert (dst.state, dst.value, dst.health, dst.blink_rate) == ("", "unknown", "", None)
+    assert dst.extra == {"state": 5, "oid_index": 2}  # keys of the newer reading win
+    assert dst.timestamp == T1
+    # configured properties still fill gaps
+    assert (dst.label, dst.latched) == ("ALARM", True)

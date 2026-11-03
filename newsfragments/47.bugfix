@@ -5,6 +5,7 @@ Fixed data model, Elasticsearch and device module bugs found while expanding the
 - ``host.files`` and ``host.successful_pulls`` had no explicit Elasticsearch mapping, and the ``hash.*`` hashes of an event's ``original`` text had no mapping in the events index.
 - An empty (disabled) log, events, memory or files index name stopped the saving of all Elasticsearch documents to ``ELASTIC_DIR``.
 - De-duplication of nested lists (e.g. the services of an interface) after merging two devices was discarded.
+- Elasticsearch host documents and the pull summary results of ``peat pull`` were generated before the models were annotated, so values derived by annotation (e.g. hashes and ``related.*`` values of firmware, logic, files and certificates set without ``store()``) were missing, while ``device-data-full.json`` had them.
 - ``Interface.description`` (an object) was converted to a string by a validator.
 - Sorting lists with both timezone-naive and timezone-aware times (e.g. events) crashed.
 - ``peat parse`` did not push devices created during the parse (e.g. the other devices of a Sage or ION multi-device parse) to Elasticsearch.

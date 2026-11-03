@@ -76,6 +76,10 @@ def test_push_elastic_dir_ignores_disabled_index_names(mocker, tmp_path, disable
     assert list(es._docs_written) == ["peat-scan-summaries"]
     assert es.push(config.ELASTIC_LOG_INDEX, {"a": 1}, doc_id="y")
     assert config.ELASTIC_LOG_INDEX not in es._docs_written
+    # high volume relationship documents are also not kept (they are in JSONL files)
+    if config.ELASTIC_RELATIONSHIPS_INDEX:
+        assert es.push(config.ELASTIC_RELATIONSHIPS_INDEX, {"a": 1}, doc_id="z")
+    assert list(es._docs_written) == ["peat-scan-summaries"]
 
 
 def test_url():

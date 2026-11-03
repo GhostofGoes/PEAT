@@ -285,6 +285,15 @@ def as_utc(ts: datetime) -> datetime:
     return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
 
 
+# Fields of a timestamped live reading that belong to its timestamp
+# (Indicator.timestamp, Clock.observed), see merge_models(). Configured
+# properties (e.g. Indicator.latched, Indicator.label) are not part of it.
+_READING_FIELDS = {
+    "Indicator": ("state", "value", "health", "blink_rate"),
+    "Clock": ("time", "offset"),
+}
+
+
 def _is_newer(src_ts: datetime | None, dst_ts: datetime | None) -> bool:
     return bool(src_ts and dst_ts and as_utc(src_ts) > as_utc(dst_ts))
 
@@ -597,9 +606,11 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
       ``Clock.observed``): if the source's value of that field is newer, the
       source's non-default values overwrite the destination's, and the
       source's items come first in merged lists (e.g. ``Clock.sources``), so
-      they win de-duplication. The ``state``/``value`` of a newer
-      ``Indicator`` reading and the ``time``/``offset`` of a newer ``Clock``
-      sample replace the destination's even when empty.
+      they win de-duplication. The reading of the newer ``Indicator``
+      (``state``, ``value``, ``health``, ``blink_rate``; its ``extra`` keys
+      win) and the ``time``/``offset`` of the newer ``Clock`` sample are kept
+      even when empty, whichever argument is newer. Other fields (e.g.
+      ``label``, ``latched``) still fill gaps.
     - ``NetworkStatistics`` samples are never mixed: a newer sample replaces
       the destination wholesale, an empty destination takes the source
       wholesale, otherwise the source is ignored.
@@ -666,10 +677,17 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
     source_dict = dict(source)
 
     overwrite = newer
-    # (state, value) of the newer Indicator reading
+    # Live reading fields of the newer Indicator reading or Clock sample. They
+    # belong to the reading's timestamp, so an older reading never fills the
+    # gaps of a newer one (configured fields such as label still fill gaps).
     reading = None
-    if dst_type == "Indicator" and (newer or older):
-        reading = (source.state, source.value) if newer else (dest.state, dest.value)
+    reading_extra = None
+    if dst_type in ("Indicator", "Clock") and (newer or older):
+        newest, oldest = (source, dest) if newer else (dest, source)
+        reading = {f: copy.deepcopy(getattr(newest, f)) for f in _READING_FIELDS[dst_type]}
+        if dst_type == "Indicator":
+            # Keys of the newer reading win, other keys (e.g. an OID index) stay
+            reading_extra = {**copy.deepcopy(oldest.extra), **copy.deepcopy(newest.extra)}
 
     if dst_type == "Service" and (
         source_dict.get("status") == "verified"
@@ -757,20 +775,15 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
                 f"current_value={current_value})"
             )
 
-    # The device time and offset of a Clock belong to the sample's "observed"
-    # time: a newer sample without them must not keep the older sample's values
-    # (annotate() recomputes the offset from the merged time/observed).
-    if dst_type == "Clock" and newer:
-        if source.time is None:
-            dest.time = None
-        if source.offset is None:
-            dest.offset = None
-
-    # The reading of a newer timestamped Indicator replaces the older reading,
-    # even when the newer state is unknown (""). An older reading never fills
-    # the gaps of a newer one.
+    # The reading of a newer timestamped Indicator, and the device time and
+    # offset of a newer Clock sample, replace the older values even when empty
+    # (e.g. an unknown state). This applies in both merge directions.
+    # (Clock.annotate() recomputes an empty offset from the merged time/observed.)
     if reading is not None:
-        dest.state, dest.value = reading
+        for name, value in reading.items():
+            setattr(dest, name, value)
+        if reading_extra is not None:
+            dest.extra = reading_extra
 
     # Relationship aggregation rules (evidence is unioned by the set branch above)
     if dst_type == "Relationship":
