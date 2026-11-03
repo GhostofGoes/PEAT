@@ -196,7 +196,7 @@ Use the canonical lowercase protocol names (with underscores) in :attr:`Service.
    "``dnp3``", "DNP3 (TCP, UDP or serial)"
    "``iec104``", "IEC 60870-5-104. Not ``iec_104``."
    "``c37_118``", "IEEE C37.118 synchrophasors. Not ``c37.118``."
-   "``mms``, ``goose``, ``sv``", "IEC 61850 MMS (tcp/102), GOOSE, Sampled Values. Not ``iec61850``."
+   "``mms``, ``goose``, ``sv``", "IEC 61850 MMS (tcp/102), GOOSE, Sampled Values. Not ``iec61850`` as a ``Service``, ``Relationship`` or ``NetworkStatistics`` protocol."
    "``cip``, ``enip``", "EtherNet/IP explicit messaging (tcp/44818), EtherNet/IP implicit I/O (udp/2222). Two different services."
    "``mirrored_bits``, ``sel``", "SEL MIRRORED BITS, SEL ASCII/Fast Message"
    "``bacnet``, ``snmp``, ``syslog``", "BACnet/IP, SNMP, Syslog"
@@ -204,6 +204,8 @@ Use the canonical lowercase protocol names (with underscores) in :attr:`Service.
    "``http``, ``https``, ``ssh``, ``telnet``, ``ftp``", "Management protocols"
 
 Known spelling variants (``c37.118``, ``iec_104``) are normalized by the validators, and a service with ``protocol="modbus"`` and ``transport="tcp"`` becomes ``modbus_tcp``. Still use the canonical names in new code.
+
+``Interface.application`` of an IEC 61850 access point from an SCL file (:mod:`peat.parsing.scl`) is ``iec61850``, because the access point carries MMS, GOOSE and SV together. Its services and relationships use ``mms``, ``goose`` and ``sv``.
 
 Statistics and live readings
 ----------------------------
