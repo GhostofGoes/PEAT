@@ -315,6 +315,62 @@ def test_parse_input_sel_cid_compare_equal(tmp_path, mocker):
             assert api.compare_to_baseline(cur, baseline, store=False) == [], (kind, name)
 
 
+@pytest.mark.usefixtures("run_dirs")
+def test_peat_written_logic_and_firmware_files_compare_equal(tmp_path, mocker):
+    """
+    The logic and firmware files PEAT writes to the device directory of a run have
+    a location on the PEAT host, which is not compared (R3-11).
+    """
+    from peat import ControlLogix, datastore
+
+    mocker.patch.object(datastore, "objects", [])
+
+    def pull(run: str, ip: str = "192.0.2.20", logic: str = "XIC(Start)OTE(Motor);") -> DeviceData:
+        datastore.objects.clear()
+        dev = DeviceData(ip=ip, type="PLC")
+        dev.description.vendor.id = "Schneider"
+        dev.description.model = "M340"
+        dev.logic.original = logic  # written to logic.txt
+        dev.firmware.original = b"project archive"
+        dev.firmware.file.extension = "apx"  # written to firmware.apx
+        (loaded,) = api.load_device_data(write_pull(tmp_path, dev, run))
+        return loaded
+
+    first = pull("pull_2026-10-30_120000")
+    assert first.logic.file.path == first.logic.file.local_path
+    second = pull("pull_2026-11-02_093000")
+    assert second.firmware.file.path != first.firmware.file.path
+    baseline = api.create_baseline(first)
+    assert api.compare_to_baseline(second, baseline, store=False) == []
+    # a profile of one unit, compared with another unit of the same run
+    profile = api.create_baseline(first, scope="device_type")
+    other = pull("pull_2026-10-30_120000", ip="192.0.2.21")
+    assert api.compare_to_baseline(other, profile, store=False) == []
+    # the content is still compared
+    changed = pull("pull_2026-11-03_080000", logic="XIC(Stop)OTE(Motor);")
+    diffs = {(f.difference, f.path) for f in api.compare_to_baseline(changed, baseline)}
+    assert ("change", "logic.hash.sha256") in diffs
+    assert ("change", "logic.file.hash.sha256") in diffs
+    assert all(
+        p.startswith(("logic.hash.", "logic.file.hash.", "logic.file.size")) for _, p in diffs
+    )
+
+    def clx_pull(run: str) -> DeviceData:
+        """ControlLogix pull: the logic file is PEAT's parsed-logic.json."""
+        datastore.objects.clear()
+        dev = DeviceData(ip="192.0.2.30", type="PLC")
+        dev._out_dir = tmp_path / run / "devices" / dev.ip
+        logic = {"0": {}}
+        dev.logic.original = json.dumps(logic)
+        ControlLogix.parse_logic(dev, logic)
+        (loaded,) = api.load_device_data(write_pull(tmp_path, dev, run))
+        return loaded
+
+    clx = [clx_pull("clx_1"), clx_pull("clx_2")]
+    assert clx[0].logic.file.path != clx[1].logic.file.path
+    assert api.compare_to_baseline(clx[1], api.create_baseline(clx[0]), store=False) == []
+
+
 # --------------------------------------------------------------------------- #
 # Creating, saving and loading baselines
 # --------------------------------------------------------------------------- #
@@ -424,6 +480,31 @@ def test_create_baseline_without_id(caplog):
     baseline = api.create_baseline(DeviceData(type="PLC"), baseline_id="c")
     assert baseline.selector.is_default_selector()
     assert "applies to ALL devices" in caplog.text
+
+
+def test_create_baseline_selector_matches_only_the_device():
+    """Glob characters in default selector values match only themselves (R3-17)."""
+    for dev_id in ("TEMPLATE@bay[1]", "TEMPLATE@[x]", "relay*", "relay?"):
+        baseline = api.create_baseline(DeviceData(id=dev_id, name="A"), baseline_id="b")
+        renamed = DeviceData(id=dev_id, name="B")
+        assert baseline.selector.matches(renamed), dev_id
+        findings = api.compare_to_baseline(renamed, baseline, store=False)
+        assert [(f.difference, f.path) for f in findings] == [("change", "name")], dev_id
+    star = api.create_baseline(DeviceData(id="relay*"), baseline_id="b")
+    assert not star.selector.matches(DeviceData(id="relay-2"))
+    serial = api.create_baseline(DeviceData(serial_number="SN[1]"), baseline_id="b")
+    assert serial.selector.matches(DeviceData(serial_number="sn[1]"))  # case-insensitive
+    assert not serial.selector.matches(DeviceData(serial_number="SN1"))
+
+    def rtac(model: str) -> DeviceData:
+        dev = DeviceData(ip="192.0.2.40")
+        dev.description.vendor.id = "SEL"
+        dev.description.model = model
+        return dev
+
+    profile = api.create_baseline(rtac("RTAC [3530]"), scope="device_type")
+    assert profile.selector.matches(rtac("rtac [3530]"))
+    assert not profile.selector.matches(rtac("RTAC 3"))
 
 
 def _unit(n: int, firmware: str = "R516") -> DeviceData:

@@ -147,6 +147,33 @@ def test_process_pages():
     assert dev.extra["routing"] == {"ipv6_routing_table": [{"destination": "::1"}]}
 
 
+@pytest.mark.usefixtures("out_config")
+def test_baseline_ignores_arp_host_routes():
+    """An expired ARP-cloned host route (MAC next hop) is not a missing route (R3-16)."""
+    from peat.data.baseline import compare_device
+    from peat.data.models import Baseline
+
+    def pull(tables: dict) -> DeviceData:
+        dev = DeviceData(ip="192.0.2.30", id="192.0.2.30")
+        GERelay._process_pages(dev, tables)
+        return dev
+
+    baseline = Baseline(id="ur", kind="previous_observed", expected=pull(_page_tables()))
+    expired = _page_tables()
+    routing = expired["routing"]
+    routing["arp_table"] = []
+    routing["ipv4_routing_table"] = [
+        r for r in routing["ipv4_routing_table"] if r["destination"] != "192.0.2.5"
+    ]
+    assert compare_device(pull(expired), baseline) == []
+    # the other routes are still compared
+    routing["ipv4_routing_table"] = [
+        r for r in routing["ipv4_routing_table"] if r["destination"] != "0.0.0.0/0"
+    ]
+    diffs = {(f.difference, f.path) for f in compare_device(pull(expired), baseline)}
+    assert diffs == {("missing", "routes[destination=0.0.0.0/0,gateway=192.0.2.1,interface=fei0]")}
+
+
 def test_port_redundancy():
     assert ge_relay.port_redundancy({"redundancy": "PRP"}).protocol == "prp"
     assert ge_relay.port_redundancy({"redundancy": "Independent"}) is None

@@ -238,6 +238,31 @@ def test_apply_eth_output_switched_has_no_port_state():
     assert _iface(dev, "5A").redundancy.state == ""
 
 
+def test_baseline_ignores_active_port_and_time_source_switches():
+    """A failover port switch and a lost IRIG-B signal are live state, not drift (R3-15)."""
+    from peat.data.baseline import compare_device
+    from peat.data.models import Baseline
+
+    def pull(sta: str = STA_ENABLED, eth: str = ETH_FAILOVER) -> DeviceData:
+        dev = _dev(ip="192.0.2.10", id="192.0.2.10")
+        process_info_into_dev(parse_status_output(sta.splitlines()), dev, observed=T0)
+        apply_eth_output(parse_eth_output(eth), dev, timestamp=T0)
+        return dev
+
+    baseline = Baseline(id="relay", kind="first_observed", expected=pull())
+    assert compare_device(pull(), baseline) == []
+    lost = pull(sta=STA_ENABLED.replace("Time Source: IRIG-B", "Time Source: Internal"))
+    assert lost.clock.source == "internal"
+    assert compare_device(lost, baseline) == []
+    switched = pull(eth=ETH_FAILOVER.replace("ACTIVE PORT: PORT 5B", "ACTIVE PORT: PORT 5A"))
+    assert _iface(switched, "5A").redundancy.state == "active"
+    assert compare_device(switched, baseline) == []
+    # the network mode (configuration) is still compared
+    prp = pull(eth=ETH_FAILOVER.replace("NETMODE: FAILOVER", "NETMODE: PRP"))
+    diffs = {(f.difference, f.path) for f in compare_device(prp, baseline)}
+    assert ("change", "interface[name=Port 5].redundancy.protocol") in diffs
+
+
 def test_apply_mac_output():
     dev = _dev(ip="192.0.2.10")
     process_port_settings("5", {"IPADDR": "192.0.2.10/24"}, dev)

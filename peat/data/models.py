@@ -3577,7 +3577,8 @@ class Route(BaseModel):
     Next-hop IP address. Empty for directly connected routes. Non-IP gateways
     never raise: a MAC (on-link host routes, GE UR) goes to ``extra["gateway_mac"]``,
     anything else (BSD/VxWorks ``link#N``) to ``extra["gateway_raw"]``, and ``type``
-    defaults to ``connected``.
+    defaults to ``connected``. Routes with a MAC next hop are ARP entries: baseline
+    comparisons ignore them, like ``cache`` routes.
     """
 
     interface: constr(strip_whitespace=True) = ""

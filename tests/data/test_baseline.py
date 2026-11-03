@@ -207,6 +207,48 @@ def test_device_to_doc_file_paths_are_posix():
     assert bl.posix_path(PurePosixPath("/SETTINGS/SET_1.TXT")) == "/SETTINGS/SET_1.TXT"
 
 
+def test_device_to_doc_has_no_peat_host_paths_of_logic_and_firmware_files(tmp_path):
+    """Logic/firmware files that are only a file on the PEAT host have no location (R3-11)."""
+    from peat.data.models import Hash
+
+    def host_file(name: str) -> File:
+        """A file PEAT wrote to the device directory of a run."""
+        path = tmp_path / "run" / "devices" / "192.0.2.20" / name
+        return File(
+            path=path,
+            local_path=path,
+            directory=f"{path.parent.as_posix()}/",
+            name=name,
+            extension=path.suffix.strip("."),
+            mime_type="text/plain",
+            owner="peat",
+            group="peat",
+            size=3,
+            hash=Hash(sha256="A" * 64),
+        )
+
+    dev = DeviceData(ip="192.0.2.20")
+    dev.logic.file = host_file("logic.txt")
+    dev.firmware.file = host_file("firmware.bin")
+    # a file with a path on the device keeps it (its local copy is ignored)
+    dev.boot_firmware.file = File(
+        path=PurePosixPath("/flash/boot.bin"), local_path=tmp_path / "boot.bin", name="boot.bin"
+    )
+    module = DeviceData(slot="1")
+    module.logic.file = host_file("parsed-logic.json")
+    dev.module.append(module)
+
+    doc = bl.device_to_doc(dev)
+    location = {"path", "directory", "name", "extension", "mime_type", "owner", "group"}
+    for file in (doc["logic"]["file"], doc["firmware"]["file"], doc["module"][0]["logic"]["file"]):
+        assert location.isdisjoint(file), file
+        assert file["size"] == 3
+        assert file["hash"]["sha256"] == "A" * 64
+    assert doc["boot_firmware"]["file"]["path"] == "/flash/boot.bin"
+    assert doc["boot_firmware"]["file"]["name"] == "boot.bin"
+    assert dev.logic.file.path is not None  # the device is not modified
+
+
 def _with_path_flavour(dev: DeviceData, path_cls: type) -> DeviceData:
     """The device as built on another OS (``PurePath`` is ``PureWindowsPath`` on Windows)."""
     for f in dev.files:

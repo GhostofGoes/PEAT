@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections import Counter
 from datetime import UTC, datetime
@@ -343,6 +344,9 @@ def create_baseline(
       (:func:`~peat.data.baseline.varying_paths`), and the selector matches the
       ``vendor_id`` and ``model`` of the devices.
 
+    The selector values are escaped, so glob characters in them (``*``, ``?``,
+    ``[``) match only themselves.
+
     Defaults: ID ``<device id>@<observed time>`` (device) or
     ``<vendor>-<model>-typical`` (device type), name ``<device id> <kind>``
     (device) or ``Typical <vendor> <model>`` (device type). The provenance records
@@ -419,9 +423,9 @@ def create_baseline(
         baseline_id = baseline_id or f"{dev_id}@{ts:%Y%m%dT%H%M%SZ}"
         name = name or f"{dev_id} {kind}"
         if device.id:
-            selector = BaselineSelector(device_id=device.id)
+            selector = BaselineSelector(device_id=_glob_escape(device.id))
         elif device.serial_number:
-            selector = BaselineSelector(serial_number=device.serial_number)
+            selector = BaselineSelector(serial_number=_glob_escape(device.serial_number))
         else:
             log.warning(
                 f"Device '{dev_id}' has no 'id' or 'serial_number': the baseline "
@@ -454,7 +458,7 @@ def create_baseline(
         type_name = "-".join(p for p in (vendor_id, model) if p).replace(" ", "-")
         baseline_id = baseline_id or f"{type_name}-typical"
         name = name or " ".join(p for p in ("Typical", vendor_id, model) if p)
-        selector = BaselineSelector(vendor_id=vendor_id, model=model)
+        selector = BaselineSelector(vendor_id=_glob_escape(vendor_id), model=_glob_escape(model))
         observed = [d._cache["observed"] for d in devices if d._cache.get("observed")]
         if observed:
             provenance.observed = max(observed)
@@ -494,6 +498,15 @@ def create_baseline(
 
     log.debug(f"Created {scope} baseline '{baseline.id}' ({kind})")
     return baseline
+
+
+def _glob_escape(value: str) -> str:
+    """
+    ``value`` as a :class:`~peat.data.models.BaselineSelector` glob that matches only
+    itself: ``*``, ``?`` and ``[`` become ``[*]``, ``[?]`` and ``[[]`` (e.g. the ID
+    ``TEMPLATE@bay[1]`` of an IED of an ICD file named ``bay[1].icd``).
+    """
+    return re.sub(r"([*?\[])", r"[\1]", value)
 
 
 def _strip_blobs(value: Any) -> Any:

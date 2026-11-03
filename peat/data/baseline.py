@@ -85,6 +85,10 @@ _VOLATILE_IGNORE: tuple[str, ...] = (
     "clock.observed",
     "clock.offset",
     "clock.last_sync",
+    # the protocol of the ACTIVE time source (e.g. irig_b -> internal when the
+    # IRIG-B signal is lost) and the sync state; the configured sources are compared
+    "clock.source",
+    "clock.synchronized",
     "clock.sources.offset",
     "clock.sources.last_sync",
     "clock.sources.state",
@@ -122,6 +126,11 @@ _VOLATILE_IGNORE: tuple[str, ...] = (
     "*.file.mtime",
     "iec61850.header.history",
     "interface.connected",
+    # live redundancy state (active/standby port of a failover pair, RSTP port
+    # role, state and neighbor); protocol, mode, LAN and members are configuration
+    "interface.redundancy.state",
+    "interface.redundancy.role",
+    "interface.redundancy.partner",
     "service.status",
     "service.process_pid",
     "interface.services.status",
@@ -217,6 +226,9 @@ STABLE_RELATIONSHIP_EVIDENCE = frozenset({"config", "scl", "user"})
 
 # Routes of these types are transient (e.g. FortiGate route cache entries, one per
 # recently used destination): they are never reported as missing, new or changed.
+# Routes with a MAC address next hop (``extra.gateway_mac``) are too: they are ARP
+# entries (host routes cloned from ARP on BSD-derived stacks, e.g. the GE UR routing
+# table) and come and go with the ARP table.
 VOLATILE_ROUTE_TYPES = frozenset({"cache"})
 
 # list field name -> ("first", fields) = first non-empty field identifies the item,
@@ -305,9 +317,50 @@ def device_to_doc(dev: DeviceData) -> dict:
     Paths (e.g. ``files[].path``) are in POSIX form on every OS (see
     :func:`posix_path`), so they align and match rule selectors the same way
     whichever OS created the baseline or the device data.
+
+    The logic and firmware files of the device and its modules have no location
+    values if they are only a file on the PEAT host (:func:`_without_host_file_paths`).
     """
     raw = strip_key(dev.dict(exclude_defaults=True), "original", ("files", "module"))
-    return strip_empty_and_private(consts.convert(_posix_paths(raw)))
+    return _without_host_file_paths(strip_empty_and_private(consts.convert(_posix_paths(raw))))
+
+
+# File values that describe a file on the PEAT host, not on the device
+_HOST_FILE_FIELDS = (
+    "path",
+    "directory",
+    "name",
+    "extension",
+    "mime_type",
+    "owner",
+    "group",
+    "uid",
+    "gid",
+)
+
+
+def _without_host_file_paths(doc: dict) -> dict:
+    """
+    ``doc`` (a device document) without the location values of the ``logic``,
+    ``firmware`` and ``boot_firmware`` files of the device and its modules
+    (:data:`_HOST_FILE_FIELDS`) when the file is only a file on the PEAT host:
+    its ``path`` is its ``local_path``, i.e. the module gave no path on the
+    device. That is the file PEAT wrote to the run's device directory
+    (e.g. ``logic.txt``, ``firmware.bin``, ControlLogix ``parsed-logic.json``) or
+    the input file of ``peat parse``, so its location changes with every run and
+    differs between units. Its ``hash`` and ``size`` (the content) stay.
+    Modifies and returns ``doc``.
+    """
+    for key in ("logic", "firmware", "boot_firmware"):
+        obj = doc.get(key)
+        file = obj.get("file") if isinstance(obj, dict) else None
+        if _is_input_file(file):
+            for field in _HOST_FILE_FIELDS:
+                file.pop(field, None)
+    for module in doc.get("module") or []:
+        if isinstance(module, dict):
+            _without_host_file_paths(module)
+    return doc
 
 
 def posix_path(path: PurePath) -> str:
@@ -606,14 +659,21 @@ def diff_docs(
 
 
 def _is_volatile_route(item: Any) -> bool:
-    return isinstance(item, dict) and str(item.get("type", "")).lower() in VOLATILE_ROUTE_TYPES
+    """If a route is a route cache entry (:data:`VOLATILE_ROUTE_TYPES`) or an ARP entry."""
+    if not isinstance(item, dict):
+        return False
+    extra = item.get("extra")
+    return str(item.get("type", "")).lower() in VOLATILE_ROUTE_TYPES or bool(
+        isinstance(extra, dict) and extra.get("gateway_mac")
+    )
 
 
 def _without_volatile_routes(doc: dict) -> dict:
     """
-    ``doc`` (a device or module) without the routes of :data:`VOLATILE_ROUTE_TYPES`,
-    and without ``routes`` if only those were in it (so an empty route table on the
-    other side is not reported as ``missing``/``unexpected`` ``routes``).
+    ``doc`` (a device or module) without the routes of :data:`VOLATILE_ROUTE_TYPES`
+    and the ARP entries (:func:`_is_volatile_route`), and without ``routes`` if only
+    those were in it (so an empty route table on the other side is not reported as
+    ``missing``/``unexpected`` ``routes``).
     """
     routes = doc.get("routes")
     if not isinstance(routes, list) or not any(_is_volatile_route(r) for r in routes):
