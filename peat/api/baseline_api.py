@@ -54,6 +54,9 @@ from peat.data.models import (
 )
 from peat.protocols.addresses import address_to_pathname
 
+# Bytes of a device ID or baseline ID in the default file names of baselines
+_MAX_STEM_BYTES = 200
+
 # Keys added to host documents (DeviceData.elastic()) that are not DeviceData fields
 _DERIVED_HOST_KEYS = ("tags", "indicator_states")
 
@@ -958,10 +961,12 @@ def _run_create(args: dict[str, Any]) -> int:
             baselines, devices if scope == "device" else [None] * len(baselines), strict=True
         ):
             stem = address_to_pathname(dev.get_id() if dev else baseline.id)
-            filename = consts.sanitize_filename(f"baseline-{stem}.json")
+            filename = _baseline_file_name(stem)
             number = 2
             while filename in used:
-                filename = consts.sanitize_filename(f"baseline-{stem}-{number}.json")
+                if number > len(baselines):  # a guard: the names of numbers always differ
+                    raise PeatError(f"Failed to find a file name for baseline '{baseline.id}'")
+                filename = _baseline_file_name(stem, number)
                 number += 1
             used.add(filename)
             path = save_baselines(baseline, config.RUN_DIR / "baselines" / filename)
@@ -971,6 +976,30 @@ def _run_create(args: dict[str, Any]) -> int:
         docs = [json.loads(b.json(exclude_defaults=True)) for b in baselines]
         print(json.dumps(docs[0] if len(docs) == 1 else docs, indent=4), flush=True)  # noqa: T201
     return 0
+
+
+def _baseline_file_name(stem: str, number: int = 1) -> str:
+    """
+    ``baseline-<stem>.json``, or ``baseline-<stem>-<number>.json`` for numbers
+    from 2, valid on all platforms. The stem is cut to ``_MAX_STEM_BYTES`` UTF-8
+    bytes, so that the name stays within the 255-byte limit of file names: a longer
+    name would be cut at its end, without the number and the extension.
+    """
+    # "ignore": drop the last character if it is cut in two
+    stem = stem.encode("utf-8")[:_MAX_STEM_BYTES].decode("utf-8", "ignore")
+    suffix = f"-{number}" if number > 1 else ""
+    return consts.sanitize_filename(f"baseline-{stem}{suffix}.json")
+
+
+def _print_text(text: str) -> None:
+    """
+    Print ``text`` to stdout, with the characters that the encoding of stdout can't
+    encode as escapes (e.g. ``\\u0420``), instead of failing: on Windows, a pipe or
+    a redirect uses the ANSI code page (e.g. cp1252), which can't encode e.g. a
+    Cyrillic device name.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(encoding, "backslashreplace").decode(encoding), flush=True)  # noqa: T201
 
 
 def _run_compare(args: dict[str, Any]) -> int:
@@ -1052,7 +1081,7 @@ def _run_compare(args: dict[str, Any]) -> int:
     if config.PRINT_RESULTS:
         print(json.dumps({"devices": results}, indent=4), flush=True)  # noqa: T201
     else:
-        print("\n\n".join(tables), flush=True)  # noqa: T201
+        _print_text("\n\n".join(tables))
 
     if not export_ok:
         return 1

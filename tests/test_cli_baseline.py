@@ -388,6 +388,98 @@ def test_run_baseline_duplicate_inputs(tmp_path, run_dir, caplog):
     assert "is in 2 inputs: its results are written to the same files" in caplog.text
 
 
+def test_run_baseline_create_long_device_ids(tmp_path, run_dir, mocker):
+    # The same device with an ID of 270 bytes (90 CJK characters) in two inputs: two
+    # files, not an endless loop (R7-10). File names have at most 255 bytes, and a
+    # longer name is cut at its end, so the stem is cut before "-2.json" is added.
+    dev = sel_relay()
+    dev.label = "\u53d8\u7535\u7ad9" * 30
+    first = write_pull(tmp_path, dev, name="long1")
+    copy = tmp_path / "long2" / "devices" / dev.ip / "device-data-full.json"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(first.read_bytes())
+    inputs = [str(first.parent.parent.parent), str(copy.parent.parent.parent)]
+
+    real = baseline_api._baseline_file_name
+    calls = []
+
+    def name(*args):  # fail instead of hanging if the names of two numbers are the same
+        assert len(calls) < 10, "endless loop"
+        calls.append(args)
+        return real(*args)
+
+    mocker.patch.object(baseline_api, "_baseline_file_name", side_effect=name)
+    assert run_baseline(_args("baseline_create", input_source=inputs)) == 0
+    saved = sorted(p.name for p in (run_dir / "baselines").iterdir())
+    assert len(saved) == 2
+    assert saved[0].endswith("-2.json")
+    assert saved[1].endswith(".json")
+    assert saved[0][: -len("-2.json")] == saved[1][: -len(".json")]
+    assert all(len(n.encode("utf-8")) <= 255 for n in saved)
+    assert saved[1].startswith("baseline-\u53d8\u7535\u7ad9")
+
+
+@pytest.mark.parametrize(
+    "stem",
+    ["x" * 300, "\u53d8\u7535\u7ad9" * 90, "\u0416" * 150],
+    ids=["ascii", "cjk", "cyrillic"],
+)
+def test_baseline_file_names_of_long_ids_keep_their_number_and_extension(stem):
+    names = [baseline_api._baseline_file_name(stem, n) for n in (1, 2, 10, 1000)]
+    assert len(set(names)) == 4
+    assert names[0].startswith("baseline-")
+    assert [n[n.rindex("-") :] for n in names[1:]] == ["-2.json", "-10.json", "-1000.json"]
+    assert all(n.endswith(".json") and len(n.encode("utf-8")) <= 255 for n in names)
+
+
+@pytest.mark.usefixtures("run_dir")
+def test_run_baseline_create_file_name_loop_is_bounded(tmp_path, mocker, caplog):
+    # If two numbers ever got the same file name, the loop ends with an error
+    first, _ = _pulls(tmp_path)
+    copy = tmp_path / "copy" / "devices" / "192.0.2.10" / "device-data-full.json"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(first.read_bytes())
+    calls = []
+
+    def same_name(_stem, number=1):
+        assert len(calls) < 10, "endless loop"
+        calls.append(number)
+        return "baseline-x.json"
+
+    mocker.patch.object(baseline_api, "_baseline_file_name", side_effect=same_name)
+    inputs = [str(first.parent.parent.parent), str(copy.parent.parent.parent)]
+    assert run_baseline(_args("baseline_create", input_source=inputs)) == 1
+    assert "Failed to find a file name for baseline" in caplog.text
+
+
+@pytest.mark.usefixtures("run_dir")
+def test_run_baseline_compare_table_on_a_non_utf8_stdout(tmp_path, monkeypatch):
+    # On Windows, a pipe or a redirect uses the ANSI code page (e.g. cp1252): the
+    # characters it can't encode are escaped, so the exit code is still 3 (R7-9)
+    dev = sel_relay()
+    dev.label = "\u0420\u0435\u043b\u0435-1"
+    first = write_pull(tmp_path, dev, name="pull1")
+    dev.firmware.version = "R517"
+    second = write_pull(tmp_path, dev, name="pull2")
+    baseline_file = tmp_path / "relay-1.json"
+    args = _args("baseline_create", input_source=[str(first)], baseline_output=str(baseline_file))
+    assert run_baseline(args) == 0
+
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr("sys.stdout", stdout)
+    args = _args(
+        "baseline_compare",
+        input_source=[str(second)],
+        baseline_files=[str(baseline_file)],
+        fail_on="medium",
+    )
+    assert run_baseline(args) == 3
+    stdout.flush()
+    out = stdout.buffer.getvalue()
+    assert b"Device \\u0420\\u0435\\u043b\\u0435-1 (baselines: " in out
+    assert b"firmware.version" in out
+
+
 @pytest.mark.usefixtures("run_dir")
 def test_export_findings_is_used(tmp_path, mocker):
     first, second = _pulls(tmp_path)
