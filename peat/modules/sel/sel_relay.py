@@ -145,6 +145,7 @@ from .sel_default_creds import (
     resolve_level_passwords,
     web_candidates,
 )
+from .sel_fast import SELFast, process_fast_results
 from .sel_files import (
     SOURCE_COMMAND_OUTPUT,
     SOURCE_DERIVED,
@@ -175,6 +176,10 @@ EVENT_FILES: Final = (
     ("ser", ("SER.TXT", "CSER.TXT")),
     ("history", ("HISTORY.TXT", "CHISTORY.TXT")),
 )
+
+#: Every value of the ``sel.pull_methods`` option. ``fast`` (read-only SEL Fast
+#: Meter and Fast Message collection, refer to sel_fast.py) isn't in the defaults.
+PULL_METHODS: Final = ("http", "ftp", "telnet", "fast")
 
 #: Directories on relays, and "Misc" in RDB files.
 #: Files in these belong to the relay in the parent directory.
@@ -350,6 +355,7 @@ class SELRelay(DeviceModule):
             "legacy_ascii_timing": False,
             "ascii_idle_timeout": 30.0,
             "cal_clarke_fallback": False,
+            "fast_ser": False,
             "old_ftp": False,
             "handle_download_errors": True,
             # These are PEAT's generic defaults. Unless credentials are configured,
@@ -1129,6 +1135,116 @@ class SELRelay(DeviceModule):
             return successful
 
     @classmethod
+    def pull_fast(cls, dev: DeviceData, serial: bool = False) -> bool:
+        """
+        Collect data with the read-only SEL Fast protocols (Fast Meter, the Fast
+        Operate configuration, and Fast Message database reads), on a binary Telnet
+        session, or on the serial port if ``serial``
+        (refer to :class:`~peat.modules.sel.sel_fast.SELFast`).
+
+        Fast SER is only collected if ``sel.fast_ser`` is enabled, since it changes
+        the state of the port. Relay settings aren't available with these
+        protocols. The results are saved to ``sel-fast.json``, and every frame
+        sent and received to ``sel-fast-frames.json``.
+
+        Returns:
+            If the relay answered the relay definition block request (``A5C0``)
+        """
+        fast_ser = bool(dev.options["sel"]["fast_ser"])
+        idle_timeout = float(dev.options["sel"]["ascii_idle_timeout"])
+        port = None
+
+        if serial:
+            address = dev.serial_port
+            if not dev.options["serial"]["baudrate"] and not cls._verify_serial(dev):
+                cls.log.error(f"Failed SEL Fast pull from {address}: no working baud rate")
+                return False
+            comm = SELSerial(
+                serial_port=address,
+                baudrate=dev.options["serial"]["baudrate"],
+                timeout=dev.options["timeout"],
+                idle_timeout=idle_timeout,
+                binary=True,
+            )
+        else:
+            address = dev.ip
+            port = dev.options["telnet"]["port"]
+            comm = SELTelnet(
+                ip=address,
+                port=port,
+                timeout=dev.options["telnet"]["timeout"],
+                idle_timeout=idle_timeout,
+                binary=True,
+            )
+
+        cls.log.info(
+            f"Collecting SEL Fast data from {address} (Fast SER: "
+            f"{'enabled' if fast_ser else 'disabled, sel.fast_ser'})"
+        )
+        fast = None
+        with comm:
+            if not comm.test_connection():
+                cls.log.error(f"Failed SEL Fast pull from {address}: failed to connect")
+                return False
+
+            cls._prepare_ascii(dev, comm)
+            fast = SELFast(comm)
+            try:
+                if not dev.firmware.id:
+                    # The model determines the default passwords, if a login is needed
+                    cls._selascii_get_id(dev, comm)
+                    cls._prepare_ascii(dev, comm)
+
+                fast.collect(
+                    fast_ser=fast_ser,
+                    elevate=lambda: comm.elevate(1, cls._configured_ascii_creds(dev)),
+                )
+            except Exception as ex:
+                fast.results.errors.append(f"collection stopped: {ex}")
+                cls.log.exception(f"SEL Fast collection from {address} failed")
+            finally:
+                dev.related.user.update(comm.successful_usernames)
+                if isinstance(comm, SELTelnet) and comm.binary_negotiated is False:
+                    fast.results.errors.append("the Telnet BINARY option wasn't negotiated")
+
+        results = fast.results
+        transport = "serial" if serial else "telnet"
+        try:
+            process_fast_results(results, dev, port=port)
+        except Exception:
+            cls.log.exception(f"Failed to process the SEL Fast data from {address}")
+
+        write_and_record_file(
+            dev=dev,
+            data=results.to_dict(),
+            filename="sel-fast.json",
+            transport=transport,
+            source=SOURCE_COMMAND_OUTPUT,
+            peat_module=cls.__name__,
+            description="Data collected with the SEL Fast protocols (parsed)",
+        )
+        if fast.transcript:
+            write_and_record_file(
+                dev=dev,
+                data=fast.transcript,
+                filename="sel-fast-frames.json",
+                transport=transport,
+                source=SOURCE_COMMAND_OUTPUT,
+                peat_module=cls.__name__,
+                description="Every SEL Fast frame PEAT sent and received (hex)",
+            )
+
+        if not results.supported:
+            cls.log.warning(
+                f"No SEL Fast data from {address}: {'; '.join(results.errors) or 'no response'}"
+            )
+            return False
+
+        problems = f" ({len(results.errors)} problems, refer to sel-fast.json)"
+        cls.log.info(f"Collected SEL Fast data from {address}{problems if results.errors else ''}")
+        return True
+
+    @classmethod
     def pull_ftp(cls, dev: DeviceData) -> bool:
         """
         Pull and parse configuration file(s) from the relay via FTP.
@@ -1307,17 +1423,21 @@ class SELRelay(DeviceModule):
         if dev.options["sel"]["force_serial_pull"] or (
             dev.serial_port and state.comm_type == "serial"
         ):
-            return cls.pull_serial(dev)
+            successful = cls.pull_serial(dev)
+            # "fast" is the only pull method that's also used on serial
+            if "fast" in (dev.options["sel"]["pull_methods"] or []):
+                successful = cls.pull_fast(dev, serial=True) and successful
+            return successful
 
         if not dev.options["sel"]["pull_methods"]:
             cls.log.error(f"The 'sel.pull_methods' option is empty or null for {dev.ip}")
             return False
 
         for method in dev.options["sel"]["pull_methods"]:
-            if method not in cls.default_options["sel"]["pull_methods"]:
+            if method not in PULL_METHODS:
                 cls.log.error(
                     f"Invalid 'sel.pull_methods' method '{method}' for {dev.ip}, it must "
-                    f"be one of {cls.default_options['sel']['pull_methods']}"
+                    f"be one of {list(PULL_METHODS)}"
                 )
                 return False
 
@@ -1349,6 +1469,13 @@ class SELRelay(DeviceModule):
 
                 if pull_results[method]:
                     files_pulled = True
+
+            elif method == "fast":
+                # SEL Fast messages are sent on a Telnet session
+                if dev.service_status({"protocol": "telnet"}) == "closed":
+                    cls.log.warning(f"Failed to pull fast on {dev.ip}: telnet port is closed")
+                    continue
+                pull_results[method] = cls.pull_fast(dev)
 
             else:
                 web_protocol = None

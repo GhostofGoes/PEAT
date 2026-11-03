@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import tempfile
@@ -13,6 +14,7 @@ from peat.protocols.expect import Expecter, ExpectResult, PatternLike, serial_re
 from peat.protocols.serial import pretty_hex_bytes
 
 from .sel_ascii import READY_TO_SEND_RE, SELAscii
+from .sel_fast import FastLink
 
 #: Flow control characters the relay sends, which aren't part of the output
 _FLOW_CONTROL = (b"\x11", b"\x13")  # XON, XOFF
@@ -52,12 +54,26 @@ class SELSerial(SELAscii):
         force_ymodem: bool = False,
         legacy_timing: bool = False,
         idle_timeout: float = 30.0,
+        binary: bool = False,
     ):
+        """
+        Args:
+            serial_port: Serial port, e.g. ``/dev/ttyUSB0`` or ``COM3``
+            baudrate: Baud rate
+            timeout: Seconds to wait for a response to a command with little output
+            force_ymodem: Use YMODEM for file transfers
+            legacy_timing: Use fixed delays instead of waiting for prompts
+            idle_timeout: Refer to :class:`~peat.modules.sel.sel_ascii.SELAscii`
+            binary: Binary session, for SEL Fast messages: XON and XOFF are only
+                removed from the ASCII data, not from binary frames. The port
+                never uses software flow control (``xonxoff`` is off).
+        """
         super().__init__(
             address=serial_port,
             timeout=timeout,
             legacy_timing=legacy_timing,
             idle_timeout=idle_timeout,
+            binary=binary,
         )
 
         self.baud = baudrate  # type: int
@@ -114,6 +130,7 @@ class SELSerial(SELAscii):
     def comm(self, obj: serial.Serial):
         self._comm = obj
         self._expecter = None
+        self._fast_link = None
 
     @property
     def expecter(self) -> Expecter:
@@ -123,6 +140,12 @@ class SELSerial(SELAscii):
         """
         if self._expecter is None:
             read_port = serial_reader(self.comm)
+
+            if self.binary:
+                # The link takes the frames out, and removes XON and XOFF from the rest
+                self._fast_link = FastLink(read_port)
+                self._expecter = Expecter(self._fast_link.read_ascii, on_data=self._log_read)
+                return self._expecter
 
             def read_chunk(wait: float) -> bytes:
                 data = read_port(wait)
@@ -143,6 +166,10 @@ class SELSerial(SELAscii):
     def _write_raw(self, data: bytes, sensitive: bool = False) -> None:
         self.log.trace2(f"Writing: {'<redacted>' if sensitive else data!r}")
         self.comm.write(data)
+
+    def _fast_link_ready(self) -> FastLink:
+        self.expecter  # noqa: B018 (creates the link, and opens the port if needed)
+        return self._fast_link
 
     def _read_available(self) -> bytes:
         return self.expecter.read_available()
@@ -266,6 +293,7 @@ class SELSerial(SELAscii):
             self._comm.close()
             self._comm = None
             self._expecter = None
+            self._fast_link = None
             self.log.info("Disconnected")
 
         self.priv_level = 0
@@ -310,6 +338,11 @@ class SELSerial(SELAscii):
             delay = self.READ_DELAY
         sleep(delay)
 
+        if self.binary:
+            # The frames must be taken out of the data, so a binary session
+            # is always read through the expecter (and its FastLink)
+            return self._process_read(self.expecter.read_available(), strip_whitespace)
+
         # Data buffered while waiting for a prompt comes first
         buffered = self._expecter.read_available() if self._expecter else b""
         raw = self.comm.read_all()
@@ -326,6 +359,12 @@ class SELSerial(SELAscii):
     ) -> str:
         if isinstance(until, str):
             until = until.encode(self.ENCODING)
+
+        if self.binary:
+            # Read through the expecter (refer to read()). Nothing is discarded:
+            # the data after "until" (e.g. a frame) is kept for the next read.
+            raw = self.expecter.expect([re.escape(until)], timeout=self.timeout).data
+            return self._process_read(raw, strip_whitespace)
 
         if self._expecter and self._expecter.buffered:
             raw = self._expecter.expect([until], timeout=self.timeout).data
