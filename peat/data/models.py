@@ -2025,6 +2025,17 @@ class Service(BaseModel):
     _clean_protocol = validator("protocol", allow_reuse=True)(clean_protocol)
     _validate_ip = validator("listen_address", allow_reuse=True)(validate_ip)
 
+    @root_validator(skip_on_failure=True, allow_reuse=True)
+    def _canonical_modbus_tcp(cls, values):
+        """
+        One canonical name for Modbus TCP: ``modbus`` with transport ``tcp`` is
+        ``modbus_tcp``. Done when the model is created or a field is assigned
+        (``validate_assignment``), so de-duplication and merging see the final name.
+        """
+        if values.get("protocol") == "modbus" and values.get("transport") == "tcp":
+            values["protocol"] = "modbus_tcp"
+        return values
+
     def annotate(self, dev: DeviceData | None = None):
         # auto-populate "transport" field if it's unset and protocol is set
         if not self.transport and self.protocol:
@@ -2042,9 +2053,8 @@ class Service(BaseModel):
             elif self.protocol in ["snmp", "sntp"]:
                 self.transport = "udp"
 
-        # One canonical name for Modbus TCP
-        if self.protocol == "modbus" and self.transport == "tcp":
-            self.protocol = "modbus_tcp"
+        # NOTE: "modbus" with transport "tcp" is renamed to "modbus_tcp" by the
+        # _canonical_modbus_tcp validator (on creation and on assignment)
 
         # Derive "encrypted" from the protocol when the module did not set it
         if self.security.encrypted is None and self.protocol:

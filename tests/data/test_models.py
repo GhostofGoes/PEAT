@@ -1417,6 +1417,43 @@ def test_service_annotate_canonical_names_and_security():
     assert Service(protocol="c37.118").protocol == "c37_118"
 
 
+def test_service_modbus_tcp_is_canonical_before_dedupe():
+    # The name is canonical when the model is created or assigned, not only
+    # in annotate() (which export() runs AFTER de-duplication)
+    assert Service(protocol="modbus", transport="tcp").protocol == "modbus_tcp"
+    assert Service.parse_obj({"protocol": "modbus", "transport": "tcp"}).protocol == "modbus_tcp"
+    later = Service(protocol="modbus", port=502)
+    assert later.protocol == "modbus"  # serial or unknown transport: unchanged
+    later.transport = "tcp"
+    assert later.protocol == "modbus_tcp"
+
+    from peat import Datastore
+
+    store = Datastore()
+    first = DeviceData(
+        ip="192.0.2.61",
+        service=[Service(protocol="modbus", transport="tcp", port=502, status="open")],
+    )
+    second = DeviceData(ip="192.0.2.61")
+    second.store("service", Service(protocol="modbus_tcp", port=502, status="open"))
+    store.objects = [first, second]
+    store.deduplicate(prune_inactive=False)
+    assert len(store.objects) == 1
+    exported = store.objects[0].export()
+    assert [(s["protocol"], s["port"], s["transport"]) for s in exported["service"]] == [
+        ("modbus_tcp", 502, "tcp")
+    ]
+    assert DeviceData.parse_obj(exported).export() == exported
+
+    # A previous export loaded with parse_obj and merged with a new pull
+    old = DeviceData.parse_obj(
+        {"ip": "192.0.2.62", "service": [{"protocol": "modbus", "transport": "tcp", "port": 502}]}
+    )
+    new = DeviceData(ip="192.0.2.62", service=[Service(protocol="modbus_tcp", port=502)])
+    merge_models(old, new)
+    assert [s["protocol"] for s in old.export()["service"]] == ["modbus_tcp"]
+
+
 def test_naive_datetimes_are_device_local():
     dev = DeviceData(ip="192.0.2.12")
     dev.geo.timezone = "America/Denver"

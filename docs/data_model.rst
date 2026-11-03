@@ -106,7 +106,7 @@ Protocol names
    "``ssh``, ``telnet``, ``ftp``", "SSH, Telnet, FTP", "tcp/22, tcp/23, tcp/21", "``client`` / ``server``"
    "``gdoi``, ``ocsp``, ``scep``", "GDOI key distribution, OCSP, SCEP (certificate services)", "udp/848, HTTP", "``gdoi_kdc``, ``ocsp_responder``, ``scep_server``"
 
-Known spelling variants are normalized automatically: ``c37.118`` -> ``c37_118``, ``iec_104`` / ``iec60870_5_104`` -> ``iec104`` (``peat.data.validators.PROTOCOL_ALIASES``), and a :class:`~peat.data.models.Service` with ``protocol="modbus"`` and ``transport="tcp"`` becomes ``modbus_tcp``. ``cip`` and ``enip`` are different services and are not merged.
+Known spelling variants are normalized automatically: ``c37.118`` -> ``c37_118``, ``iec_104`` / ``iec60870_5_104`` -> ``iec104`` (``peat.data.validators.PROTOCOL_ALIASES``), and a :class:`~peat.data.models.Service` with ``protocol="modbus"`` and ``transport="tcp"`` becomes ``modbus_tcp`` when it is created or either field is set. ``cip`` and ``enip`` are different services and are not merged.
 
 Other roles: ``client``, ``server``, ``peer``, ``gateway``, ``time_server``, ``log_server``, ``auth_server``, ``dns_server``, ``smtp_server``, ``snmp_manager``, ``parent``, ``child``, ``engineering_access``, ``io_provider`` (I/O data source), ``gdoi_kdc`` (GDOI key server), ``ocsp_responder``, ``scep_server``.
 
