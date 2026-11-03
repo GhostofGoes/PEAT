@@ -459,6 +459,18 @@ def test_zero_gateway_ignored(raw):
     assert dev.interface[0].gateway == ""
 
 
+def test_unspecified_ip_is_not_an_interface(raw):
+    zero = scl.parse_scl(
+        scl.load_scl(_variant(raw, b'<P type="IP">192.0.2.10</P>', b'<P type="IP">0.0.0.0</P>')),
+        "PROT1",
+    )
+    assert zero.access_points[0].ip == "0.0.0.0"  # kept in the SCL summary
+    dev = _applied(zero)
+    assert dev.interface == []
+    assert dev.ip == ""
+    assert "0.0.0.0" not in dev.related.ip
+
+
 # --------------------------------------------------------------------------- #
 # Configuration alerts
 # --------------------------------------------------------------------------- #

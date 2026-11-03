@@ -78,6 +78,13 @@ APPID_RANGES = {"GOOSE": (0x0000, 0x3FFF), "GSSE": (0x0000, 0x3FFF), "SV": (0x40
 MAX_DECOMPRESSED_SIZE = 256 * 1024 * 1024
 """Upper limit for the size of decompressed zlib-wrapped SCL (256 MiB)."""
 
+UNSPECIFIED_IPS = ("0.0.0.0", "::")
+"""
+Placeholder addresses: an access point ``IP`` that is not configured, or an
+``IP-GATEWAY`` meaning "no gateway". Never used as an interface, gateway or
+device address.
+"""
+
 # Name of the control block attribute that references its DataSet
 _DATSET = "datSet"
 
@@ -851,7 +858,8 @@ def apply_iec61850(
 
     - ``dev.iec61850`` is set (or merged, if already set)
     - access points with an IP -> :class:`~peat.data.models.Interface` (unless
-      ``populate_interfaces`` is False or an interface already has that IP)
+      ``populate_interfaces`` is False, an interface already has that IP, or the
+      IP is a placeholder in :data:`UNSPECIFIED_IPS`)
     - access points with a server -> ``mms`` server service (tcp/102 or ``MMS-Port``),
       with ``security`` from ``Server/Authentication``
     - GOOSE/SV control blocks -> ``goose``/``sv`` publisher services, with
@@ -874,6 +882,8 @@ def apply_iec61850(
 
     if populate_interfaces:
         for ap in ied.access_points:
+            if ap.ip in UNSPECIFIED_IPS:
+                continue  # placeholder (e.g. 0.0.0.0 in a template), kept in access_points
             if ap.ip and not any(i.ip == ap.ip for i in dev.interface):
                 dev.store(
                     "interface",
@@ -882,7 +892,7 @@ def apply_iec61850(
                         type="ethernet",
                         ip=ap.ip,
                         subnet_mask=ap.subnet_mask,
-                        gateway="" if ap.gateway in ("0.0.0.0", "::") else ap.gateway,
+                        gateway="" if ap.gateway in UNSPECIFIED_IPS else ap.gateway,
                         application="iec61850",
                     ),
                 )
@@ -1024,6 +1034,7 @@ __all__ = [
     "DEFAULT_MMS_PORT",
     "SCL_FILE_TYPES",
     "SCL_NAMESPACE",
+    "UNSPECIFIED_IPS",
     "apply_iec61850",
     "decode_scl_bytes",
     "file_type_from_name",

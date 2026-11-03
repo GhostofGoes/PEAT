@@ -136,10 +136,25 @@ Notes:
   the file is still parsed.
 - IPv6 addresses, data type templates, ``DOI``/``DAI`` values and ``Private``
   elements are not modeled. An ``SSD`` without IEDs produces no device.
-- An IED reuses an existing device with the same IED name, else one with the
-  same IP address that has no IED name yet or the same IED name. The IEDs of
-  one file never share a device. ``TEMPLATE`` (the IED name in every ``ICD``
-  file) only matches a device parsed from the same file.
+- An IED reuses the device of the same IED from the same file (the file is
+  parsed again), else an existing device with the same IED name, else one with
+  the same IP address. A device found by name or IP is only reused if it has no
+  IED name yet or the same IED name, no other IP address and no other
+  manufacturer: the IEDs of two substations with the same IED names stay
+  separate devices. The IEDs of one file never share a device. ``TEMPLATE``
+  (the IED name in every ``ICD`` file) only matches a device parsed from the
+  same file.
+- A new device is named after its IED. A ``TEMPLATE`` IED, or an IED without an
+  IP address of its own whose name another device already has, is named
+  ``<IED name>@<file name without extension>`` (e.g. ``TEMPLATE@relay`` for
+  ``relay.icd``, with ``-2``, ``-3``, ... appended if needed), so every device
+  has its own ID and output directory. ``iec61850.ied_name`` is always the IED
+  name from the file.
+- The device ``ip`` is the first access point IP, unless it is ``0.0.0.0``, the
+  IED is a ``TEMPLATE`` (default address), or another device already has it
+  (several IEDs with one IP). Such addresses stay in ``iec61850.access_points``
+  (and in the interfaces, except ``0.0.0.0``), and these devices are not merged
+  by de-duplication.
 - zlib-compressed SEL ``SET_61850.CID`` files are handled by
   :class:`~peat.modules.sel.sel_relay.SELRelay`, which uses the same SCL parser.
 

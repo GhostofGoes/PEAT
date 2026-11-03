@@ -44,6 +44,7 @@ from lxml import etree
 from peat import IEC61850, DeviceData, DeviceModule, File, ParseError, config, datastore
 from peat.file_signature import FileSignature
 from peat.parsing import scl
+from peat.protocols.addresses import address_to_pathname
 
 SCL_ROOT_TAG = f"{{{scl.SCL_NAMESPACE}}}SCL"
 
@@ -93,11 +94,15 @@ class IEC61850SCL(DeviceModule):
 
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData | None:
+        data = file.read_bytes()
         try:
-            root = scl.load_scl(file)
+            root = scl.load_scl(data)
         except ParseError as ex:
             cls.log.warning(f"'{file.name}' is not a valid SCL file: {ex}")
             return None
+        # Not guessed from the extension (".scd" is a Scribus document to mimetypes).
+        # A zlib-compressed SEL CID (0x78 header) is only parsed here if forced.
+        mime_type = "application/zlib" if data[:1] == b"\x78" else "application/xml"
         ieds = scl.parse_scl_all(root, scl.file_type_from_name(file))
         if not ieds:
             cls.log.warning(
@@ -118,7 +123,7 @@ class IEC61850SCL(DeviceModule):
                     ied_dev = dev
                 else:
                     ied_dev, created = cls._ied_device(ied, file, claimed)
-                cls._populate_ied(ied_dev, ied, file)
+                cls._populate_ied(ied_dev, ied, file, mime_type)
             except Exception as ex:
                 cls.log.warning(f"Failed to process IED '{name}' from '{file.name}': {ex}")
                 if created and ied_dev is not None:
@@ -155,17 +160,43 @@ class IEC61850SCL(DeviceModule):
         return main_dev
 
     @staticmethod
+    def _identity_ip(ied: IEC61850) -> str:
+        """
+        The IP address that identifies the IED: the first access point IP that is
+        not a placeholder (``0.0.0.0``). ``TEMPLATE`` IEDs (ICD files) have none:
+        their addresses are defaults, not the address of a device.
+        """
+        if ied.ied_name.upper() == "TEMPLATE":
+            return ""
+        return next(
+            (ap.ip for ap in ied.access_points if ap.ip and ap.ip not in scl.UNSPECIFIED_IPS),
+            "",
+        )
+
+    @classmethod
     def _ied_device(
-        ied: IEC61850, file: Path, claimed: set[int] | None = None
+        cls, ied: IEC61850, file: Path, claimed: set[int] | None = None
     ) -> tuple[DeviceData, bool]:
         """
-        Existing device for the IED (by name, then by IP), else a new one.
+        Existing device for the IED, else a new one.
+
+        Lookup order:
+
+        1. the device of the same IED from the same SCL file (file parsed again)
+        2. a device with the IED name (``name`` or ``iec61850.ied_name``)
+        3. a device with the IP address of the IED
 
         A device already used by another IED of the same file is never reused.
-        ``TEMPLATE`` (the IED name of every ICD file, IEC 61850-6) is not looked
-        up by name, and only matches a ``TEMPLATE`` device parsed from the same
-        file. A device found by IP is only reused if it has no IED name yet or
-        the same IED name.
+        A device found by name or IP is only reused if it has no IED name yet or
+        the same IED name, no other IP address and no other manufacturer (e.g.
+        the IEDs of two substations with the same IED names are different
+        devices). ``TEMPLATE`` (the IED name of every ICD file, IEC 61850-6)
+        only matches a device parsed from the same file.
+
+        A new device is named after the IED. A ``TEMPLATE`` IED, or an IED
+        without an IP address of its own whose name another device already has,
+        is named ``<IED name>@<file stem>`` (``-2``, ``-3``, ... is appended if
+        needed): every device keeps its own ID and output directory.
 
         Returns:
             The device, and if it was created
@@ -173,44 +204,70 @@ class IEC61850SCL(DeviceModule):
         claimed = claimed or set()
         file_path = file.as_posix()
         template = ied.ied_name.upper() == "TEMPLATE"
+        ip = cls._identity_ip(ied)
 
         def _usable(candidate: DeviceData | None) -> bool:
             if candidate is None or id(candidate) in claimed:
                 return False
             name = candidate.iec61850.ied_name
-            return not name or (
-                name == ied.ied_name and (not template or candidate.iec61850.scl_file == file_path)
-            )
+            if name and name != ied.ied_name:
+                return False
+            known_ips = {candidate.ip, *(i.ip for i in candidate.interface)} - {""}
+            if ip and known_ips and ip not in known_ips:
+                return False
+            manufacturer = candidate.iec61850.manufacturer
+            return not (ied.manufacturer and manufacturer and manufacturer != ied.manufacturer)
 
-        if template:
-            # Same ICD file parsed again
+        # 1. Same IED in the same file (parsed again)
+        found = next(
+            (
+                d
+                for d in datastore.objects
+                if d.iec61850.ied_name == ied.ied_name
+                and d.iec61850.scl_file == file_path
+                and id(d) not in claimed
+            ),
+            None,
+        )
+        # 2. By IED name
+        if found is None and not template and ied.ied_name:
             found = next(
                 (
                     d
                     for d in datastore.objects
-                    if d.iec61850.ied_name == ied.ied_name
-                    and d.iec61850.scl_file == file_path
-                    and id(d) not in claimed
+                    if ied.ied_name in (d.name, d.iec61850.ied_name) and _usable(d)
                 ),
                 None,
             )
-        elif ied.ied_name:
-            found = datastore.search(ied.ied_name, "name")
-            if found is not None and id(found) in claimed:
-                found = None
-        else:
-            found = None
-        ip = next((ap.ip for ap in ied.access_points if ap.ip), "")
+        # 3. By IP address
         if found is None and ip:
             candidate = datastore.search(ip, "ip")
             if _usable(candidate):
                 found = candidate
         if found is not None:
             return found, False
-        return datastore.create(ied.ied_name, "name"), True
+
+        name = ied.ied_name
+        taken = {address_to_pathname(d.name) for d in datastore.objects if d.name}
+        if template or (address_to_pathname(name) in taken and not cls._ip_available(ip)):
+            base = f"{ied.ied_name}@{file.stem}"
+            name = base
+            number = 2
+            while address_to_pathname(name) in taken:
+                name = f"{base}-{number}"
+                number += 1
+        return datastore.create(name, "name"), True
 
     @staticmethod
-    def _populate_ied(dev: DeviceData, ied: IEC61850, file: Path) -> None:
+    def _ip_available(ip: str, dev: DeviceData | None = None) -> bool:
+        """If ``ip`` can be the IP of ``dev``: no other device has it."""
+        if not ip:
+            return False
+        other = datastore.search(ip, "ip")
+        return other is None or other is dev
+
+    @classmethod
+    def _populate_ied(cls, dev: DeviceData, ied: IEC61850, file: Path, mime_type: str) -> None:
         ied.scl_file = file.as_posix()
         if not dev.name:
             dev.name = ied.ied_name
@@ -220,12 +277,24 @@ class IEC61850SCL(DeviceModule):
             dev.description.model = ied.ied_type
         if ied.description and not dev.description.description:
             dev.description.description = ied.description
-        ip = next((ap.ip for ap in ied.access_points if ap.ip), "")
-        if ip and not dev.ip:
-            dev.ip = ip
 
+        # dev.ip is the identity of the device (de-duplication merges devices with
+        # the same IP): only set it to an IP that no other device has. Placeholder
+        # (0.0.0.0) and TEMPLATE addresses, and an IP shared by several IEDs, stay
+        # in iec61850.access_points (and in the interfaces of the IED).
+        ip = cls._identity_ip(ied)
+        identity_ok = cls._ip_available(ip, dev)
+        if identity_ok and not dev.ip:
+            dev.ip = ip
+        ip_before, id_before = dev.ip, dev.id
         scl.apply_iec61850(dev, ied)
-        dev.store("files", File(local_path=file, category={"configuration", "iec61850"}))
+        if not identity_ok:  # store("interface") copies the first interface IP to dev.ip
+            dev.ip, dev.id = ip_before, id_before
+
+        dev.store(
+            "files",
+            File(local_path=file, mime_type=mime_type, category={"configuration", "iec61850"}),
+        )
 
 
 __all__ = ["IEC61850SCL"]

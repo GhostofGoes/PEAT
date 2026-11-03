@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from peat import IEC61850SCL, DeviceData, SELRelay, config, datastore, module_api
-from peat.api.parse_api import parsable_file_by_pattern, parsable_file_by_signature
+from peat.api.parse_api import parsable_file_by_pattern, parsable_file_by_signature, parse
 from peat.modules.iec61850.iec61850_scl import is_plain_xml_scl
 from peat.parsing import scl
 
@@ -54,6 +54,7 @@ def out_config(mocker, tmp_path) -> Path:
         {
             "RUN_DIR": tmp_path,
             "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
             "TEMP_DIR": tmp_path / "temp",
         },
     )
@@ -62,8 +63,41 @@ def out_config(mocker, tmp_path) -> Path:
 
 
 def _write(path: Path, data: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return path
+
+
+def _scd(*ieds: tuple[str, str, str]) -> bytes:
+    """SCD with one IED per (name, manufacturer, IP) tuple (IP "" = no address)."""
+    connected_aps = "".join(
+        f'<ConnectedAP iedName="{name}" apName="AP1"><Address>'
+        f'<P type="IP">{ip}</P></Address></ConnectedAP>'
+        for name, _, ip in ieds
+        if ip
+    )
+    ied_elements = "".join(
+        f'<IED name="{name}" manufacturer="{manufacturer}" type="T{i}"><AccessPoint name="AP1">'
+        f'<Server><Authentication/><LDevice inst="LD{i}"><LN0 lnClass="LLN0" inst=""/>'
+        "</LDevice></Server></AccessPoint></IED>"
+        for i, (name, manufacturer, _) in enumerate(ieds)
+    )
+    return (
+        '<SCL xmlns="http://www.iec.ch/61850/2003/SCL"><Header id="x"/>'
+        f'<Communication><SubNetwork name="S1">{connected_aps}</SubNetwork></Communication>'
+        f"{ied_elements}</SCL>"
+    ).encode()
+
+
+def _parse_run(*paths: Path) -> list[DeviceData]:
+    """Run 'peat parse -d IEC61850SCL' (parse API, including de-duplication)."""
+    assert parse(list(paths), ["IEC61850SCL"]) is not None
+    return list(datastore.objects)
+
+
+def _output_files(run_dir: Path) -> list[Path]:
+    """device-data-* files written in the run directory, relative to it."""
+    return sorted(p.relative_to(run_dir) for p in run_dir.rglob("device-data-*"))
 
 
 def _claims(module, path: Path) -> bool:
@@ -102,6 +136,7 @@ def test_parse_scd_one_device_per_ied(assert_glob_path):
     assert scl_file.category == {"configuration", "iec61850"}
     assert scl_file.name == SCD_PATH.name
     assert scl_file.hash.sha256
+    assert scl_file.mime_type == "application/xml"  # not guessed from ".scd"
 
     # Every other IED is in the datastore
     assert len(datastore.objects) == 2
@@ -140,9 +175,15 @@ def test_parse_reuses_existing_devices():
     assert len(datastore.search("MU1", "name").relationships) == 1
 
 
-def _icd(manufacturer: str, ied_type: str, ld_inst: str) -> str:
+def _icd(manufacturer: str, ied_type: str, ld_inst: str, ip: str = "") -> str:
+    communication = (
+        '<Communication><SubNetwork name="S1"><ConnectedAP iedName="TEMPLATE" apName="AP1">'
+        f'<Address><P type="IP">{ip}</P></Address></ConnectedAP></SubNetwork></Communication>'
+        if ip
+        else ""
+    )
     return (
-        '<SCL xmlns="http://www.iec.ch/61850/2003/SCL"><Header id="x"/>'
+        f'<SCL xmlns="http://www.iec.ch/61850/2003/SCL"><Header id="x"/>{communication}'
         f'<IED name="TEMPLATE" manufacturer="{manufacturer}" type="{ied_type}">'
         '<AccessPoint name="AP1"><Server><Authentication/>'
         f'<LDevice inst="{ld_inst}"><LN0 lnClass="LLN0" inst=""/></LDevice>'
@@ -163,6 +204,43 @@ def test_parse_template_icds_are_separate_devices(out_config):
     # parsing the same ICD again reuses its device
     assert IEC61850SCL.parse(out_config / "a.icd") is a
     assert len(datastore.objects) == 2
+    # Each ICD device has its own name, ID and output directory
+    assert (a.name, b.name) == ("TEMPLATE@a", "TEMPLATE@b")
+    assert a.iec61850.ied_name == b.iec61850.ied_name == "TEMPLATE"
+    assert a.get_out_dir() != b.get_out_dir()
+    assert a.files[0].mime_type == "application/xml"  # not guessed from ".icd"
+
+
+def test_parse_api_template_icds_with_default_ip(out_config):
+    """
+    ICDs with the same default IP (or the same file name in two directories) stay
+    separate devices after de-duplication, with their own output directory.
+    """
+    paths = [
+        _write(
+            out_config / "in" / "a.icd", _icd("VendorA", "RelayA", "LDA", "192.168.1.100").encode()
+        ),
+        _write(
+            out_config / "in" / "b.icd", _icd("VendorB", "MeterB", "LDB", "192.168.1.100").encode()
+        ),
+        _write(
+            out_config / "in2" / "a.icd",
+            _icd("VendorC", "RelayC", "LDC", "192.168.1.100").encode(),
+        ),
+    ]
+    devices = _parse_run(*paths)
+    assert sorted(d.description.model for d in devices) == ["MeterB", "RelayA", "RelayC"]
+    assert sorted(d.name for d in devices) == ["TEMPLATE@a", "TEMPLATE@a-2", "TEMPLATE@b"]
+    for d in devices:
+        assert d.ip == ""  # a template's address is a placeholder, not the device's
+        assert d.iec61850.access_points[0].ip == "192.168.1.100"
+    written = _output_files(out_config / "devices")
+    # One directory per device, no "device-data-full.json.1" files (ignored by baselining)
+    assert {p.parts[0] for p in written} == {d.get_out_dir().name for d in devices}
+    assert [p for p in written if p.name == "device-data-full.json"] == sorted(
+        Path(d.get_out_dir().name) / "device-data-full.json" for d in devices
+    )
+    assert all(p.suffix in (".json", ".jsonl") for p in written), written
 
 
 def test_parse_ieds_with_same_ip_are_separate_devices(out_config):
@@ -187,6 +265,82 @@ def test_parse_ieds_with_same_ip_are_separate_devices(out_config):
     assert by_name["IED_A"].description.model == "RelayA"
     assert by_name["IED_B"].description.model == "RelayB"
     assert [ld.inst for ld in by_name["IED_B"].iec61850.logical_devices] == ["LDB"]
+
+
+def test_parse_api_same_ied_names_in_two_scds(out_config):
+    """The IEDs of two substations with the same IED names are not merged."""
+    sub_a = _write(
+        out_config / "in" / "sub_a.scd",
+        _scd(("IEDA", "VendorA", "10.1.1.10"), ("IEDB", "VendorA", "10.1.1.11")),
+    )
+    sub_b = _write(
+        out_config / "in" / "sub_b.scd",
+        _scd(("IEDA", "OtherVendor", "10.2.2.10"), ("IEDB", "VendorA", "10.2.2.11")),
+    )
+    devices = _parse_run(sub_a, sub_b)
+    assert sorted((d.iec61850.ied_name, d.ip, d.description.vendor.name) for d in devices) == [
+        ("IEDA", "10.1.1.10", "VendorA"),
+        ("IEDA", "10.2.2.10", "OtherVendor"),
+        ("IEDB", "10.1.1.11", "VendorA"),
+        ("IEDB", "10.2.2.11", "VendorA"),
+    ]
+    for d in devices:
+        assert [f.name for f in d.files] == [Path(d.iec61850.scl_file).name]
+    # Parsing a file again reuses its devices
+    assert len(_parse_run(sub_b)) == 4
+
+
+def test_parse_api_same_ied_names_without_addresses(out_config):
+    """Same IED name, no IP of its own: a distinct name keeps the output apart."""
+    sub_a = _write(out_config / "in" / "sub_a.scd", _scd(("IEDA", "VendorA", "")))
+    sub_b = _write(out_config / "in" / "sub_b.scd", _scd(("IEDA", "VendorB", "")))
+    devices = _parse_run(sub_a, sub_b)
+    assert sorted((d.name, d.description.vendor.name) for d in devices) == [
+        ("IEDA", "VendorA"),
+        ("IEDA@sub_b", "VendorB"),
+    ]
+    assert len({d.get_out_dir() for d in devices}) == 2
+    assert len(_parse_run(sub_a, sub_b)) == 2
+
+
+def test_parse_api_shared_and_unspecified_ips(out_config):
+    """IEDs that share an IP, or have 0.0.0.0, are not merged by de-duplication."""
+    shared = _write(
+        out_config / "in" / "shared_ip.scd",
+        _scd(("IEDA", "VendorA", "192.0.2.50"), ("IEDB", "VendorB", "192.0.2.50")),
+    )
+    zero = _write(
+        out_config / "in" / "zero.scd",
+        _scd(("IEDC", "VendorC", "0.0.0.0"), ("IEDD", "VendorD", "0.0.0.0")),
+    )
+    devices = {d.iec61850.ied_name: d for d in _parse_run(shared, zero)}
+    assert sorted(devices) == ["IEDA", "IEDB", "IEDC", "IEDD"]
+    assert devices["IEDA"].ip == "192.0.2.50"
+    assert devices["IEDB"].ip == ""  # the IP is the identity of IEDA
+    assert [i.ip for i in devices["IEDB"].interface] == ["192.0.2.50"]
+    assert devices["IEDB"].description.vendor.name == "VendorB"
+    for name in ("IEDC", "IEDD"):
+        dev = devices[name]
+        assert dev.ip == ""
+        assert dev.interface == []
+        assert "0.0.0.0" not in dev.related.ip
+        assert dev.iec61850.access_points[0].ip == "0.0.0.0"  # kept in the SCL summary
+    assert len({d.get_out_dir() for d in devices.values()}) == 4
+
+
+def test_ied_name_cannot_escape_output_dir(out_config):
+    """An IED named '..' gets an output directory inside the devices directory."""
+    two = _write(out_config / "in" / "evil.scd", _scd(("REAL1", "ACME", ""), ("..", "ACME", "")))
+    one = _write(out_config / "in" / "evil2.scd", _scd(("..", "ACME", "")))
+    IEC61850SCL.parse(two)
+    dev = IEC61850SCL.parse(one)
+    devices_dir = out_config / "devices"
+    assert dev.get_out_dir().parent == devices_dir
+    assert (dev.get_out_dir() / "evil2.scd").is_file()  # the input file copy
+    assert not (out_config / "evil2.scd").exists()
+    written = _output_files(out_config)
+    assert written
+    assert all(p.parts[0] == "devices" and len(p.parts) == 3 for p in written), written
 
 
 @pytest.mark.usefixtures("out_config")
