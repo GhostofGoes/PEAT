@@ -78,7 +78,10 @@ How the SNMP data is stored in the PEAT data model:
        ``clock.source``. PEAT also derives ``syncs_time_from`` relationships from them.
 
 Identity data (``sysDescr``, ``sysName``, ``sysObjectID``), resource usage (CPU load, memory
-pools) and the RSTP bridge settings are kept in ``extra.module_<sysName>``.
+pools) and the RSTP bridge settings are kept in ``extra.module_<sysName>``. The RSTP neighbour
+MACs (``rstpNeighbourPortA``/``B``) become ``redundancy.partner`` of ``Ch1``/``Ch2`` when that
+channel has an active RSTP role. Otherwise (e.g. in PRP/HSR or point-to-point mode) they stay in
+``extra.module_<sysName>.sip_optical``, unless they are all zeros.
 
 .. note::
   ``snmp_walk()`` keys the values of a walk by object name, so only the last row of the

@@ -830,11 +830,24 @@ def process_snmp_data(
     if rest_eth:
         unmapped["sip_ethernet"] = rest_eth
     optical_mapped = _optical_channel(sip_optical) is not None
+    # The RSTP neighbour MACs are moved to Redundancy.partner of the channels
+    # with an active RSTP role; keep them in extra otherwise (e.g. in PRP/HSR
+    # or point-to-point mode), unless they are empty
+    rstp_partners = {
+        iface.name
+        for iface in channels
+        if iface.redundancy.protocol == "rstp" and iface.redundancy.partner
+    }
+    moved_neighbours = {
+        f"rstpNeighbourPort{port}"
+        for port, chan in (("A", "Ch1"), ("B", "Ch2"))
+        if chan in rstp_partners
+        or not _mac_from_octets(sip_optical.get(f"rstpNeighbourPort{port}"))
+    }
     rest_optical = {
         k: v
         for k, v in sip_optical.items()
-        if not (optical_mapped and k in _SIP_OPTICAL_TABLE)
-        and k not in ("rstpNeighbourPortA", "rstpNeighbourPortB")
+        if not (optical_mapped and k in _SIP_OPTICAL_TABLE) and k not in moved_neighbours
     }
     if rest_optical:
         unmapped["sip_optical"] = rest_optical

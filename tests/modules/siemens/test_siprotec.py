@@ -207,6 +207,33 @@ def test_process_snmp_data_prp():
     assert dev.uptime is None
 
 
+def test_process_snmp_data_keeps_unmapped_rstp_neighbours():
+    # PRP mode: the RSTP neighbour MAC of port A is not mapped to any partner, so it
+    # stays in extra; the all-zero MAC of port B holds no information and is dropped
+    info = _module_info({"nodeType": "prpmode1", "adapterActiveA": "active"})
+    dev = DeviceData(ip="192.0.2.63")
+    unmapped = siprotec.process_snmp_data(dev, info, {}, timestamp=T0)
+    assert all(i.redundancy.partner == "" for i in dev.interface)
+    assert unmapped["sip_optical"] == {
+        "opMode": "switch",
+        "bridgePrior": "32768",
+        "rstpNeighbourPortA": "0x00098e0a0b0c",
+    }
+
+    # Point-to-point mode with inactive RSTP roles: same
+    info = _module_info()
+    info["sip_ethernet"].update(
+        {
+            "rstpRoleChannel1": "nonStp",
+            "rstpRoleChannel2": "nonStp",
+            "activChannel": "activChannel1",
+        }
+    )
+    unmapped = siprotec.process_snmp_data(DeviceData(ip="192.0.2.64"), info, {}, timestamp=T0)
+    assert unmapped["sip_optical"]["rstpNeighbourPortA"] == "0x00098e0a0b0c"
+    assert "rstpNeighbourPortB" not in unmapped["sip_optical"]
+
+
 def test_process_snmp_data_point_to_point():
     info = _module_info()
     info["sip_ethernet"].update(
