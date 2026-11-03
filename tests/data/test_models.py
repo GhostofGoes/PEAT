@@ -1825,3 +1825,35 @@ def test_mixed_ip_versions_export():
     expected = ["192.0.2.9", "192.0.2.20", "2001:db8::10", "2001:db8::50"]
     assert dev.export()["related"]["ip"] == expected
     assert dev.elastic()["related"]["ip"] == expected
+
+
+def test_same_class_model_equality_does_not_serialize(monkeypatch):
+    """R6-6: == of two models of one class compares the fields without dict()."""
+    a, b = Interface(name="x"), Interface(name="x")
+
+    def no_dict(*_args, **_kwargs):
+        raise AssertionError("dict() called by ==")
+
+    monkeypatch.setattr(NetworkStatistics, "dict", no_dict)
+    assert a == b
+    assert a.is_default("statistics")
+    b.statistics.ingress.bytes = 1
+    assert a != b
+    assert not b.is_default("statistics")
+    assert Interface(name="x", services=[Service(port=1)]) != Interface(
+        name="x", services=[Service(port=2)]
+    )
+
+
+def test_model_equality_semantics():
+    """R6-6: the same results as pydantic's dict() comparison, and models stay unhashable."""
+    assert Service(port=1) == Service(port=1)
+    assert Service(port=1) != Service(port=2)
+    assert Service(port=1) == Service(port=1).dict()  # model vs dict
+    assert Service(port=1).dict() == Service(port=1)
+    assert Vlan(id="5") != Service()  # other class
+    assert Service(port=1) != Service(port=1, protocol="http")
+    assert DeviceData(service=[Service(port=1)]) == DeviceData(service=[Service(port=1)])
+    assert DeviceData(service=[Service(port=1)]) != DeviceData(service=[Service(port=2)])
+    with pytest.raises(TypeError):
+        hash(Service())
