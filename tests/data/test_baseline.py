@@ -586,6 +586,110 @@ def test_same_named_list_items_are_aligned_by_their_values():
     assert bl.compare_device(now, baseline, include_passed=False) != []
 
 
+def _python_processes(*procs: tuple[int, str]) -> DeviceData:
+    dev = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+    for pid, script in procs:
+        dev.store(
+            "processes",
+            HostProcess(type="process", name="python3", pid=pid, command_line=f"python3 {script}"),
+        )
+    return _exported(dev)
+
+
+def test_same_named_list_items_of_different_counts_are_paired_by_their_values():
+    """
+    If one of two items with the same identity is gone (or new), the other one is
+    still paired with its equal item, not by its rank (R6-3).
+    """
+    baseline = _snapshot(
+        _python_processes((100, "/opt/a.py"), (200, "/opt/z.py")), "previous_observed"
+    )
+    findings = bl.compare_device(
+        _python_processes((150, "/opt/z.py")), baseline, include_passed=False
+    )
+    assert [(f.difference, f.path) for f in findings] == [
+        ("missing", "processes[type=process,name=python3]")
+    ]
+    assert json.loads(findings[0].expected)["command_line"] == "python3 /opt/a.py"
+
+    baseline = _snapshot(_python_processes((200, "/opt/z.py")), "previous_observed")
+    findings = bl.compare_device(
+        _python_processes((300, "/opt/z.py"), (100, "/opt/a.py")), baseline, include_passed=False
+    )
+    assert [(f.difference, f.path) for f in findings] == [
+        ("unexpected", "processes[type=process,name=python3#1]")
+    ]
+    assert json.loads(findings[0].actual)["command_line"] == "python3 /opt/a.py"
+
+
+def _golden(*services: dict) -> Baseline:
+    """A hand-written (engineer_provided) snapshot with the given services."""
+    return Baseline.parse_obj(
+        {"id": "golden", "kind": "engineer_provided", "expected": {"service": list(services)}}
+    )
+
+
+def test_services_with_a_transport_on_one_side_only_are_aligned():
+    """
+    A service without a transport (e.g. of a hand-written snapshot) is aligned with
+    the only service of the other side that has one, e.g. the transport that PEAT
+    sets for ftp or a module sets for dnp3 (R6-1).
+    """
+    dev = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+    dev.store("service", Service(protocol="ftp", port=21, enabled=False))
+    dev.store("service", Service(protocol="dnp3", port=20000, transport="tcp", enabled=True))
+    assert {s.transport for s in dev.service} == {"tcp"}
+    golden = _golden(
+        {"protocol": "ftp", "port": 21, "enabled": False},
+        {"protocol": "dnp3", "port": 20000, "enabled": True},
+    )
+    assert bl.compare_device(dev, golden, include_passed=False) == []
+    # differences are reported at the path of the expected service
+    dev.service[[s.protocol for s in dev.service].index("dnp3")].enabled = False
+    assert _diffs(bl.compare_device(dev, golden, include_passed=False)) == {
+        ("change", "service[protocol=dnp3,port=20000].enabled")
+    }
+
+    # the other way round: the expected service has a transport, the actual one not
+    observed = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+    observed.store("service", Service(protocol="dnp3", port=20000, transport="tcp"))
+    now = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+    now.store("service", Service(protocol="dnp3", port=20000))
+    findings = bl.compare_device(
+        _exported(now), _snapshot(observed, "previous_observed"), include_passed=False
+    )
+    assert [(f.difference, f.path, f.expected) for f in findings] == [
+        ("missing", "service[protocol=dnp3,port=20000,transport=tcp].transport", "tcp")
+    ]
+
+
+@pytest.mark.parametrize("order", [("tcp", "udp"), ("udp", "tcp")])
+def test_services_on_two_transports_stay_apart(order: tuple[str, str]):
+    dev = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+    for transport in order:
+        dev.store(
+            "service",
+            Service(protocol="dns", port=53, transport=transport),
+            lookup=("protocol", "port", "transport"),
+        )
+    dev = _exported(dev)
+    assert [s.transport for s in dev.service] == ["tcp", "udp"]
+    assert bl.compare_device(dev, _snapshot(dev), include_passed=False) == []
+    assert _diffs(
+        bl.compare_device(
+            dev, _golden({"protocol": "dns", "port": 53, "transport": "tcp"}), include_passed=False
+        )
+    ) == {("unexpected", "service[protocol=dns,port=53,transport=udp]")}
+    # a service without a transport is not aligned with one of several (docs/baselines.rst)
+    assert _diffs(
+        bl.compare_device(dev, _golden({"protocol": "dns", "port": 53}), include_passed=False)
+    ) == {
+        ("missing", "service[protocol=dns,port=53]"),
+        ("unexpected", "service[protocol=dns,port=53,transport=tcp]"),
+        ("unexpected", "service[protocol=dns,port=53,transport=udp]"),
+    }
+
+
 def test_snapshot_observed_vs_partial_kinds():
     dev = sel_relay()
     cur = sel_relay()
@@ -1257,6 +1361,20 @@ def test_intersect_docs():
         "service": [{"protocol": "x", "port": 1}],
     }
     assert bl.intersect_docs([{"a": 1}, {"a": 2}]) == {}
+
+
+def test_intersect_docs_pairs_list_items_like_comparisons():
+    """Items are paired like in snapshot comparisons (R6-1, R6-3)."""
+    a = {"type": "process", "name": "python3", "command_line": "python3 /opt/a.py"}
+    z = {"type": "process", "name": "python3", "command_line": "python3 /opt/z.py"}
+    docs = [
+        {"service": [{"protocol": "dnp3", "port": 20000}], "processes": [a, z]},
+        {"service": [{"protocol": "dnp3", "port": 20000, "transport": "tcp"}], "processes": [z]},
+    ]
+    assert bl.intersect_docs(docs) == {
+        "service": [{"protocol": "dnp3", "port": 20000}],
+        "processes": [z],
+    }
 
 
 def test_strip_paths():

@@ -532,10 +532,103 @@ def index_items(list_name: str, items: list, ignore: tuple[str, ...] = (), path:
     numbers = [0] * len(entries)
     for positions in groups.values():
         if len(positions) > 1:
-            positions.sort(key=lambda p: json.dumps(entries[p][1], sort_keys=True, default=str))
+            positions.sort(key=lambda p: _json(entries[p][1]))
         for n, pos in enumerate(positions):
             numbers[pos] = n
     return {(key, numbers[pos]): item for pos, (key, _, item) in enumerate(entries)}
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _compared_json(item: Any, ignore: tuple[str, ...], path: str) -> str:
+    """JSON of the values of a list item that are compared (see :func:`index_items`)."""
+    return _json(strip_paths(item, ignore, path) if ignore else item)
+
+
+def pair_items(
+    list_name: str,
+    exp_idx: dict,
+    act_idx: dict,
+    ignore: tuple[str, ...] = (),
+    path: str = "",
+) -> None:
+    """
+    Change the keys of the items of ``act_idx`` (:func:`index_items` of a list) in
+    place to the keys of the items of ``exp_idx`` they are paired with:
+
+    1. Services (``service``/``services`` lists) that only one side has a
+       ``transport`` for: an unpaired item without a ``transport`` (e.g. of a
+       hand-written snapshot) is paired with the ONLY unpaired item of the other
+       side that has the same other key values and ``#n`` and a ``transport``
+       (e.g. the ``tcp`` that PEAT sets for ``ftp``). With several (e.g. ``tcp/53``
+       and ``udp/53``), none is paired.
+    2. Items that share a key: an actual item is paired with an unpaired expected
+       item with the same compared values (without the values ``ignore`` matches)
+       first, then the other items in the order of their compared values. The
+       remaining actual items get numbers after the expected ones (``unexpected``).
+    """
+    if list_name in ("service", "services"):
+        _pair_missing_transport(exp_idx, act_idx)
+    exp_groups: dict = {}
+    for key, n in exp_idx:
+        exp_groups.setdefault(key, []).append(n)
+    act_groups: dict = {}
+    for key, n in act_idx:
+        act_groups.setdefault(key, []).append(n)
+    for key, act_numbers in act_groups.items():
+        exp_numbers = sorted(exp_groups.get(key, ()))
+        if not exp_numbers or (len(exp_numbers) == 1 and act_numbers == exp_numbers):
+            continue  # nothing to choose from (most items)
+        unpaired: dict[str, list[int]] = {}  # compared values -> expected numbers
+        for n in reversed(exp_numbers):
+            unpaired.setdefault(_compared_json(exp_idx[(key, n)], ignore, path), []).append(n)
+        items = {n: act_idx.pop((key, n)) for n in sorted(act_numbers)}
+        numbers: dict[int, int] = {}
+        for n, item in items.items():
+            same = unpaired.get(_compared_json(item, ignore, path))
+            if same:
+                numbers[n] = same.pop()
+        free = sorted(e for ns in unpaired.values() for e in ns)
+        free.reverse()
+        new = exp_numbers[-1] + 1
+        for n in items:
+            if n not in numbers:
+                if free:
+                    numbers[n] = free.pop()
+                else:
+                    numbers[n], new = new, new + 1
+        for n, item in items.items():
+            act_idx[(key, numbers[n])] = item
+
+
+def _pair_missing_transport(exp_idx: dict, act_idx: dict) -> None:
+    """Step 1 of :func:`pair_items`: services with a ``transport`` on one side only."""
+
+    def without_transport(key: tuple) -> tuple | None:
+        fields, n = key
+        if fields and fields[-1][0] == "transport":
+            return (fields[:-1], n)
+        return None
+
+    def candidates(idx: dict, other: dict) -> dict:
+        # unpaired key of `other` without transport -> unpaired keys of `idx` with one
+        found: dict = {}
+        for key in idx:
+            if key not in other:
+                base = without_transport(key)
+                if base is not None and base in other and base not in idx:
+                    found.setdefault(base, []).append(key)
+        return found
+
+    # the two steps change disjoint keys: actual keys with a transport, then without
+    for base, keys in candidates(act_idx, exp_idx).items():
+        if len(keys) == 1:  # expected item without transport, actual item with one
+            act_idx[base] = act_idx.pop(keys[0])
+    for base, keys in candidates(exp_idx, act_idx).items():
+        if len(keys) == 1:  # actual item without transport, expected item with one
+            act_idx[keys[0]] = act_idx.pop(base)
 
 
 def item_label(list_name: str, item: Any) -> str:
@@ -653,7 +746,10 @@ def diff_docs(
     report_new_leaves: bool,
     out: list[tuple[str, str, Any, Any]],
 ) -> None:
-    """Append ``(difference, path, expected, actual)`` tuples to ``out``."""
+    """
+    Append ``(difference, path, expected, actual)`` tuples to ``out``. List items
+    are paired by :func:`pair_items`, and their paths use the expected item's key.
+    """
     if path and is_ignored(path, ignore):
         return
     if isinstance(expected, dict) and isinstance(actual, dict):
@@ -694,6 +790,7 @@ def diff_docs(
     ):
         exp_idx = index_items(list_name, expected, ignore, path)
         act_idx = index_items(list_name, actual, ignore, path)
+        pair_items(list_name, exp_idx, act_idx, ignore, path)
         for k in sorted(set(exp_idx) | set(act_idx), key=str):
             label = ",".join(f"{a}={b}" for a, b in k[0]) + (f"#{k[1]}" if k[1] else "")
             sub = f"{path}[{label}]"
@@ -884,7 +981,8 @@ def intersect_docs(docs: list[Any], path: str = "") -> Any:
     """
     The part of ``docs`` that is identical in ALL of them: what a "typical"
     device of the type looks like. Dicts keep common keys with common values;
-    lists of dicts keep items present in every doc (aligned with ``LIST_KEYS``);
+    lists of dicts keep items present in every doc (aligned with ``LIST_KEYS`` and
+    paired with the items of the first doc by :func:`pair_items`);
     other values are kept only if equal everywhere. Returns ``None`` if nothing
     is common.
     """
@@ -903,6 +1001,8 @@ def intersect_docs(docs: list[Any], path: str = "") -> Any:
         isinstance(x, dict) for d in docs for x in d
     ):
         indexes = [index_items(list_name, d) for d in docs]
+        for index in indexes[1:]:
+            pair_items(list_name, indexes[0], index)
         out = []
         for key in indexes[0]:
             if all(key in idx for idx in indexes[1:]):
@@ -1119,6 +1219,7 @@ __all__ = [
     "is_ignored",
     "item_key",
     "item_label",
+    "pair_items",
     "plain_path",
     "posix_path",
     "reports_new_values",
