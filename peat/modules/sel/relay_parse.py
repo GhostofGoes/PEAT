@@ -1071,7 +1071,7 @@ def _safe_ipv4(value: str) -> str:
 def _eth_value(name: str, text: str) -> str:
     """Value of a ``NAME: value`` line of the ETH output (``""`` if absent)."""
     match = re.search(
-        rf"^\s*{name}\s*[:=]\s*(?:PORT\s+)?(\S+)", text, re.ASCII | re.IGNORECASE | re.MULTILINE
+        rf"^[ \t]*{name}\s*[:=]\s*(?:PORT\s+)?(\S+)", text, re.ASCII | re.IGNORECASE | re.MULTILINE
     )
     return match.group(1).strip() if match else ""
 
@@ -1130,7 +1130,7 @@ def parse_eth_output(text: str) -> dict:
     # "MAC: 00-30-A7-..." or "MAC 1: ...", "MAC 2: ..." (SEL-451)
     macs = []
     for _, raw_mac in re.findall(
-        r"^\s*MAC(\s*\d+)?\s*:\s*(\S+)", text, re.ASCII | re.IGNORECASE | re.MULTILINE
+        r"^[ \t]*MAC(\s*\d+)?\s*:\s*(\S+)", text, re.ASCII | re.IGNORECASE | re.MULTILINE
     ):
         mac = raw_mac.replace("-", ":").upper()
         if not utils.is_mac(mac):
@@ -1171,7 +1171,7 @@ def parse_eth_output(text: str) -> dict:
 
     ports = {}
     for name, link, speed, duplex, media in re.findall(
-        r"^\s*PORT\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$",
+        r"^[ \t]*PORT\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)[ \t]*$",
         text,
         re.ASCII | re.IGNORECASE | re.MULTILINE,
     ):
@@ -1188,7 +1188,7 @@ def parse_eth_output(text: str) -> dict:
         result["ports"] = ports
 
     counters = re.search(
-        r"^\s*(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s*$",
+        r"^[ \t]*(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)[ \t]*$",
         text,
         re.ASCII | re.MULTILINE,
     )

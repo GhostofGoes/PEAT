@@ -4,6 +4,7 @@ Unit tests for the pure parsing functions of the SEL relay module
 the formats documented in the code comments.
 """
 
+import time
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -169,6 +170,24 @@ def test_parse_eth_output_prp_and_empty():
     assert eth["statistics"]["overflowed"] == []
     assert parse_eth_output("") == {}
     assert parse_eth_output("garbage\nIP ADDRESS: not-an-ip") == {}
+
+
+def test_parse_eth_output_blank_lines_are_linear():
+    # The patterns matched "\s*" (including newlines) at line edges, so every
+    # blank line rescanned all blank lines after it (quadratic: 20,000 blank lines
+    # took ~24 s). The bound is generous on purpose: the fixed parser needs well
+    # under 1 s, the quadratic one about 40 minutes for 200,000 lines.
+    for unit in ("\n", " \n", "\r\n", "\t\n"):
+        start = time.perf_counter()
+        assert parse_eth_output(unit * 200_000) == {}
+        assert time.perf_counter() - start < 20
+
+    # Blank lines around and between the lines do not change the result
+    for text in (ETH_FAILOVER, ETH_PRP):
+        expected = parse_eth_output(text)
+        assert parse_eth_output("\n" * 5000 + text + " \n" * 5000) == expected
+        assert parse_eth_output(text.replace("\n", "\n \n\t\n\n")) == expected
+        assert parse_eth_output(text.replace("\n", "\r\n")) == expected
 
 
 def test_apply_eth_output_failover():
