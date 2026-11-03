@@ -1,5 +1,7 @@
 import json
 import sys
+from collections import ChainMap
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from platform import python_version
@@ -330,6 +332,53 @@ def test_deep_get():
     assert not utils.deep_get(data, "1.2.3.4")
     assert not utils.deep_get(data, "1.2.3.hi")
     assert not utils.deep_get(data, "")
+
+
+def test_redact_options():
+    """Bug fix: the option and config dumps in the logs held passwords and SNMP communities."""
+    options = {
+        "sel": {"creds": {"acc": "RedactCanaryAcc", "2ac": "RedactCanary2ac"}},
+        "ftp": {"user": "ftpuser", "pass": "RedactCanaryFtp", "creds": [("u", "RedactCanaryC")]},
+        "snmp": {"community": "RedactCanaryComm", "communities": ["RedactCanaryComm2"]},
+        "telnet": {"meter_pass": "RedactCanaryMeter", "port": 23, "pull_delay": 0},
+        "ssh": {"passphrase": "RedactCanaryPhrase", "key_filename": "id_rsa", "pass": ""},
+        "web": {
+            "users": ["admin"],
+            "passwords": ["RedactCanaryWeb"],
+            "PASSWORD": "RedactCanaryUp",
+        },
+        "user-password": "RedactCanaryCli",
+        "HOSTS": [{"label": "h1", "options": {"ssh": {"pass": "RedactCanaryHost"}}}],
+        "ion_protocol": {"authenticated": False, "user": "0", "pass": None},
+    }
+    original = deepcopy(options)
+
+    redacted = utils.redact_options(options)
+
+    assert options == original  # input not changed
+    assert "RedactCanary" not in repr(redacted)
+    assert redacted["sel"]["creds"] == "<redacted>"
+    assert redacted["ftp"] == {"user": "ftpuser", "pass": "<redacted>", "creds": "<redacted>"}
+    assert redacted["snmp"] == {"community": "<redacted>", "communities": "<redacted>"}
+    assert redacted["telnet"] == {"meter_pass": "<redacted>", "port": 23, "pull_delay": 0}
+    # Empty values and non-secret keys are kept
+    assert redacted["ssh"] == {"passphrase": "<redacted>", "key_filename": "id_rsa", "pass": ""}
+    assert redacted["web"]["users"] == ["admin"]
+    assert redacted["user-password"] == "<redacted>"
+    assert redacted["HOSTS"][0] == {"label": "h1", "options": {"ssh": {"pass": "<redacted>"}}}
+    assert redacted["ion_protocol"] == original["ion_protocol"]
+
+
+def test_redact_options_chainmap():
+    """The raw config dump in debug-info.txt includes config["CONFIG"], a ChainMap."""
+    chained = ChainMap({"DEBUG": 3}, {"DEVICE_OPTIONS": {"ftp": {"pass": "RedactCanaryChain"}}})
+
+    redacted = utils.redact_options({"CONFIG": chained})["CONFIG"]
+
+    assert isinstance(redacted, ChainMap)
+    assert "RedactCanaryChain" not in repr(redacted)
+    assert redacted["DEVICE_OPTIONS"] == {"ftp": {"pass": "<redacted>"}}
+    assert chained["DEVICE_OPTIONS"]["ftp"]["pass"] == "RedactCanaryChain"
 
 
 def test_is_ip_address():

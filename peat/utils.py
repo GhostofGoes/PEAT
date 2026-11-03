@@ -9,6 +9,7 @@ import re
 import shutil
 import site
 import sys
+from collections import ChainMap
 from collections.abc import Container, Iterable
 from contextlib import ExitStack
 from copy import deepcopy
@@ -952,6 +953,62 @@ def deep_get(dictionary: dict, keys: str, default=None) -> Any:
         keys.split("."),
         dictionary,
     )
+
+
+#: Option and configuration key names whose values are secrets (passwords,
+#: SNMP communities, login credentials, ...), matched without regard to case on
+#: the whole key name or on a part of it separated by ``_``, ``-``, ``.`` or a
+#: space, e.g. ``pass``, ``meter_pass``, ``user-password`` or ``communities``.
+#: The whole value of a ``creds`` key is a secret (e.g. SEL ``acc``/``2ac``
+#: passwords, FTP user and password pairs).
+SECRET_OPTION_KEY_RE = re.compile(
+    r"(?:^|[_\-. ])(?:pass(?:word|wd|phrase)?s?|pwd|creds?|credentials?"
+    r"|communit(?:y|ies)|secrets?|psk|tokens?)(?:$|[_\-. ])",
+    re.IGNORECASE,
+)
+
+
+def redact_options(data: Any) -> Any:
+    """
+    Copy of options or configuration values that is safe to log, with the
+    values of secret keys (:data:`SECRET_OPTION_KEY_RE`) replaced by
+    ``"<redacted>"``.
+
+    :class:`dict`, :class:`~collections.ChainMap`, :class:`list`,
+    :class:`tuple` and :class:`set` values are copied recursively and the
+    input is not changed. Empty values
+    (:obj:`None`, ``""``, empty containers) and booleans of secret keys are
+    kept, since they don't hold a secret.
+
+    .. code-block:: python
+
+       >>> from peat.utils import redact_options
+       >>> redact_options({"sel": {"creds": {"acc": "OTTER"}}})
+       {'sel': {'creds': '<redacted>'}}
+       >>> redact_options({"ftp": {"user": "admin", "pass": "hunter2"}})
+       {'ftp': {'user': 'admin', 'pass': '<redacted>'}}
+    """
+    if isinstance(data, dict):
+        return {
+            k: (
+                "<redacted>"
+                if SECRET_OPTION_KEY_RE.search(str(k))
+                and not isinstance(v, bool)
+                and v is not None
+                and not (isinstance(v, (str, bytes, list, tuple, set, dict)) and len(v) == 0)
+                else redact_options(v)
+            )
+            for k, v in data.items()
+        }
+    if isinstance(data, ChainMap):  # e.g. config["CONFIG"]
+        return ChainMap(*(redact_options(m) for m in data.maps))
+    if isinstance(data, list):
+        return [redact_options(v) for v in data]
+    if isinstance(data, tuple):
+        return tuple(redact_options(v) for v in data)
+    if isinstance(data, (set, frozenset)):
+        return {redact_options(v) for v in data}
+    return data
 
 
 def is_ip(to_check: str) -> bool:

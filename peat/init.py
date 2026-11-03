@@ -340,8 +340,10 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
                 "do more serial stuff. Just a friendly heads up :)"
             )
 
-    # Log the arguments for debugging
-    log.trace4(f"initialize_peat conf\n{pformat(conf, indent=4)}\n")
-    log.trace2(f"global_options\n{pformat(datastore.global_options, indent=4)}")
+    # Log the arguments for debugging, without passwords and other secrets
+    log.trace4(f"initialize_peat conf\n{pformat(utils.redact_options(conf), indent=4)}\n")
+    log.trace2(
+        f"global_options\n{pformat(utils.redact_options(datastore.global_options), indent=4)}"
+    )
 
     state.peat_initialized = True

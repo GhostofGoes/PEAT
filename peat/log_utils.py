@@ -380,11 +380,10 @@ def setup_logging(
             info += f"\n\n*** scapy.conf str() ***\n\n{str(scapy_conf)}\n"
             info += f"\n\n*** scapy.conf formatted ***\n\n{pformat(scapy_conf.__dict__)}\n"
 
-        # Raw config dump only when debugging internals
+        # Raw config dump only when debugging internals (without passwords and other secrets)
         if config.DEBUG >= 3:
-            info += (
-                f"\n\n** raw config dump ***\n\n{json.dumps(consts.convert(config), indent=2)}\n"
-            )
+            raw_config = consts.convert(utils.redact_options(config))
+            info += f"\n\n** raw config dump ***\n\n{json.dumps(raw_config, indent=2)}\n"
 
         df.write_text(info, encoding="utf-8")
         state.written_files.add(df.as_posix())
