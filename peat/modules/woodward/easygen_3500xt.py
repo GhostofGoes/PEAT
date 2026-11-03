@@ -181,7 +181,9 @@ class Easygen3500XT(DeviceModule):
                 cls.log.debug(f"Verified {dev.serial_port} (baudrate: {baudrate})")
                 iface = Interface(
                     connected=True,
-                    type="rs_232",  # TODO: detect serial interface type
+                    # NOTE: "serial" since the electrical standard (RS-232/RS-485)
+                    # isn't known. TODO: detect serial interface type
+                    type="serial",
                     serial_port=dev.serial_port,
                     baudrate=baudrate,
                     parity="none",
@@ -198,8 +200,10 @@ class Easygen3500XT(DeviceModule):
     def _pull(cls, dev: DeviceData) -> bool:
         pull_successful = False
 
-        # Serial pull
-        if dev.serial_port and dev.retrieve("interface", {"type": "serial", "connected": True}):
+        # Serial pull (the serial port was verified and is connected)
+        if dev.serial_port and dev.retrieve(
+            "interface", {"serial_port": dev.serial_port, "connected": True}
+        ):
             serial_info = cls._get_serial_data(dev.serial_port)
             if serial_info:
                 pull_successful = True

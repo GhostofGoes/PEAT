@@ -7,14 +7,26 @@ Authors
 - Christopher Goes
 """
 
+import ipaddress
 import re
 import zlib
 from pprint import pformat
-from typing import Final
+from typing import Any, Final
 from xml.etree import ElementTree
 from xml.etree.ElementTree import SubElement
 
-from peat import log, utils
+from peat import DeviceData, log, utils
+from peat.data.models import (
+    ConnectionStatistics,
+    Indicator,
+    NetworkStatistics,
+    NetworkTraffic,
+    Relationship,
+    RelationshipEndpoint,
+    Service,
+    ServiceSecurity,
+    TimeSource,
+)
 from peat.parsing.plc_open.core_modules.definitions import TypeHierarchy_list
 from peat.parsing.tc6 import TC6
 
@@ -485,7 +497,11 @@ def parse_config_to_dict(config_blob: bytes) -> dict[str, str | dict]:
             # Basically, it is the configuration of
             # the communication modules (e.g Ethernet).
             # TODO: see what multiple modules looks like
-            com_block = strip_xml(block["data"])
+            # NOTE: decode the fields, joining bytes octets into an IP string failed
+            com_block = [
+                x.decode("utf-8", errors="replace") if isinstance(x, bytes) else str(x)
+                for x in strip_xml(block["data"])
+            ]
             device_info["network_configurations"] = {}
             parsed_network = {
                 "name": com_block[0],
@@ -686,3 +702,452 @@ def get_type_string(var_type: str, sceptre: bool) -> str:
         return var_type
     else:
         return ""
+
+
+# --------------------------------------------------------------------------- #
+# Processing of network-pulled and project file data into the data model
+# --------------------------------------------------------------------------- #
+
+# Documented factory SNMP communities (never stored, only compared)
+DEFAULT_SNMP_COMMUNITIES: Final[frozenset[str]] = frozenset({"public", "private"})
+
+# Keys of the SNMP/FTP module dicts (m340_pull) that move to the data model
+# (the services are those of the device, the other keys those of the module)
+_SERVICE_KEYS: Final[tuple[str, ...]] = ("port_502", "web_server", "smtp_server")
+_MOVED_MODULE_KEYS: Final[tuple[str, ...]] = (
+    "module_status",
+    "mac_address",
+    "fw_id",
+    "hardware_id",
+    *_SERVICE_KEYS,
+)
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return str(value).strip() if value is not None else ""
+
+
+def _valid_unicast_ip(value: Any) -> str:
+    """The IPv4 address as a string if it is a usable host address, else ``""``."""
+    text = _text(value)
+    if not text or not utils.is_ip(text):
+        return ""
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return ""
+    if addr.is_unspecified or addr.is_multicast or text == "255.255.255.255":
+        return ""
+    return text
+
+
+def _int(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
+
+
+def led_indicators(module_info: dict, timestamp=None) -> list[Indicator]:
+    """
+    LED states from the Schneider TFE MIB LED table (``led_<i>`` keys of a SNMP
+    module dict from ``m340_pull._get_snmp_metadata()``) as live LED
+    :class:`~peat.data.models.Indicator` readings.
+
+    The LED state enumeration is not documented publicly, so the raw state value is
+    kept in ``value`` (``state`` stays empty).
+    """
+    timestamp = timestamp or utils.utc_now()
+    indicators = []
+
+    for key in sorted(k for k in module_info if re.fullmatch(r"led_\d+", str(k))):
+        led = module_info[key]
+        if not isinstance(led, dict):
+            continue
+        index = int(key.partition("_")[2])
+        name = _text(led.get("description", "")) or _text(led.get("name", ""))
+        if not name:
+            name = key
+        ind = Indicator(
+            type="led",
+            name=name,
+            position=key,
+            timestamp=timestamp,
+            extra={"oid_index": index},
+        )
+        if led.get("name") is not None and _text(led["name"]) != name:
+            ind.label = _text(led["name"])
+        if led.get("state") is not None:
+            ind.value = _text(led["state"])
+        indicators.append(ind)
+
+    return indicators
+
+
+def port_502_service(port_502: dict, timestamp=None) -> Service:
+    """Port 502 messaging (Modbus/TCP) service with its SNMP counters."""
+    svc = Service(protocol="modbus_tcp", port=502, transport="tcp")
+    if port_502.get("service_status"):
+        svc.enabled = port_502["service_status"] == "operational"
+        svc.extra["service_status"] = port_502["service_status"]
+    if port_502.get("supported_protocol"):
+        svc.extra["supported_protocol"] = port_502["supported_protocol"]
+    if port_502.get("port_security"):
+        # IP access control ("enabled"/"disabled") of the Port 502 service
+        svc.security.extra["access_control"] = port_502["port_security"]
+
+    stats = NetworkStatistics(
+        ingress=NetworkTraffic(messages=_int(port_502.get("total_messages_received"))),
+        egress=NetworkTraffic(
+            messages=_int(port_502.get("total_messages_sent")),
+            errors=_int(port_502.get("total_errors_sent")),
+        ),
+        connections=ConnectionStatistics(max=_int(port_502.get("max_connections"))),
+    )
+    if stats.dict(exclude_defaults=True):
+        stats.timestamp = timestamp or utils.utc_now()
+        svc.statistics = stats
+    return svc
+
+
+def web_service(web: dict, timestamp=None) -> Service:
+    """Web server (HTTP) service with its login counters and password setting."""
+    svc = Service(protocol="http", port=80, transport="tcp")
+    if web.get("service_status"):
+        svc.enabled = web["service_status"] == "operational"
+        svc.extra["service_status"] = web["service_status"]
+    if web.get("password_status") == "enabled":
+        svc.security.authentication_required = True
+    elif web.get("password_status") == "disabled":
+        svc.security.authentication_required = False
+
+    stats = NetworkStatistics(
+        connections=ConnectionStatistics(
+            authentication_successes=_int(web.get("successful_attempts")),
+            authentication_failures=_int(web.get("failed_attempts")),
+        )
+    )
+    if stats.dict(exclude_defaults=True):
+        stats.timestamp = timestamp or utils.utc_now()
+        svc.statistics = stats
+    return svc
+
+
+def smtp_service(smtp: dict, timestamp=None) -> tuple[Service, Relationship | None]:
+    """SMTP (e-mail) client service with its counters, and the configured mail server."""
+    svc = Service(protocol="smtp", port=25, transport="tcp", role="client")
+    status = smtp.get("service_status", "")
+    if status:
+        svc.enabled = status != "no configuration"
+        svc.extra["service_status"] = status
+    for key in ("last_error", "last_mail_elapsed_time", "link_service_status"):
+        if smtp.get(key) not in (None, ""):
+            svc.extra[key] = smtp[key]
+
+    stats = NetworkStatistics(
+        egress=NetworkTraffic(
+            messages=_int(smtp.get("mail_sent_count")), errors=_int(smtp.get("error_count"))
+        ),
+    )
+    if _int(smtp.get("server_check_fail_count")) is not None:
+        # Number of times the link to the SMTP server was detected down
+        stats.extra["server_check_fail_count"] = _int(smtp["server_check_fail_count"])
+    if stats.dict(exclude_defaults=True):
+        stats.timestamp = timestamp or utils.utc_now()
+        svc.statistics = stats
+
+    rel = None
+    server = _valid_unicast_ip(smtp.get("ipv4_address"))
+    if server:
+        rel = Relationship(
+            type="communicates_with",
+            protocol="smtp",
+            transport="tcp",
+            direction="egress",
+            local=RelationshipEndpoint(role="client"),
+            remote=RelationshipEndpoint(ip=server, port=25, role="server"),
+            evidence={"config"},
+        )
+        if smtp.get("link_service_status"):
+            rel.extra["link_service_status"] = smtp["link_service_status"]
+    return svc, rel
+
+
+def _slot(module_info: dict) -> str:
+    slot = module_info.get("slot")
+    return str(slot) if slot is not None else ""
+
+
+def _product(module_info: dict) -> str:
+    return _text(module_info.get("device", "")) or _text(module_info.get("model_name", ""))
+
+
+def _match_modules(dev: DeviceData, entries: dict[str, dict]) -> dict[str, DeviceData | None]:
+    """
+    The module in ``dev.module`` that each module entry (``module_<slot>``,
+    ``device_<n>``) of the network-pulled data describes.
+
+    An entry matches the module in its slot. Otherwise, it matches by its
+    product (the ``Device`` of ``DINF``, the SNMP model name) only if exactly
+    one module has that product, and at most one entry without a slot and at
+    most one entry with an unknown slot have it. A module (its slot matched or
+    not) can have both an SNMP entry (with its slot) and a ``DINF`` entry (no
+    slot). With more than one module of a product (e.g. two ``BMX NOE 0100``
+    in a rack), which module an entry without a slot describes is unknown:
+    this never mixes up the data of two modules of the same product.
+
+    Returns:
+        Entry key -> matched module, or :obj:`None` if no module has the
+        product (a new module is created). Entries without a slot that can't
+        be told apart (more than one module or more than one entry without a
+        slot has their product), and entries with neither a slot nor a
+        product, are left out (their data stays in ``dev.extra``).
+    """
+    matched: dict[str, DeviceData | None] = {}
+    by_product: dict[str, list[str]] = {}
+    for key, info in entries.items():
+        slot = _slot(info)
+        if not slot and not _product(info):
+            continue
+        matched[key] = next((m for m in dev.module if slot and m.slot == slot), None)
+        if matched[key] is None and _product(info):
+            by_product.setdefault(_product(info), []).append(key)
+
+    for product, keys in by_product.items():
+        candidates = [m for m in dev.module if m.description.product == product]
+        slotless = [key for key in keys if not _slot(entries[key])]
+        if len(candidates) == 1 and len(slotless) <= 1 and len(keys) - len(slotless) <= 1:
+            for key in keys:
+                matched[key] = candidates[0]
+        elif candidates:
+            for key in slotless:
+                del matched[key]
+    return matched
+
+
+def process_network_config(dev: DeviceData, net_config: dict) -> dict:
+    """
+    Process the configuration and status pulled over the network
+    (``m340_pull.pull_network_config()``: SNMP, FTP ``DINF``, Modbus/TCP)
+    into the data model.
+
+    - Port 502 (Modbus/TCP), web (HTTP) and SMTP counters -> ``Service.statistics``
+    - LED table -> live LED :class:`~peat.data.models.Indicator` on the module
+    - module status/MAC/firmware (SNMP, ``DINF``) -> ``dev.module[slot]``
+      (the module in the slot, or the only module with the product: see
+      ``_match_modules()``)
+
+    Returns:
+        The data that was not mapped, to be merged into ``dev.extra``
+    """
+    if not net_config:
+        return {}
+
+    timestamp = utils.utc_now()
+    remaining = {}
+    module_entries = {
+        key: value
+        for key, value in net_config.items()
+        if isinstance(value, dict) and (key.startswith("module_") or key.startswith("device_"))
+    }
+    for key, value in net_config.items():
+        # firmware_version: in dev.firmware.version (and the SNMP module's firmware)
+        if key != "firmware_version" and key not in module_entries:
+            remaining[key] = value
+
+    # The entries with a slot (SNMP module_<slot>) first: the entries without
+    # a slot (DINF device_<n>) are matched after the modules of the slot
+    # entries exist (e.g. the module running the SNMP agent, when the rack
+    # isn't known from a project file)
+    slot_entries = {key: value for key, value in module_entries.items() if _slot(value)}
+    slotless_entries = {k: v for k, v in module_entries.items() if k not in slot_entries}
+    for entries in (slot_entries, slotless_entries):
+        matched_modules = _match_modules(dev, entries)
+        for key, value in entries.items():
+            module_info = dict(value)
+            # module_<slot> comes from SNMP (the module running the SNMP agent)
+            is_snmp_module = key.startswith("module_") and "slot" in module_info
+
+            if module_info.get("port_502"):
+                dev.store(
+                    "service",
+                    port_502_service(module_info["port_502"], timestamp),
+                    interface_lookup={"ip": dev.ip} if dev.ip else None,
+                )
+            if module_info.get("web_server"):
+                dev.store(
+                    "service",
+                    web_service(module_info["web_server"], timestamp),
+                    interface_lookup={"ip": dev.ip} if dev.ip else None,
+                )
+            if module_info.get("smtp_server"):
+                svc, rel = smtp_service(module_info["smtp_server"], timestamp)
+                dev.store("service", svc, interface_lookup={"ip": dev.ip} if dev.ip else None)
+                if rel:
+                    dev.store("relationships", rel)
+
+            if key not in matched_modules:
+                # The module can't be told apart from other modules with the same
+                # product: keep its data (MAC, firmware ID, ...) in dev.extra
+                unmapped = {k: v for k, v in module_info.items() if k not in _SERVICE_KEYS}
+                if unmapped:
+                    remaining[key] = unmapped
+                continue
+
+            module = matched_modules[key]
+            new_module = module is None
+            if new_module:
+                module = DeviceData()
+                if module_info.get("slot") is not None:
+                    module.slot = str(module_info["slot"])
+                if _product(module_info):
+                    module.description.product = _product(module_info)
+
+            if module_info.get("module_status") in ("ok", "nok"):
+                module.status = module_info["module_status"]
+                module.health = "normal" if module_info["module_status"] == "ok" else "failure"
+            if module_info.get("mac_address") and utils.is_mac(module_info["mac_address"]):
+                module.mac = module_info["mac_address"].upper()
+                ip = module_info.get("configured_ipv4_address") or module.ip
+                iface = dev.retrieve("interface", {"ip": ip}) if ip else None
+                if iface is not None and not iface.mac:
+                    iface.mac = module.mac
+            if module_info.get("fw_id"):
+                module.firmware.id = _text(module_info["fw_id"])
+            if module_info.get("hardware_id"):
+                module.hardware.id = _text(module_info["hardware_id"])
+            if is_snmp_module and net_config.get("firmware_version"):
+                module.firmware.version = _text(net_config["firmware_version"])
+
+            for indicator in led_indicators(module_info, timestamp):
+                module.store("indicators", indicator)
+
+            unmapped = {
+                k: v
+                for k, v in module_info.items()
+                if k not in _MOVED_MODULE_KEYS and not re.fullmatch(r"led_\d+", str(k))
+            }
+            if new_module and (module.slot or module.description.product):
+                dev.store("module", module, lookup="slot" if module.slot else None)
+            if unmapped:
+                remaining[key] = unmapped
+
+    # The keys in the order of the pulled data
+    return {key: remaining[key] for key in net_config if key in remaining}
+
+
+def redact_snmp_communities(device_info: dict) -> None:
+    """
+    Remove the SNMP community strings (secrets) from the ``snmp_config`` of
+    ``network_configurations`` in parsed project file data (modified in-place).
+    """
+    for net_conf in (device_info.get("network_configurations") or {}).values():
+        if isinstance(net_conf, dict) and isinstance(net_conf.get("snmp_config"), dict):
+            for community in ("set", "get", "trap"):
+                net_conf["snmp_config"].pop(community, None)
+
+
+# Keys of a "snmp_config" that process_project_network_config() maps to the data
+# model (SNMP service security, manager relationships) or that are secrets
+# (the community strings)
+MAPPED_SNMP_CONFIG_KEYS: Final[tuple[str, ...]] = (
+    "IPAddressMgr1",
+    "IPAddressMgr2",
+    "authentication",
+    "get",
+    "set",
+    "trap",
+)
+
+
+def without_mapped_network_config(device_info: dict) -> dict:
+    """
+    Copy of parsed project file data for ``dev.extra``, without the parts of
+    ``network_configurations`` that :func:`process_project_network_config` maps
+    to the data model: the ``snmp_config`` keys in :data:`MAPPED_SNMP_CONFIG_KEYS`
+    (SNMP service security and manager relationships) and a non-zero
+    ``ntp_srv`` (``clock.sources`` or ``clock.extra``). The other settings,
+    e.g. the SNMP ``manager`` flag, stay.
+    """
+    net_confs = device_info.get("network_configurations")
+    if not isinstance(net_confs, dict):
+        return device_info
+    stripped = {}
+    for name, net_conf in net_confs.items():
+        if isinstance(net_conf, dict):
+            remaining = {k: v for k, v in net_conf.items() if k not in ("snmp_config", "ntp_srv")}
+            snmp = net_conf.get("snmp_config")
+            if isinstance(snmp, dict):
+                snmp = {k: v for k, v in snmp.items() if k not in MAPPED_SNMP_CONFIG_KEYS}
+            if snmp:
+                remaining["snmp_config"] = snmp
+            if "ntp_srv" in net_conf and not _int(net_conf["ntp_srv"]):
+                remaining["ntp_srv"] = net_conf["ntp_srv"]  # not mapped (no server)
+            net_conf = remaining
+        stripped[name] = net_conf
+    return {**device_info, "network_configurations": stripped}
+
+
+def process_project_network_config(dev: DeviceData, network_configurations: dict) -> None:
+    """
+    Process the communication module configuration from the project file
+    (``COMExchangeFile``, ``device_info["network_configurations"]``): SNMP
+    security and trap receivers, and the NTP server.
+
+    The SNMP community strings are only compared with the documented factory
+    communities, never stored.
+    """
+    for net_conf in (network_configurations or {}).values():
+        if not isinstance(net_conf, dict):
+            continue
+
+        snmp = net_conf.get("snmp_config")
+        if isinstance(snmp, dict):
+            communities = [_text(snmp.get(c, "")) for c in ("get", "set")]
+            security = ServiceSecurity(security_mode="v1")
+            if any(c in DEFAULT_SNMP_COMMUNITIES for c in communities):
+                security.default_credentials = True
+            elif all(communities):
+                security.default_credentials = False
+            if snmp.get("authentication") is not None:
+                security.extra["authentication_flag"] = _int(snmp["authentication"])
+
+            dev.store(
+                "service",
+                Service(protocol="snmp", port=161, transport="udp", security=security),
+                interface_lookup={"ip": dev.ip} if dev.ip else None,
+            )
+
+            # SNMP managers, which receive traps
+            for mgr_key in ("IPAddressMgr1", "IPAddressMgr2"):
+                manager = _valid_unicast_ip(snmp.get(mgr_key))
+                if not manager:
+                    continue
+                dev.store(
+                    "relationships",
+                    Relationship(
+                        type="communicates_with",
+                        protocol="snmp",
+                        transport="udp",
+                        direction="egress",
+                        remote=RelationshipEndpoint(ip=manager, port=162, role="snmp_manager"),
+                        evidence={"config"},
+                        extra={"setting": mgr_key},
+                    ),
+                )
+
+        # "ntp_srv" is an integer: an IPv4 address in integer form when it is
+        # >= 2**24 (first octet non-zero), otherwise a flag/index (kept in extra).
+        ntp_srv = _int(net_conf.get("ntp_srv"))
+        if ntp_srv:
+            if 2**24 <= ntp_srv < 2**32:
+                address = str(ipaddress.IPv4Address(ntp_srv))
+                if _valid_unicast_ip(address) and not any(
+                    s.protocol == "ntp" and s.address == address for s in dev.clock.sources
+                ):
+                    dev.clock.sources.append(TimeSource(protocol="ntp", address=address))
+            else:
+                dev.clock.extra["ntp_srv"] = ntp_srv

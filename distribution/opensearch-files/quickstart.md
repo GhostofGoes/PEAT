@@ -50,9 +50,15 @@
 | `ot-device-io`                   | Information about I/O (Input/Output) available and/or configured on a device, as extracted from device configuration information. | `ELASTIC_IO_INDEX ` |
 | `ot-device-events`               | Logging and other event history as extracted from devices. Examples include access logs, system logs, or protection history.     | `ELASTIC_EVENTS_INDEX ` |
 | `ot-device-memory`               | Memory reads from devices, including address in memory, the value read, and information about where it came from and when the read occurred. | `ELASTIC_MEMORY_INDEX ` |
+| `ot-device-files`                | Information about files present on the device, or that were present on the device at one point in time. | `ELASTIC_FILES_INDEX ` |
+| `ot-device-relationships`        | Configured and observed relationships between devices and other endpoints (communication peers, ARP neighbors, route next hops, time servers, serial links, IEC 61850 GOOSE/SV publications and subscriptions). One document per relationship per PEAT run. | `ELASTIC_RELATIONSHIPS_INDEX ` |
+| `ot-device-baseline-findings`    | Results (findings) of comparing devices against baselines (factory defaults, vendor hardening recommendations, first observed state, engineer-provided configurations). | `ELASTIC_BASELINE_FINDINGS_INDEX ` |
+| `uefi-files`                     | Files from UEFI firmware images (SPI dumps). | `ELASTIC_UEFI_FILES_INDEX ` |
+| `uefi-hashes`                    | Hashes of files from UEFI systems. | `ELASTIC_UEFI_HASHES_INDEX ` |
 
 - Binary blobs or large data fields (e.g. firmware images or raw configuration files) are NOT saved to Elasticsearch by default!.
 To enable saving of large data, use the --elastic-save-blobs command line argument or the ELASTIC_SAVE_BLOBS configuration option.
+- PEAT creates its indices with `index.mapping.total_fields.limit` set to 20000. If indices are created by an index template instead (e.g. in Malcolm), set `index.mapping.total_fields.limit` to at least 5000, otherwise PEAT documents (which have up to about 4100 fields) will be rejected.
 - Indices are “split” by date, so a new index is created for each day.
 Format:
   - Timestamps are in the UTC timezone, not the host’s timezone.

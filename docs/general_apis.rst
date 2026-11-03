@@ -42,6 +42,18 @@ Pillage API
    :members:
    :undoc-members:
 
+Baseline API
+^^^^^^^^^^^^
+Creating baselines, comparing device data against them and against module known defaults, and the ``peat baseline-*`` commands (see :doc:`baselines`).
+
+.. automodule:: peat.api.baseline_api
+   :members:
+
+Baseline comparison
+^^^^^^^^^^^^^^^^^^^
+.. automodule:: peat.data.baseline
+   :members:
+
 Network Discovery
 -----------------
 .. automodule:: peat.protocols.discovery

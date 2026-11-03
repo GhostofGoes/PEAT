@@ -1,7 +1,9 @@
 [
     {
         "login_name": "root",
-        "password": "",
+        "password_in_shadow": true,
+        "password_set": false,
+        "password_empty": false,
         "user_id": "0",
         "group_id": "0",
         "comment": "root",
@@ -10,7 +12,9 @@
     },
     {
         "login_name": "nobody",
-        "password": "",
+        "password_in_shadow": true,
+        "password_set": false,
+        "password_empty": false,
         "user_id": "99",
         "group_id": "99",
         "comment": "Nobody",
@@ -19,7 +23,9 @@
     },
     {
         "login_name": "ftp",
-        "password": "",
+        "password_in_shadow": true,
+        "password_set": false,
+        "password_empty": false,
         "user_id": "14",
         "group_id": "50",
         "comment": "FTP User",
@@ -28,7 +34,9 @@
     },
     {
         "login_name": "sshd",
-        "password": "",
+        "password_in_shadow": true,
+        "password_set": false,
+        "password_empty": false,
         "user_id": "74",
         "group_id": "74",
         "comment": "Privilege-separated SSH",
@@ -37,7 +45,9 @@
     },
     {
         "login_name": "admin",
-        "password": "",
+        "password_in_shadow": true,
+        "password_set": false,
+        "password_empty": false,
         "user_id": "500",
         "group_id": "500",
         "comment": "Linux User,,,",

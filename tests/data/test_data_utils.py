@@ -244,6 +244,45 @@ def test_dedupe_model_list():
     assert iface.services == [Service(port=80, protocol="http")]
 
 
+def test_dedupe_model_list_keeps_services_of_other_transports():
+    """tcp/20000 and udp/20000 are two services; one transport is merged (R5-2)."""
+    tcp = Service(port=20000, transport="tcp", status="open")
+    udp = Service(port=20000, transport="udp", status="open")
+    assert dedupe_model_list([tcp, udp]) == [tcp, udp]
+
+    deduped = dedupe_model_list(
+        [
+            Service(port=20000, transport="tcp", status="open"),
+            Service(port=20000, transport="udp", status="open"),
+            Service(port=20000, transport="tcp", process_name="dnp3d"),
+        ]
+    )
+    assert deduped == [
+        Service(port=20000, transport="tcp", status="open", process_name="dnp3d"),
+        Service(port=20000, transport="udp", status="open"),
+    ]
+    # a service without a transport is still merged into one with the same port
+    assert len(dedupe_model_list([Service(port=20000), tcp, udp])) == 2
+
+
+def test_dedupe_model_list_status_rule_keeps_other_transports():
+    """A service is not merged into a verified or open one on another transport (R6-2)."""
+    listener = Service(port=20000, transport="udp", status="open")
+    verified = Service(protocol="dnp3", port=20000, transport="tcp", status="verified")
+    assert dedupe_model_list([listener.copy(), verified.copy()]) == [listener, verified]
+
+    closed = Service(port=53, transport="tcp", status="closed")
+    opened = Service(port=53, transport="udp", status="open")
+    assert dedupe_model_list([opened.copy(), closed.copy()]) == [opened, closed]
+
+    # the same transport, or no transport on one side, is still merged
+    assert dedupe_model_list(
+        [Service(port=20000, transport="tcp", status="open"), verified.copy()]
+    ) == [verified]
+    assert dedupe_model_list([Service(port=20000, status="open"), verified.copy()]) == [verified]
+    assert dedupe_model_list([Service(port=53, status="closed"), opened.copy()]) == [opened]
+
+
 def test_merge_models():
     """assert there are no duplicates in various places."""
     assert merge_models(None, None) is None
@@ -340,3 +379,435 @@ def test_merge_models():
     merge_models(sort_dest, sort_src)
     assert sort_dest.module[0] == mod1
     assert sort_dest.module[1] == mod2
+
+
+# --------------------------------------------------------------------------- #
+# Issue #48 machinery: identity keys, newest-wins, nested lists
+# --------------------------------------------------------------------------- #
+import time  # noqa: E402
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+from peat.data.data_utils import (  # noqa: E402
+    as_utc,
+    dedupe_is_linear,
+    dedupe_nested_lists,
+    has_nested_lists,
+    lookup_by_key,
+    model_key,
+    nested_list_fields,
+    sort_model_list,
+    submodel_fields,
+)
+from peat.data.models import (  # noqa: E402
+    IEC61850,
+    Clock,
+    Event,
+    IEC61850Publication,
+    Indicator,
+    Logic,
+    LogicTask,
+    NetworkStatistics,
+    NetworkTraffic,
+    Relationship,
+    RelationshipEndpoint,
+    Route,
+    TimeSource,
+    Vlan,
+)
+
+T0 = datetime(2026, 10, 30, 12, 0, 0, tzinfo=UTC)
+T1 = T0 + timedelta(hours=1)
+
+
+def test_strip_key_recurse_lists():
+    data = {
+        "original": "x",
+        "files": [{"name": "a", "original": b"1"}, {"name": "b"}, "raw"],
+        "module": [{"files": [{"original": b"2", "name": "c"}], "original": "m"}],
+        "event": [{"original": "log line"}],
+        "logic": {"original": "x", "name": "y"},
+    }
+    assert strip_key(data, "original") == {
+        "files": [{"name": "a", "original": b"1"}, {"name": "b"}, "raw"],
+        "module": [{"files": [{"original": b"2", "name": "c"}], "original": "m"}],
+        "event": [{"original": "log line"}],
+        "logic": {"name": "y"},
+    }
+    assert strip_key(data, "original", recurse_lists=("files", "module")) == {
+        "files": [{"name": "a"}, {"name": "b"}, "raw"],
+        "module": [{"files": [{"name": "c"}]}],
+        "event": [{"original": "log line"}],  # not in recurse_lists: kept
+        "logic": {"name": "y"},
+    }
+
+
+def test_model_key_and_lookup_by_key():
+    routes = [
+        Route(destination="10.0.0.0/8", gateway="192.0.2.1"),
+        Route(destination="10.0.0.0/8", gateway="192.0.2.2"),
+    ]
+    fields = ("destination", "gateway", "interface")
+    assert model_key(routes[1], fields) == ("10.0.0.0/8", "192.0.2.2", "")
+    assert lookup_by_key(routes, Route(destination="10.0.0.0/8", gateway="192.0.2.2"), fields) == 1
+    assert lookup_by_key(routes, Route(destination="10.0.0.0/8"), fields) is None
+    assert lookup_by_key(routes, Route(), fields) is None  # empty key never matches
+    assert lookup_by_key([], routes[0], fields) is None
+
+
+def test_as_utc():
+    naive = datetime(2026, 1, 1, 12, 0)
+    assert as_utc(naive) == datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    assert as_utc(T0) is T0
+
+
+def test_dedupe_model_list_dedupe_key():
+    # the FIRST item with a key survives, later items are merged into it
+    items = [
+        Interface(name="eth0", ip="192.0.2.1"),
+        Interface(name="eth1"),
+        Interface(name="eth0", ip="198.51.100.1", mtu=1500),
+        Interface(ip="192.0.2.9"),  # no key: handled by the subset pass
+        Interface(ip="192.0.2.9", mtu=9000),
+    ]
+    deduped = dedupe_model_list(items)
+    assert [(i.name, i.ip, i.mtu) for i in deduped] == [
+        ("eth0", "192.0.2.1", 1500),
+        ("eth1", "", None),
+        ("", "192.0.2.9", 9000),
+    ]
+
+    # Service identity is (protocol, port)
+    services = [
+        Service(protocol="http", port=80, enabled=True),
+        Service(protocol="http", port=80, status="open", extra={"banner": "x"}),
+        Service(protocol="http", port=8080),
+    ]
+    deduped = dedupe_model_list(services)
+    assert len(deduped) == 2
+    assert deduped[0].status == "open"
+    assert deduped[0].extra == {"banner": "x"}
+
+
+def test_dedupe_is_linear():
+    assert not dedupe_is_linear([])
+    assert dedupe_is_linear([Vlan(id="1"), Vlan(id="2")])
+    assert not dedupe_is_linear([Vlan(id="1"), Vlan(name="x")])  # incomplete key
+    assert not dedupe_is_linear([Register(address="1")])  # no _dedupe_key
+    assert dedupe_is_linear([Relationship(id="a"), Relationship(id="b")])
+
+
+def test_dedupe_model_list_linear_for_complete_keys():
+    rels = [
+        Relationship(id=f"{i:016x}", remote=RelationshipEndpoint(ip=f"10.0.{i // 250}.{i % 250}"))
+        for i in range(6000)
+    ]
+    rels.extend(r.copy(deep=True) for r in rels[:500])
+    start = time.perf_counter()
+    deduped = dedupe_model_list(rels)
+    assert len(deduped) == 6000
+    assert time.perf_counter() - start < 30
+
+
+def test_purge_duplicates_large_keyed_lists():
+    dev = DeviceData()
+    dev.routes = [
+        Route(destination=f"10.{i // 250}.{i % 250}.0/24", gateway="192.0.2.1", interface="eth0")
+        for i in range(5200)
+    ]
+    dev.routes.extend(r.copy(deep=True) for r in dev.routes[:10])
+    dev.purge_duplicates(force=True)
+    assert len(dev.routes) == 5200
+    # lists without a complete key keep the 5000-item guard
+    dev.registers = [Register(address=str(i % 10)) for i in range(5001)]
+    dev.purge_duplicates(force=True)
+    assert len(dev.registers) == 5001
+
+
+def test_merge_models_statistics_never_mixed():
+    # no timestamps: destination sample kept
+    dst = NetworkStatistics(ingress=NetworkTraffic(bytes=100))
+    merge_models(dst, NetworkStatistics(egress=NetworkTraffic(bytes=5)))
+    assert dst.ingress.bytes == 100
+    assert dst.egress.bytes is None
+    # one timestamp (destination): destination kept
+    dst = NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(bytes=1))
+    merge_models(dst, NetworkStatistics(egress=NetworkTraffic(bytes=7)))
+    assert dst.egress.bytes is None
+    # one timestamp (source) and an empty destination: source copied
+    dst = NetworkStatistics(interface="eth0")
+    merge_models(dst, NetworkStatistics(timestamp=T0, egress=NetworkTraffic(bytes=7)))
+    assert dst.egress.bytes == 7
+    assert dst.timestamp == T0
+    # both timestamps: newer replaces wholesale, older ignored
+    dst = NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(bytes=1))
+    merge_models(dst, NetworkStatistics(timestamp=T1, egress=NetworkTraffic(bytes=2)))
+    assert dst.ingress.bytes is None
+    assert dst.egress.bytes == 2
+    assert dst.timestamp == T1
+    merge_models(dst, NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(bytes=9)))
+    assert dst.ingress.bytes is None
+    assert dst.timestamp == T1
+
+
+def test_merge_models_newest_wins():
+    dst = Indicator(name="RUN", type="led", state="on", label="RUN", timestamp=T0)
+    merge_models(dst, Indicator(name="RUN", type="led", state="off", timestamp=T1))
+    assert dst.state == "off"
+    assert dst.timestamp == T1
+    assert dst.label == "RUN"
+    merge_models(dst, Indicator(name="RUN", type="led", state="on", timestamp=T0))
+    assert dst.state == "off"  # older reading ignored
+    # naive and aware timestamps compare safely
+    dst = Clock(observed=datetime(2026, 10, 30, 12, 0), source="sntp")
+    merge_models(dst, Clock(observed=T1, source="irig_b"))
+    assert dst.source == "irig_b"
+
+
+def test_merge_models_newer_clock_replaces_sources_and_offset():
+    old = Clock(
+        time=T0 + timedelta(seconds=10),
+        observed=T0,
+        sources=[
+            TimeSource(protocol="sntp", address="192.0.2.1", selected=True, state="active"),
+            TimeSource(protocol="sntp", address="192.0.2.2", selected=False, state="standby"),
+        ],
+    )
+    old.annotate()
+    assert old.offset == 10.0
+    new = Clock(
+        time=None,
+        observed=T1,
+        sources=[
+            TimeSource(protocol="sntp", address="192.0.2.1", selected=False, state="unreachable"),
+            TimeSource(protocol="sntp", address="192.0.2.2", selected=True, state="active"),
+        ],
+    )
+    merge_models(old, new)
+    old.annotate()
+    assert old.observed == T1
+    assert [(s.address, s.selected, s.state) for s in old.sources] == [
+        ("192.0.2.1", False, "unreachable"),
+        ("192.0.2.2", True, "active"),
+    ]
+    # the newer sample has no device time: no stale time/offset from the older one
+    assert old.time is None
+    assert old.offset is None
+
+    # an older sample does not replace the live source state
+    merge_models(
+        old,
+        Clock(
+            observed=T0,
+            sources=[TimeSource(protocol="sntp", address="192.0.2.1", state="active", stratum=2)],
+        ),
+    )
+    first = old.sources[0]
+    assert (first.address, first.state, first.stratum) == ("192.0.2.1", "unreachable", 2)
+
+
+def test_merge_models_newer_indicator_unknown_state():
+    dst = Indicator(name="ALARM", type="led", state="on", timestamp=T0)
+    merge_models(dst, Indicator(name="ALARM", type="led", state="unknown", timestamp=T1))
+    assert dst.state == ""
+    assert dst.value == "unknown"
+    assert dst.timestamp == T1
+    # a definition (no timestamp) still only fills gaps
+    merge_models(dst, Indicator(name="ALARM", type="led", label="ALARM", color="red"))
+    assert dst.state == ""
+    assert dst.label == "ALARM"
+    assert dst.color == "red"
+    # an older reading is ignored
+    merge_models(dst, Indicator(name="ALARM", type="led", state="off", timestamp=T0))
+    assert dst.state == ""
+
+
+def test_merge_models_equal_timestamps_incoming_wins():
+    """
+    Two reads can get the same timestamp (coarse clock, e.g. on Windows): the
+    incoming (later stored) sample wins, for every newest-wins model.
+    """
+    dst = NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=1))
+    merge_models(dst, NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=2)))
+    assert dst.ingress.packets == 2
+    # counters are still never mixed
+    merge_models(dst, NetworkStatistics(timestamp=T0, egress=NetworkTraffic(packets=5)))
+    assert (dst.ingress.packets, dst.egress.packets) == (None, 5)
+
+    dst = Indicator(name="KEY", type="switch", value="REMOTE", label="Key", timestamp=T0)
+    merge_models(
+        dst, Indicator(name="KEY", type="switch", value="RUN", timestamp=T0, extra={"a": 2})
+    )
+    assert (dst.value, dst.label) == ("RUN", "Key")
+    assert dst.extra == {"a": 2}
+
+    dst = Clock(time=T0 + timedelta(seconds=10), observed=T0)
+    dst.annotate()
+    merge_models(dst, Clock(time=T0 + timedelta(seconds=3), observed=T0))
+    dst.annotate()
+    assert (dst.time, dst.offset) == (T0 + timedelta(seconds=3), 3.0)
+
+    rel = Relationship(remote=RelationshipEndpoint(ip="192.0.2.50"), last_seen=T0, state="a")
+    merge_models(
+        rel, Relationship(remote=RelationshipEndpoint(ip="192.0.2.50"), last_seen=T0, state="b")
+    )
+    assert rel.state == "b"
+
+    # a sample that adds nothing (e.g. a copy, or one without a reading) changes nothing
+    dst = Indicator(name="RUN", type="led", state="on", health="normal", timestamp=T0)
+    merge_models(dst, Indicator(name="RUN", type="led", state="on", timestamp=T0))
+    merge_models(dst, Indicator(name="RUN", type="led", label="RUN", timestamp=T0))
+    assert (dst.state, dst.health, dst.label) == ("on", "normal", "RUN")
+    dst = NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=1, errors=2))
+    merge_models(dst, NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=1)))
+    assert dst.ingress.errors == 2
+
+    # the same through store() and dedupe_model_list() (order of storing)
+    dev = DeviceData()
+    for packets in (1, 2):
+        dev.store(
+            "protocol_statistics",
+            NetworkStatistics(type="ipv4", timestamp=T0, ingress=NetworkTraffic(packets=packets)),
+        )
+    assert [s.ingress.packets for s in dev.protocol_statistics] == [2]
+    items = [
+        Indicator(name="KEY", type="switch", value=v, timestamp=T0) for v in ("REMOTE", "RUN")
+    ]
+    assert [i.value for i in dedupe_model_list(items)] == ["RUN"]
+
+
+def test_merge_models_relationship_rules():
+    dst = Relationship(
+        remote=RelationshipEndpoint(ip="192.0.2.50"),
+        evidence={"config"},
+        first_seen=T0,
+        last_seen=T0,
+        count=2,
+        state="established",
+    )
+    merge_models(
+        dst,
+        Relationship(
+            remote=RelationshipEndpoint(ip="192.0.2.50"),
+            evidence={"log"},
+            first_seen=T0 - timedelta(days=1),
+            last_seen=T1,
+            count=1,
+            state="closed",
+        ),
+    )
+    assert dst.evidence == {"config", "log"}
+    assert dst.first_seen == T0 - timedelta(days=1)
+    assert dst.last_seen == T1
+    assert dst.state == "closed"  # state of the latest observation
+    assert dst.count == 2  # max
+
+
+def test_merge_models_dedupes_nested_lists():
+    # the result of dedupe_model_list() used to be discarded
+    dst = Logic(tasks=[LogicTask(name="Main", priority=1)])
+    merge_models(dst, Logic(tasks=[LogicTask(name="Main", scan_count=5), LogicTask(name="Fast")]))
+    assert [(t.name, t.priority, t.scan_count) for t in dst.tasks] == [
+        ("Fast", None, None),
+        ("Main", 1, 5),
+    ]
+
+
+def test_nested_list_helpers():
+    assert nested_list_fields(Interface) == ("vlans", "services")
+    assert "statistics" in submodel_fields(Interface)
+    assert "module" not in nested_list_fields(DeviceData)
+    assert has_nested_lists(Interface)
+    assert has_nested_lists(Clock)
+    assert has_nested_lists(IEC61850)
+    assert not has_nested_lists(Vlan)
+    assert has_nested_lists(DeviceData)  # self-referencing model (cycle guard)
+    assert not has_nested_lists(Event)
+
+
+def test_dedupe_nested_lists():
+    iface = Interface(
+        name="port1",
+        vlans=[Vlan(id="200"), Vlan(id="100"), Vlan(id="100", name="scada")],
+        services=[Service(protocol="http", port=80), Service(protocol="http", port=80)],
+    )
+    dedupe_nested_lists(iface)
+    assert [(v.id, v.name) for v in iface.vlans] == [("100", "scada"), ("200", "")]
+    assert len(iface.services) == 1
+
+    iec = IEC61850(
+        publications=[
+            IEC61850Publication(type="SV", ld_inst="MU", name="svcb1"),
+            IEC61850Publication(type="GOOSE", ld_inst="PRO", name="gcb"),
+            IEC61850Publication(type="GOOSE", ld_inst="PRO", name="gcb", conf_rev=2),
+        ]
+    )
+    dedupe_nested_lists(iec)
+    assert [(p.type, p.conf_rev) for p in iec.publications] == [("GOOSE", 2), ("SV", None)]
+
+    clock = Clock(
+        sources=[TimeSource(protocol="ntp", address="a"), TimeSource(protocol="ntp", address="a")]
+    )
+    dedupe_nested_lists(clock)
+    assert len(clock.sources) == 1
+    dedupe_nested_lists(None)  # no-op
+
+
+def test_sort_model_list_mixed_naive_aware_datetimes():
+    events = [
+        Event(action="b", created=T1),
+        Event(action="a", created=datetime(2026, 1, 1, 0, 0)),
+        Event(action="c"),
+    ]
+    sort_model_list(events)
+    assert [e.action for e in events] == ["a", "b", "c"]
+
+
+def test_merge_models_newer_clock_sample_wins_in_both_directions():
+    """R2-1: a newer destination keeps its own device time and offset."""
+    old = Clock(time=T0 + timedelta(seconds=10), observed=T0, synchronized=True)
+    old.annotate()
+    assert old.offset == 10.0
+    new = Clock(time=T1 + timedelta(seconds=5), observed=T1)
+    merge_models(new, old)
+    new.annotate()
+    assert (new.time, new.offset, new.observed) == (T1 + timedelta(seconds=5), 5.0, T1)
+    assert new.synchronized is True  # not bound to "observed": still fills the gap
+
+    # a newer sample without a device time does not take the older time/offset
+    new = Clock(observed=T1)
+    merge_models(new, old)
+    new.annotate()
+    assert (new.time, new.offset, new.observed) == (None, None, T1)
+
+
+def _older_alarm() -> Indicator:
+    return Indicator(
+        name="ALARM",
+        type="led",
+        state="blinking",
+        health="failure",
+        blink_rate=2.0,
+        latched=True,
+        label="ALARM",
+        extra={"state": 3, "oid_index": 2},
+        timestamp=T0,
+    )
+
+
+def _newer_alarm() -> Indicator:
+    return Indicator(name="ALARM", type="led", state="unknown", extra={"state": 5}, timestamp=T1)
+
+
+@pytest.mark.parametrize("newer_is_dest", [False, True])
+def test_merge_models_newer_indicator_reading_wins_in_both_directions(newer_is_dest):
+    """R2-2: no reading field of an older Indicator reading fills the newer one."""
+    if newer_is_dest:
+        dst, src = _newer_alarm(), _older_alarm()
+    else:
+        dst, src = _older_alarm(), _newer_alarm()
+    merge_models(dst, src)
+    assert (dst.state, dst.value, dst.health, dst.blink_rate) == ("", "unknown", "", None)
+    assert dst.extra == {"state": 5, "oid_index": 2}  # keys of the newer reading win
+    assert dst.timestamp == T1
+    # configured properties still fill gaps
+    assert (dst.label, dst.latched) == ("ALARM", True)

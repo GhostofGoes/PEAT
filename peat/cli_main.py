@@ -32,6 +32,7 @@ from peat import (
     state,
     utils,
 )
+from peat.api.baseline_api import run_baseline
 from peat.config_builder import launch_builder
 from peat.heat import HEAT_EXTRACTORS
 
@@ -173,6 +174,11 @@ def run_peat(args: dict[str, Any], start_time: float) -> None:
     if config.OUT_DIR and config.OUT_DIR.exists():
         write_readme()
 
+    # "peat baseline-compare --fail-on": exit code 3 if the threshold was reached
+    if args.get("_exit_code") == 3 and not state.error:
+        log.warning("PEAT run finished, baseline findings reached the --fail-on threshold")
+        sys.exit(3)
+
     # Exit with exit code 1 if failure, 0 if successful
     if state.error:
         log.warning("PEAT run failed! See logs for details.")
@@ -240,6 +246,17 @@ def oneshot_main(args: dict[str, Any]) -> bool:
         else:
             log.critical("Error encountered while decrypting results archive, exiting...")
             sys.exit(1)
+
+    # Baselines: "peat baseline-create", "peat baseline-compare", "peat baseline-show"
+    # Exit codes: 0 = success, 1 = error, 3 = "--fail-on" threshold reached
+    if args["func"] in ("baseline_create", "baseline_compare", "baseline_show"):
+        try:
+            rc = run_baseline(args)
+        except Exception:
+            log.exception(f"{args['func']} failed due to unhandled exception")
+            rc = 1
+        args["_exit_code"] = rc
+        return rc in (0, 3)
 
     targets = []  # type: list[str]
     device_types = set()  # type: set[str]

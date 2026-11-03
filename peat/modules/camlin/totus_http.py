@@ -1,3 +1,6 @@
+import copy
+import ipaddress
+import re
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import PurePath
@@ -5,8 +8,60 @@ from pathlib import PurePath
 from bs4 import BeautifulSoup
 
 from peat import DeviceData, config, consts, log, utils
-from peat.data import Interface, Register, Service, SSHKey, User
+from peat.data import (
+    Interface,
+    Register,
+    Relationship,
+    RelationshipEndpoint,
+    Service,
+    SSHKey,
+    TimeSource,
+    User,
+)
+from peat.data.data_utils import merge_models
 from peat.protocols import HTTP, clean_mac
+
+# Keys of JSON API data with secret values (Wi-Fi password, VPN credentials, ...),
+# matched against the snake_case key name (see is_secret_key()). Their values
+# are never stored in the data model or written to files.
+# Plural, numbered and "_string"/"_hash" forms count too ("passwords", "password1",
+# "community_string"). A bare or suffixed "key" is redacted as well: it can be a
+# Wi-Fi (WPA/WEP) key or a VPN key, and there are no API samples to tell them apart.
+SECRET_KEY_RE = re.compile(
+    r"(^|_)((pass(word|wd|phrase)?|pwd|psk|pre_?shared_?key|wpa_?key|secret|token"
+    r"|communit(y|ies)|tls_?auth|private_?key)(s|_?\d+|_string|_hash)?|key(_?\d+)?)$"
+)
+
+# Values that are secrets whatever their key: PEM private keys, OpenVPN static keys
+SECRET_VALUE_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|-----BEGIN OpenVPN Static key"
+)
+
+# API data that is not copied to dev.extra (fully processed into the data
+# model elsewhere, or it holds secrets: "wifihotspot" has the Wi-Fi password).
+# "ntp_config" is in dev.clock.sources.
+EXCLUDED_FROM_EXTRA = ["ssh_keys", "users", "roles", "wifihotspot", "ntp_config"]
+
+# ntpq name of a reference clock (without -n), e.g. "PPS(0)", "GPS_NMEA(0)", "SHM(0)"
+NTP_REFCLOCK_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\(\d+\)$")
+
+# Pseudo-addresses of ntpd reference clocks, 127.127.<driver type>.<unit>, as
+# "ntpq -n" shows them and ntp.conf configures them
+NTP_REFCLOCK_NETWORK = ipaddress.ip_network("127.127.0.0/16")
+
+# ntpd reference clock driver type (of 127.127.<type>.<unit>) -> ntpq driver name
+NTP_REFCLOCK_TYPES = {1: "LOCAL", 6: "IRIG", 20: "GPS_NMEA", 22: "PPS", 28: "SHM", 46: "GPSD_JSON"}
+
+# ntpq "tally code" (first character of the "remote" column) -> TimeSource.state
+NTP_TALLY_STATES = {
+    "*": "active",  # system peer (selected)
+    "o": "active",  # selected, PPS
+    "+": "candidate",
+    "#": "standby",  # backup
+    "-": "outlier",
+    "x": "falseticker",
+    ".": "excess",
+}
 
 
 class TotusHTTP(HTTP):
@@ -106,10 +161,8 @@ class TotusHTTP(HTTP):
             self.log.debug("Skipping login since we're already logged in")
             return True
 
-        if config.DEBUG:
-            self.log.trace(f"Logging in with username '{username}' and password '{password}'")
-        else:
-            self.log.debug(f"Logging in with username '{username}'")
+        # Never log the password
+        self.log.debug(f"Logging in with username '{username}'")
 
         # Get login XSRF (Cross-site request forgery) token
         # The token is required for all future requests to DGA
@@ -177,13 +230,15 @@ class TotusHTTP(HTTP):
                 # methods that work on JSON data
                 else:
                     parsed_data = response.json()
-                    # Only add some data to host.extra
-                    if label not in ["ssh_keys", "users", "roles"]:
-                        dev.extra[label] = parsed_data
+                    # Only add data to host.extra that isn't in the data model
+                    if label not in EXCLUDED_FROM_EXTRA:
+                        unmapped = unmapped_api_data(label, redact_secrets(parsed_data))
+                        if unmapped:
+                            dev.extra[label] = unmapped
 
                 if config.DEVICE_DIR:
                     dev.write_file(
-                        data=parsed_data,
+                        data=redact_secrets(parsed_data),
                         filename=f"{label}.json",
                         out_dir=dev.get_sub_dir("http_json_data"),
                     )
@@ -236,34 +291,44 @@ class TotusHTTP(HTTP):
     def process_timedate(dev: DeviceData, time_info: dict) -> None:
         dev.geo.timezone = time_info["timezone"]
 
-        if dev.uptime:
+        curr_time = utils.parse_date(time_info["time"]) if time_info.get("time") else None
+        if curr_time:
+            # Device clock, and when PEAT read it
+            dev.clock.time = curr_time
+            dev.clock.observed = utils.utc_now()
+
+        if dev.uptime and curr_time:
             # Calculate start_time from device's timestamp - uptime
-            curr_time = utils.parse_date(time_info["time"])
-            if curr_time:
-                dev.start_time = curr_time - timedelta(seconds=dev.uptime.total_seconds())
+            dev.start_time = curr_time - timedelta(seconds=dev.uptime.total_seconds())
 
     @staticmethod
     def process_ntp_config(dev: DeviceData, ntp_config: dict) -> None:
         """
-        Add GPS/NTP remotes to set of "related" hosts and IPs.
+        Configured GPS/NTP servers -> ``dev.clock.sources``
+        (NTP servers are also added to the "related" hosts and IPs).
         """
         for time_source in ntp_config:
-            if utils.is_ip(time_source):
-                dev.related.ip.add(time_source)
-            else:
-                dev.related.hosts.add(time_source)
+            if not isinstance(time_source, str) or not time_source.strip():
+                continue
+
+            source = ntp_time_source(time_source.strip())
+            source.enabled = True
+            add_related_time_server(dev, source)
+            store_time_source(dev, source)
 
     @staticmethod
     def process_ntp_status(dev: DeviceData, ntp_status: dict) -> None:
         """
-        Add GPS/NTP peers to set of "related" hosts and IPs.
+        GPS/NTP peers (``ntpq -p`` style) -> ``dev.clock.sources``
+        (NTP servers are also added to the "related" hosts and IPs).
         """
         for peer in ntp_status.get("status", {}).get("peers", []):
-            if peer.get("remote"):
-                if utils.is_ip(peer["remote"]):
-                    dev.related.ip.add(peer["remote"])
-                else:
-                    dev.related.hosts.add(peer["remote"])
+            source = ntp_peer_to_time_source(peer)
+            if not source:
+                continue
+
+            add_related_time_server(dev, source)
+            store_time_source(dev, source)
 
     @staticmethod
     def __process_if_dict(dev: DeviceData, iface: Interface, if_dict: dict) -> None:
@@ -564,6 +629,9 @@ class TotusHTTP(HTTP):
     def process_openvpn(dev: DeviceData, openvpn: dict) -> None:
         """
         Extract hostnames and/or IPs from OpenVPN configs.
+
+        Each configured remote (VPN server) becomes a
+        ``Relationship(type="tunnel", protocol="openvpn")``.
         """
         for ov_profile in openvpn.get("profiles", []):
             # Add any IPs found in "address" to remote.ip
@@ -577,10 +645,15 @@ class TotusHTTP(HTTP):
                 if not remote.get("host"):
                     continue
 
-                if utils.is_ip(remote["host"]):
-                    dev.related.ip.add(remote["host"])
+                host = str(remote["host"]).strip()
+                if utils.is_ip(host):
+                    dev.related.ip.add(host)
                 else:
-                    dev.related.hosts.add(remote["host"])
+                    dev.related.hosts.add(host)
+
+                rel = openvpn_remote_relationship(ov_profile, remote)
+                if rel:
+                    dev.store("relationships", rel)
 
     @staticmethod
     def process_wifihotspot(dev: DeviceData, wifihotspot: dict) -> None:
@@ -594,9 +667,10 @@ class TotusHTTP(HTTP):
             f"Wi-Fi Hotspot with an SSID of {wifihotspot.get('ssid', '')}"
         )
 
-        iface.extra.update(wifihotspot)
-        if iface.extra.get("password"):
-            del iface.extra["password"]
+        # NOTE: never store the Wi-Fi password
+        iface.extra.update(
+            {k: v for k, v in redact_secrets(wifihotspot).items() if not is_secret_key(k)}
+        )
 
         dev.store("interface", iface, lookup="name")
 
@@ -634,6 +708,9 @@ class TotusHTTP(HTTP):
     def process_dnp3_channels(dev: DeviceData, dnp3_channels: dict) -> None:
         """
         DNP3 configuration.
+
+        Each channel is a DNP3 outstation ``Service``, and a relationship
+        to the configured DNP3 master (``remoteAddress``).
         """
         for dnp3_ch in dnp3_channels:
             svc = Service(
@@ -653,8 +730,6 @@ class TotusHTTP(HTTP):
                 svc.extra["channel"] = dnp3_ch["channel"]
             if dnp3_ch.get("bufferSize") is not None:
                 svc.extra["buffer_size"] = int(dnp3_ch["bufferSize"])
-            if dnp3_ch.get("remoteAddress") is not None:
-                svc.extra["remote_address"] = int(dnp3_ch["remoteAddress"])
             if dnp3_ch.get("keepaliveTimeout") is not None:
                 svc.extra["keepalive_timeout"] = int(dnp3_ch["keepaliveTimeout"])
 
@@ -664,6 +739,30 @@ class TotusHTTP(HTTP):
                 dev.related.protocols.add(svc.protocol)
 
             dev.store("service", svc, interface_lookup={"ip": dev.ip})
+
+            # The configured DNP3 master (its IP isn't in the configuration).
+            # Stored after the service, so the direction (master connects to
+            # the outstation's port) is inferred from the listening service.
+            if dnp3_ch.get("remoteAddress") is not None:
+                dev.store(
+                    "relationships",
+                    Relationship(
+                        protocol="dnp3",
+                        transport=svc.transport,
+                        local=RelationshipEndpoint(
+                            port=svc.port,
+                            protocol_address=svc.protocol_id,
+                            role="outstation",
+                        ),
+                        remote=RelationshipEndpoint(
+                            protocol_address=str(dnp3_ch["remoteAddress"]),
+                            role="master",
+                        ),
+                        enabled=True,
+                        evidence={"config"},
+                        description=str(dnp3_ch.get("name", "")),
+                    ),
+                )
 
     @staticmethod
     def parse_modbus_map(modbus_map_html: str) -> list[dict]:
@@ -807,3 +906,248 @@ class TotusHTTP(HTTP):
 
 
 __all__ = ["TotusHTTP"]
+
+
+def is_secret_key(key: object) -> bool:
+    """
+    If a JSON API key holds a secret (:data:`SECRET_KEY_RE` on the snake_case
+    name, e.g. ``wpaKey``, ``preSharedKey``, ``tls_auth``). Public keys are not secret.
+    """
+    name = utils.convert_to_snake_case(str(key)).replace("-", "_")
+    return "public" not in name and bool(SECRET_KEY_RE.search(name))
+
+
+def redact_secrets(data):
+    """
+    Copy of JSON API data with the values of secret keys (passwords,
+    pre-shared keys, ...) and secret values (PEM private keys, OpenVPN static
+    keys) replaced by ``"<redacted>"`` (see :func:`is_secret_key` and
+    :data:`SECRET_VALUE_RE`).
+
+    Any non-empty value of a secret key is redacted, including numbers, lists
+    and objects. Booleans (e.g. a "password enabled" flag) are kept.
+    """
+    if isinstance(data, dict):
+        return {
+            k: (
+                "<redacted>"
+                if is_secret_key(k)
+                and not isinstance(v, bool)
+                and v is not None
+                and v not in ("", [], {})
+                else redact_secrets(v)
+            )
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [redact_secrets(v) for v in data]
+    if isinstance(data, str) and SECRET_VALUE_RE.search(data):
+        return "<redacted>"
+    return copy.copy(data)
+
+
+def unmapped_api_data(label: str, data):
+    """
+    The part of the JSON API data of ``label`` that is not mapped to the data
+    model (copied to ``dev.extra``), or :obj:`None` if everything is mapped.
+
+    - ``ntp_status``: without the NTP peers (``dev.clock.sources``)
+    - ``openvpn``: the profiles without their ``remotes`` (relationships)
+    - ``timedate``: without ``time`` (``dev.clock.time``) and ``timezone``
+      (``dev.geo.timezone``)
+    """
+    if label == "ntp_status" and isinstance(data, dict):
+        data = dict(data)
+        if isinstance(data.get("status"), dict):
+            status = {k: v for k, v in data["status"].items() if k != "peers"}
+            if status:
+                data["status"] = status
+            else:
+                data.pop("status")
+    elif label == "openvpn" and isinstance(data, dict):
+        data = dict(data)
+        if isinstance(data.get("profiles"), list):
+            data["profiles"] = [
+                {k: v for k, v in p.items() if k != "remotes"} if isinstance(p, dict) else p
+                for p in data["profiles"]
+            ]
+    elif label == "timedate" and isinstance(data, dict):
+        data = {k: v for k, v in data.items() if k not in ("time", "timezone")}
+    return data if data not in (None, {}, []) else None
+
+
+def ntp_refclock_protocol(address: str) -> str:
+    """
+    :attr:`~peat.data.models.TimeSource.protocol` of an ntpd reference clock
+    (a local driver, not a network NTP server), from its ``ntpq`` name (e.g.
+    ``PPS(0)``, ``GPS_NMEA(0)``, ``LOCAL(0)``) or its pseudo-address
+    ``127.127.<driver type>.<unit>`` (``ntpq -n``, ``ntp.conf``).
+
+    GPS, NMEA, PPS and SHM (e.g. gpsd) drivers -> ``gps``, DCF77 -> ``dcf77``,
+    IRIG -> ``irig_b``, the undisciplined local clock (``LOCAL``) and other
+    drivers -> ``internal``.
+
+    Returns:
+        The protocol, or an empty string if the address is not a reference clock
+    """
+    if NTP_REFCLOCK_RE.match(address):
+        driver = address.partition("(")[0].upper()
+    elif utils.is_ip(address) and ipaddress.ip_address(address) in NTP_REFCLOCK_NETWORK:
+        driver = NTP_REFCLOCK_TYPES.get(int(address.split(".")[2]), "")
+    else:
+        return ""
+    if driver.startswith(("GPS", "NMEA", "PPS", "SHM")):
+        return "gps"
+    if driver.startswith("DCF"):
+        return "dcf77"
+    if driver.startswith("IRIG"):
+        return "irig_b"
+    return "internal"
+
+
+def ntp_time_source(address: str) -> TimeSource:
+    """
+    :class:`~peat.data.models.TimeSource` of an NTP server, or of an ntpd
+    reference clock (see :func:`ntp_refclock_protocol`; its raw name is in
+    ``extra["refclock"]``).
+    """
+    protocol = ntp_refclock_protocol(address)
+    if protocol:
+        return TimeSource(protocol=protocol, address=address, extra={"refclock": address})
+    return TimeSource(protocol="ntp", address=address)
+
+
+def add_related_time_server(dev: DeviceData, source: TimeSource) -> None:
+    """
+    An NTP server -> ``dev.related.ip`` or ``dev.related.hosts`` (a reference
+    clock is not a host).
+    """
+    if source.protocol != "ntp":
+        return
+    if utils.is_ip(source.address):
+        dev.related.ip.add(source.address)
+    else:
+        dev.related.hosts.add(source.address)
+
+
+def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
+    """
+    Convert a NTP peer from the Totus NTP status (``ntpq -p`` columns:
+    ``remote``, ``refid``, ``st``, ``when``, ``poll``, ``reach``, ``delay``,
+    ``offset``, ``jitter``) to a :class:`~peat.data.models.TimeSource`.
+
+    The tally code that ``ntpq`` puts before the remote (``*`` = selected
+    peer, ``+`` = candidate, ...) sets ``state``/``selected``. ``ntpq`` reports
+    ``offset`` in milliseconds; :attr:`TimeSource.offset` is in seconds.
+    A reference clock (e.g. ``PPS(0)``, ``LOCAL(0)``, ``127.127.22.0``) is
+    not an NTP server: see :func:`ntp_time_source`.
+    """
+    if not isinstance(peer, dict):
+        return None
+
+    # The tally code is the first character of the raw value (a blank tally =
+    # rejected peer). The letters "o" and "x" are only a tally code before an
+    # IP address or a reference clock name (e.g. "o" before "PPS(0)"): a hostname
+    # may start with them (" ozlabs.ntp.org").
+    raw = str(peer.get("remote") or "")
+    tally = str(peer.get("tally") or "").strip()
+    rest = raw[1:].strip()
+    if raw[:1] in NTP_TALLY_STATES and (
+        raw[0] not in "ox" or utils.is_ip(rest) or NTP_REFCLOCK_RE.match(rest)
+    ):
+        tally, raw = raw[0], raw[1:]
+    remote = raw.strip()
+    if not remote:
+        return None
+
+    source = ntp_time_source(remote)
+
+    if tally in NTP_TALLY_STATES:
+        source.state = NTP_TALLY_STATES[tally]
+        source.selected = tally in ("*", "o")
+
+    stratum = _to_int(peer.get("stratum", peer.get("st")))
+    if stratum is not None and 0 <= stratum <= 16:
+        source.stratum = stratum
+
+    reach = peer.get("reach")
+    if not source.state and reach is not None and str(reach).strip() in ("0", "000"):
+        source.state = "unreachable"
+
+    try:
+        if peer.get("offset") not in (None, ""):
+            source.offset = round(float(peer["offset"]) / 1000.0, 9)
+    except (TypeError, ValueError):
+        source.extra["offset_raw"] = str(peer["offset"])
+
+    for key in ("refid", "t", "when", "poll", "reach", "delay", "jitter"):
+        if peer.get(key) not in (None, ""):
+            source.extra[key] = peer[key]
+
+    return source
+
+
+def store_time_source(dev: DeviceData, source: TimeSource) -> None:
+    """Add a time source to ``dev.clock.sources``, merged with an existing one."""
+    for existing in dev.clock.sources:
+        if (existing.protocol, existing.address, existing.port) == (
+            source.protocol,
+            source.address,
+            source.port,
+        ):
+            merge_models(existing, source)
+            return
+    dev.clock.sources.append(source)
+
+
+def openvpn_remote_relationship(profile: dict, remote: dict) -> Relationship | None:
+    """
+    ``Relationship(type="tunnel", protocol="openvpn")`` to an OpenVPN server
+    configured as a ``remote`` of an OpenVPN (client) profile. The ``proto`` of
+    the remote is the ``transport`` (``udp``/``tcp``), and is kept in
+    ``extra["proto"]`` if it says more (e.g. ``udp6``, ``tcp-client``).
+    """
+    host = str(remote.get("host") or "").strip()
+    if not host:
+        return None
+
+    endpoint = RelationshipEndpoint(role="server")
+    if utils.is_ip(host):
+        endpoint.ip = host
+    else:
+        endpoint.hostname = host
+
+    port = _to_int(remote.get("port"))
+    if port is not None and 0 < port <= 65535:
+        endpoint.port = port
+
+    # OpenVPN "--proto": udp, udp4, udp6, tcp-client, tcp4-client, tcp6-client, ...
+    proto = str(remote.get("proto") or remote.get("protocol") or "").strip()
+    transport = proto.lower()[:3] if proto.lower()[:3] in ("tcp", "udp") else ""
+
+    rel = Relationship(
+        type="tunnel",
+        protocol="openvpn",
+        transport=transport,
+        direction="egress",  # the device connects to its configured remotes
+        local=RelationshipEndpoint(role="client"),
+        remote=endpoint,
+        evidence={"config"},
+    )
+
+    if proto and proto.lower() != transport:
+        rel.extra["proto"] = proto  # e.g. the IP version of udp6, or an unknown value
+    name = profile.get("name") or profile.get("id")
+    if name not in (None, ""):
+        rel.extra["profile"] = str(name)
+    if profile.get("enabled") is not None:
+        rel.enabled = bool(profile["enabled"])
+
+    return rel
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None

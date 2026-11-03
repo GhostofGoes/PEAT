@@ -22,15 +22,34 @@ from bs4 import BeautifulSoup
 from dateutil.parser import parse as date_parse
 from requests import Response
 
-from peat import DeviceData, Event, PeatError, config, consts, datastore, log, utils
+from peat import (
+    DeviceData,
+    Event,
+    File,
+    Indicator,
+    LogicTask,
+    PeatError,
+    Relationship,
+    RelationshipEndpoint,
+    Service,
+    config,
+    consts,
+    datastore,
+    log,
+    utils,
+)
 from peat.data.models import User
 from peat.data.validators import validate_hash
-from peat.protocols import HTTP, split_ipv4_cidr
+from peat.protocols import HTTP
 
 from .relay_parse import (
+    apply_eth_output,
+    history_event_details,
     parse_and_process_events,
+    parse_eth_output,
     parse_status_output,
     process_fid,
+    process_front_panel_settings,
     process_info_into_dev,
     process_port_settings,
     split_lines,
@@ -506,7 +525,31 @@ class SELHTTP(HTTP):
                     new_key = utils.clean_replace(key, "", "():").replace(" ", "_").lower()
                     web_diag[new_key] = int(str(web_diag.pop(key)).split(" ")[0])
 
-            dash_config["web_diagnostics"] = web_diag
+            dash_config["web_diagnostics"] = dict(web_diag)
+
+            # Task CPU usage (fraction) -> dev.logic.tasks
+            for key, task_name in (
+                ("main_task_usage", "Main Task"),
+                ("automation_task_usage", "Automation Task"),
+            ):
+                if key in web_diag:
+                    usage = web_diag.pop(key)
+                    dev.logic.tasks = merge_logic_task(
+                        dev.logic.tasks,
+                        LogicTask(name=task_name, cpu_percent=round(usage * 100, 2)),
+                    )
+
+            # Web users logged in -> statistics of the web (HTTPS) service
+            if "number_of_users_logged_in" in web_diag:
+                users_logged_in = web_diag.pop("number_of_users_logged_in")
+                try:
+                    https_port = dev.options["https"]["port"] or 443
+                except Exception:
+                    https_port = 443
+                web_svc = Service(protocol="https", port=https_port, transport="tcp")
+                web_svc.statistics.timestamp = utils.utc_now()
+                web_svc.statistics.connections.active = users_logged_in
+                dev.store("service", web_svc)
 
             if web_diag.get("memory_usage_ram"):
                 dev.hardware.memory_usage = int(web_diag.pop("memory_usage_ram"))
@@ -526,7 +569,7 @@ class SELHTTP(HTTP):
                 except Exception as ex:
                     self.log.warning(f"Failed to parse project modification timestamp: {ex}")
 
-            dev.extra["web_diagnostics"] = dash_config["web_diagnostics"]
+            dev.extra["web_diagnostics"] = web_diag
         except ValueError:
             self.log.exception(
                 "No table in 'diagnostics' or failed to parse parts of it (check credentials?)"
@@ -545,7 +588,11 @@ class SELHTTP(HTTP):
         else:
             try:
                 self.dump_htmltable(post_summary, dash_config["web_post_summary"])
-                dev.extra["web_post_summary"] = dash_config["web_post_summary"]
+                # Power-on self-test results -> dev.indicators
+                for indicator in post_summary_indicators(
+                    dash_config["web_post_summary"], utils.utc_now()
+                ):
+                    dev.store("indicators", indicator)
                 # TODO: cleanup the default keys and values for the dicts from various pages
                 #   remove ':', lowercase underscore_separated, bools
                 # TODO: dump parsed intermediate representations to JSON files
@@ -606,7 +653,20 @@ class SELHTTP(HTTP):
             web_files[filename] = file_data
             dev.related.files.add(str(filename))
 
-        dev.extra["web_files"] = web_files
+            dev.store(
+                "files",
+                File(
+                    name=str(filename),
+                    size=file_data["size"],
+                    mtime=file_data.get("timestamp"),
+                    type="file",
+                    peat_module=dev._module.__name__ if dev._module else "SELRTAC",
+                ),
+                lookup="name",
+            )
+
+        # Used by download_http_files()
+        dev._cache["web_files"] = web_files
         return {"web_files": web_files}
 
     def download_http_files(self, dev: DeviceData) -> dict:
@@ -615,17 +675,17 @@ class SELHTTP(HTTP):
         """
         # just a dict to indicate a file was downloaded from the device
         downloaded_files = {}
-        if not dev.extra["web_files"]:
+        if not dev._cache.get("web_files"):
             self.log.error(
                 "PEAT did not find any web files listed on the device, skipping file download..."
             )
             return downloaded_files
 
-        num_downloads = len(dev.extra["web_files"])
+        num_downloads = len(dev._cache["web_files"])
         self.log.info(f"Attempting to download {num_downloads} file(s)...")
 
         # For each file in web_files, send a request to download the file to local machine
-        for file in dev.extra["web_files"]:
+        for file in dev._cache["web_files"]:
             filename = str(file)
             self.log.info(f"Attempting to download file via http: {file}")
 
@@ -751,6 +811,8 @@ class SELHTTP(HTTP):
     def view_syslog(self, dev: DeviceData) -> dict:
         """
         Get the system log (SOE, Sequence of Events) from a RTAC (``soe.csv``).
+
+        The log is parsed by :func:`process_soe_csv`.
         """
         self.log.info("Getting RTAC system log data (soe.csv)")
 
@@ -762,6 +824,7 @@ class SELHTTP(HTTP):
 
         if not response or not response.text:
             self.log.error("No response or data for Sequence of Events (SOE) log (soe.csv)")
+            return {}
 
         dev.write_file(
             data=response.text,
@@ -769,249 +832,7 @@ class SELHTTP(HTTP):
             out_dir=dev.get_sub_dir("http_files"),
         )
 
-        # Ensure csv has contents
-        # TODO: can we just read this using python's csv module?
-        # TODO: move SOE file parsing into separate function
-        # TODO: support parsing of SOE log file directly with SELRTAC.parse()
-        # TODO: this code needs some serious cleanup and refactoring
-        web_syslog_events = []
-        syslog_lines = response.text.split("\n")
-        if len(syslog_lines) > 0:
-            labels = syslog_lines[0].split(",")
-            # TODO: better error handling for parsing of each event, failure
-            #   of one event's parsing shouldn't break the rest of them
-            for i in range(1, len(syslog_lines)):
-                # If event has no entries, skip
-                if len(syslog_lines[i]) == 0:
-                    continue
-                raw = {}
-                line = [x.strip('"') for x in syslog_lines[i].split('",') if x]
-                # For each event column, fill in details, and populate event
-                for col_idx in range(len(labels)):
-                    trim_label = labels[col_idx][1:-1]
-                    raw[trim_label] = line[col_idx]
-                web_syslog_events.append(raw)
-
-                # Process the event into the data model
-                # TODO: add more log messages with status of parsing
-                msg = raw["message"].lower()
-                raw_msg = raw["message"].strip()
-
-                if raw.get("tag_name"):
-                    event_action = raw["tag_name"].split(".")[-1].lower().replace("_", "-")
-                else:
-                    event_action = utils.clean_replace(msg, "-", " ,:")
-                    event_action = event_action.strip("-").replace("--", "-")
-
-                event_category = {"host"}
-                event_kind = {"event"}
-                # TODO: set outcome to alarm state in some cases?
-                event_outcome = ""  # "success", "failure", "unknown", ""
-                event_type = {"info"}
-                extra = {}
-
-                if "user_changed_settings" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.update({"change", "access", "user"})
-
-                    match = re.match(
-                        # "Time System modified settings"
-                        r"^(?P<username>.*) (changed|modified) settings$",
-                        # NOTE: want to make sure the username is case-sensitive
-                        raw_msg,
-                        flags=re.IGNORECASE,
-                    )
-
-                    if match:
-                        extra["user"] = match.groupdict()["username"].strip()
-                        dev.related.user.add(extra["user"])
-                    else:
-                        self.log.warning(
-                            f"user_changed_settings: "
-                            f"Failed to match username regex for message '{raw_msg}'"
-                        )
-                        event_kind.add("pipeline_error")
-                elif "password_changed" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.update({"change", "access", "user", "connection"})
-                    match = re.match(
-                        # "admin changed password for admin"
-                        r"^(?P<username>.*) changed password for (?P<target>.*)$",
-                        # NOTE: want to make sure the username is case-sensitive
-                        raw_msg,
-                        flags=re.IGNORECASE,
-                    )
-
-                    if match:
-                        extra["acting_user"] = match.groupdict()["username"].strip()
-                        extra["target_user"] = match.groupdict()["target"].strip()
-                        dev.related.user.add(extra["acting_user"])
-                        dev.related.user.add(extra["target_user"])
-                    else:
-                        self.log.warning(
-                            f"password_changed: "
-                            f"Failed to match username regex for message '{raw_msg}'"
-                        )
-                        event_kind.add("pipeline_error")
-                elif "change" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.add("change")
-                elif "power" in msg and "up" in msg:
-                    event_type.add("start")
-                elif "archive cleared" in msg:
-                    event_category.add("database")
-                    event_type.update({"change", "deletion"})
-                elif "factory reset" in msg:
-                    event_category.update({"configuration", "host"})
-                    event_type.add("change")
-                elif (
-                    "attempt failed" in msg
-                    or "login attempt from" in msg
-                    or "unauthorized" in msg
-                    or "unsuccessful_log_on_attempt" in msg
-                ):
-                    event_category.update({"authentication", "network", "session"})
-                    event_type.update({"access", "connection", "denied", "user"})
-                    event_outcome = "failure"
-                    if "login attempt" in msg:
-                        event_action = "login-attempt"
-                        match = re.match(
-                            # "admin login attempt failed"
-                            # "Unknown login attempt from 192.168.1.1 failed"
-                            r"^(?P<username>.*) login attempt (from (?P<host>[:\.\w]+) )?failed.*",
-                            # NOTE: want to make sure the username is case-sensitive
-                            raw_msg,
-                            flags=re.IGNORECASE,
-                        )
-
-                        if match:
-                            extra["user"] = match.groupdict()["username"].strip()
-                            dev.related.user.add(extra["user"])
-
-                            host = match.groupdict().get("host")
-                            if (
-                                host
-                                and utils.is_ip(host)
-                                and not (":" in host and host.count(".") == 3)
-                            ):
-                                dev.related.ip.add(host)
-                            elif host:
-                                dev.related.hosts.add(host)
-                        else:
-                            self.log.warning(
-                                f"login_attempt: "
-                                f"Failed to match username regex for message '{raw_msg}'"
-                            )
-                            event_kind.add("pipeline_error")
-                elif "logged o" in msg or "login" in msg or "log_On" in msg:
-                    event_category.update({"authentication", "network", "session"})
-                    event_type.update({"access", "allowed", "connection", "user"})
-                    event_outcome = "success"
-
-                    # "<User> logged off device via Web"
-                    # "<User> logged on device via ODBC"
-                    match = re.match(
-                        r"^(?P<username>.*) logged (?P<direction>off|on) "
-                        r"device via (?P<service>.*)$",
-                        # NOTE: want to make sure the username is case-sensitive
-                        raw_msg,
-                    )
-
-                    if match:
-                        extra["logon_user"] = match.groupdict()["username"].strip()
-                        dev.related.user.add(extra["logon_user"])
-                        extra["logon_service"] = match.groupdict()["service"].strip().lower()
-                        if extra["logon_service"] in ["odbc", "web"]:
-                            event_category.add("database")
-                        event_action = (
-                            f"user-logged-{match.groupdict()['direction']}"
-                            f"-via-{extra['logon_service']}"
-                        )
-                    else:
-                        self.log.warning(
-                            f"logged_on: Failed to match username regex for message '{raw_msg}'"
-                        )
-                        event_kind.add("pipeline_error")
-                elif "application_status" in msg:
-                    # "The rtacsnmpmgr application has been restarted"
-                    # TODO: extract application name and put in metadata
-                    event_category.update({"process", "host"})
-                    event_outcome = "unknown"
-                    event_type.add("change")
-                    if "restarted" in msg:
-                        event_action = "application-restarted"
-                elif "firmware: " in msg or "project: " in msg or "power_up_description" in msg:
-                    event_kind.add("state")
-                    event_action = "rtac-started"
-                    # TODO: using a regex here would be more flexible to format changes
-                    if "project: " in msg:
-                        project_name = msg.split("project: ")[-1].strip()
-                        extra["project_name"] = project_name
-                        if not dev.logic.name:
-                            dev.logic.name = project_name
-                    if "firmware: " in msg:
-                        extra["firmware"] = msg.split(",")[0].split("firmware: ")[-1].strip()
-                        process_fid(extra["firmware"], dev)
-
-                # TODO: change time parsing if 't_dst_enabled' is 't' instead of 'f'?
-                #   In other words, if daylight savings time is enabled on device
-                # t_value: when event actually occurred
-                # this value can sometimes be 'f' for some reason
-                created_ts = None
-                t_value = raw.get("t_value", "").strip()
-                if t_value and len(t_value) > 1:
-                    created_ts = utils.parse_date(t_value)
-                # TODO: add a 3rd timestamp to Event data model for this thing
-                #   creation_timestamp: when log was last generated
-                #       on RTAC (recovered/rebuilt?)
-                ingest_ts = None
-                ct = raw.get("creation_timestamp", "").strip()
-                if ct and len(ct) > 1:
-                    ingest_ts = utils.parse_date(ct)
-                if ingest_ts:
-                    extra["creation_timestamp"] = ingest_ts
-
-                for key in [
-                    "category",
-                    "priority",
-                    "tag_name",
-                    "host_name",
-                    "device_name",
-                    "device_guid",
-                    "comment",
-                    "ack_operator_username",
-                ]:
-                    val = raw.get(key, "").strip()
-                    if val:
-                        if val.lower() == "f":
-                            extra[key] = False
-                        elif val.lower() == "t":
-                            extra[key] = True
-                        else:
-                            extra[key] = val
-                if "device_name" in extra:
-                    dev.related.hosts.add(extra["device_name"])
-                if "host_name" in extra:
-                    dev.related.hosts.add(extra["host_name"])
-
-                event = Event(
-                    action=event_action,
-                    category=event_category,
-                    created=created_ts,
-                    dataset="web_syslog",
-                    kind=event_kind,
-                    message=raw["message"].strip(),
-                    extra=extra,
-                    module="SELRTAC" if not dev._module else dev._module.__name__,
-                    original=syslog_lines[i],
-                    outcome=event_outcome,
-                    provider=dev.name if dev.name else dev.get_id(),
-                    sequence=int(i),
-                    type=event_type,
-                )
-                # If a event exists with the same timestamp, update it.
-                # Otherwise, it's a new event and don't bother comparing values.
-                dev.store("event", event)
+        web_syslog_events = process_soe_csv(response.text, dev)
 
         dev.write_file(web_syslog_events, "raw-web-syslog-events.json")
 
@@ -1284,7 +1105,12 @@ class SELHTTP(HTTP):
 
     def get_communications(self, dev: DeviceData) -> bool:
         """
-        Get communication interface status and current state from a relay.
+        Get communication interface status and current state from a relay
+        (``eth`` page, same as the ``ETH`` command).
+
+        The data is parsed by :func:`~peat.modules.sel.relay_parse.parse_eth_output`
+        and stored on the Ethernet interfaces
+        (:func:`~peat.modules.sel.relay_parse.apply_eth_output`).
 
         NOTE: this is not available on 351S or 351.
         """
@@ -1294,76 +1120,15 @@ class SELHTTP(HTTP):
             self.log.warning("Failed to get communications page ('eth')")
             return False
 
-        # Extract info about the communication ports
-        extracted_ports = re.findall(r"\nPORT\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)", page)
-        port_information = {
-            str(port[0]): {  # Key is the port name
-                "link": str(port[1]).lower(),
-                "speed": str(port[2]).replace("---", ""),
-                "duplex": str(port[3]).replace("---", ""),
-                "media": port[4],
-            }
-            for port in extracted_ports
-        }
-
-        # Extract MAC addresses (451 in PEAT rack has "MAC 1" and "MAC 2")
-        extracted_macs = re.findall(r"\nMAC(?::| \d:)\s(\S+)", page)
-        # Use a set to ensure there are no duplicates, then convert to list
-        macs = list({m.lower().replace("-", ":") for m in extracted_macs})
-
-        # Extract Ethernet statistics
-        # NOTE: if counters exceed a certain value, then the values will be
-        # replaced with "$$$$" characters. What this value is exactly is
-        # unknown and doesn't appear to be referenced in SEL's documentation.
-        # This behavior will likely vary by relay model and firmware revision.
-        # Simple fix is to reset the counters with "eth c" command on the relay.
-        # Example output below:
-        #      PACKETS                 BYTES               ERRORS
-        #    SENT     RCVD         SENT       RCVD      SENT    RCVD
-        # $$$$$$$  $$$$$$$   1463657022 1664082074         0       0
-        extracted_stats = re.findall(
-            r"\n\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)\s+(\d+|\$+)",
-            page,
-        )
-
-        if extracted_stats:
-            stats = extracted_stats[0]
-            network_statistics = {
-                "packets_sent": int(stats[0]) if "$" not in stats[0] else -1,
-                "packets_received": int(stats[1]) if "$" not in stats[1] else -1,
-                "bytes_sent": int(stats[2]) if "$" not in stats[2] else -1,
-                "bytes_received": int(stats[3]) if "$" not in stats[3] else -1,
-                "errors_sent": int(stats[4]) if "$" not in stats[4] else -1,
-                "errors_received": int(stats[5]) if "$" not in stats[5] else -1,
-            }
-        else:
+        timestamp = utils.utc_now()
+        eth = parse_eth_output(page)
+        if not eth:
+            self.log.warning("Failed to extract any data from the ETH page")
+            return False
+        if not eth.get("statistics"):
             self.log.warning("Failed to extract network statistics from ETH page (no regex match)")
-            network_statistics = {}
 
-        # Extract IPv4 address and subnet information
-        extracted_addr = parse_simple_line("IP ADDRESS", page)
-        if "/" in extracted_addr:
-            addr, mask = split_ipv4_cidr(extracted_addr)
-        else:
-            # TODO: 351 probably stores subnet mask as separate value
-            addr = extracted_addr
-            mask = ""
-
-        communications = {
-            "mac_addresses": macs,
-            "ipv4_address": addr,
-            "ipv4_subnet_mask": mask,
-            "gateway": parse_simple_line("DEFAULT GATEWAY", page),
-            "network_mode": parse_simple_line("NETMODE", page),
-            "primary_port": parse_simple_line("PRIMARY PORT", page),
-            "active_port": parse_simple_line("ACTIVE PORT", page),
-            "port_information": port_information,
-            "statistics": network_statistics,
-        }
-
-        # TODO: add data to the appropriate Interface in data model
-        dev.extra["communications"] = communications
-
+        apply_eth_output(eth, dev, timestamp=timestamp)
         return True
 
     def get_port_settings(self, dev: DeviceData) -> bool:
@@ -1451,9 +1216,20 @@ class SELHTTP(HTTP):
             return False
 
         settings = normalize_keys(parse_multiple_lists(page))
-        settings["front_panel_settings"] = parse_comments(settings["front_panel_settings"])
+        if not settings:
+            self.log.warning("No settings found on the front panel settings page")
+            return False
 
-        dev.extra["front_panel_data"] = settings
+        # Target LED and pushbutton definitions -> dev.indicators.
+        # Settings that aren't mapped stay in dev.extra["front_panel_data"].
+        remaining = {}
+        for list_name, values in settings.items():
+            unmapped = process_front_panel_settings(parse_comments(values), dev)
+            if unmapped:
+                remaining[list_name] = unmapped
+
+        if remaining:
+            dev.extra["front_panel_data"] = remaining
         return True
 
     def get_sequential_events(self, dev: DeviceData) -> bool:
@@ -1469,7 +1245,9 @@ class SELHTTP(HTTP):
             return False
 
         try:
-            parse_and_process_events(page, "Sequential Event Recorder ('ser')", dev)
+            parse_and_process_events(
+                page, "Sequential Event Recorder ('ser')", dev, observed=utils.utc_now()
+            )
         except Exception:
             self.log.exception(f"Failed parsing of SER data from {dev.ip}")
             return False
@@ -1498,16 +1276,21 @@ class SELHTTP(HTTP):
             self.log.debug("No historical events available")
             return False
 
-        lines = split_lines(page)
-        # Find the header line for the actual events
-        header_index = next(i for i, s in enumerate(lines) if s[0] == "#" and "date" in s.lower())
-        if header_index != 0:
-            # Process the status information front matter
-            self._process_status_data(lines[:header_index], dev)
-
         if "History Buffer Empty" in page:  # SEL 351S (and possibly the 351?)
             self.log.warning("Historical event buffer empty")
             return False
+
+        lines = split_lines(page)
+        # Find the header line for the actual events
+        header_index = next(
+            (i for i, s in enumerate(lines) if s and s[0] == "#" and "date" in s.lower()), None
+        )
+        if header_index is None:
+            self.log.warning("No header line found on the historical events page")
+            return False
+        if header_index != 0:
+            # Process the status information front matter
+            self._process_status_data(lines[:header_index], dev)
 
         for raw_line in lines[header_index + 1 :]:
             # TODO: handle links in lines
@@ -1544,14 +1327,18 @@ class SELHTTP(HTTP):
             if values[9]:
                 extra["targets"] = int(values[9].strip())
 
+            action, reason, kind = history_event_details(event_val, values[9].strip())
+
             event = Event(
-                action=event_val,
+                action=action,
                 category={"host"},
                 created=date_parse(f"{values[1]} {values[2]}"),
                 dataset="Historical Events ('his')",
-                kind={"event"},
+                kind=kind,
+                module=dev._module.__name__ if dev._module else "SELRelay",
                 original=raw_line,
-                provider=self.ip,
+                provider=dev.get_id(),
+                reason=reason,
                 # TODO: should sequence be reverse order, since "1" in the
                 #  log is actually the newest event, not the oldest?
                 sequence=int(values[0]),
@@ -1782,7 +1569,7 @@ class SELHTTP(HTTP):
             if not info:
                 self.log.warning(f"Failed to parse status info\nRaw lines: {lines}")
                 return False
-            process_info_into_dev(info, dev)
+            process_info_into_dev(info, dev, observed=utils.utc_now())
         except Exception:
             log.exception("Failed to parse status data")
             return False
@@ -2417,6 +2204,422 @@ class SELHTTP(HTTP):
         return {"x509_certificates": x509_cert_export}
 
     # -------------------- End of gateway web pages --------------------
+
+
+# Logon service named in RTAC SOE messages -> protocol of the device's service
+SOE_LOGON_PROTOCOLS = {"web": "https", "odbc": "postgres"}
+
+
+def process_soe_csv(text: str, dev: DeviceData) -> list[dict]:
+    """
+    Parse the RTAC Sequence of Events (SOE) log (``soe.csv``) into
+    :class:`~peat.data.models.Event` objects stored in ``dev``.
+
+    - login failures: ``reason="login attempt failed"``, ``outcome="failure"``
+    - factory reset: ``reason`` = the message
+    - ``application_status`` restarts: ``reason="application restarted"``,
+      ``extra["application"]`` = the application name
+    - ``priority`` -> ``severity``
+    - logons and failed logons with a source IP are aggregated per (source IP,
+      protocol) into ``communicates_with`` relationships (``evidence={"log"}``,
+      ``first_seen``/``last_seen``/``count``), see
+      :func:`aggregate_logon_relationships`
+
+    Args:
+        text: Contents of ``soe.csv``
+        dev: Device to update
+
+    Returns:
+        The raw rows of the log, as dicts keyed by column name
+    """
+    # TODO: can we just read this using python's csv module?
+    web_syslog_events = []
+    logons = []  # type: list[dict]
+    syslog_lines = text.split("\n")
+    if not syslog_lines:
+        return web_syslog_events
+
+    labels = syslog_lines[0].split(",")
+    for i in range(1, len(syslog_lines)):
+        # If event has no entries, skip
+        if len(syslog_lines[i].strip()) == 0:
+            continue
+        raw = {}
+        line = [x.strip().strip('"') for x in syslog_lines[i].split('",') if x]
+        # For each event column, fill in details, and populate event
+        for col_idx in range(min(len(labels), len(line))):
+            trim_label = labels[col_idx].strip()[1:-1]
+            raw[trim_label] = line[col_idx]
+        web_syslog_events.append(raw)
+
+        try:
+            event, logon = _soe_event(raw, syslog_lines[i], i, dev)
+        except Exception as ex:
+            log.warning(f"Failed to process SOE log line {i}: {ex}")
+            continue
+
+        if logon:
+            logons.append(logon)
+        # If a event exists with the same timestamp, update it.
+        # Otherwise, it's a new event and don't bother comparing values.
+        dev.store("event", event)
+
+    for rel in aggregate_logon_relationships(logons):
+        dev.store("relationships", rel)
+
+    return web_syslog_events
+
+
+def _host_or_ip(host: str, dev: DeviceData) -> str:
+    """Add a host from a log message to related.ip/hosts, return it if it's an IP."""
+    if host and utils.is_ip(host) and not (":" in host and host.count(".") == 3):
+        dev.related.ip.add(host)
+        return host
+    if host:
+        dev.related.hosts.add(host)
+    return ""
+
+
+def _soe_event(raw: dict, original: str, sequence: int, dev: DeviceData) -> tuple[Event, dict]:
+    """Convert one SOE row into an Event (and a logon observation, if any)."""
+    msg = raw["message"].lower()
+    raw_msg = raw["message"].strip()
+    # Message and tag name, for the checks of tag-like keywords
+    # ("application_status", "password_changed", ...)
+    tagged = f"{msg} {raw.get('tag_name', '').lower()}"
+
+    if raw.get("tag_name"):
+        event_action = raw["tag_name"].split(".")[-1].lower().replace("_", "-")
+    else:
+        event_action = utils.clean_replace(msg, "-", " ,:")
+        event_action = event_action.strip("-").replace("--", "-")
+
+    event_category = {"host"}
+    event_kind = {"event"}
+    # TODO: set outcome to alarm state in some cases?
+    event_outcome = ""  # "success", "failure", "unknown", ""
+    event_type = {"info"}
+    reason = ""
+    extra = {}
+    logon = {}  # source IP, service, outcome of a logon (for relationships)
+
+    if "user_changed_settings" in tagged:
+        event_category.update({"configuration", "host"})
+        event_type.update({"change", "access", "user"})
+
+        match = re.match(
+            # "Time System modified settings"
+            r"^(?P<username>.*) (changed|modified) settings$",
+            # NOTE: want to make sure the username is case-sensitive
+            raw_msg,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            extra["user"] = match.groupdict()["username"].strip()
+            dev.related.user.add(extra["user"])
+        else:
+            log.warning(
+                f"user_changed_settings: Failed to match username regex for message '{raw_msg}'"
+            )
+            event_kind.add("pipeline_error")
+    elif "password_changed" in tagged:
+        event_category.update({"configuration", "host"})
+        event_type.update({"change", "access", "user", "connection"})
+        match = re.match(
+            # "admin changed password for admin"
+            r"^(?P<username>.*) changed password for (?P<target>.*)$",
+            # NOTE: want to make sure the username is case-sensitive
+            raw_msg,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            extra["acting_user"] = match.groupdict()["username"].strip()
+            extra["target_user"] = match.groupdict()["target"].strip()
+            dev.related.user.add(extra["acting_user"])
+            dev.related.user.add(extra["target_user"])
+        else:
+            log.warning(
+                f"password_changed: Failed to match username regex for message '{raw_msg}'"
+            )
+            event_kind.add("pipeline_error")
+    elif "factory reset" in msg:
+        event_category.update({"configuration", "host"})
+        event_type.add("change")
+        reason = raw_msg
+    elif "change" in msg:
+        event_category.update({"configuration", "host"})
+        event_type.add("change")
+    elif "power" in msg and "up" in msg:
+        event_type.add("start")
+    elif "archive cleared" in msg:
+        event_category.add("database")
+        event_type.update({"change", "deletion"})
+    elif (
+        "attempt failed" in msg
+        or "login attempt from" in msg
+        or "unauthorized" in msg
+        or "unsuccessful_log_on_attempt" in tagged
+    ):
+        event_category.update({"authentication", "network", "session"})
+        event_type.update({"access", "connection", "denied", "user"})
+        event_outcome = "failure"
+        reason = "login attempt failed"
+        if "login attempt" in msg:
+            event_action = "login-attempt"
+            match = re.match(
+                # "admin login attempt failed"
+                # "Unknown login attempt from 192.168.1.1 failed"
+                r"^(?P<username>.*) login attempt (from (?P<host>[:\.\w]+) )?failed.*",
+                # NOTE: want to make sure the username is case-sensitive
+                raw_msg,
+                flags=re.IGNORECASE,
+            )
+
+            if match:
+                extra["user"] = match.groupdict()["username"].strip()
+                dev.related.user.add(extra["user"])
+
+                source_ip = _host_or_ip(match.groupdict().get("host") or "", dev)
+                if source_ip:
+                    logon = {"ip": source_ip, "outcome": "failure"}
+            else:
+                log.warning(
+                    f"login_attempt: Failed to match username regex for message '{raw_msg}'"
+                )
+                event_kind.add("pipeline_error")
+    elif "logged o" in msg or "login" in msg or "log_on" in msg:
+        event_category.update({"authentication", "network", "session"})
+        event_type.update({"access", "allowed", "connection", "user"})
+        event_outcome = "success"
+
+        # "<User> logged off device via Web"
+        # "<User> logged on device via ODBC"
+        match = re.match(
+            r"^(?P<username>.*) logged (?P<direction>off|on) "
+            r"device via (?P<service>\S+)(?: from (?P<host>[:\.\w]+))?.*$",
+            # NOTE: want to make sure the username is case-sensitive
+            raw_msg,
+        )
+
+        if match:
+            extra["logon_user"] = match.groupdict()["username"].strip()
+            dev.related.user.add(extra["logon_user"])
+            extra["logon_service"] = match.groupdict()["service"].strip().lower()
+            if extra["logon_service"] in ["odbc", "web"]:
+                event_category.add("database")
+            event_action = (
+                f"user-logged-{match.groupdict()['direction']}-via-{extra['logon_service']}"
+            )
+            source_ip = _host_or_ip(match.groupdict().get("host") or "", dev)
+            if source_ip and match.groupdict()["direction"] == "on":
+                logon = {
+                    "ip": source_ip,
+                    "service": extra["logon_service"],
+                    "outcome": "success",
+                }
+        else:
+            log.warning(f"logged_on: Failed to match username regex for message '{raw_msg}'")
+            event_kind.add("pipeline_error")
+    elif "application_status" in tagged:
+        # "The rtacsnmpmgr application has been restarted"
+        event_category.update({"process", "host"})
+        event_outcome = "unknown"
+        event_type.add("change")
+        app_match = re.search(r"the (?P<app>\S+) application", raw_msg, flags=re.IGNORECASE)
+        if app_match:
+            extra["application"] = app_match.group("app")
+            dev.related.process.add(app_match.group("app"))
+        if "restarted" in msg:
+            event_action = "application-restarted"
+            reason = "application restarted"
+    elif "firmware: " in msg or "project: " in msg or "power_up_description" in tagged:
+        event_kind.add("state")
+        event_action = "rtac-started"
+        # TODO: using a regex here would be more flexible to format changes
+        if "project: " in msg:
+            project_name = msg.split("project: ")[-1].strip()
+            extra["project_name"] = project_name
+            if not dev.logic.name:
+                dev.logic.name = project_name
+        if "firmware: " in msg:
+            extra["firmware"] = msg.split(",")[0].split("firmware: ")[-1].strip()
+            process_fid(extra["firmware"], dev)
+
+    # TODO: change time parsing if 't_dst_enabled' is 't' instead of 'f'?
+    #   In other words, if daylight savings time is enabled on device
+    # t_value: when event actually occurred
+    # this value can sometimes be 'f' for some reason
+    created_ts = None
+    t_value = raw.get("t_value", "").strip()
+    if t_value and len(t_value) > 1:
+        created_ts = utils.parse_date(t_value)
+    # creation_timestamp: when log was last generated on RTAC (recovered/rebuilt?)
+    # ECS has no field for this, so it stays in extra.
+    ingest_ts = None
+    ct = raw.get("creation_timestamp", "").strip()
+    if ct and len(ct) > 1:
+        ingest_ts = utils.parse_date(ct)
+    if ingest_ts:
+        extra["creation_timestamp"] = ingest_ts
+
+    for key in [
+        "category",
+        "tag_name",
+        "host_name",
+        "device_name",
+        "device_guid",
+        "comment",
+        "ack_operator_username",
+    ]:
+        val = raw.get(key, "").strip()
+        if val:
+            if val.lower() == "f":
+                extra[key] = False
+            elif val.lower() == "t":
+                extra[key] = True
+            else:
+                extra[key] = val
+    if "device_name" in extra:
+        dev.related.hosts.add(extra["device_name"])
+    if "host_name" in extra:
+        dev.related.hosts.add(extra["host_name"])
+
+    event = Event(
+        action=event_action,
+        category=event_category,
+        created=created_ts,
+        dataset="web_syslog",
+        kind=event_kind,
+        message=raw["message"].strip(),
+        extra=extra,
+        module="SELRTAC" if not dev._module else dev._module.__name__,
+        original=original,
+        outcome=event_outcome,
+        provider=dev.name if dev.name else dev.get_id(),
+        reason=reason,
+        sequence=int(sequence),
+        severity=raw.get("priority", "").strip(),
+        type=event_type,
+    )
+
+    if logon:
+        logon["timestamp"] = created_ts
+        if extra.get("user") or extra.get("logon_user"):
+            logon["user"] = extra.get("user") or extra.get("logon_user")
+
+    return event, logon
+
+
+def aggregate_logon_relationships(logons: list[dict]) -> list[Relationship]:
+    """
+    Aggregate logon observations (``{ip, service, outcome, timestamp, user}``) per
+    (source IP, protocol) into one inbound ``communicates_with``
+    :class:`~peat.data.models.Relationship` each, with ``first_seen``,
+    ``last_seen`` and ``count`` (``evidence={"log"}``). The service names of the
+    RTAC log map to protocols with :data:`SOE_LOGON_PROTOCOLS` (``Web`` ->
+    ``https``, ``ODBC`` -> ``postgres``). Logons without a mapped service (e.g.
+    failed logons, which name no service) have no protocol and are one
+    relationship per source IP, because ``store()`` would merge them anyway
+    (:meth:`~peat.data.models.Relationship.key`). The raw service names are in
+    ``extra["logon_services"]``.
+    """
+    groups = {}  # type: dict[tuple[str, str], dict]
+    for logon in logons:
+        ip = logon.get("ip", "")
+        if not ip:
+            continue
+        service = str(logon.get("service", "")).lower()
+        group = groups.setdefault(
+            (ip, SOE_LOGON_PROTOCOLS.get(service, "")),
+            {
+                "count": 0,
+                "times": [],
+                "successes": 0,
+                "failures": 0,
+                "users": set(),
+                "services": set(),
+            },
+        )
+        group["count"] += 1
+        if service:
+            group["services"].add(service)
+        if logon.get("timestamp") is not None:
+            group["times"].append(logon["timestamp"])
+        if logon.get("outcome") == "success":
+            group["successes"] += 1
+        elif logon.get("outcome") == "failure":
+            group["failures"] += 1
+        if logon.get("user"):
+            group["users"].add(logon["user"])
+
+    relationships = []
+    for (ip, protocol), group in groups.items():
+        extra = {
+            "logon_successes": group["successes"],
+            "logon_failures": group["failures"],
+        }
+        if group["services"]:
+            extra["logon_services"] = sorted(group["services"])
+        if group["users"]:
+            extra["users"] = sorted(group["users"])
+        times = sorted(group["times"], key=lambda t: (t.tzinfo is not None, t))
+        relationships.append(
+            Relationship(
+                type="communicates_with",
+                protocol=protocol,
+                direction="ingress",
+                remote=RelationshipEndpoint(ip=ip),
+                evidence={"log"},
+                first_seen=times[0] if times else None,
+                last_seen=times[-1] if times else None,
+                count=group["count"],
+                extra=extra,
+            )
+        )
+    return relationships
+
+
+def post_summary_indicators(post_summary: dict, timestamp) -> list[Indicator]:
+    """
+    RTAC power-on self-test (POST) summary rows (``post_summary.sel``) ->
+    :class:`~peat.data.models.Indicator` (``type="status_flag"``,
+    ``category="self_test"``). ``health`` is ``normal`` for ``OK``/``Pass`` and
+    ``failure`` for ``Fail``.
+    """
+    indicators = []
+    for name, value in post_summary.items():
+        if not name:
+            continue
+        raw = " ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        text = f"{name} {raw}"
+        health = ""
+        if re.search(r"\bfail", text, re.IGNORECASE):
+            health = "failure"
+        elif re.search(r"\b(ok|pass|passed)\b", text, re.IGNORECASE):
+            health = "normal"
+        indicators.append(
+            Indicator(
+                type="status_flag",
+                category="self_test",
+                name=str(name).strip().rstrip(":"),
+                value=raw.strip(),
+                health=health,
+                timestamp=timestamp,
+            )
+        )
+    return indicators
+
+
+def merge_logic_task(tasks: list[LogicTask], task: LogicTask) -> list[LogicTask]:
+    """Add ``task`` to ``tasks``, replacing the values of a task with the same name."""
+    for existing in tasks:
+        if existing.name == task.name:
+            for field in task.__fields_set__:
+                setattr(existing, field, getattr(task, field))
+            return tasks
+    return [*tasks, task]
 
 
 def querystr() -> str:

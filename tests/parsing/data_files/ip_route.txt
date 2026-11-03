@@ -1,0 +1,6 @@
+default via 192.0.2.1 dev eth0 proto static metric 100
+192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.20
+10.8.0.0/24 via 10.8.0.5 dev tun0 proto dhcp
+198.51.100.0/24 dev eth0.100 proto kernel scope link src 198.51.100.2 linkdown
+blackhole 203.0.113.0/24
+unreachable 203.0.113.128/25 proto static

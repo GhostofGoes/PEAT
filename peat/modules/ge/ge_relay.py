@@ -16,7 +16,30 @@ from peat import (
     state,
     utils,
 )
+from peat.data.models import (
+    NetworkStatistics,
+    NetworkTraffic,
+    Redundancy,
+    Relationship,
+    RelationshipEndpoint,
+    Route,
+)
 from peat.protocols import HTTP, clean_mac
+
+# Security servers configured on the "Administrator" Modbus map page -> remote role
+SECURITY_SERVER_ROLES = {
+    "GDOI KDC IP": "gdoi_kdc",
+    "OCSP Server IP": "ocsp_responder",
+    "SCEP Server IP": "scep_server",
+}
+
+# Role of a security server -> protocol of the relationship. Without a port, the
+# protocol is part of the relationship identity: servers on one host stay separate.
+SECURITY_SERVER_PROTOCOLS = {
+    "gdoi_kdc": "gdoi",
+    "ocsp_responder": "ocsp",
+    "scep_server": "scep",
+}
 
 # TODO: these devices may support HTTPS in some cases, should we handle that somehow?
 # TODO: make a "GEHTTP" subclass of HTTP to more cleanly implement custom functionality
@@ -219,7 +242,8 @@ class GERelay(DeviceModule):
                 url = f"http://{dev.ip}{path}"
                 page_data = cls._get_page(http, dev, url)
                 if page_data:
-                    raw_pages[d_type] = cls._get_page(http, dev, url)
+                    # NOTE: each page used to be downloaded twice
+                    raw_pages[d_type] = page_data
 
         cls.log.info(f"Finished downloading pages from {dev.ip}")
         return raw_pages
@@ -295,13 +319,9 @@ class GERelay(DeviceModule):
 
         # TODO: add to dev.registers for Modbus points?
         for row in relay_data.get("mb_map_administrator", []):
-            if row.get("value") and row.get("name") in [
-                "GDOI KDC IP",
-                "OCSP Server IP",
-                "SCEP Server IP",
-            ]:
-                if utils.is_ip(row["value"]):
-                    dev.related.ip.add(row["value"])
+            rel = security_server_relationship(row)
+            if rel:
+                dev.store("relationships", rel)
 
         # Process device metadata from "Product Info" ModbusMap page
         for row in relay_data.get("mb_map_product_info", []):
@@ -348,11 +368,17 @@ class GERelay(DeviceModule):
                 id=port.get("port", ""),
                 extra={
                     "link_status": port.get("link_status", ""),
-                    "redundancy": port.get("redundancy", ""),
-                    "active_if_redundancy": str(port.get("active_if_redundancy", "")),
                     "port": port.get("port", ""),
                 },
             )
+
+            redundancy = port_redundancy(port)
+            if redundancy:
+                iface.redundancy = redundancy
+            else:
+                for key in ["redundancy", "active_if_redundancy"]:
+                    if port.get(key):
+                        iface.extra[key] = str(port[key])
 
             # "127.0.0.1" check is to avoid duplicating "lo0" interface
             if port.get("ip_address") and port["ip_address"] != "127.0.0.1":
@@ -384,6 +410,10 @@ class GERelay(DeviceModule):
             elif ":" in v4_route.get("gateway", ""):
                 dev.related.mac.add(clean_mac(v4_route["gateway"]))
 
+            route = route_from_row(v4_route)
+            if route:
+                dev.store("routes", route)
+
             # Add localhost "lo0" interface standalone
             if not lo_found and v4_route.get("if") == "lo0":
                 lo_iface = Interface(
@@ -392,7 +422,7 @@ class GERelay(DeviceModule):
                     name="lo0",
                     hostname="localhost",
                     ip="127.0.0.1",
-                    type="ethernet",
+                    type="loopback",
                 )
                 dev.store("interface", lo_iface)
                 lo_found = True
@@ -401,23 +431,17 @@ class GERelay(DeviceModule):
 
         # Process ARP table entries
         for arp in relay_data.get("routing", {}).get("arp_table", []):
-            dev.related.ip.add(arp.get("internet_address", ""))
-            dev.related.mac.add(clean_mac(arp.get("physical_address", "")))
+            if arp.get("internet_address"):
+                dev.related.ip.add(arp["internet_address"])
+            if arp.get("physical_address"):
+                dev.related.mac.add(clean_mac(arp["physical_address"]))
+            rel = arp_relationship(arp)
+            if rel:
+                dev.store("relationships", rel)
 
-        # Add the fact that there's a USB interface I guess
+        # USB interface and its frame counters
         if relay_data.get("usb_stats"):
-            u_stats = relay_data["usb_stats"]
-            usb_iface = Interface(
-                type="usb",
-                # TODO: use to determine enabled/active status:
-                #   usb_initialized, usb_configured, usb_enumerated,
-                #   rx_frame_count, tx_frame_count
-                # speed=0,  # TODO: usb_speed, "Full Speed: 12Mbit/s"
-                extra=copy.deepcopy(u_stats),
-            )
-            if "metric" in usb_iface.extra:
-                del usb_iface.extra["metric"]
-            dev.store("interface", usb_iface)
+            dev.store("interface", usb_interface(relay_data["usb_stats"]))
 
         # Process logic. Currently this is just cleaning up the fields,
         # someday we should turn this into useful logic.
@@ -466,9 +490,23 @@ class GERelay(DeviceModule):
             "event_recorder",
             "mb_map_product_info",
             "mb_map_administrator",
+            "usb_stats",  # USB Interface (statistics, speed)
         ]:
             if key in dev.extra:
                 del dev.extra[key]
+
+        # Port status -> interfaces (incl. redundancy), IPv4 routes -> dev.routes,
+        # ARP table -> relationships. Only unprocessed tables stay in dev.extra.
+        if isinstance(dev.extra.get("routing"), dict):
+            routing = {
+                k: v
+                for k, v in dev.extra["routing"].items()
+                if k not in ["port_status", "ipv4_routing_table", "arp_table"]
+            }
+            if routing:
+                dev.extra["routing"] = routing
+            else:
+                del dev.extra["routing"]
 
         return relay_data
 
@@ -489,6 +527,7 @@ class GERelay(DeviceModule):
                     kind={"event"},
                     module=cls.__name__ if not dev._module else dev._module.__name__,
                     original=raw["event_cause"],
+                    reason=raw["event_cause"],
                     sequence=int(raw["event_number"]),
                     type={"info"},
                 )
@@ -525,6 +564,136 @@ GERelay.ip_methods = [
         default_port=80,
     ),
 ]
+
+
+def security_server_relationship(row: dict) -> Relationship | None:
+    """
+    GDOI key server, OCSP responder or SCEP server configured on the
+    "Administrator" Modbus map page as a ``depends_on`` relationship
+    (``protocol`` ``gdoi``, ``ocsp`` or ``scep``).
+    """
+    role = SECURITY_SERVER_ROLES.get(row.get("name", ""))
+    value = str(row.get("value", "")).strip()
+    if not role or not utils.is_ip(value) or value in ("0.0.0.0", "255.255.255.255"):
+        return None
+    return Relationship(
+        type="depends_on",
+        protocol=SECURITY_SERVER_PROTOCOLS[role],
+        remote=RelationshipEndpoint(ip=value, role=role),
+        evidence={"config"},
+    )
+
+
+def arp_relationship(arp: dict) -> Relationship | None:
+    """An ARP table row as a ``neighbor_of`` relationship."""
+    ip = str(arp.get("internet_address", "")).strip()
+    if not utils.is_ip(ip):
+        return None
+    rel = Relationship(
+        type="neighbor_of",
+        remote=RelationshipEndpoint(ip=ip),
+        evidence={"arp"},
+    )
+    mac = str(arp.get("physical_address", "")).strip()
+    if mac:
+        try:
+            rel.remote.mac = clean_mac(mac)
+        except Exception:
+            rel.extra["physical_address"] = mac
+    interface = arp.get("interface") or arp.get("if") or ""
+    if interface:
+        rel.local.interface = str(interface)
+    return rel
+
+
+def route_from_row(row: dict) -> Route | None:
+    """
+    A row of the IPv4 routing table (``RoutingAndArpTable.htm``) as a
+    :class:`~peat.data.models.Route`. MAC gateways (on-link hosts) are kept
+    in ``extra["gateway_mac"]`` by the Route model.
+    """
+    destination = str(row.get("destination", "")).strip()
+    if not destination:
+        return None
+    route = Route(
+        destination=destination,
+        gateway=str(row.get("gateway", "")).strip(),
+        interface=str(row.get("if", "")).strip(),
+    )
+    for key, value in row.items():
+        if key in ["destination", "gateway", "if"] or value in (None, ""):
+            continue
+        if key == "flags":
+            route.flags = str(value)
+        elif key == "metric" and str(value).isdigit():
+            route.metric = int(value)
+        else:
+            route.extra[key] = value
+    return route
+
+
+# Port redundancy values of the UR port status table -> Redundancy.protocol
+_REDUNDANCY_PROTOCOLS = {"prp": "prp", "hsr": "hsr", "failover": "failover", "rstp": "rstp"}
+_NO_REDUNDANCY = {"", "none", "n/a", "na", "independent", "disabled", "off", "-"}
+
+
+def port_redundancy(port: dict) -> Redundancy | None:
+    """
+    Redundancy settings of a row of the port status table
+    (``redundancy`` and ``active_if_redundancy`` columns), or :obj:`None` if the
+    port is not part of a redundant pair.
+    """
+    raw = str(port.get("redundancy", "")).strip()
+    if raw.lower() in _NO_REDUNDANCY:
+        return None
+
+    active_raw = str(port.get("active_if_redundancy", "")).strip()
+    red = Redundancy(
+        protocol=_REDUNDANCY_PROTOCOLS.get(raw.lower(), ""),
+        mode=raw.lower(),
+        extra={"redundancy": raw},
+    )
+    if active_raw:
+        red.extra["active_if_redundancy"] = active_raw
+        if red.protocol == "failover" and active_raw.lower() in ("yes", "true", "active", "1"):
+            red.state = "active"
+        elif red.protocol == "failover" and active_raw.lower() in ("no", "false", "0"):
+            red.state = "standby"
+    return red
+
+
+def usb_interface(u_stats: dict) -> Interface:
+    """
+    The USB port and its frame counters (``USBStats.htm`` key-value pairs:
+    ``rx_frame_count``, ``tx_frame_count``, ``usb_speed``, ...).
+    """
+    usb_iface = Interface(
+        type="usb",
+        # TODO: use to determine enabled/active status:
+        #   usb_initialized, usb_configured, usb_enumerated
+        extra={k: v for k, v in u_stats.items() if k not in ["metric"]},
+    )
+
+    counters = {}
+    for key, field in [("rx_frame_count", "ingress"), ("tx_frame_count", "egress")]:
+        try:
+            counters[field] = int(str(u_stats[key]).strip())
+            usb_iface.extra.pop(key, None)
+        except (KeyError, ValueError):
+            pass
+    if counters:
+        usb_iface.statistics = NetworkStatistics(
+            timestamp=utils.utc_now(),
+            ingress=NetworkTraffic(messages=counters.get("ingress")),
+            egress=NetworkTraffic(messages=counters.get("egress")),
+        )
+
+    # "Full Speed: 12Mbit/s"
+    speed = re.search(r"(\d+)\s*Mbit", str(u_stats.get("usb_speed", "")), re.IGNORECASE)
+    if speed:
+        usb_iface.speed = int(speed.group(1))
+
+    return usb_iface
 
 
 def process_header_data(dev: DeviceData, header: list) -> None:

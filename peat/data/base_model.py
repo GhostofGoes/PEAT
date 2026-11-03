@@ -44,7 +44,9 @@ JSON_ENCODERS = {
 
 
 # https://pydantic-docs.helpmanual.io/usage/model_config/#change-behaviour-globally
-class BaseModel(PydanticBaseModel):
+# Defining __eq__ sets __hash__ to None: models are mutable and stay unhashable,
+# like pydantic models ("__hash__ = None" here would be a pydantic private attribute)
+class BaseModel(PydanticBaseModel):  # noqa: PLW1641
     _cache: dict = PrivateAttr(default={})
     """
     Cache for internal usage by device modules. Can include data such as
@@ -65,10 +67,34 @@ class BaseModel(PydanticBaseModel):
     _sort_by_fields: tuple[str] = PrivateAttr(default=())
     """Field names and order to use when sorting lists of this model."""
 
+    _dedupe_key: tuple[str] = PrivateAttr(default=())
+    """
+    Fields that identify a model inside a list. Items whose values for ALL these
+    fields are equal (and not all empty) are merged by ``dedupe_model_list()``,
+    and ``DeviceData.store()`` uses them as the default lookup.
+    """
+
+    _newest_wins_field: str = PrivateAttr(default="")
+    """
+    Name of a datetime field. When two models are merged and the source's value
+    is newer, the source's non-default values overwrite the destination's
+    (``NetworkStatistics`` is replaced wholesale, see ``merge_models()``).
+    """
+
     def __repr_args__(self) -> list[tuple]:
         return [
             (a, v) for a, v in super().__repr_args__() if v is not None and not self.is_default(a)
         ]
+
+    def __eq__(self, other) -> bool:
+        # Same class: compare the field values directly (nested models recurse
+        # through this method). pydantic v1 converts BOTH models to dicts on every
+        # comparison, which exclude_defaults/is_default() do for every sub-model field.
+        # This equals pydantic's result: no model excludes or includes fields, and
+        # private attributes are not in __dict__.
+        if type(other) is type(self):
+            return self.__dict__ == other.__dict__
+        return super().__eq__(other)
 
     def annotate(self, dev=None) -> None:
         """Populate and cleanup fields on a model."""

@@ -1,9 +1,129 @@
 import ast
 import copy
+import re
+from typing import Any
 
-from peat import DeviceData, Interface, Service, User, consts, log, utils
+from peat import (
+    DeviceData,
+    Interface,
+    Redundancy,
+    Relationship,
+    RelationshipEndpoint,
+    Route,
+    Service,
+    TimeSource,
+    User,
+    Vlan,
+    consts,
+    log,
+    utils,
+)
 
 from .fortigate_consts import FG_TIMEZONES
+
+# Setting names that may hold secrets. Values of these are never copied
+# into the data model (e.g. into "extra") or the parsed configuration files.
+_SECRET_KEY_RE = re.compile(r"pass|secret|psk|key|community|token|cert", re.IGNORECASE)
+
+# Words of setting names (split at "-") that _SECRET_KEY_RE matches, but that
+# are known not to hold secrets: IPsec SA lifetimes ("keylife", "keylifeseconds",
+# "keylifekbs", "keylife-type"), passive interfaces and peers of routing protocols
+# ("passive-interface", "passive") and names of certificates ("certificate",
+# "ca-cert", "admin-server-cert", ...). Other words of the name are still checked
+# (e.g. "cert-password" or "passive-psk" may hold secrets).
+_NON_SECRET_KEY_WORDS = frozenset(
+    {
+        "keylife",
+        "keylifeseconds",
+        "keylifekbs",
+        "passive",
+        "cert",
+        "certs",
+        "certificate",
+        "certificates",
+    }
+)
+
+# Interface "type" values of FortiOS aggregate interfaces -> Redundancy.protocol
+_AGGREGATE_TYPES = {"aggregate": "lag", "redundant": "failover"}
+
+# DNS server settings of "config system dns"
+_DNS_SERVER_KEYS = (
+    "primary",
+    "secondary",
+    "alt-primary",
+    "alt-secondary",
+    "ip6-primary",
+    "ip6-secondary",
+)
+
+# Unspecified addresses (FortiOS shows them for unset values in "full-configuration")
+_UNSET_IPS = ("0.0.0.0", "::")
+
+
+def _is_encrypted(value: Any) -> bool:
+    """FortiOS shows stored secrets as ``ENC <base64>``, whatever the setting is named."""
+    return isinstance(value, str) and value.startswith("ENC ")
+
+
+def _is_secret_key(key: Any) -> bool:
+    """
+    If a setting (or ``config`` block) may hold secrets: a word of its name
+    matches ``_SECRET_KEY_RE`` and is not in ``_NON_SECRET_KEY_WORDS``.
+    """
+    return any(
+        _SECRET_KEY_RE.search(word) and word.lower() not in _NON_SECRET_KEY_WORDS
+        for word in str(key).split("-")
+    )
+
+
+def _redacted_settings(settings: Any) -> Any:
+    """
+    Copy of ``settings`` without the settings that may hold secrets (names
+    matching ``_SECRET_KEY_RE``, except known non-secret names such as
+    ``keylife`` or ``admin-server-cert``, and encrypted ``ENC ...`` values,
+    whatever the setting is named), also in nested ``config`` blocks (e.g.
+    ``config l2tp-client-settings`` / ``set password`` or ``config wifi-networks``
+    / ``set wifi-passphrase`` of an interface).
+    """
+    if isinstance(settings, dict):
+        return {
+            k: _redacted_settings(v)
+            for k, v in settings.items()
+            if not _is_secret_key(k) and not _is_encrypted(v)
+        }
+    if isinstance(settings, list):
+        return [_redacted_settings(v) for v in settings if not _is_encrypted(v)]
+    return settings
+
+
+def _split_names(value: str) -> list[str]:
+    """FortiOS lists of names, e.g. ``'"port1" "port2"'`` (quotes already stripped)."""
+    return [x for x in str(value).replace('"', " ").split() if x]
+
+
+def _remote_endpoint(address: str, role: str = "", port: int | None = None):
+    """
+    Remote endpoint for an IP address or a hostname.
+
+    Returns:
+        The endpoint, or :obj:`None` if ``address`` is empty or unset
+    """
+    address = str(address or "").strip()
+    if not address or address in _UNSET_IPS:
+        return None
+    if utils.is_ip(address):
+        return RelationshipEndpoint(ip=address, role=role, port=port)
+    return RelationshipEndpoint(hostname=address, role=role, port=port)
+
+
+def _port(value) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port <= 65535 else None
+
 
 # HA: High Availability
 # VDOM: Virtual Domain(s)
@@ -86,20 +206,21 @@ def fg_conf_to_dict(raw_data: str) -> dict:
 
 def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
     # === global ===
-    if system["global"].get("hostname"):
-        dev.hostname = system["global"].pop("hostname")
-    if system["global"].get("alias"):
-        dev.name = system["global"].pop("alias")
+    sys_global = system.get("global", {})
+    if sys_global.get("hostname"):
+        dev.hostname = sys_global.pop("hostname")
+    if sys_global.get("alias"):
+        dev.name = sys_global.pop("alias")
 
     # Parse timezone from integer to standard string
     # The fortigate timezones don't match TZ database names
     # For now, just use the name that was extracted from docs.
-    if system["global"].get("timezone"):
+    if sys_global.get("timezone"):
         try:
             # TODO: use pytz and levenshtein distance to determine name,
             # since a given offset can have multiple timezones associated.
             # https://stackoverflow.com/a/35086476
-            tz_name = FG_TIMEZONES[int(system["global"].pop("timezone"))]["timezone"]
+            tz_name = FG_TIMEZONES[int(sys_global.pop("timezone"))]["timezone"]
             dev.geo.timezone = tz_name
         except (ValueError, KeyError) as ex:
             log.warning(f"Failed to parse Fortigate timezone: {ex}")
@@ -133,6 +254,25 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
             iface.type = si.pop("type").lower()
             iface.physical = bool(iface.type == "physical")
 
+        # VLAN interface: "set interface <parent>" and "set vlanid <id>"
+        if si.get("vlanid"):
+            try:
+                iface.vlan = Vlan(id=si.pop("vlanid"), tagged=True)
+            except ValueError as ex:
+                log.warning(f"Invalid VLAN ID for Fortigate interface '{if_name}': {ex}")
+            iface.physical = False
+        if si.get("interface"):
+            iface.parent = si.pop("interface")
+
+        # Aggregate (LACP/static) and redundant interfaces: membership of the ports
+        if iface.type in _AGGREGATE_TYPES:
+            iface.physical = False
+            iface.redundancy = Redundancy(
+                protocol=_AGGREGATE_TYPES[iface.type],
+                mode=si.pop("lacp-mode", ""),
+                members=_split_names(si.pop("member", "")),
+            )
+
         if si.get("snmp-index"):
             si["snmp-index"] = int(si["snmp-index"])
 
@@ -151,7 +291,7 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
                     iface.services.append(svc)
 
         # save remaining parameters in "extra"
-        iface.extra = si
+        iface.extra = _redacted_settings(si)
         dev.store("interface", iface, lookup="id")
 
     # === accprofile ===
@@ -161,7 +301,7 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
 
     # === admin ===
     # Admin users
-    for name, sa in system["admin"].items():
+    for name, sa in system.get("admin", {}).items():
         user = User(name=name)
 
         # VDOM: Virtual Domain
@@ -179,27 +319,36 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
         ]:
             sa.pop(key, None)
 
-        # store remaining values
-        user.extra = sa
+        # store remaining values, except encrypted ("ENC ...") secrets
+        # (the public "ssh-public-key<N>" values are kept)
+        user.extra = {k: v for k, v in sa.items() if not _is_encrypted(v)}
 
         dev.store("users", user, lookup="name")
 
     # DNS configuration
     if system.get("dns"):
-        for key in [
-            "primary",
-            "secondary",
-            "alt-primary",
-            "alt-secondary",
-            "ip6-primary",
-            "ip6-secondary",
-            "source-ip",
-        ]:
+        for key in [*_DNS_SERVER_KEYS, "source-ip"]:
             if system["dns"].get(key):
                 if utils.is_ip(system["dns"][key]):
                     dev.related.ip.add(system["dns"][key])
                 else:
                     log.warning(f"Invalid IP for Fortigate DNS server: {system['dns'][key]}")
+
+        # The device depends on its DNS servers
+        for key in _DNS_SERVER_KEYS:
+            server = str(system["dns"].get(key, "")).strip()
+            if utils.is_ip(server) and server not in _UNSET_IPS:
+                dev.store(
+                    "relationships",
+                    Relationship(
+                        type="depends_on",
+                        protocol="dns",
+                        direction="egress",
+                        remote=RelationshipEndpoint(ip=server, role="dns_server"),
+                        evidence={"config"},
+                        extra={"setting": key},
+                    ),
+                )
 
         if system["dns"].get("server-hostname"):
             dev.related.hosts.add(system["dns"]["server-hostname"])
@@ -247,20 +396,47 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
                 if utils.is_email(contact):
                     dev.related.emails.add(contact)
 
-        # SNMP community configuration. I can't make much sense of it
-        # at the moment, I think it's SNMP TRAP targets.
-        for comm in system["snmp"].get("community", {}).values():
-            # SNMP managers
-            if key in ["hosts", "hosts6"]:
-                if comm.get(key):
-                    for host in comm[key].values():
-                        if host.get("ip"):
-                            # IP and subnet mask
-                            ip = host["ip"].split(" ")[0]
-                            if utils.is_ip(ip):
-                                dev.related.ip.add(ip)
-
         dev.store("service", svc, lookup="protocol")
+
+        # SNMP communities: the hosts are the SNMP managers allowed to query
+        # the device ("host-type query"), to receive traps ("trap") or both ("any").
+        # NOTE: the community name is the community string (a secret), never copy it.
+        for comm in system["snmp"].get("community", {}).values():
+            if not isinstance(comm, dict):
+                continue
+            # SNMP managers
+            for key in ["hosts", "hosts6"]:
+                if not isinstance(comm.get(key), dict):
+                    continue
+                for host in comm[key].values():
+                    raw_ip = str(host.get("ip") or host.get("ipv6") or "").strip()
+                    if not raw_ip:
+                        continue
+                    # IP and subnet mask, e.g. "192.0.2.99 255.255.255.255"
+                    ip, _, mask = raw_ip.partition(" ")
+                    if "/" in ip:
+                        ip, _, mask = ip.partition("/")
+                    if not utils.is_ip(ip) or ip in _UNSET_IPS:
+                        continue
+                    dev.related.ip.add(ip)
+
+                    host_type = str(host.get("host-type", "")).lower()
+                    direction = {"query": "ingress", "trap": "egress"}.get(host_type, "")
+                    extra = {"host_type": host_type} if host_type else {}
+                    if mask.strip() and mask.strip() not in ("255.255.255.255", "32", "128"):
+                        extra["netmask"] = mask.strip()
+
+                    dev.store(
+                        "relationships",
+                        Relationship(
+                            protocol="snmp",
+                            transport="udp",
+                            direction=direction,
+                            remote=RelationshipEndpoint(ip=ip, role="snmp_manager"),
+                            evidence={"config"},
+                            extra=extra,
+                        ),
+                    )
 
     # This has a email address
     if system.get("fortiguard"):
@@ -290,6 +466,25 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
         if ses.get("username"):
             dev.related.user.add(ses["username"])
 
+        # The device depends on the email server (never copy the password)
+        remote = _remote_endpoint(ses.get("server", ""), "smtp_server", _port(ses.get("port")))
+        if remote is not None:
+            local_ip = str(ses.get("source-ip", "")).strip()
+            dev.store(
+                "relationships",
+                Relationship(
+                    type="depends_on",
+                    protocol="smtp",
+                    transport="tcp",
+                    direction="egress",
+                    local=RelationshipEndpoint(
+                        ip=local_ip if utils.is_ip(local_ip) and local_ip not in _UNSET_IPS else ""
+                    ),
+                    remote=remote,
+                    evidence={"config"},
+                ),
+            )
+
     # A session helper binds a service to a TCP or UDP port.
     # https://community.fortinet.com/t5/FortiGate/Technical-Tip-Enable-and-disable-FortiGate-system-session/ta-p/191762
     for p_id, p_vals in system.get("session-helper", {}).items():
@@ -310,12 +505,205 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
         if dh.get("default-gateway") and utils.is_ip(dh["default-gateway"]):
             dev.related.ip.add(dh["default-gateway"])
 
-    # TODO: system["ntp"]
+    # NTP servers ("set type custom", "config ntpserver"). With "set type fortiguard"
+    # the FortiGuard servers are used instead of the configured servers.
+    ntp = system.get("ntp", {})
+    if ntp:
+        ntp_type = str(ntp.get("type", "")).lower()
+        ntp_enabled = None
+        if ntp.get("ntpsync"):
+            ntp_enabled = str(ntp["ntpsync"]).lower() == "enable"
+        if ntp_type == "fortiguard":
+            ntp_enabled = False
+
+        for server_id, ntp_server in (ntp.get("ntpserver") or {}).items():
+            if not isinstance(ntp_server, dict) or not ntp_server.get("server"):
+                continue
+            source = TimeSource(
+                protocol="ntp",
+                address=ntp_server["server"],
+                port=_port(ntp_server.get("port")),
+                enabled=ntp_enabled,
+                extra={"id": str(server_id)},
+            )
+            if ntp_server.get("authentication"):
+                source.extra["authentication"] = ntp_server["authentication"]
+            if not any(
+                (s.protocol, s.address, s.port) == (source.protocol, source.address, source.port)
+                for s in dev.clock.sources
+            ):
+                dev.clock.sources.append(source)
+
+        if ntp_type:
+            dev.clock.extra["ntp_type"] = ntp_type  # "fortiguard" or "custom"
+        if ntp.get("ntpsync"):
+            dev.clock.extra["ntp_sync"] = str(ntp["ntpsync"]).lower() == "enable"
+
+    # High availability (FGCP). Device-level redundancy isn't modeled yet.
+    if system.get("ha"):
+        dev.extra["ha"] = _redacted_settings(system["ha"])
+
     # TODO: "system sdwan" => related.urls, related.protocol
 
     # TODO
     # save remaining parameters in "extra"
     # dev.extra["system"] = system
+
+
+def process_fg_router(router: dict[str, dict], dev: DeviceData) -> None:
+    """
+    Process ``config router static`` entries into :class:`~peat.data.models.Route`.
+
+    .. code-block:: text
+
+       config router static
+           edit 1
+               set dst 192.0.2.0 255.255.255.0
+               set gateway 198.51.100.1
+               set device "port1"
+           next
+       end
+
+    A missing ``dst`` is the default route (``0.0.0.0/0``).
+    """
+    for route_id, rs in (router.get("static") or {}).items():
+        if not isinstance(rs, dict):
+            continue
+        gateway = str(rs.get("gateway", "")).strip()
+        route = Route(
+            destination=rs.get("dst") or "0.0.0.0/0",
+            gateway="" if gateway in _UNSET_IPS else gateway,
+            interface=rs.get("device", ""),
+            type="blackhole" if str(rs.get("blackhole", "")).lower() == "enable" else "static",
+            protocol="static",
+            enabled=str(rs.get("status", "enable")).lower() != "disable",
+            description=rs.get("comment", ""),
+            extra={"id": str(route_id)},
+        )
+        if rs.get("distance"):
+            try:
+                route.metric = int(rs["distance"])
+            except ValueError:
+                pass
+        for key in ("priority", "weight", "vrf"):
+            if rs.get(key):
+                route.extra[key] = rs[key]
+        dev.store("routes", route)
+
+
+def process_fg_vpn(vpn: dict[str, dict], dev: DeviceData) -> None:
+    """
+    Process ``config vpn ipsec phase1-interface`` tunnels into
+    ``Relationship(type="tunnel", protocol="ipsec")``. Pre-shared keys and other
+    secrets are never copied.
+    """
+    phase1 = (vpn.get("ipsec") or {}).get("phase1-interface") or {}
+    for name, tunnel in phase1.items():
+        if not isinstance(tunnel, dict):
+            continue
+        remote = _remote_endpoint(tunnel.get("remote-gw", ""), "peer")
+        if remote is None:
+            remote = _remote_endpoint(tunnel.get("remotegw-ddns", ""), "peer")
+        if remote is None:  # dial-up tunnels have no fixed peer
+            continue
+
+        extra = {"tunnel_name": name}
+        for key in ("ike-version", "mode", "peertype", "type"):
+            if tunnel.get(key):
+                extra[key.replace("-", "_")] = tunnel[key]
+
+        dev.store(
+            "relationships",
+            Relationship(
+                type="tunnel",
+                protocol="ipsec",
+                local=RelationshipEndpoint(interface=tunnel.get("interface", "")),
+                remote=remote,
+                evidence={"config"},
+                extra=extra,
+            ),
+        )
+
+
+def process_fg_log(log_conf: dict[str, dict], dev: DeviceData) -> None:
+    """
+    Process the log destinations: FortiAnalyzer (``config log fortianalyzer
+    setting``) and syslog servers (``config log syslogd setting``,
+    ``syslogd2``, ...) into ``Relationship(type="logs_to")``.
+    """
+    # TODO: log_conf["tap-device"] => port/service
+
+    # Global FortiAnalyzer settings
+    for section in ("fortianalyzer", "fortianalyzer2", "fortianalyzer3"):
+        fas = (log_conf.get(section) or {}).get("setting")
+        if not isinstance(fas, dict):
+            continue
+
+        # Extract IP addresses
+        for key in ["server", "source-ip"]:
+            if fas.get(key) and utils.is_ip(fas[key]):
+                dev.related.ip.add(fas[key])
+
+        remote = _remote_endpoint(fas.get("server", ""), "log_server")
+        if remote is None:
+            continue
+
+        local_ip = str(fas.get("source-ip", "")).strip()
+        extra = {
+            k.replace("-", "_"): v
+            for k, v in _redacted_settings(fas).items()
+            if k not in ("server", "source-ip", "status")
+        }
+        dev.store(
+            "relationships",
+            Relationship(
+                type="logs_to",
+                protocol="fortianalyzer",
+                direction="egress",
+                local=RelationshipEndpoint(
+                    ip=local_ip if utils.is_ip(local_ip) and local_ip not in _UNSET_IPS else ""
+                ),
+                remote=remote,
+                enabled=(str(fas["status"]).lower() == "enable") if fas.get("status") else None,
+                evidence={"config"},
+                extra=extra,
+            ),
+        )
+
+    # Syslog servers
+    for section in ("syslogd", "syslogd2", "syslogd3", "syslogd4"):
+        sls = (log_conf.get(section) or {}).get("setting")
+        if not isinstance(sls, dict):
+            continue
+
+        remote = _remote_endpoint(sls.get("server", ""), "log_server", _port(sls.get("port")))
+        if remote is None:
+            continue
+        if remote.ip:
+            dev.related.ip.add(remote.ip)
+
+        # reliable: RFC 6587 (TCP), legacy-reliable: RFC 3195 (BEEP over TCP)
+        mode = str(sls.get("mode", "")).lower()
+        transport = {"udp": "udp", "reliable": "tcp", "legacy-reliable": "tcp"}.get(mode, "")
+
+        extra = {"setting": section}
+        for key in ("mode", "facility", "format", "enc-algorithm"):
+            if sls.get(key):
+                extra[key.replace("-", "_")] = sls[key]
+
+        dev.store(
+            "relationships",
+            Relationship(
+                type="logs_to",
+                protocol="syslog",
+                transport=transport,
+                direction="egress",
+                remote=remote,
+                enabled=(str(sls["status"]).lower() == "enable") if sls.get("status") else None,
+                evidence={"config"},
+                extra=extra,
+            ),
+        )
 
 
 def process_fg_conf(fg_conf: dict[str, dict], dev: DeviceData):
@@ -327,19 +715,17 @@ def process_fg_conf(fg_conf: dict[str, dict], dev: DeviceData):
     if conf.get("system"):
         process_fg_system(conf["system"], dev)
 
-    # Global FortiAnalyzer settings
+    # FortiAnalyzer and syslog servers
     if conf.get("log"):
-        # TODO: conf["log"]["tap-device"] => port/service
+        process_fg_log(conf["log"], dev)
 
-        if conf["log"].get("fortianalyzer", {}).get("setting"):
-            fas = conf["log"]["fortianalyzer"]["setting"]
+    # Static routes
+    if conf.get("router"):
+        process_fg_router(conf["router"], dev)
 
-            # Extract IP addresses
-            for key in ["server", "source-ip"]:
-                if fas.get(key) and utils.is_ip(fas[key]):
-                    dev.related.ip.add(fas[key])
-
-            dev.extra["fortianalyzer"] = fas
+    # IPsec VPN tunnels
+    if conf.get("vpn"):
+        process_fg_vpn(conf["vpn"], dev)
 
     # TODO: verify this in the UI
     if conf.get("web-proxy", {}).get("explicit"):
@@ -355,5 +741,4 @@ def process_fg_conf(fg_conf: dict[str, dict], dev: DeviceData):
     # TODO: "user local" and "user group" => Users
 
     # TODO: add protocols from conf["router"]
-    # TODO: conf["router"]["static"]
     # TODO: conf["router"]["ospf"]

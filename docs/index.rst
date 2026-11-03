@@ -26,6 +26,7 @@ Table of Contents
    install
    configure
    operate
+   baselines
    reference_documents
    design_documents
    developer_reference

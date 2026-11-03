@@ -8,10 +8,11 @@ from peat.protocols.addresses import clean_ipv4, clean_mac
 
 MAC_REGEX_UPPER = re.compile(r"([0-9A-F]{2}(?::[0-9A-F]{2}){5})", flags=re.ASCII)
 
-# NOTE: last updated for ECS 8.1.0 on April 28 2022
+# NOTE: last updated for ECS 9.5.0 (released 2026-08-04) on 2026-10-31.
+# Source: https://github.com/elastic/ecs/blob/v9.5.0/schemas/event.yml
 # Fields: category, kind, outcome, type
 ECS_EVENT_VALUES: dict[str, set[str]] = {
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-category.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-category
     "category": {
         "api",  # Added in ECS 8.7.0
         "authentication",
@@ -34,24 +35,24 @@ ECS_EVENT_VALUES: dict[str, set[str]] = {
         "vulnerability",  # Added in ECS 8.6.0
         "web",
     },
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-kind.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-kind
     "kind": {
         "alert",
-        "asset",  # Added in ECS 8.8.0
+        "asset",  # Added in ECS 8.8.0 (beta), GA in ECS 9.0.0
         "enrichment",
         "event",
         "metric",
         "state",
         "pipeline_error",
-        "signal",
+        # "signal" is reserved by ECS for Kibana alerting: data sources must not set it
     },
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-outcome.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-outcome
     "outcome": {
         "failure",
         "success",
         "unknown",
     },
-    # https://www.elastic.co/guide/en/ecs/current/ecs-allowed-values-event-type.html
+    # https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-type
     "type": {
         "access",
         "admin",
@@ -61,6 +62,7 @@ ECS_EVENT_VALUES: dict[str, set[str]] = {
         "creation",
         "deletion",
         "denied",
+        "device",  # Added in ECS 9.2.0
         "end",
         "error",
         "group",
@@ -81,9 +83,10 @@ def validate_ecs(v: str, field: ModelField) -> str:
 
     v = v.strip().lower().replace(" ", "_").replace("-", "_")
 
-    # for some reason a "_" gets prepended
-    # e.g. "category" gets changed to "_category"
-    field_name = field.name.replace("_", "")
+    # Reused validators get a "_" prepended to the field name
+    # (e.g. "category" becomes "_category"). Only strip leading underscores,
+    # so ECS field names containing underscores keep working.
+    field_name = field.name.lstrip("_")
 
     if v not in ECS_EVENT_VALUES[field_name]:
         raise ValueError(
@@ -99,11 +102,17 @@ def validate_ip(v: str) -> str:
         return ""
 
     v = v.strip().replace(" ", "")
-    if "." in v:
+    if "." in v and ":" not in v:
         v = clean_ipv4(v)  # strip leading zeros
 
     # NOTE: this will raise ValueError if not valid IPv4 or IPv6 address
-    return str(ipaddress.ip_address(v))
+    addr = ipaddress.ip_address(v)
+
+    # IPv4-mapped IPv6 address of a dual-stack socket (::ffff:192.0.2.1)
+    if addr.version == 6 and addr.ipv4_mapped:
+        return str(addr.ipv4_mapped)
+
+    return str(addr)
 
 
 def validate_mac(v: str) -> str:
@@ -157,9 +166,23 @@ def cleanstr(v: str) -> str:
     return v.strip().lower().replace(" ", "_")
 
 
+# Known spelling variants of application protocol names -> canonical name.
+# Canonical names are documented in docs/data_model.rst ("Protocol names").
+PROTOCOL_ALIASES: dict[str, str] = {
+    "c37.118": "c37_118",
+    "iec_104": "iec104",
+    "iec60870_5_104": "iec104",
+}
+
+
 def clean_protocol(v: str) -> str:
-    """Replace spaces and dashes with underscores."""
-    return v.replace("-", "_")
+    """
+    Replace dashes with underscores, then map known spelling variants
+    to the canonical protocol name (:data:`PROTOCOL_ALIASES`),
+    e.g. ``c37.118`` -> ``c37_118`` and ``iec-104`` -> ``iec104``.
+    """
+    v = v.replace("-", "_")
+    return PROTOCOL_ALIASES.get(v.lower(), v)
 
 
 def strip_quotes(v: str) -> str:

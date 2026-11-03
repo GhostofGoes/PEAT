@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 from peat import (
+    Baseline,
     DeviceData,
     DeviceError,
     IPMethod,
@@ -128,6 +129,71 @@ class DeviceModule:
     Define module-specific options and/or override global defaults,
     such as default ports for protocols or default credentials.
     """
+
+    known_defaults: list[Baseline] = []
+    """
+    Generic "device profile" baselines for devices handled by this module:
+    factory default VALUES (``kind="factory_default"``, severity ``info``; a failed
+    rule means "changed from the factory default") and vendor hardening
+    recommendations (``kind="vendor_recommended"``), as
+    :class:`~peat.data.models.Baseline` objects with ``rules`` (and normally no
+    ``expected`` snapshot). Used by ``peat baseline-compare --known-defaults``.
+
+    Use :meth:`get_known_defaults` to read them (includes parent classes).
+    Never include passwords or other secrets.
+    See :func:`peat.api.baseline_api.compare_to_known_defaults` and :doc:`baselines`.
+    """
+
+    factory_default_credentials: set[tuple[str, str]] = set()
+    """
+    Vendor factory-default ``(user, password)`` pairs (code only; never exported or
+    logged). Used by :meth:`is_factory_default_credential` to set
+    ``Service.security.default_credentials``. Anonymous logins are NOT listed here.
+    """
+
+    @classmethod
+    def get_known_defaults(cls) -> list[Baseline]:
+        """
+        Known-default baselines of this module and its parent classes (deep copies).
+
+        Subclass entries win over parent entries with the same ``id``.
+        An empty ``provenance.author`` is set to the module name, and an entirely
+        empty ``selector`` is set to the ``vendor_id``/``device_type`` of the module.
+        """
+        merged: dict[str, Baseline] = {}
+        for klass in cls.__mro__:
+            for baseline in vars(klass).get("known_defaults", None) or []:
+                merged.setdefault(baseline.id, baseline.copy(deep=True))
+        results = list(merged.values())
+        for baseline in results:
+            if not baseline.provenance.author:
+                baseline.provenance.author = cls.__name__
+            if baseline.selector.is_default_selector():
+                baseline.selector.vendor_id = cls.vendor_id
+                baseline.selector.device_type = cls.device_type
+        return results
+
+    @classmethod
+    def is_factory_default_credential(cls, user: str, password: str) -> bool:
+        """
+        Check if a credential is a vendor factory default of this module.
+
+        Callers pass the credential that SUCCEEDED and set
+        ``Service.security.default_credentials``: ``True`` if this returns
+        :obj:`True` for the credential that worked; ``False`` only if every
+        factory default was tried and rejected; otherwise leave it :obj:`None`.
+
+        Args:
+            user: username (compared case-insensitively)
+            password: password (compared exactly)
+
+        Returns:
+            If ``(user, password)`` is in :attr:`factory_default_credentials`
+        """
+        return any(
+            str(user).lower() == u.lower() and password == p
+            for u, p in cls.factory_default_credentials
+        )
 
     @classmethod
     def pull(cls, dev: DeviceData) -> bool:
@@ -391,6 +457,16 @@ class DeviceModule:
         """
         Implemented by modules. Subclass :class:`~peat.device.DeviceModule`
         and override this method.
+
+        .. note::
+           A file may describe several devices (e.g. the IEDs of an IEC 61850 SCD
+           file): return one of them and add the others to the
+           :class:`~peat.data.store.Datastore`. ``peat parse`` pushes the devices
+           the parse added with the returned device and lists them in the
+           :ref:`parse-summary`. If the parse filled devices that were already in
+           the datastore (e.g. the placeholder of a ``hosts`` entry of the PEAT
+           configuration file), list them (or all the other devices) in
+           ``dev._cache["parse_devices"]`` of the returned device.
         """
         pass
 

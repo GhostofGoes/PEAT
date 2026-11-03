@@ -86,6 +86,7 @@ Authors
 """
 
 import functools
+import io
 import time
 import timeit
 from copy import deepcopy
@@ -105,24 +106,37 @@ from peat import (
     IPMethod,
     SerialMethod,
     Service,
+    ServiceSecurity,
     consts,
     datastore,
     state,
     utils,
 )
 from peat.file_signature import FileSignature
+from peat.parsing import scl
 from peat.protocols import FTP, check_tcp_port
 
 from .relay_parse import (
+    apply_device_time,
+    apply_eth_output,
+    apply_mac_output,
     event_data_present,
     parse_and_process_events,
     parse_cfg_txt,
+    parse_eth_output,
     parse_rdb,
     parse_set_all,
     process_cid_file,
     process_info_into_dev,
 )
 from .sel_comms import populate_file_listing, pull_files
+from .sel_defaults import (
+    SEL_RELAY_ACCESS_LEVEL_DEFAULTS,
+    SEL_RELAY_FACTORY_CREDENTIALS,
+    SEL_RELAY_FTP_DEFAULTS,
+    SEL_RELAY_KNOWN_DEFAULTS,
+    credential_security,
+)
 from .sel_http import SELHTTP
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
@@ -187,28 +201,46 @@ class SELRelay(DeviceModule):
         "*HISTORY.TXT",
         "*HISTORY.txt",
         "*history.txt",
-        # *.CID (e.g. SET_61850.CID)
-        "*.CID",
-        "*.cid",
+        # NOTE: *.CID (e.g. SET_61850.CID) files are claimed by the zlib file
+        # signature below, not by a filename pattern. Patterns are matched
+        # case-insensitively, and plain-XML CID files from other vendors' tools
+        # belong to the IEC61850SCL module.
     ]
 
     # Targeted function for file_signatures custom_check usage
     def is_cid(data):
         """
-        Take zlib compressed data and test if contains expected CID data
+        Take zlib compressed data and test if it is a CID: data that decompresses
+        to IEC 61850 SCL, XML with the ``SCL`` element of the
+        ``http://www.iec.ch/61850/2003/SCL`` namespace (no other content is required).
+
+        Decompression is limited to :data:`peat.parsing.scl.MAX_DECOMPRESSED_SIZE`
+        (the limit of the CID parser): larger (zlib bomb), truncated and non-zlib
+        data is not a CID. The file signature runs this check on every file
+        checked by ``peat parse``, even if the magic number doesn't match.
         """
         import zlib
 
+        header = data.read(2)
+        # zlib header: CMF 0x78 (deflate, 32K window) and a FLG with valid check bits
+        if len(header) != 2 or header[0] != 0x78 or int.from_bytes(header, "big") % 31:
+            return False
+
+        decompressor = zlib.decompressobj()
         try:
-            decompressed_bytes = zlib.decompress(data.read())
-            sig = FileSignature(
-                default_filename="",
-                xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
-                substrings=("IEC 61850",),
+            decompressed_bytes = decompressor.decompress(
+                header + data.read(), scl.MAX_DECOMPRESSED_SIZE
             )
-            return sig.matches(decompressed_bytes)
         except zlib.error:
             return False
+        if not decompressor.eof:  # larger than the limit, or truncated
+            return False
+
+        sig = FileSignature(
+            default_filename="",
+            xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
+        )
+        return sig.matches(decompressed_bytes)
 
     file_signatures = [
         FileSignature(
@@ -224,7 +256,9 @@ class SELRelay(DeviceModule):
         ),
         FileSignature(
             default_filename="SET_61850.CID",
-            magic_number="7801",  # zlib---no compression, no preset dictionary
+            # Any zlib header (0x78 + FLG): 7801 (no/low compression, SEL's CIDs),
+            # 789C (default), 78DA (best). is_cid() checks the decompressed content.
+            magic_number="78",
             custom_check=is_cid,  # examine decompressed content
         ),
     ]
@@ -310,6 +344,12 @@ class SELRelay(DeviceModule):
 
     # 57600 used by ymodem and by 351 by default
     sel_fallback_baudrates = [9600, 57600, 19200]
+
+    # Factory default values and hardening checks (peat/modules/sel/sel_defaults.py)
+    known_defaults = SEL_RELAY_KNOWN_DEFAULTS
+
+    # Access level passwords (ACC/BAC/2AC/CAL) and FTP logins
+    factory_default_credentials = set(SEL_RELAY_FACTORY_CREDENTIALS)
 
     @classmethod
     def _verify_serial(cls, dev: DeviceData) -> bool:
@@ -462,10 +502,10 @@ class SELRelay(DeviceModule):
                         dev.name = exit_info[id_candidate]
                         break
 
-            process_info_into_dev(exit_info, dev)
+            process_info_into_dev(exit_info, dev, observed=utils.utc_now())
 
-        if not dev.name and dev.extra.get("iedName"):
-            dev.name = dev.extra["iedName"]
+        if not dev.name and dev.iec61850.ied_name:
+            dev.name = dev.iec61850.ied_name
 
         if dev.description.model:
             cls._check_model(dev.description.model, dev.ip)
@@ -500,12 +540,21 @@ class SELRelay(DeviceModule):
                 dev._cache["verified_web_pass"],
                 protocol,
             )
+            if logged_in:
+                cls._store_login_security(
+                    dev,
+                    protocol,
+                    port,
+                    dev._cache["verified_web_user"],
+                    dev._cache["verified_web_pass"],
+                )
         else:
             if dev.options["web"]["user"] and dev.options["web"]["pass"]:
                 creds = {dev.options["web"]["user"]: dev.options["web"]["pass"]}
             else:
                 creds = dev.options["sel"]["creds"]
 
+            rejected = []  # type: list[tuple[str, str]]
             for username, password in creds.items():
                 cls.log.debug(
                     f"Attempting SEL Relay HTTP login to {dev.ip} with user '{username}'"
@@ -517,7 +566,18 @@ class SELRelay(DeviceModule):
                     dev._cache["verified_web_user"] = username
                     dev._cache["verified_web_pass"] = password
                     dev.related.user.add(username)
+                    cls._store_login_security(
+                        dev,
+                        protocol,
+                        port,
+                        username,
+                        password,
+                        rejected,
+                        SEL_RELAY_ACCESS_LEVEL_DEFAULTS,
+                    )
                     break
+
+                rejected.append((username, password))
 
         if logged_in:
             # Pull info about device including the model number
@@ -560,6 +620,58 @@ class SELRelay(DeviceModule):
             )
             return False
         return True
+
+    @classmethod
+    def _store_login_security(
+        cls,
+        dev: DeviceData,
+        protocol: str,
+        port: int | None,
+        user: str,
+        password: str,
+        rejected: list[tuple[str, str]] | tuple = (),
+        service_defaults: frozenset[tuple[str, str]] = frozenset(),
+    ) -> None:
+        """
+        Record the security facts of a successful login on the service
+        (``Service.security``, see :func:`~peat.modules.sel.sel_defaults.credential_security`).
+        The credential itself is never stored.
+        """
+        security = credential_security(cls, user, password, rejected, service_defaults)
+        dev.store(
+            "service",
+            Service(protocol=protocol, port=port, transport="tcp", security=security),
+            lookup=["protocol", "port"] if port else "protocol",
+        )
+
+    @classmethod
+    def _store_ascii_login_security(
+        cls, dev: DeviceData, comm: SELTelnet | SELSerial, creds: dict[str, str] | None
+    ) -> None:
+        """
+        Record the security facts of the SEL ASCII (Telnet) access levels that
+        were entered: ``default_credentials=True`` if a factory default level
+        password worked, else unknown.
+        """
+        if not isinstance(comm, SELTelnet) or not comm.successful_usernames:
+            return  # Serial ports have no Service to describe
+
+        if not creds:
+            creds = comm.DEFAULT_CREDS
+
+        security = ServiceSecurity(authentication_required=True)
+        if any(
+            cls.is_factory_default_credential(user, creds.get(user, ""))
+            for user in comm.successful_usernames
+        ):
+            security.default_credentials = True
+
+        port = dev.options["telnet"]["port"]
+        dev.store(
+            "service",
+            Service(protocol="telnet", port=port, transport="tcp", security=security),
+            lookup=["protocol", "port"],
+        )
 
     @classmethod
     def pull_configs(cls, dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -> bool:
@@ -706,30 +818,41 @@ class SELRelay(DeviceModule):
         # Parse the results
         try:
             if results.get("sta"):
-                process_info_into_dev(results.pop("sta")["result"], dev=dev)
+                sta = results.pop("sta")
+                process_info_into_dev(sta["result"], dev=dev, observed=sta["timestamp"])
 
             if results.get("device_time"):
-                dev.extra["device_time"] = results.pop("device_time")["result"]
+                device_time = results.pop("device_time")
+                apply_device_time(dev, device_time["result"], observed=device_time["timestamp"])
 
             if results.get("ser"):
-                ser_data = "\n".join(results.pop("ser")["result"])
-                parse_and_process_events(ser_data, dataset="SER", dev=dev)
+                ser = results.pop("ser")
+                ser_data = "\n".join(ser["result"])
+                parse_and_process_events(
+                    ser_data, dataset="SER", dev=dev, observed=ser["timestamp"]
+                )
 
             if results.get("his"):
-                his_data = "\n".join(results.pop("his")["result"])
-                parse_and_process_events(his_data, dataset="HIS", dev=dev)
+                his = results.pop("his")
+                his_data = "\n".join(his["result"])
+                parse_and_process_events(
+                    his_data, dataset="HIS", dev=dev, observed=his["timestamp"]
+                )
 
             if results.get("mac"):
-                for mac_name, mac_value in results.pop("mac")["result"].items():
-                    dev.related.mac.add(mac_value)
-                    dev.extra[mac_name] = mac_value
+                apply_mac_output(results.pop("mac")["result"], dev)
 
             if results.get("active_group"):
                 active_group = results.pop("active_group")["result"]
                 dev.extra["active_settings_group"] = active_group
 
-            # if results.get("eth"):
-            #     pass  # TODO
+            if results.get("eth"):
+                eth = results.pop("eth")
+                eth_text = eth["result"]
+                if isinstance(eth_text, list):
+                    eth_text = "\n".join(eth_text)
+                apply_eth_output(parse_eth_output(eth_text), dev, timestamp=eth["timestamp"])
+
             # if results.get("bre"):
             #     pass  # TODO
             # if results.get("eve"):
@@ -768,6 +891,7 @@ class SELRelay(DeviceModule):
                 return False
 
             dev.related.user.update(tn.successful_usernames)
+            cls._store_ascii_login_security(dev, tn, dev.options["sel"]["creds"])
             successful = True
 
             # Get more info via terminal commands (get_sta, show_eth, show_status, etc.)
@@ -783,6 +907,10 @@ class SELRelay(DeviceModule):
                     successful = False
             else:
                 cls.log.debug(f"Skipping file pull via Telnet for {dev.ip}")
+
+            # Levels entered later (e.g. 2AC for SER/HIS)
+            dev.related.user.update(tn.successful_usernames)
+            cls._store_ascii_login_security(dev, tn, dev.options["sel"]["creds"])
 
             return successful
 
@@ -868,6 +996,13 @@ class SELRelay(DeviceModule):
                     return False
 
                 dev.related.user.add(username)
+                cls._store_login_security(
+                    dev,
+                    "ftp",
+                    dev.options["ftp"]["port"],
+                    username,
+                    dev.options["ftp"]["pass"],
+                )
 
                 delay = dev.options["ftp"]["pull_delay"]
                 cls.log.info(
@@ -950,6 +1085,7 @@ class SELRelay(DeviceModule):
             dev.related.user.add(username)
             dev._cache["verified_web_user"] = username
             dev._cache["verified_web_pass"] = password
+            cls._store_login_security(dev, protocol, port, username, password)
 
         web_methods = [
             session.get_status,
@@ -1216,7 +1352,7 @@ class SELRelay(DeviceModule):
                 # put their configs in the root directory. However, this
                 # is not always the case, as we've seen a directory structure
                 # on a 700G with the fancy front panel display.
-                if not dev.extra.get("file_listing") or not dev.extra.get(
+                if not dev._cache.get("file_listing") or not dev.extra.get(
                     "settings_root_directory"
                 ):
                     populate_file_listing(dev, relay)
@@ -1224,7 +1360,7 @@ class SELRelay(DeviceModule):
                 # Push only the files on the relay already and in
                 # the order the relay displays them
                 settings_root = dev.extra["settings_root_directory"]
-                on_relay = [x.upper() for x in dev.extra["file_listing"][settings_root]]
+                on_relay = [x.upper() for x in dev._cache["file_listing"][settings_root]]
 
                 # Compare local file names with those on the device
                 local_names = [x.name for x in config_files]
@@ -1367,13 +1503,15 @@ class SELRelay(DeviceModule):
         timeout = dev.options["ftp"]["timeout"]
         delay = dev.options["ftp"]["pull_delay"]
         attempts = 0
+        rejected = []  # type: list[tuple[str, str]]
 
         for creds in dev.options["ftp"]["creds"]:
             attempts += 1
             try:
                 with FTP(dev.ip, port, timeout) as relay:
                     if not relay.login(creds[0], creds[1]):
-                        cls.log.trace(f"FTP login creds {creds} failed for {dev.ip}")
+                        cls.log.trace(f"FTP login failed for {dev.ip} (user: '{creds[0]}')")
+                        rejected.append((creds[0], creds[1]))
                         continue
 
                     cls.log.trace(
@@ -1398,7 +1536,13 @@ class SELRelay(DeviceModule):
                     dev.related.user.add(creds[0])
 
                     ftp_svc = Service(
-                        protocol="ftp", port=port, status="verified", transport="tcp"
+                        protocol="ftp",
+                        port=port,
+                        status="verified",
+                        transport="tcp",
+                        security=credential_security(
+                            cls, creds[0], creds[1], rejected, SEL_RELAY_FTP_DEFAULTS
+                        ),
                     )
 
                     dev.store("service", ftp_svc, lookup=["protocol", "port"])
@@ -1433,12 +1577,18 @@ class SELRelay(DeviceModule):
 
         # CFG.TXT, SER.TXT, CSER.TXT, HISTORY.TXT, CHISTORY.TXT, *.CID
         f_name = file.name.lower()
-        if "cfg" in f_name or "ser" in f_name or "history" in f_name or f_name.endswith(".cid"):
+
+        # zlib-compressed CID claimed by its file signature, whatever its name
+        is_cid_file = f_name.endswith(".cid") or (
+            raw_data[:1] == b"\x78" and cls.is_cid(io.BytesIO(raw_data))
+        )
+
+        if "cfg" in f_name or "ser" in f_name or "history" in f_name or is_cid_file:
             if not dev:
                 dev = datastore.get(f"selrelay_{file.stem.lower()}", "id")
 
-            if f_name.endswith(".cid"):
-                cid_extracted = process_cid_file(raw_data, file, dev)
+            if is_cid_file:
+                cid_extracted = process_cid_file(raw_data, file, dev, local_path=file)
 
                 if not cid_extracted:
                     return None

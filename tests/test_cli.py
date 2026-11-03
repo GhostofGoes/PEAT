@@ -459,3 +459,60 @@ def test_cli_config_file_json(run_peat, tmp_path, datapath):
     written_files = sorted(state_data["written_files"])
     actual_files = sorted([x.as_posix() for x in tmp_path.rglob("*.*")])
     assert written_files == actual_files
+
+
+@pytest.mark.slow
+def test_cli_logs_never_contain_configured_secrets(exec_peat, tmp_path):
+    """
+    Bug fix: with -VV and higher, the global options dump in peat.log and
+    json-log.jsonl and the raw config dump in debug-info.txt (-VVV) had the
+    device passwords and SNMP communities from the config file.
+    """
+    canaries = ["LogCanaryAcc", "LogCanary2ac", "LogCanaryComm", "LogCanaryFtp", "LogCanaryHost"]
+    config_file = tmp_path / "secrets-config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "device_options": {
+                    "sel": {"creds": {"acc": canaries[0], "2ac": canaries[1]}},
+                    "snmp": {"community": canaries[2]},
+                    "ftp": {"user": "ftpuser", "pass": canaries[3]},
+                },
+                "hosts": [
+                    {
+                        "label": "secrets-host",
+                        "identifiers": {"ip": "192.0.2.80"},
+                        "options": {"ssh": {"pass": canaries[4]}},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    dummy_file = tmp_path / "secrets-dummy.txt"
+    dummy_file.write_text("not a device file\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    exec_peat(
+        [
+            "parse",
+            "-VVVV",
+            "-c",
+            config_file.as_posix(),
+            "-d",
+            "selrelay",
+            "-o",
+            out_dir.as_posix(),
+            dummy_file.as_posix(),
+        ]
+    )
+
+    log_dirs = list(out_dir.glob("*/logs"))
+    assert len(log_dirs) == 1
+    logs = {f.name: f.read_text(encoding="utf-8") for f in log_dirs[0].iterdir() if f.is_file()}
+    assert {"peat.log", "json-log.jsonl", "debug-info.txt"} <= set(logs)
+    assert "<redacted>" in logs["peat.log"]
+    assert "<redacted>" in logs["debug-info.txt"]
+    for name, text in logs.items():
+        for canary in canaries:
+            assert canary not in text, f"{canary} in {name}"

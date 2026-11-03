@@ -7,15 +7,81 @@ single large file with a custom format.
 """
 
 import functools
+import ipaddress
 import re
 from datetime import timedelta
 from pathlib import PurePosixPath
+from typing import Final
 
 import humanfriendly
 
-from peat import DeviceData, Event, File, Interface, consts, log, utils
+from peat import (
+    DeviceData,
+    Event,
+    File,
+    HostProcess,
+    Interface,
+    NetworkStatistics,
+    Relationship,
+    RelationshipEndpoint,
+    Route,
+    consts,
+    log,
+    utils,
+)
 from peat.parsing.arm_cpuid import ARM_CPU_IDS
 from peat.protocols.common import IPV4_RE, MAC_RE_COLON
+
+# "diagnose sys top" process states (Linux "ps" state codes)
+TOP_STATES: Final[dict[str, str]] = {
+    "R": "running",
+    "S": "sleeping",
+    "Z": "zombie",
+    "D": "disk_sleep",
+}
+
+# Linux neighbor (ARP) states (NUD_*), as shown in "diagnose ip arp list" "state="
+ARP_STATES: Final[dict[int, str]] = {
+    0x01: "incomplete",
+    0x02: "reachable",
+    0x04: "stale",
+    0x08: "delay",
+    0x10: "probe",
+    0x20: "failed",
+    0x40: "noarp",
+    0x80: "permanent",
+}
+
+# NIC counters of "get hardware nic" / "diagnose hardware deviceinfo nic" (lowercase keys)
+# -> NetworkStatistics field. Two output formats exist: "rx pkts : 123" (e.g. FG100F)
+# and "Rx_Packets=123" (Fortinet documentation, Linux net_device statistics).
+NIC_COUNTERS: Final[dict[str, str]] = {
+    "rx pkts": "ingress.packets",
+    "rx bytes": "ingress.bytes",
+    "tx pkts": "egress.packets",
+    "tx bytes": "egress.bytes",
+    "rx_packets": "ingress.packets",
+    "tx_packets": "egress.packets",
+    "rx_bytes": "ingress.bytes",
+    "tx_bytes": "egress.bytes",
+    "rx_errors": "ingress.errors",
+    "tx_errors": "egress.errors",
+    "rx_dropped": "ingress.dropped",
+    "tx_dropped": "egress.dropped",
+    "rx_crc_errors": "ingress.crc_errors",
+    "multicast": "ingress.multicast_packets",
+    "collisions": "collisions",
+}
+
+# Termination causes in crashlog messages -> Event.reason
+_CRASH_REASON_RES: Final[tuple[re.Pattern, ...]] = (
+    # "*** signal 11 (Segmentation fault) received ***"
+    re.compile(r"(signal\s+\d+\s*\([^)]*\))", re.IGNORECASE),
+    # "the killed daemon is /bin/sflowd: status=0x0"
+    re.compile(r"(killed daemon is\s+\S+?:?\s+status=\S+)", re.IGNORECASE),
+    # "... terminated/killed/aborted/crashed due to ..." (free text)
+    re.compile(r"\b((?:terminated|killed|aborted|crashed)\b.*)$", re.IGNORECASE),
+)
 
 
 def parse_fg_debug_log(raw_data: str) -> dict[str, list[str]]:
@@ -108,6 +174,21 @@ def process_fg_system_status(raw_status: list[str], dev: DeviceData) -> None:
     dev.extra["system_status"] = status
 
 
+def crashlog_reason(message: str) -> str:
+    """
+    Termination cause of a crashlog message, e.g. ``signal 11 (Segmentation fault)``
+    for ``*** signal 11 (Segmentation fault) received ***``.
+
+    Returns:
+        The cause, or an empty string if the message doesn't contain one
+    """
+    for regex in _CRASH_REASON_RES:
+        match = regex.search(message)
+        if match:
+            return match.group(1).strip().rstrip("*").strip()
+    return ""
+
+
 def process_fg_crashlog(crashlog: list[str], dev: DeviceData) -> None:
     for line in crashlog:
         try:
@@ -123,20 +204,25 @@ def process_fg_crashlog(crashlog: list[str], dev: DeviceData) -> None:
                 dataset="crashlog",
                 message=msg,
                 original=line,
+                reason=crashlog_reason(msg),
                 sequence=sequence,
             )
+
+            # TODO: associate process name and PID with Service
+            # "process_id=1028, process_name="httpsd""
+            pid = re.search(r"process_id=(\d+)", msg)
+            if pid:
+                event.extra["process_id"] = int(pid.group(1))
+            pname = re.search(r'process_name="([^"]+)"', msg)
+            if pname:
+                event.extra["process_name"] = pname.group(1)
+                dev.related.process.add(pname.group(1))
+
             dev.store("event", event, lookup="message")
 
             # e.g. "/bin/sflowd", /bin/getty
             for path in re.findall(r"(/[\w/.-]+)", msg):
                 dev.related.files.add(path)
-
-            # TODO: associate process name and PID with Service
-            # "process_id=1028, process_name="httpsd""
-            if "process_name" in line:
-                # pid = re.search(r"process_id=(\d+)", msg).group(1)
-                pname = re.search(r'process_name="([^"]+)"', msg).group(1)
-                dev.related.process.add(pname)
         except Exception as ex:
             log.trace3(f"Skipping bad Fortigate crashlog line: '{line}' (exception: {ex})")
             continue
@@ -224,6 +310,21 @@ def parse_fg_ls(ls_output: list[str], ls_command: str) -> list[dict]:
     return results
 
 
+def fg_file_category(path: str) -> set[str]:
+    """
+    :attr:`File.category <peat.data.models.File.category>` of a FortiGate file path:
+    ``{"configuration"}`` for ``/data/config*``, ``{"log"}`` for files in log directories.
+    """
+    path = str(path)
+    if path.startswith("/data/config"):
+        return {"configuration"}
+    if any(part in ("log", "logs") for part in PurePosixPath(path).parts[:-1]) or re.match(
+        r"^/(var|data|tmp)/log", path
+    ):
+        return {"log"}
+    return set()
+
+
 def process_fg_ls(ls_output: list[str], ls_command: str, dev: DeviceData) -> None:
     """
     Process the parsed results of the "ls" command into the PEAT data model.
@@ -279,10 +380,9 @@ def process_fg_ls(ls_output: list[str], ls_command: str, dev: DeviceData) -> Non
         if file["gid"] == 0:
             file_obj.group = "root"
 
-        # Don't deduplicate, there are multiple instances of files
-        # for example, there are 5 instances of /tmp/KEY-FILE, one of
-        # which is a symlink.
-        dev.files.append(file_obj)
+        file_obj.category = fg_file_category(file["path"])
+
+        dev.store("files", file_obj, lookup="path")
 
 
 def parse_fg_hardware_cpu(lines: list[str]) -> dict[str, str | int | list[str]]:
@@ -379,11 +479,105 @@ def process_fg_hardware_memory(lines: list[str], dev: DeviceData) -> None:
         dev.hardware.memory_usage = mem["MemTotal"]["bytes"] - mem["MemFree"]["bytes"]
 
 
+def parse_fg_run_time(text: str) -> timedelta | None:
+    """
+    Parse the ``Run Time`` of ``diagnose sys top``, e.g.
+    ``4 days, 5 hours and 29 minutes``.
+    """
+    values = {
+        unit: int(num)
+        # (?<!\d): only match at the start of a number (linear time on long digit runs)
+        for num, unit in re.findall(
+            r"(?<!\d)(\d+)\s*(day|hour|minute|second)s?", text, re.IGNORECASE
+        )
+    }
+    if not values:
+        return None
+    return timedelta(
+        days=values.get("day", 0),
+        hours=values.get("hour", 0),
+        minutes=values.get("minute", 0),
+        seconds=values.get("second", 0),
+    )
+
+
+def parse_fg_top(lines: list[str]) -> tuple[timedelta | None, list[HostProcess]]:
+    """
+    Parse the output of ``diagnose sys top`` (``diagnose sys top-all``).
+
+    .. code-block:: text
+
+       Run Time:  4 days, 5 hours and 29 minutes
+       1U, 0N, 0S, 99I, 0WA, 0HI, 0SI, 0ST; 1866T, 1113F
+                 miglogd      191      S       0.3     6.3
+               ipshelper      164      S <     0.3     1.2
+
+    Process rows are ``name pid state [<] cpu% memory% [cpu core]``. ``<`` marks
+    a high priority process. FortiOS 7.x on multi-core units appends the CPU core
+    the process runs on (``extra["cpu_core"]``).
+
+    Returns:
+        The run time (uptime) of the system and the processes
+    """
+    run_time = None
+    processes = []
+    row_re = re.compile(
+        r"^(?P<name>\S+)\s+(?P<pid>\d+)\s+(?P<state>[A-Za-z])\s+(?P<flags>[<N]\s+)?"
+        r"(?P<cpu>\d+(?:\.\d+)?)\s+(?P<mem>\d+(?:\.\d+)?)(?:\s+(?P<cpu_core>\d+))?\s*$"
+    )
+
+    for line in lines:
+        line = line.strip()
+        if line.lower().startswith("run time"):
+            run_time = parse_fg_run_time(line.partition(":")[2])
+            continue
+
+        match = row_re.match(line)
+        if not match:
+            continue
+
+        state_code = match["state"].upper()
+        extra = {"state_code": state_code}
+        flags = (match["flags"] or "").strip()
+        if flags == "<":
+            extra["high_priority"] = True
+        elif flags == "N":
+            extra["low_priority"] = True
+        if match["cpu_core"] is not None:
+            extra["cpu_core"] = int(match["cpu_core"])
+
+        memory_percent = float(match["mem"])
+        processes.append(
+            HostProcess(
+                name=match["name"],
+                pid=int(match["pid"]),
+                type="process",
+                state=TOP_STATES.get(state_code, ""),
+                cpu_percent=float(match["cpu"]),
+                memory_percent=memory_percent if memory_percent <= 100 else None,
+                extra=extra,
+            )
+        )
+
+    return run_time, processes
+
+
 def process_fg_top(lines: list[str], dev: DeviceData) -> None:
-    # TODO: extract uptime
+    run_time, processes = parse_fg_top(lines)
+
     # "Run Time:  0 days, 0 hours and 31 minutes"
-    for line in lines[2:]:
-        dev.related.process.add(line.split()[0])
+    if run_time is not None and not dev.uptime:
+        dev.uptime = run_time
+
+    for process in processes:
+        dev.store("processes", process)
+
+    # Rows in an unknown format ("name pid ..."): keep at least the process name
+    parsed = {p.name for p in processes}
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].isdigit() and parts[0] not in parsed:
+            dev.related.process.add(parts[0])
 
 
 def process_fg_sys_flash_list(lines: list[str], dev: DeviceData) -> None:
@@ -405,6 +599,210 @@ def process_fg_sys_flash_list(lines: list[str], dev: DeviceData) -> None:
                     dev.firmware.revision = res.groupdict()["build"]
                 if not dev.firmware.release_date:
                     dev.firmware.release_date = utils.parse_date(res.groupdict()["timestamp"])
+
+
+def parse_fg_arp_list(lines: list[str]) -> list[dict]:
+    """
+    Parse the output of ``diagnose ip arp list``.
+
+    .. code-block:: text
+
+       index=5 ifname=port1 192.0.2.1 00:09:0f:00:00:01 state=00000002 use=170 ref=3
+
+    Returns:
+        One dict per entry with the keys ``ifname``, ``ip``, ``mac``, ``state``
+        (raw hex value) and the other ``key=value`` pairs
+    """
+    entries = []
+    for line in lines:
+        ip = re.search(r"(?:^|\s)(\d{1,3}(?:\.\d{1,3}){3})(?:\s|$)", line)
+        if not ip or not utils.is_ip(ip.group(1)):
+            continue
+        # (?<![\w-]): only match at the start of a key (linear time on long words)
+        entry = dict(re.findall(r"(?<![\w-])([\w-]+)=(\S*)", line))
+        entry["ip"] = ip.group(1)
+        mac = re.search(MAC_RE_COLON, line)
+        entry["mac"] = mac.group(0).upper() if mac else ""
+        entries.append(entry)
+    return entries
+
+
+def process_fg_arp_list(lines: list[str], dev: DeviceData) -> None:
+    """
+    ARP table entries -> ``Relationship(type="neighbor_of", evidence={"arp"})``.
+    """
+    entries = parse_fg_arp_list(lines)
+
+    for entry in entries:
+        mac = entry["mac"]
+        if mac == "00:00:00:00:00:00" or not utils.is_mac(mac):
+            mac = ""
+
+        # Not a neighbor: the root VDOM placeholder (0.0.0.0), the limited
+        # broadcast address, multicast addresses, and entries with a broadcast
+        # or multicast MAC (e.g. a subnet broadcast address with ff:ff:ff:ff:ff:ff)
+        ip_obj = ipaddress.ip_address(entry["ip"])
+        if (
+            ip_obj.is_unspecified
+            or ip_obj.is_multicast
+            or entry["ip"] == "255.255.255.255"
+            or (mac and int(mac[:2], 16) & 1)  # I/G bit: multicast or broadcast MAC
+        ):
+            continue
+
+        state = ""
+        extra = {}
+        if entry.get("state"):
+            extra["state_code"] = entry["state"]
+            try:
+                state = ARP_STATES.get(int(entry["state"], 16), "")
+            except ValueError:
+                state = entry["state"]
+        for key in ("index", "ref"):
+            if entry.get(key):
+                extra[key] = entry[key]
+
+        dev.store(
+            "relationships",
+            Relationship(
+                type="neighbor_of",
+                local=RelationshipEndpoint(interface=entry.get("ifname", "")),
+                remote=RelationshipEndpoint(ip=entry["ip"], mac=mac),
+                state=state,
+                evidence={"arp"},
+                extra=extra,
+            ),
+        )
+
+    # Lines that couldn't be parsed
+    if not entries:
+        dev.related.ip.update(extract_ips(lines))
+        dev.related.mac.update(extract_macs(lines))
+
+
+def parse_fg_rtcache(lines: list[str]) -> list[dict[str, str]]:
+    """
+    Parse the route entries of ``diagnose ip rtcache list``.
+
+    .. code-block:: text
+
+       family=02 tab=254 vrf=0 vwl_id=0 type=01 tos=0 flag=00000200
+       192.0.2.10@0->198.51.100.7@3(port1) gwy=192.0.2.1 prefsrc=192.0.2.10
+
+    Returns:
+        One dict per entry with the keys ``source``, ``destination``,
+        ``interface``, ``gateway`` and ``prefsrc``
+    """
+    rt_re = re.compile(
+        r"(?P<source>\d{1,3}(?:\.\d{1,3}){3})@\d+->"
+        r"(?P<destination>\d{1,3}(?:\.\d{1,3}){3})@\d+"
+        r"(?:\((?P<interface>[^)]*)\))?"
+        r"(?:.*?\bgwy=(?P<gateway>\S+))?"
+        r"(?:.*?\bprefsrc=(?P<prefsrc>\S+))?"
+    )
+    entries = []
+    for line in lines:
+        match = rt_re.search(line)
+        if match and utils.is_ip(match["destination"]):
+            entries.append({k: (v or "") for k, v in match.groupdict().items()})
+    return entries
+
+
+def process_fg_rtcache(lines: list[str], dev: DeviceData) -> None:
+    """
+    Route cache entries -> :class:`~peat.data.models.Route` (``type="cache"``),
+    where the destination and gateway can be parsed.
+    """
+    dev.related.ip.update(extract_ips(lines))
+
+    for entry in parse_fg_rtcache(lines):
+        gateway = entry["gateway"]
+        if not utils.is_ip(gateway) or gateway == "0.0.0.0":
+            gateway = ""
+        dev.store(
+            "routes",
+            Route(
+                destination=entry["destination"],
+                gateway=gateway,
+                interface=entry["interface"],
+                type="cache",
+                extra={"source": "rtcache"},
+            ),
+        )
+
+
+def parse_fg_nic(lines: list[str]) -> dict[str, str]:
+    """
+    Parse the NIC details of ``get hardware nic <name>`` or
+    ``diagnose hardware deviceinfo nic <name>``. Both output formats are handled:
+
+    .. code-block:: text
+
+       Description          :FortiASIC NP6XLITE Adapter
+       Current_HWaddr        00:09:0f:00:00:01
+       rx pkts              :1234
+
+    .. code-block:: text
+
+       State                up
+       Link                 up
+       Speed                100
+       Rx_Packets=5685708
+
+    Returns:
+        Lowercase keys -> values
+    """
+    info = {}
+    for line in lines:
+        if "Command fail" in line:
+            break
+        if not line or line[0] in ["=", "["] or line[-1] == ":":
+            continue
+
+        match = re.match(r"(.+)\b\s{2,}:?(.+)$", line) or re.match(
+            r"^([A-Za-z][\w ]*?)\s*[=:]\s*(\S.*)$", line
+        )
+        if match:
+            info[match.groups()[0].strip().lower()] = match.groups()[1].strip()
+    return info
+
+
+def nic_statistics(info: dict[str, str]) -> NetworkStatistics:
+    """
+    Interface counters of a parsed NIC section (:func:`parse_fg_nic`).
+    ``Rx_*``/``Tx_*`` counters without a field are kept in ``extra``.
+    """
+    stats = NetworkStatistics(timestamp=utils.utc_now())
+
+    for key, raw_value in info.items():
+        try:
+            value = int(str(raw_value).strip())
+        except ValueError:
+            continue
+        if value < 0:
+            continue
+
+        target = NIC_COUNTERS.get(key)
+        if target is None:
+            if key.startswith(("rx_", "tx_")):
+                stats.extra[key] = value
+            continue
+        if "." in target:
+            section, name = target.split(".")
+            setattr(getattr(stats, section), name, value)
+        else:
+            setattr(stats, target, value)
+
+    return stats
+
+
+def _nic_bool(value: str, iface: Interface, key: str) -> bool | None:
+    """up/down value of a NIC status key; unknown values are kept in ``extra``."""
+    try:
+        return consts.str_to_bool(value)
+    except ValueError:
+        iface.extra[key.replace(" ", "_")] = value
+        return None
 
 
 def process_fg_interfaces(db_log: dict[str, list[str]], dev: DeviceData) -> None:
@@ -455,17 +853,7 @@ def process_fg_interfaces(db_log: dict[str, list[str]], dev: DeviceData) -> None
         # e.g.: "get hardware nic lan"
         log_entry = f"get hardware nic {nic}"
         if db_log.get(log_entry) and len(db_log[log_entry]) > 1:
-            info = {}
-
-            for line in db_log[log_entry]:
-                if "Command fail" in line:
-                    break
-                if line[0] in ["=", "["] or line[-1] == ":":
-                    continue
-
-                match = re.match(r"(.+)\b\s{2,}:?(.+)$", line)
-                if match:
-                    info[match.groups()[0].lower()] = match.groups()[1]
+            info = parse_fg_nic(db_log[log_entry])
 
             if info.get("description"):
                 ifaces[nic].description.description = info["description"]
@@ -480,15 +868,22 @@ def process_fg_interfaces(db_log: dict[str, list[str]], dev: DeviceData) -> None
                 ifaces[nic].physical = True
                 ifaces[nic].type = "ethernet"
 
-            # Administrative status up/down
-            if info.get("admin"):
-                ifaces[nic].enabled = consts.str_to_bool(info["admin"])
-            # "netdev status" and "link_status" I think roughly align
-            if info.get("netdev status"):
-                ifaces[nic].connected = consts.str_to_bool(info["netdev status"])
+            # Administrative status up/down ("admin" or "state")
+            for key in ("admin", "state"):
+                if info.get(key):
+                    ifaces[nic].enabled = _nic_bool(info[key], ifaces[nic], key)
+                    break
+            # Link status: "netdev status" and "link_status" I think roughly align
+            for key in ("netdev status", "link"):
+                if info.get(key):
+                    ifaces[nic].connected = _nic_bool(info[key], ifaces[nic], key)
+                    break
 
-            if info.get("speed_setting"):
-                ifaces[nic].speed = int(info["speed_setting"])
+            for key in ("speed_setting", "speed"):
+                speed = re.match(r"^\s*(\d+)", info.get(key, ""))
+                if speed:
+                    ifaces[nic].speed = int(speed.group(1))
+                    break
             if info.get("duplex") and info["duplex"].lower() in [
                 "full",
                 "half",
@@ -496,15 +891,9 @@ def process_fg_interfaces(db_log: dict[str, list[str]], dev: DeviceData) -> None
             ]:
                 ifaces[nic].duplex = info["duplex"].lower()
 
-            if info.get("rx pkts"):
-                # received
-                ifaces[nic].extra["received_packets"] = int(info["rx pkts"])
-            if info.get("rx bytes"):
-                ifaces[nic].extra["received_bytes"] = int(info["rx bytes"])
-            if info.get("tx pkts"):
-                ifaces[nic].extra["transmitted_packets"] = int(info["tx pkts"])
-            if info.get("tx bytes"):
-                ifaces[nic].extra["transmitted_bytes"] = int(info["tx bytes"])
+            stats = nic_statistics(info)
+            if stats.has_counters() or stats.extra:
+                ifaces[nic].statistics = stats
 
     # add to data model
     for iface in ifaces.values():
@@ -543,11 +932,8 @@ def process_fg_debug_log(db_log: dict[str, list[str]], dev: DeviceData) -> None:
         "fnsysctl ls -l /dev/shm": functools.partial(
             process_fg_ls, ls_command="fnsysctl ls -l /dev/shm"
         ),
-        "diagnose ip arp list": [
-            lambda d, dev: dev.related.ip.update(extract_ips(d)),
-            lambda d, dev: dev.related.mac.update(extract_macs(d)),
-        ],
-        "diagnose ip rtcache list": lambda d, dev: dev.related.ip.update(extract_ips(d)),
+        "diagnose ip arp list": process_fg_arp_list,
+        "diagnose ip rtcache list": process_fg_rtcache,
         # "get hardware memory" and "diagnose hardware sysinfo memory"  have same output
         # "diagnose" happens later in the dump and free memory is more accurate.
         "get hardware memory": process_fg_hardware_memory,
@@ -570,7 +956,10 @@ def process_fg_debug_log(db_log: dict[str, list[str]], dev: DeviceData) -> None:
             log.exception(f"Failed to process fortigate debug log section '{section}': {ex}")
 
     # Process interface information
-    process_fg_interfaces(db_log, dev)
+    try:
+        process_fg_interfaces(db_log, dev)
+    except Exception as ex:
+        log.exception(f"Failed to process fortigate debug log interface information: {ex}")
 
     # TODO: "diagnose test update info"
     #   => Logs

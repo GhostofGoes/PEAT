@@ -183,7 +183,8 @@ def _get_snmp_metadata(
         "error_count": ("4.1.3833.1.9.1.1.1.5.0", int),
         "last_error": ("4.1.3833.1.9.1.1.1.6.0", int),
         "last_mail_elapsed_time": ("4.1.3833.1.9.1.1.1.7.0", int),
-        "link_service_status": ("4.1.3833.1.9.1.1.1.8.0", str),
+        # INTEGER: 1 = SMTP server unreachable, 2 = reachable
+        "link_service_status": ("4.1.3833.1.9.1.1.1.8.0", int),
         # The number of time that the link to the SMTP server has been detected down.
         "server_check_fail_count": ("4.1.3833.1.9.1.1.1.9.0", int),
     }
@@ -197,7 +198,8 @@ def _get_snmp_metadata(
         # modbusThroughGatewayAndUnite(5) -- MODBUS through Gateway and UNITE protocol
         # modbusDirectAndUnite(6)         -- MODBUS direct and UNITE protocol
         "supported_protocol": ("4.1.3833.1.2.2.0", int),
-        "service_status": ("4.1.3833.1.2.1.0", str),
+        # INTEGER: 2 = operational
+        "service_status": ("4.1.3833.1.2.1.0", int),
         # 1=disabled, 2=enabled
         "port_security": ("4.1.3833.1.2.3.0", int),
         "max_connections": ("4.1.3833.1.2.4.0", int),
@@ -221,7 +223,9 @@ def _get_snmp_metadata(
     system_oids = {
         # profileCPUType
         "full_model": ("4.1.3833.1.7.11.0", str),
-        "system_uptime": ("2.1.31.1.5.0", int),
+        # IF-MIB ifTableLastChange (TimeTicks): sysUpTime at the last change of
+        # the interface table (RFC 2863). This is NOT the system uptime.
+        "if_table_last_change": ("2.1.31.1.5.0", int),
         "implementation_class": ("4.1.3833.1.7.19.0", str),
         "firmware_version": ("4.1.3833.1.7.2.0", str),
     }
@@ -372,13 +376,25 @@ def _get_snmp_metadata(
         if not responses:
             continue
 
-        led_info[name] = [oid_pair[1](x["value_encoded"]) for x in responses]
-    for i in range(5):
-        # Convert from the lists of values per OID to dict of info per LED
+        values = []
+        for x in responses:
+            try:
+                values.append(oid_pair[1](x["value_encoded"]))
+            except (KeyError, TypeError, ValueError):
+                values.append(None)
+        led_info[name] = values
+
+    # Convert from the lists of values per OID to dict of info per LED.
+    # Columns can be missing or shorter than the others (a failed or
+    # partial walk): use what is there instead of aborting all SNMP data.
+    num_leds = max((len(values) for values in led_info.values()), default=0)
+    for i in range(num_leds):
         info = {}
-        for k in led_oids.keys():
-            info[k] = led_info[k][i]
-        module_info["led_" + str(i)] = info
+        for k, values in led_info.items():
+            if i < len(values) and values[i] is not None:
+                info[k] = values[i]
+        if info:
+            module_info["led_" + str(i)] = info
 
     # Pull information for the overall system
     log.debug("Pulling SNMP overall system info...")

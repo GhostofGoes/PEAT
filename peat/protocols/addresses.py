@@ -13,7 +13,7 @@ from ipaddress import (
 )
 from pathlib import Path
 
-from peat import ParseError, log, state
+from peat import ParseError, consts, log, state
 
 ADDR_RANGE_REGEX = re.compile(
     r"((\d{1,3}|\d{1,3}-\d{1,3})"
@@ -27,8 +27,23 @@ ADDR_RANGE_REGEX = re.compile(
 def address_to_pathname(address: str) -> str:
     """
     Converts a address or other host identifier to a suitable filepath name.
+
+    The result is always one name inside the parent directory, also for
+    identifiers that come from device data (e.g. an IED name in an SCL file):
+    ``/`` and ``\\`` are replaced, a name of only dots (``.``, ``..``) has its
+    dots replaced, and a Windows drive prefix (``d:``) has its colon replaced.
+    On Windows, characters and names that are not valid there are also replaced
+    (e.g. the ``:`` of IPv6 and MAC addresses, ``<>"|?*``, reserved device names
+    such as ``con`` or ``nul``, trailing dots).
     """
-    return address.strip().lower().replace("/", "_").replace(" ", "_")
+    name = address.strip().lower().replace("/", "_").replace("\\", "_").replace(" ", "_")
+    if name[1:2] == ":":  # "d:x" is relative to the current directory of drive D: (Windows)
+        name = f"{name[0]}_{name[2:]}"
+    if consts.WINDOWS and name:
+        name = consts.sanitize_filename(name) or "_"
+    if not name.strip("."):  # "." or "..": the directory itself or its parent
+        name = name.replace(".", "_")
+    return name
 
 
 @lru_cache(maxsize=2048)
@@ -490,11 +505,20 @@ def network_is_local(net: IPv4Network) -> bool:
     return any(net.subnet_of(local) for local in state.local_networks)
 
 
+def _ip_sort_key(value: str) -> tuple[int, int, str]:
+    try:
+        addr = ip_address(value)
+        return (addr.version, int(addr), str(value))
+    except ValueError:
+        return (99, 0, str(value))
+
+
 def sort_ips(ip_list: list[str] | set[str]) -> list[str]:
     """
-    Sort IPv4 address strings in ascending order by integer IPs.
+    Sort IP address strings: IPv4 first, then IPv6, each in ascending order by
+    integer IP. Values that are not IP addresses come last. Never raises.
     """
-    return sorted(ip_list, key=lambda x: socket.inet_pton(socket.AF_INET, x))
+    return sorted(ip_list, key=_ip_sort_key)
 
 
 @lru_cache

@@ -61,6 +61,8 @@ elastic_events_index: ot-device-events
 elastic_memory_index: ot-device-memory
 elastic_uefi_files_index: uefi-files
 elastic_uefi_hashes_index: uefi-hashes
+elastic_relationships_index: ot-device-relationships
+elastic_baseline_findings_index: ot-device-baseline-findings
 heat_elastic_server: null
 heat_index_names: packetbeat-*
 heat_date_range: null

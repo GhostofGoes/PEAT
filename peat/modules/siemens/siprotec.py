@@ -22,11 +22,21 @@ Authors
 import binascii
 import functools
 import os.path
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from pprint import pformat
-from typing import Literal
+from typing import Any, Final, Literal
 
-from peat import DeviceData, DeviceModule, IPMethod
+from peat import DeviceData, DeviceModule, IPMethod, utils
+from peat.data.models import (
+    Interface,
+    NetworkStatistics,
+    NetworkTraffic,
+    Package,
+    Redundancy,
+    Service,
+    TimeSource,
+)
 from peat.protocols import HTTP, SNMP, snmp_walk
 
 from .mlfb import decode_mlfb
@@ -103,24 +113,22 @@ class Siprotec(DeviceModule):
                 timeout=dev.options["snmp"]["timeout"],
                 community=dev.options["snmp"]["community"],
             )
-            if system.get("system_uptime"):
-                dev.uptime = system.pop("system_uptime")  # TODO: timedelta?
-                # TODO: calculate dev.start_time
+            # Uptime, interfaces, statistics, redundancy and time sources
+            unmapped = process_snmp_data(dev, snmp_module, system)
 
             # Add the overall system info straight into the device info
             dev.extra.update(system)
 
             # Add the information for each module to its corresponding dict
             # TODO: add device modules to dev.module
-            # TODO: extract interface information
-            modname = str(snmp_module["sysName"])
-            module_name = f"module_{modname[: modname.find(' ')]}"  # module_<sysName>
+            modname = str(snmp_module.get("sysName", "")).strip()
+            module_name = f"module_{modname.split(' ')[0]}"  # module_<sysName>
             if module_name in dev.extra:
                 # If module exists, add the info
-                dev.extra[module_name].update(snmp_module)
+                dev.extra[module_name].update(unmapped)
             else:
                 # If it doesn't, create it using the info
-                dev.extra[module_name] = snmp_module
+                dev.extra[module_name] = unmapped
         except Exception as err:
             cls.log.error(f"Could not pull SNMP metadata: {err}")
             successful = False
@@ -177,6 +185,9 @@ class Siprotec(DeviceModule):
                     if parsed.get("model"):
                         dev.description.model = parsed.pop("model")
 
+                    # WebMonitor version -> dev.software
+                    process_webmonitor_version(dev, parsed)
+
                     dev.extra.update(parsed)
                     dev._cache[f"{f_type}_data_pulled"] = True
                     data_was_pulled = True
@@ -228,15 +239,16 @@ class Siprotec(DeviceModule):
             "ifOperStatus": ("2.1.2.2.1.8.2", int),
         }
 
-        # OIDs with snmp statistics
+        # OIDs with snmp statistics (SNMPv2-MIB, RFC 3418)
         snmp_oids = {
             "snmpInBadVersions": ("2.1.11.3.0", int),
-            "snmpInBadCommunityNames": ("2.1.11.3.0", int),
-            "snmpInBadCommunityUses": ("2.1.11.3.0", int),
+            "snmpInBadCommunityNames": ("2.1.11.4.0", int),
+            "snmpInBadCommunityUses": ("2.1.11.5.0", int),
         }
 
         # OIDs with system-wide information
         system_oids = {
+            # sysUpTime, TimeTicks (hundredths of a second)
             "system_uptime": ("2.1.1.3.0", int),
         }
 
@@ -285,9 +297,9 @@ class Siprotec(DeviceModule):
                     except Exception:
                         cls.log.debug(f"Bad SNMP sysDescr: {data}")
                 elif name == "ifAdminStatus":
-                    module_info[name] = "up" if data == 1 else "down"
+                    module_info[name] = IF_ADMIN_STATUS.get(data, str(data))
                 elif name == "ifOperStatus":
-                    module_info[name] = "up" if data == 1 else "down"
+                    module_info[name] = IF_OPER_STATUS.get(data, str(data))
                 else:
                     module_info[name] = data
 
@@ -419,6 +431,453 @@ class Siprotec(DeviceModule):
             cls.log.debug(f"Failed to parse WebMonitor timestamp '{parts[1]}': {err}")
 
         return parsed
+
+
+# IF-MIB (RFC 2863) ifAdminStatus and ifOperStatus values
+IF_ADMIN_STATUS: Final[dict[int, str]] = {1: "up", 2: "down", 3: "testing"}
+IF_OPER_STATUS: Final[dict[int, str]] = {
+    1: "up",
+    2: "down",
+    3: "testing",
+    4: "unknown",
+    5: "dormant",
+    6: "notPresent",
+    7: "lowerLayerDown",
+}
+
+# SipEthernet module-wide counters with a NetworkStatistics field. The
+# other counters of the MIB go to statistics.extra (snake_case names).
+_SIP_ETHERNET_FIELDS: Final[dict[str, tuple[str, str]]] = {
+    "nRxBMsg": ("ingress", "broadcast_packets"),
+    "nRxMMsg": ("ingress", "multicast_packets"),
+    "nRxCRCErrFrm": ("ingress", "crc_errors"),
+    "nFrameLoss": ("ingress", "dropped"),
+    "nTxTel": ("egress", "packets"),
+}
+_SIP_ETHERNET_COUNTERS: Final[tuple[str, ...]] = (
+    "nRxTelInt",
+    "nRxTelTask",
+    "nRxBuffDescriptor",
+    "nMismatchTel",
+    "nRxBMsg",
+    "nRxMMsg",
+    "nLongTel",
+    "nRxNOAlignFrm",
+    "nRxCRCErrFrm",
+    "nRxTruncMsg",
+    "nTxTel",
+    "nTxBuffFull",
+    "nRxFnsFull",
+    "nFrameLoss",
+    "nTxDefTel",
+    "nTxHeartBeat",
+    "nTxLateCollision",
+    "nRetransLmtCross",
+    "nTxRetry",
+    "nTxUnderRun",
+    "nTxCSL",
+    "overrun",
+    "maxRxBDs",
+    "rxLoopMax",
+    "rxOverload",
+    "rxOverloadCnt",
+    "maxTxBD",
+)
+# Per-channel status objects of SipEthernet (-> channel interfaces) and SNTP
+_SIP_ETHERNET_MOVED: Final[tuple[str, ...]] = (
+    "linkUpChan1",
+    "linkUpChan2",
+    "activChannel",
+    "optLevel1",
+    "optLevel2",
+    "rstpRoleChannel1",
+    "rstpRoleChannel2",
+    "rstpStatusChannel1",
+    "rstpStatusChannel2",
+    "sntpPrimaryServer",
+    "sntpSecondaryServer",
+    "sntpClockmaster",
+)
+# SipOptical per-channel table (opticalTransceiverTable, .5.1.*)
+_SIP_OPTICAL_TABLE: Final[tuple[str, ...]] = (
+    "channel",
+    "txPacket",
+    "rxPacket",
+    "filterSrc",
+    "filterDest",
+    "filterCrcErrCnt",
+    "filterLenErrCnt",
+    "filterSymErrCnt",
+    "overflowExtCnt",
+    "overflowIntCnt",
+    "overflowIntTraCnt",
+    "optLevel",
+    "vendor",
+    "partNo",
+    "revision",
+    "temperature",
+    "powerSupply",
+    "txBias",
+    "txPower",
+    "rxPower",
+)
+_TRANSCEIVER_KEYS: Final[tuple[str, ...]] = (
+    "optLevel",
+    "revision",
+    "temperature",
+    "powerSupply",
+    "txBias",
+    "txPower",
+    "rxPower",
+)
+_RSTP_INACTIVE_ROLES: Final[frozenset[str]] = frozenset({"", "nonstp", "unknown"})
+
+
+def _int(value: Any) -> int | None:
+    try:
+        result = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
+
+
+def _mac_from_octets(value: Any) -> str:
+    """``0x001122334455`` (prettyPrint of a 6-byte OctetString) -> ``00:11:22:33:44:55``."""
+    text = str(value or "").strip().lower()
+    if text.startswith("0x"):
+        text = text[2:]
+    text = text.replace(":", "").replace("-", "")
+    if not re.fullmatch(r"[0-9a-f]{12}", text) or text == "0" * 12:
+        return ""
+    return ":".join(text[i : i + 2] for i in range(0, 12, 2)).upper()
+
+
+def _sip_ethernet_statistics(sip_eth: dict, timestamp: datetime) -> NetworkStatistics | None:
+    stats = NetworkStatistics(timestamp=timestamp)
+    found = False
+    for name in _SIP_ETHERNET_COUNTERS:
+        value = _int(sip_eth.get(name))
+        if value is None:
+            continue
+        found = True
+        if name in _SIP_ETHERNET_FIELDS:
+            direction, field = _SIP_ETHERNET_FIELDS[name]
+            setattr(getattr(stats, direction), field, value)
+        else:
+            stats.extra[utils.convert_to_snake_case(name)] = value
+    return stats if found else None
+
+
+def _optical_channel(sip_optical: dict) -> int | None:
+    """
+    Position of the channel (0 = ``Ch1``, 1 = ``Ch2``) of the ``SipOptical``
+    table row: the ``channel`` index of the table is 0..1 in the MIB.
+    NOTE: snmp_walk() keys values by column name, so only the last row of the
+    table (the "channel" column says which) is known.
+    """
+    chan_num = _int(sip_optical.get("channel"))
+    return chan_num if chan_num in (0, 1) else None
+
+
+def _channel_interfaces(
+    sip_eth: dict, sip_optical: dict, iec_62439: dict, timestamp: datetime
+) -> tuple[list[Interface], Redundancy | None]:
+    """
+    The two physical EN100 channels (``Ch1``, ``Ch2``) and the redundancy of the
+    IP interface they belong to (PRP/HSR > RSTP > point-to-point failover).
+    """
+    channels = []
+    for num in (1, 2):
+        iface = Interface(name=f"Ch{num}", type="ethernet", physical=True)
+        link = str(sip_eth.get(f"linkUpChan{num}", "")).strip()
+        if link in ("linkUp", "1"):
+            iface.connected = True
+        elif link in ("linkDown", "0"):
+            iface.connected = False
+        opt_level = _int(sip_eth.get(f"optLevel{num}"))
+        if opt_level is not None:
+            # Optical Rx level in millivolts, "should be greater 2100 if LinkUp"
+            iface.extra["optical_rx_level_mv"] = opt_level
+        channels.append(iface)
+
+    # SipOptical per-channel table
+    chan_num = _optical_channel(sip_optical)
+    if chan_num is not None:
+        iface = channels[chan_num]
+        stats = NetworkStatistics(
+            timestamp=timestamp,
+            ingress=NetworkTraffic(
+                packets=_int(sip_optical.get("rxPacket")),
+                crc_errors=_int(sip_optical.get("filterCrcErrCnt")),
+            ),
+            egress=NetworkTraffic(packets=_int(sip_optical.get("txPacket"))),
+        )
+        for name in _SIP_OPTICAL_TABLE[3:11]:
+            if _int(sip_optical.get(name)) is not None and name != "filterCrcErrCnt":
+                stats.extra[utils.convert_to_snake_case(name)] = _int(sip_optical[name])
+        iface.statistics = stats
+        if sip_optical.get("vendor"):
+            iface.description.vendor.name = str(sip_optical["vendor"]).strip()
+        if sip_optical.get("partNo"):
+            iface.description.model = str(sip_optical["partNo"]).strip()
+        transceiver = {
+            utils.convert_to_snake_case(k): str(sip_optical[k]).strip()
+            for k in _TRANSCEIVER_KEYS
+            if sip_optical.get(k) not in (None, "")
+        }
+        if transceiver:
+            iface.extra["transceiver"] = transceiver
+
+    redundancy = None
+    node_type = str(iec_62439.get("nodeType", "")).strip().lower()
+    if node_type in ("prpmode0", "prpmode1", "hsr"):
+        protocol = "hsr" if node_type == "hsr" else "prp"
+        mode = str(iec_62439.get("hsrLREMode", "")).strip() if protocol == "hsr" else node_type
+        redundancy = Redundancy(protocol=protocol, mode=mode, members=["Ch1", "Ch2"])
+        for key in ("nodeName", "versionName", "manufacturerName", "switchingEndNode"):
+            if iec_62439.get(key) not in (None, ""):
+                redundancy.extra[utils.convert_to_snake_case(key)] = iec_62439[key]
+        if iec_62439.get("evaluateSupervision") not in (None, ""):
+            redundancy.extra["evaluate_supervision"] = iec_62439["evaluateSupervision"]
+        for iface, lan in zip(channels, ("A", "B"), strict=True):
+            active = str(iec_62439.get(f"adapterActive{lan}", "")).strip()
+            iface.redundancy = Redundancy(
+                protocol=protocol,
+                lan=lan,
+                state="active" if active == "active" else "inactive" if active else "",
+            )
+    else:
+        rstp = False
+        for num, iface in enumerate(channels, start=1):
+            role = str(sip_eth.get(f"rstpRoleChannel{num}", "")).strip()
+            if role.lower() in _RSTP_INACTIVE_ROLES:
+                continue
+            rstp = True
+            port = "A" if num == 1 else "B"
+            iface.redundancy = Redundancy(
+                protocol="rstp",
+                role=role,
+                state=str(sip_eth.get(f"rstpStatusChannel{num}", "")).strip(),
+                partner=_mac_from_octets(sip_optical.get(f"rstpNeighbourPort{port}")),
+            )
+        active_chan = str(sip_eth.get("activChannel", "")).strip()
+        if rstp:
+            redundancy = Redundancy(protocol="rstp", members=["Ch1", "Ch2"])
+        elif active_chan in ("activChannel1", "activChannel2"):
+            # Point-to-point (line) mode: one channel active, the other standby
+            redundancy = Redundancy(protocol="failover", members=["Ch1", "Ch2"])
+            for num, iface in enumerate(channels, start=1):
+                iface.redundancy = Redundancy(
+                    protocol="failover",
+                    state="active" if active_chan.endswith(str(num)) else "standby",
+                )
+
+    # Only keep channels the device reported something about
+    channels = [
+        iface
+        for iface in channels
+        if iface.connected is not None
+        or iface.extra
+        or iface.redundancy.protocol
+        or iface.statistics.timestamp
+    ]
+    return channels, redundancy
+
+
+def process_snmp_data(
+    dev: DeviceData,
+    module_info: dict,
+    system_info: dict,
+    timestamp: datetime | None = None,
+) -> dict:
+    """
+    Process SNMP data (:meth:`Siprotec._get_snmp_data`) into the data model.
+
+    - ``sysUpTime`` (TimeTicks, hundredths of a second) -> ``uptime``, ``start_time``
+    - EN100 IP interface (MAC, netmask, status) with the SipEthernet module-wide
+      counters as ``statistics`` (counters without a field in ``statistics.extra``)
+    - per-channel interfaces ``Ch1``/``Ch2`` (link, optical level, SipOptical table,
+      RSTP or PRP/HSR redundancy); the IP interface gets the PRP/HSR/RSTP redundancy
+    - SipGoose counters -> ``Service(protocol="goose").statistics``
+    - SNMP bad community counters -> ``Service(protocol="snmp").statistics``
+    - SNTP servers -> ``clock.sources``
+
+    ``system_uptime`` is removed from ``system_info``.
+
+    Returns:
+        The module data that was not mapped (identity keys, resource usage,
+        RSTP bridge settings, ...), for ``dev.extra["module_<sysName>"]``
+    """
+    timestamp = timestamp or utils.utc_now()
+    unmapped = {
+        k: v
+        for k, v in module_info.items()
+        if k
+        not in [
+            "mac_address",
+            "netmask",
+            "ifAdminStatus",
+            "ifOperStatus",
+            "snmp_stats",
+            "sip_ethernet",
+            "sip_goose",
+            "sip_optical",
+            "iec_62439",
+        ]
+    }
+
+    # sysUpTime is TimeTicks (1/100 s), not seconds or milliseconds
+    ticks = _int(system_info.pop("system_uptime", None))
+    if ticks is not None:
+        dev.uptime = timedelta(seconds=ticks / 100)
+        dev.start_time = timestamp - dev.uptime
+
+    sip_eth = module_info.get("sip_ethernet") or {}
+    sip_optical = module_info.get("sip_optical") or {}
+    iec_62439 = module_info.get("iec_62439") or {}
+
+    # EN100 IP interface
+    ip_iface = Interface(name="EN100", type="ethernet")
+    if dev.ip:
+        ip_iface.ip = dev.ip
+    if module_info.get("mac_address") and utils.is_mac(module_info["mac_address"]):
+        ip_iface.mac = module_info["mac_address"]
+    if module_info.get("netmask") and utils.is_ip(str(module_info["netmask"])):
+        ip_iface.subnet_mask = str(module_info["netmask"])
+    admin = module_info.get("ifAdminStatus", "")
+    if admin in ("up", "down"):
+        ip_iface.enabled = admin == "up"
+    elif admin:
+        ip_iface.extra["admin_status"] = admin
+    oper = module_info.get("ifOperStatus", "")
+    if oper == "up":
+        ip_iface.connected = True
+    elif oper in ("down", "lowerLayerDown", "notPresent", "dormant"):
+        ip_iface.connected = False
+    if oper and oper not in ("up", "down"):
+        ip_iface.extra["oper_status"] = oper
+
+    stats = _sip_ethernet_statistics(sip_eth, timestamp)
+    if stats:
+        ip_iface.statistics = stats
+
+    channels, redundancy = _channel_interfaces(sip_eth, sip_optical, iec_62439, timestamp)
+    if redundancy:
+        ip_iface.redundancy = redundancy
+    if sip_eth.get("activChannel") not in (None, "") and not redundancy:
+        ip_iface.extra["active_channel"] = sip_eth["activChannel"]
+
+    if ip_iface.ip or ip_iface.mac:
+        dev.store("interface", ip_iface)
+    for iface in channels:
+        dev.store("interface", iface, lookup="name")
+
+    # GOOSE: matched telegrams received; mismatched ones are not errors
+    goose = module_info.get("sip_goose") or {}
+    matched, mismatched = _int(goose.get("nRxMatchedTel")), _int(goose.get("nRxMismatchTel"))
+    if matched is not None or mismatched is not None:
+        goose_stats = NetworkStatistics(
+            timestamp=timestamp, ingress=NetworkTraffic(messages=matched)
+        )
+        if mismatched is not None:
+            goose_stats.extra["mismatched_telegrams"] = mismatched
+        dev.store("service", Service(protocol="goose", statistics=goose_stats))
+
+    # SNMP: bad community names = failed authentications (network scans)
+    snmp_stats = module_info.get("snmp_stats") or {}
+    if snmp_stats:
+        svc_stats = NetworkStatistics(timestamp=timestamp)
+        svc_stats.connections.authentication_failures = _int(
+            snmp_stats.get("snmpInBadCommunityNames")
+        )
+        for key, extra_key in [
+            ("snmpInBadVersions", "bad_versions"),
+            ("snmpInBadCommunityUses", "bad_community_uses"),
+        ]:
+            if _int(snmp_stats.get(key)) is not None:
+                svc_stats.extra[extra_key] = _int(snmp_stats[key])
+        dev.store(
+            "service",
+            Service(protocol="snmp", port=161, transport="udp", statistics=svc_stats),
+            interface_lookup={"ip": dev.ip} if dev.ip else None,
+        )
+
+    # SNTP servers
+    master = str(sip_eth.get("sntpClockmaster", "")).strip()
+    for priority, (key, name) in enumerate(
+        [("sntpPrimaryServer", "primary"), ("sntpSecondaryServer", "secondary")], start=1
+    ):
+        address = str(sip_eth.get(key, "")).strip()
+        if not utils.is_ip(address) or address in ("0.0.0.0", "255.255.255.255"):
+            continue
+        source = TimeSource(protocol="sntp", address=address, priority=priority)
+        if master in ("primary", "secondary"):
+            source.selected = master == name
+        if not any(
+            (s.protocol, s.address) == (source.protocol, source.address) for s in dev.clock.sources
+        ):
+            dev.clock.sources.append(source)
+    if master in ("primary", "secondary") and not dev.clock.source:
+        dev.clock.source = "sntp"
+
+    # Unmapped SipEthernet resources and SipOptical RSTP bridge settings stay in
+    # extra, and the SipOptical table row if its channel is unknown
+    rest_eth = {
+        k: v
+        for k, v in sip_eth.items()
+        if k not in _SIP_ETHERNET_COUNTERS and k not in _SIP_ETHERNET_MOVED
+    }
+    if rest_eth:
+        unmapped["sip_ethernet"] = rest_eth
+    optical_mapped = _optical_channel(sip_optical) is not None
+    # The RSTP neighbour MACs are moved to Redundancy.partner of the channels
+    # with an active RSTP role; keep them in extra otherwise (e.g. in PRP/HSR
+    # or point-to-point mode), unless they are empty
+    rstp_partners = {
+        iface.name
+        for iface in channels
+        if iface.redundancy.protocol == "rstp" and iface.redundancy.partner
+    }
+    moved_neighbours = {
+        f"rstpNeighbourPort{port}"
+        for port, chan in (("A", "Ch1"), ("B", "Ch2"))
+        if chan in rstp_partners
+        or not _mac_from_octets(sip_optical.get(f"rstpNeighbourPort{port}"))
+    }
+    rest_optical = {
+        k: v
+        for k, v in sip_optical.items()
+        if not (optical_mapped and k in _SIP_OPTICAL_TABLE) and k not in moved_neighbours
+    }
+    if rest_optical:
+        unmapped["sip_optical"] = rest_optical
+
+    return unmapped
+
+
+def process_webmonitor_version(dev: DeviceData, parsed: dict) -> None:
+    """
+    Move the WebMonitor version from parsed ``VER.txt`` data
+    (:meth:`Siprotec._parse_ver_txt`) to ``dev.software`` (modifies ``parsed``).
+    """
+    version = parsed.pop("webmonitor_version", "")
+    build_date = parsed.pop("webmonitor_build_date", "")
+    build_timestamp = parsed.pop("webmonitor_build_timestamp", "")
+    if not version:
+        return
+
+    pkg = Package(
+        name="WebMonitor",
+        version=str(version).strip(),
+        category="application",
+        vendor="Siemens",
+        description="Embedded web server of the EN100 Ethernet module",
+    )
+    if build_date:
+        pkg.extra["build_date"] = build_date
+    if build_timestamp:
+        pkg.extra["build_timestamp"] = build_timestamp
+    dev.store("software", pkg)
 
 
 Siprotec.ip_methods = [

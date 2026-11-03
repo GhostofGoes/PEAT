@@ -29,7 +29,6 @@ import binascii
 import re
 import socket
 import traceback
-from copy import copy
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from pprint import pformat
@@ -47,11 +46,13 @@ from peat import (
     datastore,
     utils,
 )
+from peat.data.models import ServiceSecurity
 from peat.file_signature import FileSignature
 from peat.parsing.tc6 import TC6
 from peat.protocols import FTP, SNMP
 
 from . import m340_parse, m340_pull
+from .m340_defaults import M340_KNOWN_DEFAULTS
 from .umas_packets import (
     Modbus,
     UMASConnectionResponse,
@@ -102,6 +103,37 @@ class M340(DeviceModule):
         "os.vendor.id": "WindRiver",
         "os.version": "7",  # TODO: big assumption, get ground truth
     }
+    # Factory default FTP account (firmware loader)
+    factory_default_credentials = {("loader", "fwdownload")}
+    known_defaults = M340_KNOWN_DEFAULTS
+
+    @classmethod
+    def _record_ftp_login(
+        cls, dev: DeviceData, user: str, password: str, defaults_rejected: bool = False
+    ) -> None:
+        """
+        Record what a SUCCESSFUL FTP login says about the service in
+        ``Service.security`` (never the credential itself).
+
+        Args:
+            dev: device to update
+            user: username of the credential that worked
+            password: password of the credential that worked
+            defaults_rejected: every factory default credential was tried and rejected
+        """
+        security = ServiceSecurity(authentication_required=True)
+        if cls.is_factory_default_credential(user, password):
+            security.default_credentials = True
+        elif defaults_rejected:
+            security.default_credentials = False
+
+        dev.store(
+            "service",
+            Service(
+                protocol="ftp", port=dev.options["ftp"]["port"], transport="tcp", security=security
+            ),
+            interface_lookup={"ip": dev.ip} if dev.ip else None,
+        )
 
     @classmethod
     def _verify_ftp(cls, dev: DeviceData) -> bool:
@@ -133,10 +165,13 @@ class M340(DeviceModule):
             "CPU 672",  # Other Modicon models
         ]
 
+        rejected = set()  # credentials that failed, (lowercase user, password)
+
         try:
             for user, password in creds:
                 with FTP(dev.ip, port, timeout) as ftp:
                     if not ftp.login(user, password):
+                        rejected.add((str(user).lower(), password))
                         continue
                     # TODO: cache DINF output for use with _pull()
                     #   so the command isn't repeated (reduce device load)
@@ -152,6 +187,14 @@ class M340(DeviceModule):
 
                 if any(x.lower() in resp.lower() for x in search_strings):
                     cls.log.debug(f"Verified {dev.ip}:{port} via FTP")
+                    cls._record_ftp_login(
+                        dev,
+                        user,
+                        password,
+                        defaults_rejected=all(
+                            (u.lower(), p) in rejected for u, p in cls.factory_default_credentials
+                        ),
+                    )
                     return True
 
                 cls.log.debug(
@@ -286,6 +329,9 @@ class M340(DeviceModule):
             cls.log.debug("Failed to parse out SNMP info from network_configurations")
         # TODO: update dev with snmp info
 
+        # Never keep the SNMP community strings (secrets) in pulled data
+        m340_parse.redact_snmp_communities(device_info)
+
         # Pull configuration information from the network
         if dev.options["m340"]["use_network_for_config"]:
             # TODO: update dev in pull_network_config (pass the dev object?)
@@ -293,9 +339,16 @@ class M340(DeviceModule):
                 ip=dev.ip, timeout=timeout, snmp_community=snmp_community
             )
             device_info.update(net_config)
-            # TODO: full parsing of modules and other information from data
-            #   pulled via network protocols (SNMP, FTP, Modbus)
-            dev.extra.update(net_config)
+
+            # Processed into the data model by _parse_blob(), after the modules
+            # from the project file exist (the rest is merged into dev.extra there)
+            dev._cache["m340_network_config"] = net_config
+
+            # _get_ftp_metadata() logs in with the factory default FTP account,
+            # and only returns data (always "loader_status") if the login worked
+            if "loader_status" in net_config:
+                user, password = next(iter(sorted(cls.factory_default_credentials)))
+                cls._record_ftp_login(dev, user, password)
 
         if device_info.get("firmware_version"):
             dev.firmware.version = device_info.pop("firmware_version")
@@ -476,62 +529,6 @@ class M340(DeviceModule):
                     subnet_mask=mod.get("configured_ipv4_netmask", ""),
                 )
                 dev.store("interface", iface, lookup="ip")
-
-                def _proto_enabled(data):
-                    """If status is "no configuration", service isn't enabled."""
-                    if not data.get("service_status"):
-                        return False
-                    if data["service_status"].lower() == "no configuration":
-                        return False
-                    return True
-
-                if mod.get("port_502"):
-                    svc = Service(
-                        protocol="modbus_tcp",
-                        port=502,
-                        transport="tcp",
-                        enabled=_proto_enabled(mod["port_502"]),
-                        extra=copy.deepcopy(mod["port_502"]),
-                    )
-
-                    if svc.port:
-                        dev.related.ports.add(svc.port)
-                    if svc.protocol:
-                        dev.related.protocols.add(svc.protocol)
-
-                    dev.store("service", svc)
-
-                if mod.get("smtp_server"):
-                    svc = Service(
-                        protocol="smtp",
-                        port=25,  # TODO: don't hardcode port for smtp
-                        transport="tcp",
-                        enabled=_proto_enabled(mod["smtp_server"]),
-                        extra=copy.deepcopy(mod["smtp_server"]),
-                    )
-
-                    if svc.port:
-                        dev.related.ports.add(svc.port)
-                    if svc.protocol:
-                        dev.related.protocols.add(svc.protocol)
-
-                    dev.store("service", svc, lookup="protocol")
-
-                if mod.get("web_server"):
-                    svc = Service(
-                        protocol="http",
-                        port=80,  # TODO: don't hardcode port for web
-                        transport="tcp",
-                        enabled=_proto_enabled(mod["web_server"]),
-                        extra=copy.deepcopy(mod["web_server"]),
-                    )
-
-                    if svc.port:
-                        dev.related.ports.add(svc.port)
-                    if svc.protocol:
-                        dev.related.protocols.add(svc.protocol)
-
-                    dev.store("service", svc, lookup="protocol")
 
         dev.populate_fields(network_only=True)
 
@@ -725,8 +722,28 @@ class M340(DeviceModule):
 
             dev.store("io", io_point, lookup="id")
 
-        # Add the raw parsed config to dev.extra
-        dev.extra.update(parsed_config)
+        # SNMP security, SNMP managers and NTP server from the project file.
+        # The SNMP community strings are removed afterwards (secrets).
+        m340_parse.process_project_network_config(
+            dev, parsed_config.get("network_configurations", {})
+        )
+        m340_parse.redact_snmp_communities(parsed_config)
+
+        # Data pulled over the network (SNMP, FTP, Modbus/TCP) by _pull_config()
+        net_remaining = m340_parse.process_network_config(
+            dev, dev._cache.pop("m340_network_config", {})
+        )
+
+        # Add the raw parsed config to dev.extra, without the data mapped above.
+        # Merge per key: the SNMP/FTP module dicts and the project file module
+        # dicts share the "module_<slot>" keys.
+        extra_config = m340_parse.without_mapped_network_config(parsed_config)
+        for extra_source in (net_remaining, extra_config):
+            for key, value in extra_source.items():
+                if isinstance(value, dict) and isinstance(dev.extra.get(key), dict):
+                    dev.extra[key] = {**dev.extra[key], **value}
+                else:
+                    dev.extra[key] = value
 
         cls.update_dev(dev)
 

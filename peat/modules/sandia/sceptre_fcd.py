@@ -51,6 +51,8 @@ Authors
 - Christopher Goes
 """  # noqa: E501
 
+import ipaddress
+from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from random import randint
 from xml.etree.ElementTree import Element, fromstring
@@ -66,9 +68,21 @@ from peat import (
     Tag,
     config,
     datastore,
+    utils,
 )
+from peat.data.data_utils import merge_models
+from peat.data.models import LogicTask, Relationship, RelationshipEndpoint
 from peat.file_signature import FileSignature
 from peat.protocols import FTP
+
+# Roles of the (client, server) sides of a connection, per protocol
+PROTOCOL_ROLES: dict[str, tuple[str, str]] = {
+    "dnp3": ("master", "outstation"),
+    "modbus_tcp": ("client", "server"),
+    "modbus_rtu": ("client", "server"),
+    "iec104": ("controlling_station", "controlled_station"),
+    "bacnet": ("client", "server"),
+}
 
 
 class SCEPTRE(DeviceModule):
@@ -349,9 +363,19 @@ class SCEPTRE(DeviceModule):
             elif "fep" in dev.name.lower():
                 dev.type = "FEP"
 
+        # Scan cycle of the device's main loop, in milliseconds
         cycle_time = _ele(root, "cycle-time")
         if cycle_time:
-            dev.extra["cycle_time"] = int(cycle_time)
+            task = LogicTask(
+                name="main",
+                type="cyclic",
+                interval=timedelta(milliseconds=int(cycle_time)),
+            )
+            existing = next((t for t in dev.logic.tasks if t.name == task.name), None)
+            if existing:
+                merge_models(existing, task)
+            else:
+                dev.logic.tasks.append(task)
 
         # Parse I/O tags
         tags_element = root.find("tags")
@@ -409,6 +433,14 @@ class SCEPTRE(DeviceModule):
             module_element = root.find(module_name)
             if module_element is None:
                 continue
+
+            # The simulation (I/O provider) the device gets inputs from and
+            # sends outputs to
+            io_provider = io_provider_relationship(
+                module_name.split("-")[0], _ele(module_element, "endpoint")
+            )
+            if io_provider:
+                dev.store("relationships", io_provider)
 
             for child in list(module_element):
                 if child.tag in ["analog", "binary"]:
@@ -510,20 +542,31 @@ def extract_interface_info(com: Element, dev: DeviceData) -> None:
         if cmd_if.get("multicast_ip"):
             dev.related.ip.add(cmd_if["multicast_ip"])
 
-    # TODO: build links to other devices via <x-connection> child tags
+    # Links to other devices via <x-connection> child tags
     #  <modbus-client>
     #    <modbus-connection>
     #      <endpoint>tcp://127.0.0.1:5502</endpoint>
+    peer_count = 0
     for child in list(com):
         if "connection" in child.tag:
-            # for now, just add the IPs to related.ip
-            # want to expand on this in the future with richer linkages
             if _ele(child, "endpoint"):
                 conn_ep = _parse_endpoint(_ele(child, "endpoint"))
-                if conn_ep.get("ip"):
+                if utils.is_ip(str(conn_ep.get("ip") or "")):
                     dev.related.ip.add(conn_ep["ip"])
+                elif conn_ep.get("ip") and conn_ep["ip"] != "*":
+                    dev.related.hosts.add(conn_ep["ip"])  # e.g. "tcp://outstation-1:20000"
                 if conn_ep.get("multicast_ip"):
                     dev.related.ip.add(conn_ep["multicast_ip"])
+
+            if conn_type == "client":
+                rel = client_connection_relationship(com, child, protocol)
+                if rel:
+                    dev.store("relationships", rel)
+                    peer_count += 1
+
+    # The scan rate is per server connection (relationship "scan_rate")
+    if peer_count:
+        svc.extra.pop("scan-rate", None)
 
     endpoint = _ele(com, "endpoint")
     ip = _ele(com, "ip")
@@ -556,6 +599,19 @@ def extract_interface_info(com: Element, dev: DeviceData) -> None:
         if port:
             svc.port = int(port)
 
+    # Canonical protocol name of the service, e.g. "modbus_rtu" for Modbus on
+    # a serial port. Clients have their endpoint(s) in the connection elements.
+    protocol_endpoint = _parse_endpoint(endpoint) if endpoint else {}
+    if not protocol_endpoint:
+        conn_endpoints = [
+            _ele(c, "endpoint") for c in list(com) if "connection" in c.tag and _ele(c, "endpoint")
+        ]
+        if conn_endpoints:
+            protocol_endpoint = _parse_endpoint(conn_endpoints[0])
+        elif ip:
+            protocol_endpoint = {"ip": ip}
+    svc.protocol = canonical_protocol(protocol, protocol_endpoint)
+
     if svc.port:
         dev.related.ports.add(svc.port)
     if svc.protocol:
@@ -563,6 +619,157 @@ def extract_interface_info(com: Element, dev: DeviceData) -> None:
 
     dev.store("interface", iface, lookup=["ip", "serial_port", "application"])
     dev.store("service", svc, interface_lookup={"application": protocol})
+
+
+def canonical_protocol(protocol: str, endpoint: dict) -> str:
+    """
+    Canonical protocol name (``docs/data_model.rst``) of a bennu comms module
+    protocol, e.g. ``modbus`` over TCP is ``modbus_tcp`` and over a serial
+    port ``modbus_rtu``, ``iec60870_5_104`` is ``iec104``.
+    """
+    protocol = protocol.replace("-", "_").lower()
+    if protocol == "iec60870_5_104":
+        return "iec104"
+    if protocol == "modbus":
+        if endpoint.get("serial_port"):
+            return "modbus_rtu"
+        if endpoint.get("transport") == "tcp" or (
+            endpoint.get("ip") and not endpoint.get("transport")
+        ):
+            return "modbus_tcp"
+    return protocol
+
+
+def client_connection_relationship(
+    com: Element, connection: Element, protocol: str
+) -> Relationship | None:
+    """
+    Relationship from a client comms module (e.g. ``<dnp3-client>``) to the
+    server configured in one of its ``<x-connection>`` elements.
+
+    Example::
+
+        <dnp3-client>
+            <address>1</address>
+            <scan-rate>5</scan-rate>
+            <dnp3-connection>
+                <endpoint>tcp://127.0.0.1:20000</endpoint>
+                <address>10</address>
+                ...
+
+    becomes ``Relationship(protocol="dnp3", transport="tcp", direction="egress",
+    local=(role="master", protocol_address="1"), remote=(ip="127.0.0.1",
+    port=20000, role="outstation", protocol_address="10"))``. Serial
+    endpoints (``/dev/ttyS0``) have ``medium="serial"`` and ``local.serial_port``.
+    """
+    raw_endpoint = _ele(connection, "endpoint")
+    endpoint = _parse_endpoint(raw_endpoint) if raw_endpoint else {}
+    if not endpoint:
+        return None
+
+    protocol = canonical_protocol(protocol, endpoint)
+    client_role, server_role = PROTOCOL_ROLES.get(protocol, ("client", "server"))
+
+    rel = Relationship(
+        type="communicates_with",
+        protocol=protocol,
+        direction="egress",  # the client polls the server
+        local=RelationshipEndpoint(
+            role=client_role,
+            protocol_address=_ele(com, "address") or "",
+        ),
+        remote=RelationshipEndpoint(
+            role=server_role,
+            protocol_address=_ele(connection, "address") or "",
+        ),
+        evidence={"config"},
+    )
+
+    if endpoint.get("serial_port"):
+        rel.medium = "serial"  # the electrical standard isn't configured
+        rel.local.serial_port = endpoint["serial_port"]
+    else:
+        rel.transport = str(endpoint.get("transport", "")).lower()
+        host = str(endpoint.get("ip") or "").strip()
+        if utils.is_ip(host):
+            rel.remote.ip = host
+        elif host and host != "*":  # e.g. "tcp://outstation-1:20000"
+            rel.remote.hostname = host
+        if endpoint.get("port"):
+            rel.remote.port = endpoint["port"]
+        if endpoint.get("multicast_ip"):
+            rel.extra["multicast_ip"] = endpoint["multicast_ip"]
+
+    scan_rate = _ele(com, "scan-rate")
+    if scan_rate:
+        rel.extra["scan_rate"] = int(scan_rate) if scan_rate.isdigit() else scan_rate
+    instance = _ele(connection, "instance")
+    if instance:
+        rel.extra["instance"] = instance
+
+    return rel
+
+
+def io_provider_relationship(direction: str, raw_endpoint: str | None) -> Relationship | None:
+    """
+    Relationship to the simulation (I/O provider) from the endpoint of the
+    ``<input>``/``<output>`` element of a bennu field device.
+
+    - ``<input><endpoint>udp://172.16.1.4;239.0.0.1:40000</endpoint>``: inputs
+      are received from multicast group ``239.0.0.1`` (``extra["multicast_ip"]``)
+      on the local interface ``172.16.1.4`` (``local.ip``)
+    - ``<output><endpoint>tcp://172.16.1.2:5555</endpoint>``: outputs are sent
+      to the provider at ``172.16.1.2:5555`` (``remote.ip``/``port``)
+    """
+    if not raw_endpoint:
+        return None
+    endpoint = _parse_endpoint(raw_endpoint)
+    if not endpoint or endpoint.get("serial_port"):
+        return None
+
+    rel = Relationship(
+        type="depends_on",
+        transport=str(endpoint.get("transport", "")).lower(),
+        direction="ingress" if direction == "input" else "egress",
+        remote=RelationshipEndpoint(
+            role="io_provider",
+            address=raw_endpoint.strip(),
+            port=endpoint.get("port"),
+        ),
+        evidence={"config"},
+        extra={"io": direction},
+    )
+
+    ip = str(endpoint.get("ip") or "").strip()
+    multicast_ip = str(endpoint.get("multicast_ip") or "").strip()
+    # A hostname (e.g. "tcp://provider:5555") or a wildcard is kept in remote.address
+    hostname = ""
+    if ip and not utils.is_ip(ip):
+        hostname = ip if ip != "*" else ""
+        ip = ""
+    if multicast_ip and not utils.is_ip(multicast_ip):
+        rel.extra["multicast_address"] = multicast_ip
+        multicast_ip = ""
+    if not multicast_ip and ip and _is_multicast(ip):
+        multicast_ip, ip = ip, ""
+
+    if multicast_ip:
+        rel.extra["multicast_ip"] = multicast_ip
+        if ip:
+            rel.local.ip = ip  # local interface that receives the multicast
+    elif ip:
+        rel.remote.ip = ip
+    elif hostname and direction != "input":
+        rel.remote.hostname = hostname
+
+    return rel
+
+
+def _is_multicast(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_multicast
+    except ValueError:
+        return False
 
 
 def _parse_endpoint(endpoint: str) -> dict:

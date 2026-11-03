@@ -25,6 +25,9 @@
                     "enabled": true,
                     "port": 21,
                     "protocol": "telnet",
+                    "security": {
+                        "encrypted": false
+                    },
                     "transport": "tcp"
                 }
             ]
@@ -35,6 +38,9 @@
             "enabled": true,
             "port": 21,
             "protocol": "telnet",
+            "security": {
+                "encrypted": false
+            },
             "transport": "tcp"
         }
     ],

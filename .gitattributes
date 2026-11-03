@@ -44,6 +44,16 @@ SYSLOG.LOG  text eol=crlf
 *.l5x       text eol=crlf
 *.L5X       text eol=crlf
 
+# IEC 61850 SCL (XML) test fixtures: tests patch them as bytes, keep LF.
+# NOTE: before "*.CID binary", so SEL .CID files stay binary (also on Windows,
+# where attribute patterns are case-insensitive; binary is byte-exact too)
+tests/**/*.scd  text eol=lf
+tests/**/*.icd  text eol=lf
+tests/**/*.cid  text eol=lf
+tests/**/*.iid  text eol=lf
+tests/**/*.ssd  text eol=lf
+tests/**/*.sed  text eol=lf
+
 # Binary files
 *.db		binary
 *.pkl 		binary

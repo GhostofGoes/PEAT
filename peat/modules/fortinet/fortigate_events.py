@@ -80,11 +80,19 @@ def process_fg_events(events: list[dict[str, str]], dev: DeviceData) -> None:
             dataset += f"_{evt['subtype']}"  # Ex: "rest-api", "system"
 
         # no inherent sequence numbers
+        # "logid" is the log message type (ECS event.code, like Elastic's FortiGate
+        # integration). Event.id keeps it too, for compatibility (deprecated).
         event = Event(
             created=ts,
             dataset=dataset,
             id=evt.get("logid", ""),
+            code=evt.get("logid", ""),
             original=evt["raw_line"],
+            # e.g. "passwd_invalid", "name_invalid" for failed admin logins
+            reason=evt.get("reason", ""),
+            # "emergency", "alert", "critical", "error", "warning",
+            # "notice", "information", "debug"
+            log_level=evt.get("level", ""),
         )
 
         # extract IPs from anywhere in the line
@@ -108,7 +116,7 @@ def process_fg_events(events: list[dict[str, str]], dev: DeviceData) -> None:
             if (
                 "unable" in evt["msg"].lower()
                 or "failed" in evt["msg"].lower()
-                or evt["level"] == "critical"
+                or evt.get("level") == "critical"
             ):
                 event.outcome = "failure"
             elif "started" in evt["msg"]:
@@ -131,6 +139,8 @@ def process_fg_events(events: list[dict[str, str]], dev: DeviceData) -> None:
 
         if "successful" in evt["raw_line"] or evt.get("status") == "success":
             event.outcome = "success"
+        elif not event.outcome and evt.get("status", "").lower() in ("failed", "failure"):
+            event.outcome = "failure"
 
         if evt.get("action") == "perf-stats":
             event.category.add("host")
@@ -159,12 +169,14 @@ def process_fg_events(events: list[dict[str, str]], dev: DeviceData) -> None:
                 "time",
                 "tz",
                 "eventtime",  # event.created
-                "logid",  # event.id
+                "logid",  # event.code (and event.id)
                 "type",  # event.dataset
                 "subtype",  # event.dataset
                 "msg",  # event.message
                 "logdesc",  # event.message, or already added to event.extra
                 "action",  # set in => event.action
+                "reason",  # event.reason
+                "level",  # event.log_level
             ]:
                 event.extra[key] = value
 

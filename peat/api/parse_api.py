@@ -101,6 +101,34 @@ def parse(
     parse_results = []
     parsed_devices = []
 
+    # Devices that a successful parse of a file filled besides the device it returned
+    # (e.g. one device per IED in an IEC 61850 SCD file): the devices it created, and
+    # the existing devices the module lists in dev._cache["parse_devices"] (e.g. the
+    # placeholder of a "hosts" entry of the PEAT config file that an IED reused).
+    # They are pushed to Elasticsearch and are in the parse results as well. Devices
+    # left behind by a failed parse are not: their files are not exported either.
+    # (parse result of the file, devices filled by the parse)
+    created: list[tuple[dict, list[DeviceData]]] = []
+
+    def _parse_file(source: Path | str, dev_cls: type[DeviceModule]) -> None:
+        before = list(datastore.objects)  # references keep their id() unique
+        before_ids = {id(d) for d in before}
+        dev = parse_data(source, dev_cls)
+        filled = dev._cache.pop("parse_devices", []) if dev is not None else []
+
+        parsed_devices.append(dev)
+        result = {
+            "name": source.name if isinstance(source, Path) else "stdin",
+            "path": source.as_posix() if isinstance(source, Path) else "stdin",
+            "module": dev_cls.__name__,
+            "results": dev.elastic() if dev else {},
+        }
+        parse_results.append(result)
+        if dev is not None:
+            new = [d for d in datastore.objects if id(d) not in before_ids]
+            new.extend(d for d in filled if id(d) in before_ids)  # existing devices
+            created.append((result, new))
+
     # Iterate over the user-provided path arguments
     # TODO: breakup this logic a bit
     for path in paths:
@@ -120,17 +148,7 @@ def parse(
             or Path(path).is_file()
             or (Path(path).is_dir() and resolved_types[0].can_parse_dir)
         ):
-            dev = parse_data(path, resolved_types[0])
-
-            parsed_devices.append(dev)
-            parse_results.append(
-                {
-                    "name": path.name if isinstance(path, Path) else "stdin",
-                    "path": path.as_posix() if isinstance(path, Path) else "stdin",
-                    "module": resolved_types[0].__name__,
-                    "results": dev.elastic() if dev else {},
-                }
-            )
+            _parse_file(path, resolved_types[0])
 
         # Cases:
         # - single module + directory + module isn't directory-aware
@@ -155,40 +173,97 @@ def parse(
 
             for dev_cls in resolved_types:
                 for file_path in find_parsable_files(all_files, dev_cls):
-                    dev = parse_data(file_path, dev_cls)
-
-                    parsed_devices.append(dev)
-                    parse_results.append(
-                        {
-                            "name": file_path.name,
-                            "path": file_path.as_posix(),
-                            "module": dev_cls.__name__,
-                            "results": dev.elastic() if dev else {},
-                        }
-                    )
+                    _parse_file(file_path, dev_cls)
 
     # * Deduplicate *
+    before_dedupe = list(datastore.objects)  # references keep their id() unique
     datastore.deduplicate(prune_inactive=False)
+
+    # Devices that successful parses filled besides the devices they returned and
+    # that are still in the datastore (not merged into another device)
+    current = {id(d) for d in datastore.objects}
+    returned = [d for d in parsed_devices if d is not None]
+    parse_ids = {id(d) for d in returned}  # devices of this parse
+    other_devices: dict[int, list[DeviceData]] = {}  # id(parse result) -> devices
+    for result, devices in created:
+        for c_dev in devices:
+            if id(c_dev) in current and id(c_dev) not in parse_ids:
+                parse_ids.add(id(c_dev))  # each device once
+                other_devices.setdefault(id(result), []).append(c_dev)
+
+    # A device of this parse that de-duplication merged into another device (e.g. into
+    # the placeholder of a "hosts" entry of the PEAT config file, with the label and
+    # asset context of the entry) is replaced by the device that has its data now.
+    # That device writes its files to the output directory of the merged device, which
+    # has the earlier exports of the device, unless it has an output directory already.
+    # The parse result of a merged device that a parse returned stays its state after
+    # the file; a merged device that a parse created or filled is replaced in the
+    # parse results too (each device once).
+    of_parse = parse_ids | {id(d) for _, devices in created for d in devices}
+    survivors: dict[int, DeviceData] = {}  # id(merged device) -> device it is in
+    for m_dev in before_dedupe:
+        if id(m_dev) in of_parse and id(m_dev) not in current:
+            survivor = next((s for s in datastore.objects if s.is_duplicate(m_dev)), None)
+            if survivor is not None:
+                survivors[id(m_dev)] = survivor
+                if not survivor._out_dir and m_dev._out_dir:
+                    survivor._out_dir = m_dev._out_dir
+    parse_ids.update(id(survivors[id(d)]) for d in returned if id(d) in survivors)
+    for result, devices in created:
+        for c_dev in devices:
+            survivor = survivors.get(id(c_dev))
+            if survivor is not None and id(survivor) not in parse_ids:
+                parse_ids.add(id(survivor))
+                other_devices.setdefault(id(result), []).append(survivor)
+
+    # Devices that are not part of this parse (neither parsed nor filled by it) are
+    # neither exported nor pushed
+    parse_devices = [d for d in datastore.objects if id(d) in parse_ids]
+
+    # * Export the final state of the devices to files *
+    # DeviceModule.parse() exports a device after each file: the state after a later
+    # file of the same device went to "device-data-full.json.1", ".2", ... Like pull
+    # and scan, "device-data-full.json" gets the final (merged) state of each device.
+    # Different devices can have the same output directory (IDs that differ only in
+    # case or separators, or the same name, e.g. SEL event files of one relay): only
+    # the first device overwrites its files, the others write numbered files.
+    if config.DEVICE_DIR:
+        written: dict[Path, DeviceData] = {}  # output directory -> first device
+        for f_dev in parse_devices:
+            out_dir = f_dev.get_out_dir()
+            first = written.setdefault(out_dir, f_dev)
+            if first is not f_dev:
+                log.warning(
+                    f"Devices {_dev_name(first)} and {_dev_name(f_dev)} have the same "
+                    f"output directory '{out_dir.as_posix()}': the final state of the "
+                    f"second device is in numbered files (device-data-full.json.<n>)"
+                )
+            f_dev.export_to_files(overwrite_existing=first is f_dev)
 
     # * Push results to Elasticsearch *
     if state.elastic:
-        for d_dev in datastore.objects:
-            if d_dev not in parsed_devices:  # skip any not part of this parse
-                log.trace(f"Skipping device not part of parse: {d_dev.get_id()}")
-                continue
+        for d_dev in parse_devices:
             d_dev.export_to_elastic()
 
     # * Construct the parse results summary *
     parse_results.sort(key=itemgetter("module"))  # sort by device module
+    files_parsed = [r["path"] for r in parse_results]
 
     parse_successes = []
     parse_failures = []
     for result in parse_results:
         if result["results"]:
             parse_successes.append(result)
+            # one result per device: the other devices created by the parse of the
+            # file (e.g. the other IEDs of an SCD file) follow the device it returned
+            for o_dev in other_devices.get(id(result), []):
+                o_results = o_dev.elastic()
+                if o_results:
+                    parse_successes.append({**result, "results": o_results})
         else:
             del result["results"]
             parse_failures.append(result)
+    num_parse_successes = len(parse_results) - len(parse_failures)
 
     parse_duration = timeit.default_timer() - start_time
 
@@ -198,9 +273,9 @@ def parse(
         "parse_duration": parse_duration,
         "parse_modules": module_api.lookup_names(device_types),
         "input_paths": filepaths,
-        "files_parsed": [r["path"] for r in parse_results],
-        "num_files_parsed": len(parse_results),
-        "num_parse_successes": len(parse_successes),
+        "files_parsed": files_parsed,
+        "num_files_parsed": len(files_parsed),
+        "num_parse_successes": num_parse_successes,
         "num_parse_failures": len(parse_failures),
         "parse_failures": parse_failures,
         "parse_results": parse_successes,
@@ -223,6 +298,12 @@ def parse(
         f"Completed parsing of {len(parse_results)} files in {utils.fmt_duration(parse_duration)}"
     )
     return parse_summary
+
+
+def _dev_name(dev: DeviceData) -> str:
+    """Device ID for log messages, with its ``id`` if that is different."""
+    dev_id = dev.get_id()
+    return f"'{dev_id}' (id '{dev.id}')" if dev.id and dev.id != dev_id else f"'{dev_id}'"
 
 
 def parse_data(source: str | Path | TextIO, dev_cls: type[DeviceModule]) -> DeviceData | None:

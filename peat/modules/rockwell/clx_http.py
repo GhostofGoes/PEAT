@@ -3,13 +3,88 @@ import re
 import traceback
 from collections import defaultdict
 from datetime import timedelta
+from typing import Final
 from urllib.parse import parse_qs, urlparse
 
 from requests.auth import HTTPDigestAuth
 
-from peat import DeviceData, Event, Interface, Memory, Service, log, utils
+from peat import (
+    DeviceData,
+    Event,
+    Interface,
+    Memory,
+    NetworkStatistics,
+    Relationship,
+    RelationshipEndpoint,
+    Route,
+    Service,
+    log,
+    utils,
+)
 from peat.protocols import HTTP, clean_mac
 from peat.protocols.enip.vendor_ids import VENDOR_NAMES
+
+# MIB-II (RFC 1213) object names of the "advancedDiags" statistics tables
+# (if, ip, icmp, tcp, udp), without the table prefix and normalized to lowercase
+# alphanumerics, mapped to NetworkStatistics fields. Labels are matched
+# case-insensitively ("In Octets", "InOctets", "ifInOctets"). Labels that are not
+# listed here are kept in NetworkStatistics.extra (snake_case keys).
+MIB2_STATISTICS_LABELS: Final[dict[str, str]] = {
+    "inoctets": "ingress.bytes",
+    "outoctets": "egress.bytes",
+    "inerrors": "ingress.errors",
+    "outerrors": "egress.errors",
+    "indiscards": "ingress.dropped",
+    "outdiscards": "egress.dropped",
+    "inunknownprotos": "ingress.unknown_protocols",
+    # tcpActiveOpens + tcpPassiveOpens
+    "activeopens": "connections.total",
+    "passiveopens": "connections.total",
+    "attemptfails": "connections.failed",
+    "estabresets": "connections.resets",
+    "currestab": "connections.active",
+    "insegs": "ingress.packets",
+    "outsegs": "egress.packets",
+    "indatagrams": "ingress.packets",
+    "outdatagrams": "egress.packets",
+    "inmsgs": "ingress.messages",
+    "outmsgs": "egress.messages",
+}
+
+# MIB-II table prefixes ("ifInOctets", "tcpActiveOpens", ...)
+_MIB2_PREFIXES: Final[tuple[str, ...]] = ("icmp", "tcp", "udp", "if", "ip")
+
+# Labels of the "if" statistics table that describe the interface, not counters
+IF_IDENTITY_LABELS: Final[frozenset[str]] = frozenset({"MAC address", "MTU", "Description"})
+
+# advancedDiags statistics table -> key fields of the DeviceData.protocol_statistics entry
+PROTOCOL_STATISTICS_TABLES: Final[dict[str, dict[str, str]]] = {
+    "ip_statistics": {"type": "ipv4"},
+    "icmp_statistics": {"transport": "icmp"},
+    "tcp_statistics": {"transport": "tcp"},
+    "udp_statistics": {"transport": "udp"},
+}
+
+
+def _snake_case(label: str) -> str:
+    """``"Retrans Segs"`` -> ``"retrans_segs"``."""
+    return re.sub(r"[^a-z0-9]+", "_", str(label).lower()).strip("_")
+
+
+def _to_counter(value: str | int | None) -> int | None:
+    """Non-negative integer counter value, or :obj:`None` if it isn't one."""
+    if value is None:
+        return None
+    try:
+        counter = int(str(value).strip().replace(",", ""))
+    except ValueError:
+        return None
+    return counter if counter >= 0 else None
+
+
+def _empty_cell(value: str | None) -> bool:
+    """Table cells without text are converted to the string ``"None"`` by the parsers."""
+    return value is None or not str(value).strip() or str(value).strip() == "None"
 
 
 class ClxHTTP(HTTP):
@@ -92,6 +167,8 @@ class ClxHTTP(HTTP):
         super().__init__(*args, **kwargs)
         self.syslog_page_id = ""
         self.memory_page_ids = {}
+        self.web_login_succeeded = False
+        """If a page that requires a login with the "web" credentials was retrieved."""
 
     @staticmethod
     def _clean_data(data: dict) -> dict:
@@ -327,12 +404,15 @@ class ClxHTTP(HTTP):
 
     @classmethod
     def _make_svc(cls, dev: DeviceData, svc_info: dict, transport: str) -> None:
-        port = svc_info.get("Local Port")
+        port = _to_counter(svc_info.get("Local Port"))
 
-        if not port:
+        if not port or port > 65535:
             return
 
-        port = int(port)
+        # Address the socket is bound to, if it is bound to one (not 0.0.0.0)
+        listen_address = str(svc_info.get("Local Address") or "").strip()
+        if not utils.is_ip(listen_address) or listen_address in ("0.0.0.0", "::"):
+            listen_address = ""
 
         _protocol_lookups = {
             68: "bootp",
@@ -366,74 +446,228 @@ class ClxHTTP(HTTP):
             # service because the matching logic is flawed and thinks
             # it's a duplicate or something.
             new_service = Service(
-                port=port, protocol=protocol_name, status="open", transport=transport
+                port=port,
+                protocol=protocol_name,
+                status="open",
+                transport=transport,
+                listen_address=listen_address,
             )
-            dev.store("service", new_service)
+            dev.store(
+                "service",
+                new_service,
+                interface_lookup={"ip": listen_address} if listen_address else None,
+            )
+
+    @classmethod
+    def statistics_from_table(
+        cls, table: dict[str, str], skip: frozenset[str] | set[str] = frozenset()
+    ) -> NetworkStatistics:
+        """
+        Convert a parsed "advancedDiags" statistics table (``{label: value}``) into a
+        :class:`~peat.data.models.NetworkStatistics` sample (``timestamp`` = now).
+
+        Labels that match a MIB-II object name (:data:`MIB2_STATISTICS_LABELS`,
+        case-insensitive, with or without the table prefix) become counters,
+        ``Active Opens`` and ``Passive Opens`` are summed into ``connections.total``.
+        All other labels are kept in ``extra`` with snake_case keys.
+
+        Args:
+            table: label -> value
+            skip: labels to ignore (e.g. the interface MAC/MTU/description)
+
+        Returns:
+            The statistics sample
+        """
+        stats = NetworkStatistics(timestamp=utils.utc_now())
+        totals: dict[str, int] = {}
+
+        for label, raw_value in table.items():
+            if _empty_cell(label) or label in skip:
+                continue
+
+            norm = re.sub(r"[^a-z0-9]", "", str(label).lower())
+            target = MIB2_STATISTICS_LABELS.get(norm)
+            if not target:
+                for prefix in _MIB2_PREFIXES:
+                    if norm.startswith(prefix) and norm[len(prefix) :] in MIB2_STATISTICS_LABELS:
+                        target = MIB2_STATISTICS_LABELS[norm[len(prefix) :]]
+                        break
+
+            value = _to_counter(raw_value)
+            if target and value is not None:
+                totals[target] = totals.get(target, 0) + value
+            elif not _empty_cell(raw_value):
+                stats.extra[_snake_case(label)] = (
+                    value if value is not None else str(raw_value).strip()
+                )
+
+        for target, value in totals.items():
+            section, name = target.split(".")
+            setattr(getattr(stats, section), name, value)
+
+        return stats
 
     @classmethod
     def process_network(cls, dev: DeviceData, info: dict) -> None:
         """
-        Add data from the parsed network information pages to a
+        Add data from the parsed network information pages ("advancedDiags") to a
         :class:`~peat.data.models.DeviceData` object.
+
+        - ``if_statistics``: interface MAC/MTU/name and ``Interface.statistics``
+        - ``ip_statistics``, ``icmp_statistics``, ``tcp_statistics``,
+          ``udp_statistics``: ``DeviceData.protocol_statistics``
+        - ``udp_table`` and LISTEN rows of ``tcp_connections``: ``Service``
+          (with the ``listen_address`` of sockets bound to one address)
+        - other ``tcp_connections`` rows: ``Relationship`` (``evidence={"netstat"}``)
+        - ``arp_table``: ``Relationship(type="neighbor_of", evidence={"arp"})``
+        - ``ip_routes``: ``Route`` (and subnet masks of the interfaces)
         """
         # ARP table, has MACs and IPs
         for arp_entry in info.get("arp_table", []):
-            mac = clean_mac(arp_entry["Physical Address"])
-            dev.related.mac.add(mac)
-            dev.related.ip.add(arp_entry.get("Net Address"))
+            ip = str(arp_entry.get("Net Address") or "").strip()
+            mac = clean_mac(str(arp_entry.get("Physical Address") or ""))
+            if mac and not utils.is_mac(mac):
+                mac = ""
+            if mac:
+                dev.related.mac.add(mac)
+            if ip:
+                dev.related.ip.add(ip)
+
             # infer MAC if it's not known from IP in arp table
-            if not dev.mac and mac and arp_entry["Net Address"] == dev.ip:
+            if not dev.mac and mac and ip == dev.ip:
                 dev.mac = mac
 
-        # Interface info
-        if info.get("if_statistics") and info["if_statistics"].get("MAC address"):
-            mtu = int(info["if_statistics"]["MTU"])
-            description = info["if_statistics"]["Description"]
+            if not ip or not utils.is_ip(ip) or ip == dev.ip:
+                continue
 
-            mac = clean_mac(info["if_statistics"]["MAC address"])
-            dev.related.mac.add(mac)
+            extra = {
+                _snake_case(key): str(value).strip()
+                for key, value in arp_entry.items()
+                if key not in ("Net Address", "Physical Address") and not _empty_cell(value)
+            }
+            dev.store(
+                "relationships",
+                Relationship(
+                    type="neighbor_of",
+                    evidence={"arp"},
+                    remote=RelationshipEndpoint(ip=ip, mac=mac),
+                    extra=extra,
+                ),
+            )
 
-            if not dev.interface:
-                interface = Interface(
-                    enabled=True, name=description, mac=mac, mtu=mtu, type="ethernet"
+        # Interface info and counters
+        if_info = info.get("if_statistics") or {}
+        if if_info:
+            stats = cls.statistics_from_table(if_info, skip=IF_IDENTITY_LABELS)
+            mac = clean_mac(str(if_info.get("MAC address") or ""))
+            description = str(if_info.get("Description") or "").strip()
+            mtu = _to_counter(if_info.get("MTU")) or None
+
+            if mac:
+                dev.related.mac.add(mac)
+
+            target = None
+            for iface in dev.interface:
+                if mac and mac == iface.mac:
+                    iface.name = description or iface.name
+                    target = iface
+                    break
+
+                if description and description == iface.name:
+                    iface.mac = mac or iface.mac
+                    target = iface
+                    break
+
+            if target is not None:
+                if mtu:
+                    target.mtu = mtu
+                target.statistics = stats
+            elif mac:
+                dev.store(
+                    "interface",
+                    Interface(
+                        enabled=True,
+                        name=description,
+                        mac=mac,
+                        mtu=mtu,
+                        type="ethernet",
+                        statistics=stats,
+                    ),
                 )
-                dev.store("interface", interface)
-            else:
-                for iface in dev.interface:
-                    if mac == iface.mac:
-                        iface.name = description
-                        iface.mtu = mtu
-                        break
+            elif stats.has_counters() or stats.extra:
+                # Unknown interface: the totals of the communication module
+                dev.statistics = stats
 
-                    if description == iface.name:
-                        iface.mac = mac
-                        iface.mtu = mtu
-                        break
+        # IP, ICMP, TCP and UDP counters
+        for table_name, key_fields in PROTOCOL_STATISTICS_TABLES.items():
+            if not info.get(table_name):
+                continue
+            stats = cls.statistics_from_table(info[table_name])
+            if stats.has_counters() or stats.extra:
+                for key, value in key_fields.items():
+                    setattr(stats, key, value)
+                dev.store("protocol_statistics", stats)
 
-        # udp_table: listening ports (0.0.0.0-only), infer service names
+        # udp_table: listening ports, infer service names
         for udp in info.get("udp_table", []):
             dev.related.ip.add(udp.get("Local Address"))
 
-            if udp.get("Local Address") == "0.0.0.0" and udp.get("Local Port"):
+            if udp.get("Local Port"):
                 cls._make_svc(dev, udp, "udp")
-            elif udp.get("Local Port"):
-                try:
-                    dev.related.ports.add(int(udp["Local Port"]))
-                except Exception:
-                    pass
 
-        # tcp_connections: listening ports (0.0.0.0-only), infer service names
+        # tcp_connections: listening ports, infer service names
+        # The services are added BEFORE the connections, so Relationship.annotate()
+        # can infer the direction of the connections from the listening ports.
+        connections = []
         for conn in info.get("tcp_connections", []):
             dev.related.ip.add(conn.get("Local Address"))
             dev.related.ip.add(conn.get("Remote Address"))
 
-            if conn.get("State") == "LISTEN" and conn.get("Local Address") == "0.0.0.0":
+            if conn.get("State") == "LISTEN":
                 cls._make_svc(dev, conn, "tcp")
-            elif conn.get("Local Port"):
+                continue
+
+            if conn.get("Local Port"):
                 try:
                     dev.related.ports.add(int(conn["Local Port"]))
                 except Exception:
                     pass
+            connections.append(conn)
+
+        # Other tcp_connections rows: one relationship per peer and server port,
+        # "count" is the number of connections in the table.
+        relationships = {}  # type: dict[str, Relationship]
+        for conn in connections:
+            remote_ip = str(conn.get("Remote Address") or "").strip()
+            if not utils.is_ip(remote_ip) or remote_ip == "0.0.0.0":
+                continue
+            local_ip = str(conn.get("Local Address") or "").strip()
+            if not utils.is_ip(local_ip) or local_ip == "0.0.0.0":
+                local_ip = ""
+            local_port = _to_counter(conn.get("Local Port"))
+            remote_port = _to_counter(conn.get("Remote Port"))
+
+            rel = Relationship(
+                transport="tcp",
+                local=RelationshipEndpoint(
+                    ip=local_ip, port=local_port if local_port and local_port <= 65535 else None
+                ),
+                remote=RelationshipEndpoint(
+                    ip=remote_ip,
+                    port=remote_port if remote_port and remote_port <= 65535 else None,
+                ),
+                state=str(conn.get("State") or "").strip().lower(),
+                evidence={"netstat"},
+            )
+            rel.annotate(dev)
+            if rel.id in relationships:
+                relationships[rel.id].count += 1
+            else:
+                rel.count = 1
+                relationships[rel.id] = rel
+
+        for rel in relationships.values():
+            dev.store("relationships", rel)
 
         # ip_routes: IP routing table
         for ip_route in info.get("ip_routes", []):
@@ -441,11 +675,12 @@ class ClxHTTP(HTTP):
             # If any of the interfaces on the device have an IP that lies in
             # that subnet and doesn't have a known subnet mask, then set the
             # subnet mask to the mask derived from the IP route.
-            dest = ip_route.get("Destination", "")
-            raw_mask = ip_route.get("Mask", "")
-            if not dest or not raw_mask:
+            dest = str(ip_route.get("Destination") or "").strip()
+            raw_mask = str(ip_route.get("Mask") or "").strip()
+            if _empty_cell(dest) or _empty_cell(raw_mask):
                 continue
 
+            # NOTE: the mask is reported with the bytes in reverse order
             subnet_mask = ".".join(reversed(raw_mask.split(".")))
             try:
                 network = ipaddress.ip_network(f"{dest}/{subnet_mask}")
@@ -460,7 +695,23 @@ class ClxHTTP(HTTP):
                 if not interface.subnet_mask and iface_ip in network:
                     interface.subnet_mask = subnet_mask
 
-        dev.extra["network"] = info
+            gateway = ""
+            extra = {}
+            for key, value in ip_route.items():
+                if key in ("Destination", "Mask") or _empty_cell(value):
+                    continue
+                value = str(value).strip()
+                norm = re.sub(r"[^a-z]", "", str(key).lower())
+                if norm in ("gateway", "nexthop", "gw") and utils.is_ip(value):
+                    if value != "0.0.0.0":
+                        gateway = value
+                else:
+                    extra[_snake_case(key)] = value
+
+            dev.store(
+                "routes",
+                Route(destination=str(network), gateway=gateway, extra=extra),
+            )
 
     def get_home(self) -> dict:
         """
@@ -710,12 +961,12 @@ class ClxHTTP(HTTP):
                 "param_1": raw["Param1"],  # "Param1": "0x2"
                 "param_2": raw["Param2"],  # "Param2": "0x19001e"
                 "task_name": raw["Task Name"],  # "Task Name": "EncapTCP024"
-                "event_code": raw["Event Code"],  # "Event Code": "0xd"
             }
 
             event = Event(
                 action=action,
                 category={"process"},
+                code=str(raw.get("Event Code") or "").strip(),  # "Event Code": "0xd"
                 created=created_ts,
                 dataset="syslog",
                 kind=event_kind,
@@ -768,6 +1019,9 @@ class ClxHTTP(HTTP):
         """
         log.info(f"Processing serverlog from {dev.ip} (this may take a while)")
 
+        # Web clients, aggregated per client IP: ip -> [count, first_seen, last_seen]
+        clients = {}  # type: dict[str, list]
+
         for raw_event in serverlog:
             dev.related.ip.add(raw_event["IP Address"])
 
@@ -807,10 +1061,12 @@ class ClxHTTP(HTTP):
                     log.warning(f"Failed to process username for URL '{raw_event['URL']}': {ex}")
                     event_kind.add("pipeline_error")
 
+            # "Timestamp": "MAY 04 17:11:01 2021" (device local time, no timezone)
+            created = utils.parse_date(raw_event["Timestamp"])
+
             event = Event(
                 category=event_category,
-                # "Timestamp": "MAY 04 17:11:01 2021",
-                created=utils.parse_date(raw_event["Timestamp"]),
+                created=created,
                 dataset="serverlog",
                 kind=event_kind,
                 module=dev._module.__name__ if dev._module else "ControlLogix",
@@ -822,6 +1078,31 @@ class ClxHTTP(HTTP):
 
             # TODO: de-duplication of events before export
             dev.event.append(event)
+
+            client_ip = str(raw_event["IP Address"]).strip()
+            if utils.is_ip(client_ip):
+                client = clients.setdefault(client_ip, [0, None, None])
+                client[0] += 1
+                if created is not None:
+                    if client[1] is None or created < client[1]:
+                        client[1] = created
+                    if client[2] is None or created > client[2]:
+                        client[2] = created
+
+        for client_ip, (count, first_seen, last_seen) in clients.items():
+            dev.store(
+                "relationships",
+                Relationship(
+                    type="communicates_with",
+                    protocol="http",
+                    direction="ingress",
+                    remote=RelationshipEndpoint(ip=client_ip),
+                    evidence={"log"},
+                    first_seen=first_seen,
+                    last_seen=last_seen,
+                    count=count,
+                ),
+            )
 
     def get_diagnetwork(self) -> dict:
         """
@@ -1055,6 +1336,7 @@ class ClxHTTP(HTTP):
                 if pulled_info:
                     if name == "serverlog":
                         dev.related.user.add(dev.options["web"]["user"])
+                        self.web_login_succeeded = True
                     dev.write_file(
                         data=pulled_info,
                         filename=f"{name}.json",  # Example: "syslog.json"

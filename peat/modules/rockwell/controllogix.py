@@ -25,13 +25,16 @@ Authors
 
 import json
 from datetime import timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from peat import (
     DeviceData,
     DeviceModule,
+    File,
     Interface,
     IPMethod,
+    Service,
+    ServiceSecurity,
     consts,
     datastore,
     exit_handler,
@@ -44,7 +47,9 @@ from . import ab_push
 from .ab_parse import parse_logic
 from .ab_scan import DevDescType, broadcast_scan, fingerprint_device
 from .clx_cip import ClxCIP
+from .clx_defaults import CLX_KNOWN_DEFAULTS
 from .clx_http import ClxHTTP
+from .clx_identity import apply_identity_status
 
 
 class ControlLogix(DeviceModule):
@@ -70,6 +75,56 @@ class ControlLogix(DeviceModule):
         "os.vendor.id": "WindRiver",
     }
     module_aliases = ["clx", "allen-bradley"]
+    # Factory default account of the EWEB/EN2T web pages and FTP server
+    factory_default_credentials = {("Administrator", "")}
+    known_defaults = CLX_KNOWN_DEFAULTS
+
+    @classmethod
+    def _record_login(
+        cls, dev: DeviceData, protocol: str, port: int, user: str, password: str
+    ) -> None:
+        """
+        Record what a SUCCESSFUL login says about a service in
+        ``Service.security`` (never the credential itself).
+
+        Args:
+            dev: device to update
+            protocol: protocol of the service, ``ftp`` or ``http``
+            port: port of the service
+            user: username of the credential that worked
+            password: password of the credential that worked
+        """
+        security = ServiceSecurity()
+        if password:
+            security.authentication_required = True
+        if cls.is_factory_default_credential(user, password):
+            security.default_credentials = True
+
+        dev.store(
+            "service",
+            Service(protocol=protocol, port=port, transport="tcp", security=security),
+        )
+
+    @classmethod
+    def _store_ftp_listing(cls, dev: DeviceData, metadata: list[dict]) -> None:
+        """
+        Add the files of a FTP ``dir`` listing (:meth:`peat.protocols.FTP.dir`)
+        to ``dev.files``.
+        """
+        for meta in metadata:
+            if not meta.get("path"):
+                continue
+            file = File(
+                path=PurePosixPath(meta["path"]),
+                name=meta.get("name", ""),
+                directory=meta.get("parent", ""),
+                type=meta.get("type", ""),
+                size=meta.get("size"),
+                mtime=meta.get("modified"),
+                mode=utils.file_perms_to_octal(meta.get("permissions", "")),
+                peat_module=cls.__name__,
+            )
+            dev.store("files", file, lookup="path")
 
     @classmethod
     def _verify_ftp(cls, dev: DeviceData) -> bool:
@@ -105,8 +160,8 @@ class ControlLogix(DeviceModule):
                     )
                     return False
 
-                dev.extra["ftp_files"] = file_dir[0]
-                dev.extra["ftp_file_metadata"] = file_dir[1]
+                # Reused by pull_ftp() to avoid listing the files again
+                dev._cache["clx_ftp_listing"] = file_dir
 
                 if (
                     "vxworks" not in welcome_string.lower()
@@ -118,6 +173,9 @@ class ControlLogix(DeviceModule):
                         f"in welcome and no *.eds or ReadMe.txt file found"
                     )
                     return False
+
+                cls._record_login(dev, "ftp", port, username, password)
+                cls._store_ftp_listing(dev, file_dir[1])
         except Exception as ex:
             cls.log.debug(f"Failed to verify {dev.ip} via FTP: {ex}")
             return False
@@ -188,8 +246,14 @@ class ControlLogix(DeviceModule):
         data.firmware.revision = str(value["firmware_revision"])
 
         data.extra["product_code"] = value["product_code"]
-        data.extra["state"] = value["state"]
-        data.extra["status"] = value["status"]
+
+        # CIP Identity status word and state => indicators, key switch, health
+        apply_identity_status(
+            data,
+            status=value.get("status"),
+            state=value.get("state"),
+            product_type=str(value.get("product_type", "")),
+        )
 
     @classmethod
     def update_dev(cls, dev: DeviceData) -> None:
@@ -423,29 +487,49 @@ class ControlLogix(DeviceModule):
                 if welcome_string and not dev.extra.get("ftp_welcome"):
                     ftp.process_vxworks_ftp_welcome(welcome_string, dev)
 
-                if not ftp.login(dev.options["ftp"]["user"], dev.options["ftp"]["pass"]):
+                user = dev.options["ftp"]["user"]
+                password = dev.options["ftp"]["pass"]
+                if not ftp.login(user, password):
                     cls.log.error(f"Failed to pull from {dev.ip} via FTP: login failed")
                     return False
 
+                cls._record_login(dev, "ftp", dev.options["ftp"]["port"], user, password)
+
                 # If file listing was queried during verify, then use the cached listing
                 # Otherwise, query it like normal using "dir"
-                if not dev.extra.get("ftp_files"):
+                file_dir = dev._cache.get("clx_ftp_listing")
+                if not file_dir:
                     file_dir = ftp.dir()
                     if not file_dir:
                         cls.log.error(
                             f"Failed to pull from {dev.ip} via FTP: no results from dir() command"
                         )
                         return False
-                    dev.extra["ftp_files"] = file_dir[0]
-                    dev.extra["ftp_metadata"] = file_dir[1]
-                    dev.related.user.add(dev.options["ftp"]["user"])
+                    dev._cache["clx_ftp_listing"] = file_dir
+                    dev.related.user.add(user)
+                    cls._store_ftp_listing(dev, file_dir[1])
 
-                files = dev.extra["ftp_files"]  # type: list[str]
+                # Directories can't be downloaded (RETR)
+                files = [m for m in file_dir[1] if m.get("type") != "dir" and m.get("path")]
 
                 cls.log.info(f"Downloading {len(files)} files via FTP from {dev.ip}")
-                for filename in files:
+                for meta in files:
+                    filename = meta["path"]
                     cls.log.debug(f"Downloading '{filename}' via FTP from {dev.ip}")
-                    ftp.download_binary(filename)
+                    data = ftp.download_binary(filename, save_to_file=False)
+                    if not data:
+                        continue
+
+                    local_path = dev.write_file(
+                        data=data,
+                        filename=filename.lstrip("/"),
+                        out_dir=dev.get_sub_dir("ftp_files"),
+                    )
+                    dev.related.files.add(filename)
+                    file = File(path=PurePosixPath(filename), peat_module=cls.__name__)
+                    if local_path.is_absolute() and local_path.is_file():
+                        file.local_path = local_path
+                    dev.store("files", file, lookup="path")
 
                 # TODO: parse downloaded files
 
@@ -548,15 +632,16 @@ class ControlLogix(DeviceModule):
                 if oper_status:
                     iface.connected = bool(oper_status[0]["value_string"] == "up")
 
-                # calculate based on sysUpTime
                 # "The value of sysUpTime at the time the interface entered
                 # its current operational state.  If the current state was
                 # entered prior to the last re-initialization of the local
                 # network management subsystem, then this object contains a
                 # zero value."
-                # NOTE: this is also Timeticks,
-                if_uptime = snmp.get(("IF-MIB", "ifLastChange", index))[0]["value_encoded"]  # int
-                iface.uptime = timedelta(milliseconds=int(if_uptime) * 10)
+                # NOTE: this is a TimeStamp (Timeticks, centiseconds), NOT the
+                # uptime of the interface, so it's kept raw in "extra".
+                if_last_change = snmp.get(("IF-MIB", "ifLastChange", index))
+                if if_last_change:
+                    iface.extra["if_last_change"] = int(if_last_change[0]["value_encoded"])
 
                 # INTEGER: false(2), true(1)
                 # https://oidref.com/1.3.6.1.2.1.31.1.1.1.16
@@ -614,6 +699,16 @@ class ControlLogix(DeviceModule):
             timeout=dev.options["http"]["timeout"],
         ) as http:
             result = http.get_all(dev)
+
+            # The serverlog page requires a login with the "web" credentials
+            if http.web_login_succeeded:
+                cls._record_login(
+                    dev,
+                    "http",
+                    dev.options["http"]["port"],
+                    dev.options["web"]["user"],
+                    dev.options["web"]["pass"],
+                )
 
         if result:
             cls.log.info(f"Finished pulling HTTP from {dev.ip}")

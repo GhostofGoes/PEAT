@@ -12,18 +12,30 @@ References for /proc (aka, "procfs"):
 """
 
 import datetime
+import ipaddress
 import itertools
 import json
 import os.path
 import re
-from collections import defaultdict
 from pathlib import PurePosixPath
 
 import humanfriendly
 from humanfriendly.text import split_paragraphs
 
 from peat import DeviceData, Event, Interface, log, utils
-from peat.data.models import File, Service, User
+from peat.data.models import (
+    MAX_ES_LONG,
+    File,
+    HostProcess,
+    NetworkStatistics,
+    Relationship,
+    RelationshipEndpoint,
+    Route,
+    Service,
+    User,
+    Vlan,
+)
+from peat.protocols.addresses import clean_mac
 
 
 class NixParserBase:
@@ -38,6 +50,13 @@ class NixParserBase:
     # list of commands with arguments
     command: str = ""
     commands: list[str] = []
+
+    # If the parsed data is also saved to ``dev.extra`` (keyed by file path or
+    # command). Parsers whose data is fully modeled by first-class fields
+    # (interfaces, statistics, relationships, services, ...) set this to False,
+    # so the same data isn't stored twice. The raw and parsed data are always
+    # written to files in the device's output directory.
+    save_to_extra: bool = True
 
     @classmethod
     def parse_and_process(cls, to_parse: str, dev: DeviceData) -> bool:
@@ -101,10 +120,7 @@ class NixParserBase:
         )
 
         # Save parsed format to extra
-        if cls not in [
-            VarLogMessagesParser,
-            LsRecursiveParser,
-        ]:
+        if cls.save_to_extra:
             if cls.file and str(cls.file) not in dev.extra:
                 dev.extra[str(cls.file)] = parsed
             elif cls.command and cls.command not in dev.extra:
@@ -150,6 +166,7 @@ class VarLogMessagesParser(NixParserBase):
     """
 
     file = PurePosixPath("/var/log/messages")
+    save_to_extra = False
 
     MESSAGE_REGEX = (
         r"(?P<timestamp>\w+[ \t]+\d+[ \t]+\d{2}:\d{2}:\d{2})[ \t]+"
@@ -428,10 +445,15 @@ class ProcUptimeParser(NixParserBase):
 
 class ProcNetDevParser(NixParserBase):
     """
-    Parse and process ``/proc/net/dev``
+    Parse and process ``/proc/net/dev`` (Linux per-interface counters).
+
+    Process adds the interfaces to ``dev.interface`` with the counters in
+    :attr:`Interface.statistics <peat.data.models.Interface.statistics>`
+    (see :data:`PROC_NET_DEV_STATISTICS`).
     """
 
     file = PurePosixPath("/proc/net/dev")
+    save_to_extra = False
 
     @classmethod
     def parse(cls, to_parse: str) -> dict[str, dict[str, int]]:
@@ -462,26 +484,33 @@ class ProcNetDevParser(NixParserBase):
 
     @classmethod
     def process(cls, to_process: dict[str, dict[str, int]], dev: DeviceData) -> None:
-        # TODO: dev.interface
-        for iface_name in to_process.keys():
-            iface = dev.retrieve("interface", search={"name": iface_name})
+        timestamp = utils.utc_now()
 
-            if not iface:
-                iface = Interface(
-                    name=iface_name,
-                )
+        for iface_name, counters in to_process.items():
+            iface_name = iface_name.strip()
+            iface = Interface(name=iface_name)
 
+            if not dev.retrieve("interface", search={"name": iface_name}):
                 if iface_name == "lo":
                     iface.type = "loopback"
                 elif iface_name.startswith("eth"):
                     iface.type = "ethernet"
+                set_interface_layering(iface)
 
-                dev.store("interface", iface, lookup="name")
+            stats = build_statistics(counters, PROC_NET_DEV_STATISTICS, timestamp)
+            if stats.has_counters():
+                iface.statistics = stats
+
+            dev.store("interface", iface, lookup="name")
 
 
 class EtcPasswdParser(NixParserBase):
     """
     Parse ``/etc/passwd`` and return the extracted user data.
+
+    The password field (it may hold a password hash) is never stored, only
+    what it holds: ``password_in_shadow`` (``x``), ``password_set`` (a hash)
+    and ``password_empty`` (no password is needed to log in).
 
     Process adds the users to ``dev.users`` in the device data model.
     """
@@ -492,14 +521,15 @@ class EtcPasswdParser(NixParserBase):
     def parse(cls, to_parse: str) -> list[str]:
         users = []
 
-        for line in to_parse.splitlines():
+        for line_number, line in enumerate(to_parse.splitlines(), start=1):
             # To read manpage: "man 5 passwd"
 
             # /etc/passwd contains one line for each user account,
             # with seven fields delimited by colons (“:”)
             sections = line.split(":")
             if len(sections) != 7:
-                log.warning(f"Bad /etc/passwd line: {line}")
+                # Never log the line, it may have a password hash
+                log.warning(f"Bad /etc/passwd line {line_number}: {len(sections)} fields, not 7")
                 continue
 
             # login name
@@ -510,9 +540,16 @@ class EtcPasswdParser(NixParserBase):
             # user home directory
             # optional user command interpreter
             #   If this field is empty, it defaults to the value /bin/sh
+            # The password (hash) is a secret: only record what kind of value it is
+            password = sections[1]
             user = {
                 "login_name": sections[0],
-                "password": sections[1] if sections[1] != "x" else "",
+                # The password is in /etc/shadow
+                "password_in_shadow": password == "x",
+                # A password hash (not a lock marker such as "*" or "!") is in the field
+                "password_set": password not in ("", "x") and not password.startswith(("*", "!")),
+                # No password is needed to log in
+                "password_empty": password == "",
                 "user_id": sections[2],
                 "group_id": sections[3],
                 "comment": sections[4],
@@ -680,10 +717,58 @@ class IfconfigParser(NixParserBase):
     Shows all network interfaces.
     This is usually seen on older Linux distributions
     that install the ``net-utils`` package by default,
-    as well as BusyBox systems.
+    as well as BusyBox systems and VxWorks.
+
+    Both the VxWorks format (``Link type:``, ``mcast:``, ``Queue:``) and the
+    BusyBox/net-tools format (``Link encap:``, ``inet addr:``) are parsed.
+    Counters go to :attr:`Interface.statistics <peat.data.models.Interface.statistics>`
+    (see :data:`IFCONFIG_STATISTICS`). VLAN sub-interfaces (``eth0.100``) get
+    ``vlan`` and ``parent``, aliases (``eth0:1``) get ``parent``.
     """
 
     command = "ifconfig -a"
+    save_to_extra = False
+
+    # BusyBox/net-tools (Linux) format. Only used for values the VxWorks
+    # patterns did not find.
+    LINUX_PATTERNS = [
+        re.compile(
+            r"HWaddr\s+(?P<mac>[0-9A-Fa-f]{1,2}(?::[0-9A-Fa-f]{1,2}){5})(?![-:0-9A-Fa-f])",
+            re.ASCII,
+        ),
+        re.compile(
+            r"inet addr:\s*(?P<ip>(?:[0-9]{1,3}\.){3}[0-9]{1,3})"
+            r"(?:\s+P-t-P:(?P<peer>(?:[0-9]{1,3}\.){3}[0-9]{1,3}))?"
+            r"(?:\s+Bcast:(?P<broadcast>(?:[0-9]{1,3}\.){3}[0-9]{1,3}))?"
+            r"\s+Mask:(?P<subnet_mask>(?:[0-9]{1,3}\.){3}[0-9]{1,3})",
+            re.ASCII,
+        ),
+        re.compile(
+            r"^[ \t]*(?P<flags>(?:[A-Z]+[ \t])+)[ \t]*MTU:(?P<mtu>[0-9]+)"
+            r"[ \t]+Metric:(?P<metric>[0-9]+)",
+            re.ASCII | re.MULTILINE,
+        ),
+        re.compile(
+            r"RX packets:(?P<rx_packets>[0-9]+)\s+errors:(?P<rx_errors>[0-9]+)"
+            r"\s+dropped:(?P<rx_dropped>[0-9]+)\s+overruns:(?P<rx_overruns>[0-9]+)"
+            r"\s+frame:(?P<rx_frame>[0-9]+)",
+            re.ASCII,
+        ),
+        re.compile(
+            r"TX packets:(?P<tx_packets>[0-9]+)\s+errors:(?P<tx_errors>[0-9]+)"
+            r"\s+dropped:(?P<tx_dropped>[0-9]+)\s+overruns:(?P<tx_overruns>[0-9]+)"
+            r"\s+carrier:(?P<tx_carrier>[0-9]+)",
+            re.ASCII,
+        ),
+        re.compile(
+            r"collisions:(?P<collisions>[0-9]+)(?:\s+txqueuelen:(?P<txqueuelen>[0-9]+))?",
+            re.ASCII,
+        ),
+        re.compile(
+            r"RX bytes:(?P<rx_bytes>[0-9]+)(?:\s+\([^)]*\))?\s+TX bytes:(?P<tx_bytes>[0-9]+)",
+            re.ASCII,
+        ),
+    ]
 
     @classmethod
     def parse(cls, to_parse: str) -> dict[str, dict]:
@@ -771,6 +856,14 @@ class IfconfigParser(NixParserBase):
                         if isinstance(v, str):
                             interface[k] = v.strip()
 
+            # BusyBox/net-tools (Linux) format, for values not found above
+            for pattern in cls.LINUX_PATTERNS:
+                match = pattern.search(chunk)
+                if match:
+                    for k, v in match.groupdict().items():
+                        if isinstance(v, str) and k not in interface:
+                            interface[k] = v.strip()
+
             for key, value in interface.items():
                 if key in ["capabilities", "flags"]:
                     interface[key] = [x.strip() for x in value.split(" ") if x.strip()]
@@ -799,6 +892,8 @@ class IfconfigParser(NixParserBase):
 
     @classmethod
     def process(cls, to_process: dict[str, dict], dev: DeviceData) -> None:
+        timestamp = utils.utc_now()
+
         for name, if_dict in to_process.items():
             iface = Interface(
                 name=name,
@@ -810,11 +905,14 @@ class IfconfigParser(NixParserBase):
             )
 
             # Interface type
-            if_type = if_dict["type"].lower().replace(" ", "_")
+            if_type = if_dict.get("type", "").strip().lower().replace(" ", "_")
             if "loopback" in if_type:
                 iface.type = "loopback"
             else:
                 iface.type = if_type
+
+            # VLAN sub-interfaces ("eth0.100") and aliases ("eth0:1")
+            set_interface_layering(iface)
 
             # "fei0" is primary. "fei1" is secondary
             if name == "fei0":
@@ -828,13 +926,13 @@ class IfconfigParser(NixParserBase):
 
             # ifconfig flags reference:
             # https://docs.oracle.com/cd/E19253-01/816-5166/ifconfig-1m/index.html
-            if "RUNNING" in if_dict["flags"]:
-                iface.connected = True
-            if "UP" in if_dict["flags"]:
-                iface.enabled = True
-            elif "DOWN" in if_dict["flags"]:
-                iface.enabled = False
+            # (net-tools/BusyBox never print DOWN: no UP flag = administratively down)
+            flags = if_dict.get("flags", [])
+            if flags:
+                iface.enabled = "UP" in flags and "DOWN" not in flags
+                iface.connected = "RUNNING" in flags
 
+            counters = {}
             for key, value in if_dict.items():
                 if value is None:
                     continue
@@ -849,21 +947,19 @@ class IfconfigParser(NixParserBase):
                     "ifindex",
                     "vr",
                     "broadcast",
+                    "txqueuelen",
                 ]:
                     iface.extra[key] = value
-                # Store statistics in a "statistics" sub-dict in "extra"
-                elif key[:2] in ["tx", "rx"] or key in [
+                # Counters (rx_*, tx_*, collisions, ...)
+                elif key.startswith(("tx_", "rx_")) or key in [
                     "collisions",
                     "unsupported_protocol",
                 ]:
-                    if not iface.extra.get("statistics"):
-                        iface.extra["statistics"] = defaultdict(dict)
-                    if key[:2] == "tx":
-                        iface.extra["statistics"]["transmitted"][key[3:]] = value
-                    elif key[:2] == "rx":
-                        iface.extra["statistics"]["received"][key[3:]] = value
-                    else:
-                        iface.extra["statistics"][key] = value
+                    counters[key] = value
+
+            stats = build_statistics(counters, IFCONFIG_STATISTICS, timestamp)
+            if stats.has_counters():
+                iface.statistics = stats
 
             dev.store("interface", iface, lookup=["name", "ip"])
 
@@ -873,9 +969,21 @@ class ArpParser(NixParserBase):
     Parse and process output of ``arp -a`` command.
 
     ARP table, shows all known network devices.
+
+    Process adds one :class:`~peat.data.models.Relationship`
+    (``type="neighbor_of"``, ``evidence={"arp"}``) per ARP entry, with the
+    neighbor's IP, MAC and hostname (if resolved) and the local interface
+    (``on <interface>``), and adds the IPs and MACs to ``related.*``.
+
+    Examples of lines (Linux/BusyBox and BSD-style)::
+
+        ? (192.0.2.1) at b4:96:91:51:3a:67 [ether]  on eth0
+        gateway (192.0.2.254) at 0:a0:1e:2:3:4 on fei0 permanent [ethernet]
+        ? (192.0.2.9) at <incomplete>  on eth0
     """
 
     command = "arp -a"
+    save_to_extra = False
 
     @classmethod
     def parse(cls, to_parse: str) -> list[str]:
@@ -883,19 +991,61 @@ class ArpParser(NixParserBase):
 
     @classmethod
     def process(cls, to_process: list[str], dev: DeviceData) -> None:
+        own_ips = {dev.ip} | {iface.ip for iface in dev.interface}
+
         for line in to_process:
             parts = [x.strip() for x in line.split(" ") if x.strip()]
+            entry = {"ip": "", "mac": "", "hostname": "", "interface": ""}
 
-            for part in parts:
+            for index, raw_part in enumerate(parts):
                 # "(192.0.2.1)"
-                part = utils.clean_replace(part, "", "()").strip()
+                part = utils.clean_replace(raw_part, "", "()").strip()
 
                 # IP address
                 if utils.is_ip(part):
                     dev.related.ip.add(part)
+                    if not entry["ip"]:
+                        entry["ip"] = part
+                        # "hostname (192.0.2.1) at ..." ("?" if not resolved)
+                        if index == 1 and raw_part.startswith("(") and parts[0] != "?":
+                            entry["hostname"] = parts[0]
                 # MAC address
                 elif part.count(":") == 5:
-                    dev.related.mac.add(part.upper())
+                    mac = clean_mac(part)
+                    dev.related.mac.add(mac)
+                    if not entry["mac"]:
+                        entry["mac"] = mac
+                # Interface the neighbor was seen on ("on eth0")
+                elif raw_part == "on" and index + 1 < len(parts) and not entry["interface"]:
+                    entry["interface"] = parts[index + 1]
+
+            if not entry["ip"] or entry["ip"] in own_ips:
+                continue
+
+            lowered = line.lower()
+            state = ""
+            if not entry["mac"] and "incomplete" in lowered:
+                state = "incomplete"
+            elif "permanent" in lowered or " perm " in f" {lowered} ":
+                state = "permanent"
+
+            try:
+                rel = Relationship(
+                    type="neighbor_of",
+                    evidence={"arp"},
+                    state=state,
+                    local=RelationshipEndpoint(interface=entry["interface"]),
+                    remote=RelationshipEndpoint(
+                        ip=entry["ip"],
+                        mac=entry["mac"],
+                        hostname=entry["hostname"],
+                    ),
+                )
+            except ValueError as ex:
+                log.warning(f"{cls.__name__}: skipping bad ARP entry '{line}': {ex}")
+                continue
+
+            dev.store("relationships", rel)
 
 
 class SshdConfigParser(NixParserBase):
@@ -958,6 +1108,7 @@ class LsRecursiveParser(NixParserBase):
     # command = "ls -lenAR /"
     #  /usr
     command = "ls -lenAR /etc /boot /var/log /root /sysopt /sbin /pkg /bin /common /opt /lib"
+    save_to_extra = False
 
     @classmethod
     def parse(cls, to_parse: str) -> list[dict]:
@@ -1069,6 +1220,11 @@ class LsRecursiveParser(NixParserBase):
 
     @classmethod
     def process(cls, to_process: list[dict], dev: DeviceData) -> None:
+        # Paths of files already in the data model. Files are merged on "path",
+        # same as dev.store(..., lookup="path"), without a linear search of
+        # dev.files for every one of the (potentially many thousands) entries.
+        known_paths = {str(f.path) for f in dev.files if f.path}
+
         for f_data in to_process:
             # File type
             # -: regular file
@@ -1119,7 +1275,12 @@ class LsRecursiveParser(NixParserBase):
             if file_obj.gid == "0":
                 file_obj.group = "root"
 
-            dev.files.append(file_obj)  # add to data model
+            # Add to data model, merging with an existing file with the same path
+            if str(path) in known_paths:
+                dev.store("files", file_obj, lookup="path")
+            else:
+                dev.store("files", file_obj, append=True)
+                known_paths.add(str(path))
 
 
 class NetstatSocketsVxWorksParser(NixParserBase):
@@ -1130,9 +1291,21 @@ class NetstatSocketsVxWorksParser(NixParserBase):
         -n: numeric names instead of hostnames resolved
         -P: show the TID (task ID) that owns the socket
 
+    Process adds:
+
+    - the owning tasks to ``dev.processes`` as
+      :class:`~peat.data.models.HostProcess` (``type="task"``,
+      ``pid=int(tid, 16)``, ``extra["task_id"]``), merged with tasks
+      already in the data model (e.g. from a task listing)
+    - listening sockets to ``dev.service`` (port, transport, listen address,
+      owning task)
+    - other sockets (sessions) to ``dev.relationships``
+      (``evidence={"netstat"}``, one record per peer and server port;
+      direction and protocol are inferred by ``Relationship.annotate()``)
     """
 
     command = "netstat -anP"
+    save_to_extra = False
 
     @classmethod
     def parse(cls, to_parse: str) -> list[str]:
@@ -1146,6 +1319,9 @@ class NetstatSocketsVxWorksParser(NixParserBase):
 
             if len(parts) < 6 or len(parts) > 7:
                 log.warning(f"Bad netstat line with length {len(line)}: '{line}'")
+                continue
+            if not (parts[1].isdigit() and parts[2].isdigit()):
+                log.warning(f"Bad netstat line with invalid queue sizes: '{line}'")
                 continue
 
             skt = {
@@ -1167,53 +1343,86 @@ class NetstatSocketsVxWorksParser(NixParserBase):
 
     @classmethod
     def process(cls, to_process: list[dict], dev: DeviceData) -> None:
+        # Tasks that own sockets. Stored first, so services can be
+        # resolved to the task name (if a task listing named the task).
+        for tid in dict.fromkeys(skt["tid"] for skt in to_process):
+            pid = task_id_to_pid(tid)
+            if pid is None:
+                continue
+            dev.store(
+                "processes",
+                HostProcess(type="task", pid=pid, extra={"task_id": tid}),
+                lookup={"type": "task", "pid": pid},
+            )
+
+        connections = []  # type: list[Relationship]
+
         for skt in to_process:
-            # Use local_address to resolve the interface
-            #   if interface doesn't exist, create it
-
-            # TODO: add "connections" to data model
-
             # protocol "115" seems to be some sort of default
             # TCP and UDP
             # TODO: ipv6?
-            if (
-                skt["foreign_address"] == "0.0.0.0"
-                and skt["foreign_port"] == "*"
-                and skt["local_port"] != "*"
-            ):
-                transport = ""
-                if not skt["protocol"].isdigit():
-                    transport = skt["protocol"].lower()
+            transport = ""
+            if not skt["protocol"].isdigit():
+                transport = skt["protocol"].lower()
+            pid = task_id_to_pid(skt["tid"])
 
-                svc = Service(
-                    port=int(skt["local_port"]),
-                    transport=transport,
-                    status="open",
-                    listen_address=skt["local_address"],
-                    process_pid=int(skt["tid"], 16),  # as integer
-                    extra={
-                        "receive_queue": skt["recv_q"],
-                        "send_queue": skt["send_q"],
-                        "task_id": skt["tid"],  # TID as hex
-                    },
-                )
-
-                # TODO: associate with all interfaces
-                if skt["local_address"] == "0.0.0.0":
-                    # listening on all interfaces
-                    pass
-                elif skt["local_address"] == "127.0.0.1":
-                    # listening on localhost
-                    dev.store(
-                        "service",
-                        svc,
-                        lookup="port",
-                        interface_lookup={"ip": "127.0.0.1"},
+            try:
+                if (
+                    skt["foreign_address"] == "0.0.0.0"
+                    and skt["foreign_port"] == "*"
+                    and skt["local_port"] != "*"
+                ):
+                    svc = Service(
+                        port=int(skt["local_port"]),
+                        transport=transport,
+                        status="open",
+                        listen_address=skt["local_address"],
+                        process_pid=pid,
+                        process_name=_process_name(dev, "task", pid),
+                        extra={
+                            "receive_queue": skt["recv_q"],
+                            "send_queue": skt["send_q"],
+                            "task_id": skt["tid"],  # TID as hex
+                        },
                     )
-                else:
-                    log.warning(f"netstat: unknown local_address '{skt['local_address']}'")
 
-                # TODO: dev.store service
+                    # TODO: associate with all interfaces
+                    if skt["local_address"] == "0.0.0.0":
+                        # listening on all interfaces
+                        store_listening_service(dev, svc)
+                    elif utils.is_ip(skt["local_address"]):
+                        # listening on localhost or a specific interface
+                        store_listening_service(
+                            dev, svc, interface_lookup={"ip": skt["local_address"]}
+                        )
+                    else:
+                        log.warning(f"netstat: unknown local_address '{skt['local_address']}'")
+                elif (
+                    skt["foreign_port"].isdigit()
+                    and skt["local_port"].isdigit()
+                    and skt["foreign_address"] != "0.0.0.0"
+                    and utils.is_ip(skt["foreign_address"])
+                ):
+                    local_ip = skt["local_address"]
+                    if not utils.is_ip(local_ip) or local_ip == "0.0.0.0":
+                        local_ip = ""
+                    connections.append(
+                        Relationship(
+                            transport=transport,
+                            local=RelationshipEndpoint(ip=local_ip, port=int(skt["local_port"])),
+                            remote=RelationshipEndpoint(
+                                ip=skt["foreign_address"],
+                                port=int(skt["foreign_port"]),
+                            ),
+                            state=skt["state"].lower(),
+                            evidence={"netstat"},
+                        )
+                    )
+            except ValueError as ex:
+                # One unexpected line (e.g. a corrupted port) must not drop the
+                # rest of the socket table
+                log.warning(f"{cls.__name__}: skipping socket {skt}: {ex}")
+                continue
 
             # Add IPs and ports to related.ip and related.ports
             for key in ["local", "foreign"]:
@@ -1226,6 +1435,480 @@ class NetstatSocketsVxWorksParser(NixParserBase):
                     dev.related.ports.add(int(port))
                 except ValueError:
                     pass
+
+        # After the services: direction is inferred from the listening ports
+        store_relationships(dev, connections)
+
+
+class NetstatLinuxParser(NixParserBase):
+    """
+    Parse output of ``netstat -tulnp`` on Linux (net-tools or BusyBox).
+
+        -t: TCP sockets
+        -u: UDP sockets
+        -l: listening sockets only
+        -n: numeric addresses and ports
+        -p: PID and name of the program owning the socket
+
+    Process adds:
+
+    - the programs owning the sockets to ``dev.processes`` as
+      :class:`~peat.data.models.HostProcess` (``type="process"``, pid, name)
+    - listening sockets to ``dev.service`` (port, transport, listen address,
+      process PID and name)
+    - other sockets (if the output includes them, e.g. ``netstat -tunp``) to
+      ``dev.relationships`` (``evidence={"netstat"}``)
+
+    Example::
+
+        Active Internet connections (only servers)
+        Proto Recv-Q Send-Q Local Address    Foreign Address  State   PID/Program name
+        tcp        0      0 0.0.0.0:22       0.0.0.0:*        LISTEN  612/dropbear
+        tcp        0      0 :::443           :::*             LISTEN  640/lighttpd
+        udp        0      0 0.0.0.0:161      0.0.0.0:*                655/snmpd
+    """
+
+    command = "netstat -tulnp"
+    save_to_extra = False
+
+    @classmethod
+    def parse(cls, to_parse: str) -> list[dict]:
+        sockets = []
+
+        for line in _extract_lines(to_parse):
+            parts = line.split()
+            proto = parts[0].lower()
+
+            if proto not in ("tcp", "tcp6", "udp", "udp6") or len(parts) < 6:
+                continue
+
+            local_address, _, local_port = parts[3].rpartition(":")
+            foreign_address, _, foreign_port = parts[4].rpartition(":")
+
+            # "State" is empty for most UDP sockets
+            rest = parts[5:]
+            state = ""
+            if rest and "/" not in rest[0] and rest[0] != "-":
+                state = rest.pop(0)
+
+            # "PID/Program name", or "-" if unknown (e.g. not root)
+            program = " ".join(rest)
+            pid, _, name = program.partition("/")
+
+            sockets.append(
+                {
+                    "protocol": proto,
+                    "recv_q": int(parts[1]) if parts[1].isdigit() else None,
+                    "send_q": int(parts[2]) if parts[2].isdigit() else None,
+                    "local_address": local_address,
+                    "local_port": local_port,
+                    "foreign_address": foreign_address,
+                    "foreign_port": foreign_port,
+                    "state": state,
+                    "pid": int(pid) if pid.isdigit() else None,
+                    "program": name.strip(),
+                }
+            )
+
+        return sockets
+
+    @classmethod
+    def process(cls, to_process: list[dict], dev: DeviceData) -> None:
+        # Programs owning the sockets
+        programs = {(s["pid"], s["program"]) for s in to_process if s["pid"] is not None}
+        for pid, name in sorted(programs):
+            dev.store("processes", HostProcess(type="process", pid=pid, name=name))
+
+        connections = []  # type: list[Relationship]
+
+        for skt in to_process:
+            transport = skt["protocol"].rstrip("6")
+            local_ip = _clean_listen_address(skt["local_address"])
+
+            if not skt["local_port"].isdigit():
+                continue
+
+            try:
+                if skt["state"].upper() == "LISTEN" or (
+                    transport == "udp" and skt["foreign_port"] == "*"
+                ):
+                    svc = Service(
+                        port=int(skt["local_port"]),
+                        transport=transport,
+                        status="open",
+                        listen_address=local_ip,
+                        process_pid=skt["pid"],
+                        process_name=skt["program"],
+                    )
+
+                    if local_ip and local_ip not in ("0.0.0.0", "::"):
+                        store_listening_service(dev, svc, interface_lookup={"ip": local_ip})
+                    else:
+                        store_listening_service(dev, svc)
+                elif skt["foreign_port"].isdigit() and utils.is_ip(skt["foreign_address"]):
+                    connections.append(
+                        Relationship(
+                            transport=transport,
+                            local=RelationshipEndpoint(
+                                ip=local_ip if local_ip not in ("0.0.0.0", "::") else "",
+                                port=int(skt["local_port"]),
+                            ),
+                            remote=RelationshipEndpoint(
+                                ip=skt["foreign_address"],
+                                port=int(skt["foreign_port"]),
+                            ),
+                            state=skt["state"].lower(),
+                            evidence={"netstat"},
+                        )
+                    )
+            except ValueError as ex:
+                # One unexpected line must not drop the rest of the socket table
+                log.warning(f"{cls.__name__}: skipping socket {skt}: {ex}")
+
+        store_relationships(dev, connections)
+
+
+class IpRouteParser(NixParserBase):
+    """
+    Parse output of the ``ip route`` command (iproute2 or BusyBox).
+
+    Process adds the routes to ``dev.routes`` (:class:`~peat.data.models.Route`).
+
+    Example::
+
+        default via 192.0.2.1 dev eth0 proto static metric 100
+        192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.20
+        blackhole 198.51.100.0/24
+    """
+
+    command = "ip route"
+    save_to_extra = False
+
+    # Route types that come before the destination
+    ROUTE_TYPES = {
+        "unicast",
+        "local",
+        "broadcast",
+        "multicast",
+        "blackhole",
+        "unreachable",
+        "prohibit",
+        "throw",
+        "nat",
+        "anycast",
+    }
+
+    # Keywords followed by a value
+    VALUE_KEYS = {
+        "via",
+        "dev",
+        "proto",
+        "metric",
+        "scope",
+        "src",
+        "table",
+        "mtu",
+        "advmss",
+        "expires",
+        "pref",
+        "realm",
+        "weight",
+        "error",
+    }
+
+    # Routing protocols (proto) of dynamically learned routes
+    DYNAMIC_PROTOCOLS = {"dhcp", "ra", "ospf", "bgp", "rip", "zebra", "babel", "isis", "bird"}
+
+    @staticmethod
+    def _is_destination(value: str) -> bool:
+        """``default`` or a network/address (not a prompt or an error message)."""
+        if value == "default":
+            return True
+        try:
+            ipaddress.ip_network(value, strict=False)
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def parse(cls, to_parse: str) -> list[dict]:
+        routes = []
+        current = None  # route that the following "nexthop" lines belong to
+
+        for line in _extract_lines(to_parse):
+            parts = line.split()
+            # Multipath next hops are on their own lines ("nexthop via ... dev ...")
+            if parts[0] == "nexthop":
+                if current is not None:
+                    hop = {
+                        key: parts[i + 1]
+                        for i, key in enumerate(parts[:-1])
+                        if key in ("via", "dev", "weight")
+                    }
+                    if hop:
+                        current.setdefault("nexthops", []).append(hop)
+                continue
+            current = None
+            if parts[0] == "cache" or parts[0].endswith(":"):
+                continue
+
+            route = {}  # type: dict[str, str | list[str]]
+            if parts[0] in cls.ROUTE_TYPES:
+                route["type"] = parts.pop(0)
+            if not parts or not cls._is_destination(parts[0]):
+                continue  # e.g. a shell prompt or a BusyBox usage message
+            route["destination"] = parts.pop(0)
+
+            flags = []
+            index = 0
+            while index < len(parts):
+                if parts[index] in cls.VALUE_KEYS and index + 1 < len(parts):
+                    route[parts[index]] = parts[index + 1]
+                    index += 2
+                else:
+                    flags.append(parts[index])
+                    index += 1
+            if flags:
+                route["flags"] = flags
+
+            routes.append(route)
+            current = route
+
+        return routes
+
+    @classmethod
+    def process(cls, to_process: list[dict], dev: DeviceData) -> None:
+        for raw in to_process:
+            raw_type = raw.get("type", "")
+            gateway = raw.get("via", "")
+            protocol = raw.get("proto", "")
+            interface = raw.get("dev", "")
+            # Multipath route: the first next hop is the gateway
+            nexthops = raw.get("nexthops") or []
+            if not gateway and nexthops:
+                gateway = nexthops[0].get("via", "")
+                interface = interface or nexthops[0].get("dev", "")
+
+            if raw_type in ("blackhole", "unreachable", "prohibit"):
+                route_type = "blackhole"
+            elif raw_type and raw_type != "unicast":
+                route_type = raw_type
+            elif not gateway:
+                route_type = "connected"
+            elif protocol in cls.DYNAMIC_PROTOCOLS:
+                route_type = "dynamic"
+            else:
+                route_type = "static"
+
+            extra = {
+                key: raw[key]
+                for key in ("scope", "src", "table", "mtu", "advmss", "pref", "realm", "error")
+                if raw.get(key)
+            }
+            if raw_type in ("unreachable", "prohibit"):
+                extra["action"] = raw_type
+            if nexthops:
+                extra["nexthops"] = nexthops
+
+            try:
+                route = Route(
+                    destination=raw.get("destination", ""),
+                    gateway=gateway,
+                    interface=interface,
+                    metric=int(raw["metric"]) if str(raw.get("metric", "")).isdigit() else None,
+                    type=route_type,
+                    protocol=protocol,
+                    flags=" ".join(raw.get("flags", [])),
+                    extra=extra,
+                )
+            except ValueError as ex:
+                log.warning(f"{cls.__name__}: skipping bad route {raw}: {ex}")
+                continue
+
+            dev.store("routes", route)
+
+
+# Linux /proc/net/dev counter -> NetworkStatistics field ("" = statistics.extra)
+PROC_NET_DEV_STATISTICS: dict[str, str] = {
+    "recv_bytes": "ingress.bytes",
+    "recv_packets": "ingress.packets",
+    "recv_errs": "ingress.errors",
+    "recv_drop": "ingress.dropped",
+    "recv_multicast": "ingress.multicast_packets",
+    "trans_bytes": "egress.bytes",
+    "trans_packets": "egress.packets",
+    "trans_errs": "egress.errors",
+    "trans_drop": "egress.dropped",
+    "trans_colls": "collisions",
+}
+
+# ifconfig counter -> NetworkStatistics field (others go to statistics.extra)
+IFCONFIG_STATISTICS: dict[str, str] = {
+    "rx_bytes": "ingress.bytes",
+    "rx_packets": "ingress.packets",
+    "rx_multicast": "ingress.multicast_packets",
+    "rx_errors": "ingress.errors",
+    "rx_dropped": "ingress.dropped",
+    "tx_bytes": "egress.bytes",
+    "tx_packets": "egress.packets",
+    "tx_multicast": "egress.multicast_packets",
+    "tx_errors": "egress.errors",
+    "tx_dropped": "egress.dropped",
+    "collisions": "collisions",
+    "unsupported_protocol": "ingress.unknown_protocols",
+}
+
+
+def build_statistics(
+    counters: dict[str, int],
+    field_map: dict[str, str],
+    timestamp: datetime.datetime,
+) -> NetworkStatistics:
+    """
+    Build a :class:`~peat.data.models.NetworkStatistics` sample from raw counters.
+
+    Args:
+        counters: raw counter names and values
+        field_map: raw counter name -> statistics field, e.g. ``"ingress.bytes"``
+            or ``"collisions"``. Counters not in the map go to ``extra`` (under
+            their raw name).
+        timestamp: when the counters were read from the device (aware UTC)
+
+    Returns:
+        The statistics sample (check :meth:`~peat.data.models.NetworkStatistics.has_counters`
+        before storing it)
+    """
+    stats = NetworkStatistics(timestamp=timestamp)
+
+    for key, value in counters.items():
+        target = field_map.get(key, "")
+        if not target or not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            if value is not None:
+                stats.extra[key] = value
+            continue
+        if "." in target:
+            direction, name = target.split(".", 1)
+            setattr(getattr(stats, direction), name, value)
+        else:
+            setattr(stats, target, value)
+
+    return stats
+
+
+def set_interface_layering(iface: Interface) -> None:
+    """
+    Set :attr:`~peat.data.models.Interface.vlan` and
+    :attr:`~peat.data.models.Interface.parent` from Linux-style interface names.
+
+    - VLAN sub-interface ``<parent>.<vid>`` (e.g. ``eth0.100``, iproute2
+      ``eth0.100@eth0``): ``vlan=Vlan(id=<vid>, tagged=True)``, ``parent=<parent>``
+    - Alias ``<parent>:<n>`` (e.g. ``eth0:1``): ``parent=<parent>``
+
+    Values already set are kept.
+    """
+    name, _, lower = iface.name.partition("@")
+
+    base, sep, vid = name.rpartition(".")
+    if sep and base and vid.isdigit() and int(vid) <= 4095:
+        if not iface.parent:
+            iface.parent = lower or base
+        if not iface.vlan.id:
+            iface.vlan = Vlan(id=vid, tagged=True)
+        return
+
+    base, sep, alias = name.partition(":")
+    if sep and base and alias and not iface.parent:
+        iface.parent = lower or base
+
+
+def task_id_to_pid(tid: str) -> int | None:
+    """
+    Convert a VxWorks task ID (hex string, e.g. ``"0x1c8f0e0"`` or ``"1c8f0e0"``)
+    to an integer PID. Returns :obj:`None` if it isn't hex or doesn't fit
+    in an Elasticsearch ``long``.
+    """
+    try:
+        pid = int(str(tid).strip(), 16)
+    except ValueError:
+        return None
+    return pid if 0 <= pid <= MAX_ES_LONG else None
+
+
+def store_listening_service(
+    dev: DeviceData, svc: Service, interface_lookup: dict | None = None
+) -> None:
+    """
+    Store a listening socket as a :class:`~peat.data.models.Service`.
+
+    It is merged with an existing service on the same port, unless that
+    service is on a different transport (e.g. ``tcp/161`` vs ``udp/161``).
+    """
+    lookup = {"port": svc.port}  # type: dict
+    if svc.transport and any(
+        s.port == svc.port and s.transport and s.transport != svc.transport for s in dev.service
+    ):
+        lookup["transport"] = svc.transport
+
+    dev.store("service", svc, lookup=lookup, interface_lookup=interface_lookup)
+
+
+def store_relationships(dev: DeviceData, relationships: list[Relationship]) -> None:
+    """
+    Store observed relationships (e.g. sockets from a netstat table) with
+    ONE ``store()`` per relationship: observations of the same edge (same
+    peer and server port, see :meth:`~peat.data.models.Relationship.key`)
+    are aggregated first, ``count`` is the number of observations.
+
+    Sessions with the device itself (loopback addresses or one of the
+    device's own IP addresses as the peer) are not relationships: skipped.
+
+    .. note::
+       Call this after the device's listening services were stored,
+       since they are used to infer the direction of the sessions.
+    """
+    own_ips = {dev.ip} | {i.ip for i in dev.interface if i.ip}
+    own_ips.discard("")
+    groups = {}  # type: dict[str, list[Relationship]]
+    for rel in relationships:
+        if rel.remote.ip and (rel.remote.ip in own_ips or _is_loopback(rel.remote.ip)):
+            continue
+        rel.annotate(dev)
+        groups.setdefault(rel.id, []).append(rel)
+
+    for group in groups.values():
+        rel = group[0]
+        rel.count = len(group)
+        dev.store("relationships", rel)
+
+
+def _is_loopback(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
+
+
+def _process_name(dev: DeviceData, process_type: str, pid: int | None) -> str:
+    """Name of a process or task already in ``dev.processes``, if known."""
+    if pid is None:
+        return ""
+    for proc in dev.processes:
+        if proc.pid == pid and proc.type == process_type and proc.name:
+            return proc.name
+    return ""
+
+
+def _clean_listen_address(address: str) -> str:
+    """
+    Listening address from netstat (``*`` and non-IP values become ``""``).
+    An IPv4-mapped IPv6 address of a dual-stack socket (``::ffff:192.0.2.1``)
+    becomes the IPv4 address, as in the model fields.
+    """
+    address = address.strip("[]")
+    if address in ("", "*") or not utils.is_ip(address):
+        return ""
+    mapped = getattr(ipaddress.ip_address(address), "ipv4_mapped", None)
+    return str(mapped) if mapped else address
 
 
 def _extract_lines(data: str, exclude: str = "") -> list[str]:

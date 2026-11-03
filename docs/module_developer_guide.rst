@@ -10,6 +10,8 @@ Module developer guide
 
    :doc:`general_apis`
 
+   :doc:`baselines`
+
    :doc:`Python code examples <python_examples>`
 
    :ref:`scanning-process`
@@ -169,6 +171,187 @@ Contributing a new module to be included in PEAT's codebase.
 #. Add the device information (vendor, model, known tested, firmware, etc.) to the table of supported devices in Introduction section of the PEAT documentation
 #. Write a basic set of tests for your module (refer to the existing tests as well as the :ref:`test-docs`)
 #. (Optional) Create a dedicated documentation page with details on the device in the documentation. A few examples of this are ``sel.rst`` and ``siemens.rst``.
+
+
+.. _module-data-conventions:
+
+Data conventions
+================
+Follow these conventions when storing data, so the data of different modules can be searched, compared and correlated together. The fields are documented in :doc:`data_model`.
+
+- Store list items with :meth:`~peat.data.models.DeviceData.store` (e.g. ``dev.store("service", Service(...))``), not ``list.append()``: ``store()`` merges the item with an existing item with the same identity (e.g. a service with the same protocol and port).
+- When data has a first-class field, use it and remove the old key from ``dev.extra`` (or ``*.extra``) in the same change. ``extra`` is for data with no field.
+- Aggregate high-volume observations (log lines, connection logs, ARP refreshes) per peer BEFORE storing them: one :class:`~peat.data.models.Relationship` per peer with ``count``, ``first_seen`` and ``last_seen``. Do not compute relationship IDs, and leave ``direction``, ``protocol`` and ``local.interface`` empty if the source does not say: :meth:`Relationship.annotate() <peat.data.models.Relationship.annotate>` infers them.
+- Group observations by the identity of the relationship (:meth:`Relationship.key() <peat.data.models.Relationship.key>`), not by your own key: records with the same identity are merged by ``store()``, which keeps the first record's names and ``extra``. Combine several logical peers configured behind one edge (e.g. remote devices behind one gateway IP address and port, or several sessions of one master) into one relationship, with the details of each in ``extra``. Set the protocol of an edge without a port (e.g. ``ocsp`` for an OCSP responder) so that different services of one host stay separate.
+- Device-reported times without a timezone stay naive (device-local time). Never guess UTC.
+
+Protocol names
+--------------
+Use the canonical lowercase protocol names (with underscores) in :attr:`Service.protocol <peat.data.models.Service.protocol>`, :attr:`Relationship.protocol <peat.data.models.Relationship.protocol>`, :attr:`NetworkStatistics.protocol <peat.data.models.NetworkStatistics.protocol>` and :attr:`Interface.application <peat.data.models.Interface.application>`, and give a relationship the same protocol as the device's own service. The full table with transports, ports and the roles of each protocol (``RelationshipEndpoint.role``) is in "Canonical vocabularies" in :doc:`data_model`.
+
+.. csv-table::
+   :header: "Name", "Protocol"
+
+   "``modbus_tcp``, ``modbus_rtu``", "Modbus TCP, Modbus RTU (serial). Not ``modbus``."
+   "``dnp3``", "DNP3 (TCP, UDP or serial)"
+   "``iec104``", "IEC 60870-5-104. Not ``iec_104``."
+   "``c37_118``", "IEEE C37.118 synchrophasors. Not ``c37.118``."
+   "``mms``, ``goose``, ``sv``", "IEC 61850 MMS (tcp/102), GOOSE, Sampled Values. Not ``iec61850`` as a ``Service``, ``Relationship`` or ``NetworkStatistics`` protocol."
+   "``cip``, ``enip``", "EtherNet/IP explicit messaging (tcp/44818), EtherNet/IP implicit I/O (udp/2222). Two different services."
+   "``mirrored_bits``, ``sel``", "SEL MIRRORED BITS, SEL ASCII/Fast Message"
+   "``bacnet``, ``snmp``, ``syslog``", "BACnet/IP, SNMP, Syslog"
+   "``ntp``, ``sntp``, ``ptp``", "Time synchronization"
+   "``http``, ``https``, ``ssh``, ``telnet``, ``ftp``", "Management protocols"
+
+Known spelling variants (``c37.118``, ``iec_104``) are normalized by the validators, and a service with ``protocol="modbus"`` and ``transport="tcp"`` becomes ``modbus_tcp``. Still use the canonical names in new code.
+
+``Interface.application`` of an IEC 61850 access point from an SCL file (:mod:`peat.parsing.scl`) is ``iec61850``, because the access point carries MMS, GOOSE and SV together. Its services and relationships use ``mms``, ``goose`` and ``sv``.
+
+Statistics and live readings
+----------------------------
+- Statistics (:class:`~peat.data.models.NetworkStatistics`) are cumulative counters, exactly as read from the device (not rates). Set ``since`` only if the device reports when its counters were last cleared; do not assume the boot time.
+- **Always set** :attr:`NetworkStatistics.timestamp <peat.data.models.NetworkStatistics.timestamp>` to the time the counters were read, as timezone-aware UTC (:func:`peat.utils.utc_now`). When device data is merged, a sample with a newer ``timestamp`` replaces the older sample *as a whole*. Counters of two samples are never mixed, and a sample without a timestamp never replaces another one.
+- Keep ONE complete sample per scope (device, interface, service). If a second source reports other counters for the same scope during the same pull, put them in a :attr:`DeviceData.protocol_statistics <peat.data.models.DeviceData.protocol_statistics>` entry or in ``statistics.extra``.
+- Counters that the device reports as overflowed (e.g. ``$$$$``): leave the field ``None`` and list the field in ``extra["overflowed"]`` (e.g. ``["ingress.packets"]``). Values above the Elasticsearch ``long`` range are moved to ``extra["out_of_range"]`` automatically. The same applies to the integer fields of services, routes, time sources, relationships, processes, PLC tasks and software packages (e.g. a corrupted PID or route metric): ``annotate()`` moves values that the Elasticsearch type of the field can't hold to the ``extra["out_of_range"]`` of the item, as text, and the item is kept.
+- Live readings also need a timestamp (``utils.utc_now()``): :attr:`Indicator.timestamp <peat.data.models.Indicator.timestamp>` for LED/display/switch states (a definition from a settings file has no timestamp and no state), and :attr:`Clock.observed <peat.data.models.Clock.observed>` when ``Clock.time`` is read from the device.
+
+Health (NE 107)
+---------------
+Map vendor states to the NAMUR NE 107 categories of :attr:`DeviceData.health <peat.data.models.DeviceData.health>` and :attr:`Indicator.health <peat.data.models.Indicator.health>`. Keep the raw device values in ``status``, ``run_mode`` and ``key_switch``. When several sources apply (e.g. self-tests, alarms and the operating mode), the most severe value wins, in the order of the table. Leave ``health`` empty if the device does not report enough to decide.
+
+.. csv-table::
+   :header: "Device state", "``health``"
+
+   "Fault; outputs disabled by a failure; a failed self-test", "``failure``"
+   "Program, test or maintenance mode; key switch in PROG; relay disabled for a settings change", "``check_function``"
+   "Measurement out of range; deviation from a setpoint", "``out_of_specification``"
+   "Minor fault with valid outputs; battery low; wear (e.g. contact or flash wear)", "``maintenance_required``"
+   "Running without faults", "``normal``"
+
+Credentials and secrets
+-----------------------
+**Never store secrets** (passwords, SNMP community strings, private keys, password hashes) in any field, including ``extra``, and never log them. Record credential *facts* in :class:`~peat.data.models.ServiceSecurity` (``Service.security``):
+
+- Declare the vendor's factory-default credentials as the class attribute :attr:`~peat.device.DeviceModule.factory_default_credentials` (``{(user, password), ...}``). It is only used in code; it is never exported.
+- After a successful login, check the credential that SUCCEEDED with :meth:`~peat.device.DeviceModule.is_factory_default_credential` (user names are case-insensitive). Set ``default_credentials=True`` only if it returns ``True``. Set ``default_credentials=False`` only if every factory default for that service was tried and rejected. Otherwise (e.g. site credentials from the configuration worked, factory defaults not tried) leave it ``None``.
+- When the device configuration shows the credentials of a service (e.g. the SNMP communities of an M340 project file), compare them with the documented factory defaults in code and never store them: set ``default_credentials=True`` if a factory-default credential is in use (e.g. an SNMP community ``public``/``private``), ``False`` if the configured credentials are known and none is a factory default, else leave it ``None``.
+- An anonymous login (e.g. anonymous FTP) is not a default credential: set ``anonymous_access=True`` and ``authentication_required=False``. Set ``authentication_required=True`` where a password was needed.
+- Send passwords over Telnet with ``write(password, secret=True)`` (:meth:`peat.protocols.telnet.Telnet.write`, also :meth:`SELAscii.write <peat.modules.sel.sel_ascii.SELAscii.write>`): the data is sent unchanged, but logged and recorded as ``<redacted>``. Never put secrets in log messages, files written with :meth:`DeviceData.write_file <peat.data.models.DeviceData.write_file>` or other side files (e.g. a parsed configuration): drop or redact them first. To log device options (``dev.options``, which hold the configured passwords), log :func:`peat.utils.redact_options` of them.
+
+.. code-block:: python
+
+   class AwesomeTool(DeviceModule):
+       factory_default_credentials = {("admin", "awesome")}
+
+   # after a successful FTP login with (user, password)
+   svc = Service(protocol="ftp", port=21, transport="tcp")
+   svc.security.authentication_required = True
+   if AwesomeTool.is_factory_default_credential(user, password):
+       svc.security.default_credentials = True
+   dev.store("service", svc)
+
+File paths from a device
+------------------------
+File names and paths reported by a device (e.g. a FTP listing) are untrusted. :meth:`DeviceData.write_file <peat.data.models.DeviceData.write_file>` keeps them inside the output directory (``..`` components and a leading ``/`` are dropped). To build a local path from a device path yourself, use :func:`peat.utils.safe_join`, never ``Path(local_dir, device_path)``. Convert device file times with :func:`peat.utils.utc_from_timestamp`, which returns ``None`` instead of raising for a corrupt or crafted time.
+
+.. _declaring-known-defaults:
+
+Declaring known defaults
+------------------------
+Modules can declare the factory defaults and vendor hardening recommendations of the devices they support, as :class:`~peat.data.models.Baseline` objects in the class attribute :attr:`~peat.device.DeviceModule.known_defaults`. ``peat baseline-compare --known-defaults`` and :func:`~peat.api.baseline_api.compare_to_known_defaults` compare devices against them (see :doc:`baselines`). A module declares at most two baselines, both with ``rules`` only (no ``expected`` snapshot):
+
+- ``<module>-factory-defaults`` (``kind="factory_default"``): the factory VALUES, e.g. "Telnet listens on 23", "the device name is ``AWESOME-PLC``". Use severity ``info`` and a reason like "... changed from factory default ...": a failed rule means the setting was changed from the factory default, which is information, not a problem.
+- ``<module>-vendor-recommended`` (``kind="vendor_recommended"``): the vendor's hardening guidance, e.g. "Telnet absent", "FTP disabled", "no factory default password accepted", "key switch in RUN". A failed rule is a deviation from the recommendation. Use ``alert=True`` for findings that need action (e.g. accepted factory default passwords).
+
+Do not add rules that are neither factory values nor hardening guidance, e.g. "the firmware is a version PEAT was tested with" or "the OS is VxWorks". Never put passwords or other secrets in rules: check ``service[*].security.default_credentials`` instead. Only add rules that can fail: e.g. a ``default_credentials`` rule needs :attr:`~peat.device.DeviceModule.factory_default_credentials` (a ``not_equals`` rule passes when the path has no value), otherwise it stores a misleading ``pass`` finding for every device.
+
+Guidelines:
+
+- Put the baselines in their own file in the module package (e.g. ``peat/modules/sel/sel_defaults.py``).
+- Rule ``id`` values are stable and unique, ``<module>.<area>.<check>`` (e.g. ``awesome.service.telnet.absent``). Paths use the baseline path syntax (:doc:`baselines`) on the exported device data, e.g. ``service[protocol=ftp].enabled``, ``service[*].security.default_credentials``, ``key_switch``.
+- Set ``category`` and ``severity`` on each rule, and ``reference`` (manual section, hardening guide) and ``standards`` where they apply. ``reason`` may use ``{expected}``, ``{actual}`` and ``{path}``.
+- If ``selector`` is left empty, :meth:`~peat.device.DeviceModule.get_known_defaults` sets it to the module's ``vendor_id`` and ``device_type``, and an empty ``provenance.author`` to the module name. Set the selector explicitly if the baseline only applies to some devices of the module (e.g. ``model="351*"``).
+- Test the baselines: every rule path parses (:func:`peat.data.baseline.split_path`), and the rules pass and fail as expected on synthetic :class:`~peat.data.models.DeviceData` objects (:func:`~peat.api.baseline_api.compare_to_baseline`). Print them with ``peat baseline-show --known-defaults -d <module>``.
+
+Example:
+
+.. code-block:: python
+
+   # awesome_defaults.py
+   from peat.data.models import Baseline, BaselineProvenance, BaselineRule
+
+   FACTORY_NAMES = ["AWESOME-PLC", "awesome-plc"]
+   PROVENANCE = BaselineProvenance(reference="Awesome PLC user manual, section 4.2")
+
+   AWESOME_KNOWN_DEFAULTS = [
+       Baseline(
+           id="awesome-factory-defaults",
+           name="Awesome PLC factory defaults",
+           version="1",
+           kind="factory_default",
+           scope="device_type",
+           provenance=PROVENANCE,
+           rules=[
+               BaselineRule(
+                   id="awesome.default.http-port",
+                   name="HTTP on factory port",
+                   path="service[protocol=http].port",
+                   operator="equals",
+                   value=80,
+                   category="ports_services",
+                   severity="info",
+                   reason="HTTP port changed from factory default 80 to {actual}",
+               ),
+               BaselineRule(
+                   id="awesome.default.name",
+                   name="Factory device name",
+                   path="name",
+                   operator="in",
+                   value=FACTORY_NAMES,
+                   category="identity",
+                   severity="info",
+                   reason="Device name changed from factory default",
+               ),
+           ],
+       ),
+       Baseline(
+           id="awesome-vendor-recommended",
+           name="Awesome PLC hardening",
+           version="1",
+           kind="vendor_recommended",
+           scope="device_type",
+           provenance=PROVENANCE,
+           rules=[
+               BaselineRule(
+                   id="awesome.service.telnet.absent",
+                   name="Telnet not exposed",
+                   path="service[protocol=telnet]",
+                   operator="absent",
+                   category="ports_services",
+                   severity="medium",
+                   reason="Telnet (23/tcp, cleartext) is exposed",
+               ),
+               BaselineRule(
+                   id="awesome.accounts.default-credentials",
+                   name="No factory default passwords",
+                   path="service[*].security.default_credentials",
+                   operator="not_equals",
+                   value=True,
+                   category="accounts",
+                   severity="high",
+                   alert=True,
+                   reason="A factory default password was accepted",
+               ),
+           ],
+       ),
+   ]
+
+   # awesome_module.py
+   class AwesomeTool(DeviceModule):
+       device_type = "PLC"
+       vendor_id = "Awesome"
+       known_defaults = AWESOME_KNOWN_DEFAULTS
+       factory_default_credentials = {("admin", "awesome")}
 
 
 Development tips and tricks

@@ -91,7 +91,7 @@ class Elastic:
     Wrapper for interacting with an Elasticsearch or OpenSearch database.
     """
 
-    ECS_VERSION = "8.10.0"
+    ECS_VERSION = "9.5.0"
     """
     Version of :term:`ECS` PEAT currently follows.
     """
@@ -358,6 +358,8 @@ class Elastic:
                 config.ELASTIC_MEMORY_INDEX: "ot-device-memory",
                 config.ELASTIC_UEFI_FILES_INDEX: "uefi-files",
                 config.ELASTIC_UEFI_HASHES_INDEX: "uefi-hashes",
+                config.ELASTIC_RELATIONSHIPS_INDEX: "ot-device-relationships",
+                config.ELASTIC_BASELINE_FINDINGS_INDEX: "ot-device-baseline-findings",
             }
             remapped_name = index_remap.get(index_name, index_name)
 
@@ -717,12 +719,17 @@ class Elastic:
         # Save raw contents of documents for later saving to files
         # TODO: disable this functionality by default or remove it entirely?
         # TODO: make excluded indices configurable
-        if (
-            config.ELASTIC_DIR
-            and config.ELASTIC_LOG_INDEX not in index
-            and config.ELASTIC_EVENTS_INDEX not in index
-            and config.ELASTIC_MEMORY_INDEX not in index
-            and config.ELASTIC_FILES_INDEX not in index
+        # NOTE: an empty index name means the index is disabled, and "" is "in"
+        # every string, so empty names must not exclude every index.
+        if config.ELASTIC_DIR and not any(
+            name and name in index
+            for name in (
+                config.ELASTIC_LOG_INDEX,
+                config.ELASTIC_EVENTS_INDEX,
+                config.ELASTIC_MEMORY_INDEX,
+                config.ELASTIC_FILES_INDEX,
+                config.ELASTIC_RELATIONSHIPS_INDEX,
+            )
         ):
             doc = {
                 "_index": index,

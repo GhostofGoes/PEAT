@@ -1,6 +1,8 @@
 import json
 import sys
-from datetime import datetime
+from collections import ChainMap
+from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from platform import python_version
 
@@ -269,6 +271,54 @@ def test_utc_now():
     assert str(utils.utc_now().tzinfo) == "UTC"
 
 
+def test_utc_from_timestamp():
+    assert utils.utc_from_timestamp(0) == datetime(1970, 1, 1, tzinfo=UTC)
+    assert utils.utc_from_timestamp(1_700_000_000).tzinfo == UTC
+    # Out of range (corrupt or crafted file times) or unset: None, not an exception
+    assert utils.utc_from_timestamp(10**15) is None
+    assert utils.utc_from_timestamp(float("nan")) is None
+    assert utils.utc_from_timestamp(None) is None
+
+
+@pytest.mark.parametrize(
+    ("rel_path", "expected"),
+    [
+        ("a/b.txt", ("a", "b.txt")),
+        ("/etc/passwd", ("etc", "passwd")),
+        ("../../../../escaped.txt", ("escaped.txt",)),
+        ("a/../../b/./c", ("a", "b", "c")),
+        ("..\\..\\win.ini", ("win.ini",)),
+        ("..", ()),
+    ],
+)
+def test_safe_join(tmp_path, rel_path, expected):
+    result = utils.safe_join(tmp_path, rel_path)
+    assert result == Path(tmp_path, *expected)
+    assert result.is_relative_to(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("rel_path", "posix", "windows"),
+    [
+        ("/SETTINGS/SET:1.TXT", ("SETTINGS", "SET:1.TXT"), ("SETTINGS", "SET_1.TXT")),
+        ("logs/CON/x?.txt", ("logs", "CON", "x?.txt"), ("logs", "CON_", "x_.txt")),
+        ("a/b./c", ("a", "b.", "c"), ("a", "b", "c")),
+        ("a/. ./b", ("a", ". .", "b"), ("a", "b")),
+        ("C:/x", ("C:", "x"), ("C_", "x")),
+    ],
+)
+def test_safe_join_windows_names(tmp_path, monkeypatch, rel_path, posix, windows):
+    """On Windows, device file names are made valid Windows names (other OSes keep them)."""
+    from peat import consts
+
+    real_windows = consts.WINDOWS
+    monkeypatch.setattr(consts, "WINDOWS", True)
+    assert utils.safe_join(tmp_path, rel_path).relative_to(tmp_path).parts == windows
+    if not real_windows:  # (a "C:" component is a drive on Windows)
+        monkeypatch.setattr(consts, "WINDOWS", False)
+        assert utils.safe_join(tmp_path, rel_path).relative_to(tmp_path).parts == posix
+
+
 def test_time_now():
     assert utils.time_now()
     assert isinstance(utils.time_now(), str)
@@ -282,6 +332,53 @@ def test_deep_get():
     assert not utils.deep_get(data, "1.2.3.4")
     assert not utils.deep_get(data, "1.2.3.hi")
     assert not utils.deep_get(data, "")
+
+
+def test_redact_options():
+    """Bug fix: the option and config dumps in the logs held passwords and SNMP communities."""
+    options = {
+        "sel": {"creds": {"acc": "RedactCanaryAcc", "2ac": "RedactCanary2ac"}},
+        "ftp": {"user": "ftpuser", "pass": "RedactCanaryFtp", "creds": [("u", "RedactCanaryC")]},
+        "snmp": {"community": "RedactCanaryComm", "communities": ["RedactCanaryComm2"]},
+        "telnet": {"meter_pass": "RedactCanaryMeter", "port": 23, "pull_delay": 0},
+        "ssh": {"passphrase": "RedactCanaryPhrase", "key_filename": "id_rsa", "pass": ""},
+        "web": {
+            "users": ["admin"],
+            "passwords": ["RedactCanaryWeb"],
+            "PASSWORD": "RedactCanaryUp",
+        },
+        "user-password": "RedactCanaryCli",
+        "HOSTS": [{"label": "h1", "options": {"ssh": {"pass": "RedactCanaryHost"}}}],
+        "ion_protocol": {"authenticated": False, "user": "0", "pass": None},
+    }
+    original = deepcopy(options)
+
+    redacted = utils.redact_options(options)
+
+    assert options == original  # input not changed
+    assert "RedactCanary" not in repr(redacted)
+    assert redacted["sel"]["creds"] == "<redacted>"
+    assert redacted["ftp"] == {"user": "ftpuser", "pass": "<redacted>", "creds": "<redacted>"}
+    assert redacted["snmp"] == {"community": "<redacted>", "communities": "<redacted>"}
+    assert redacted["telnet"] == {"meter_pass": "<redacted>", "port": 23, "pull_delay": 0}
+    # Empty values and non-secret keys are kept
+    assert redacted["ssh"] == {"passphrase": "<redacted>", "key_filename": "id_rsa", "pass": ""}
+    assert redacted["web"]["users"] == ["admin"]
+    assert redacted["user-password"] == "<redacted>"
+    assert redacted["HOSTS"][0] == {"label": "h1", "options": {"ssh": {"pass": "<redacted>"}}}
+    assert redacted["ion_protocol"] == original["ion_protocol"]
+
+
+def test_redact_options_chainmap():
+    """The raw config dump in debug-info.txt includes config["CONFIG"], a ChainMap."""
+    chained = ChainMap({"DEBUG": 3}, {"DEVICE_OPTIONS": {"ftp": {"pass": "RedactCanaryChain"}}})
+
+    redacted = utils.redact_options({"CONFIG": chained})["CONFIG"]
+
+    assert isinstance(redacted, ChainMap)
+    assert "RedactCanaryChain" not in repr(redacted)
+    assert redacted["DEVICE_OPTIONS"] == {"ftp": {"pass": "<redacted>"}}
+    assert chained["DEVICE_OPTIONS"]["ftp"]["pass"] == "RedactCanaryChain"
 
 
 def test_is_ip_address():

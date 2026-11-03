@@ -9,12 +9,13 @@ import re
 import shutil
 import site
 import sys
+from collections import ChainMap
 from collections.abc import Container, Iterable
 from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
-from pathlib import Path
+from pathlib import Path, PurePath
 from traceback import format_exc
 from typing import Any
 
@@ -753,6 +754,35 @@ def write_file(
     return True
 
 
+def safe_join(base: Path, rel_path: str | PurePath) -> Path:
+    """
+    Join a relative path, e.g. a file path reported by a device, to a base
+    directory without the result leaving that directory.
+
+    Empty, ``.`` and ``..`` components and any root are dropped (``/`` and
+    ``\\`` both separate components), so both ``../../etc/x`` and ``/etc/x``
+    become ``<base>/etc/x``. On Windows, components are also made valid file
+    names there (e.g. ``:``, ``?`` and ``*`` replaced, reserved device names
+    such as ``CON`` changed, trailing dots removed).
+
+    Args:
+        base: Directory the result must stay in
+        rel_path: Path to put under ``base``
+
+    Returns:
+        The joined path (``base`` itself if ``rel_path`` has no usable components)
+    """
+    parts = [p for p in re.split(r"[\\/]+", str(rel_path)) if p not in ("", ".", "..")]
+    if consts.WINDOWS:
+        # Device file names can have characters or names that Windows does not allow
+        parts = [p for p in map(consts.sanitize_filename, parts) if p not in ("", ".", "..")]
+    path = Path(base, *parts)
+    if not path.is_relative_to(base):
+        # A component with a drive ("C:") switches drives on Windows
+        path = Path(base, *(consts.sanitize_filename(p) for p in parts))
+    return path
+
+
 def dup_path(file: Path) -> Path:
     """
     Handle duplicate files by adding a '.<num>' to the name.
@@ -821,6 +851,19 @@ def utc_now() -> datetime:
     Further reading: https://blog.miguelgrinberg.com/post/it-s-time-for-a-change-datetime-utcnow-is-now-deprecated
     """
     return datetime.now(UTC)
+
+
+def utc_from_timestamp(timestamp: float | None) -> datetime | None:
+    """
+    Timezone-aware UTC :class:`datetime.datetime` of a POSIX timestamp, or
+    :obj:`None` if it is unset or out of range (e.g. a corrupt or crafted file time).
+    """
+    if timestamp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=UTC)
+    except (OverflowError, OSError, TypeError, ValueError):
+        return None
 
 
 def time_now() -> str:
@@ -910,6 +953,62 @@ def deep_get(dictionary: dict, keys: str, default=None) -> Any:
         keys.split("."),
         dictionary,
     )
+
+
+#: Option and configuration key names whose values are secrets (passwords,
+#: SNMP communities, login credentials, ...), matched without regard to case on
+#: the whole key name or on a part of it separated by ``_``, ``-``, ``.`` or a
+#: space, e.g. ``pass``, ``meter_pass``, ``user-password`` or ``communities``.
+#: The whole value of a ``creds`` key is a secret (e.g. SEL ``acc``/``2ac``
+#: passwords, FTP user and password pairs).
+SECRET_OPTION_KEY_RE = re.compile(
+    r"(?:^|[_\-. ])(?:pass(?:word|wd|phrase)?s?|pwd|creds?|credentials?"
+    r"|communit(?:y|ies)|secrets?|psk|tokens?)(?:$|[_\-. ])",
+    re.IGNORECASE,
+)
+
+
+def redact_options(data: Any) -> Any:
+    """
+    Copy of options or configuration values that is safe to log, with the
+    values of secret keys (:data:`SECRET_OPTION_KEY_RE`) replaced by
+    ``"<redacted>"``.
+
+    :class:`dict`, :class:`~collections.ChainMap`, :class:`list`,
+    :class:`tuple` and :class:`set` values are copied recursively and the
+    input is not changed. Empty values
+    (:obj:`None`, ``""``, empty containers) and booleans of secret keys are
+    kept, since they don't hold a secret.
+
+    .. code-block:: python
+
+       >>> from peat.utils import redact_options
+       >>> redact_options({"sel": {"creds": {"acc": "OTTER"}}})
+       {'sel': {'creds': '<redacted>'}}
+       >>> redact_options({"ftp": {"user": "admin", "pass": "hunter2"}})
+       {'ftp': {'user': 'admin', 'pass': '<redacted>'}}
+    """
+    if isinstance(data, dict):
+        return {
+            k: (
+                "<redacted>"
+                if SECRET_OPTION_KEY_RE.search(str(k))
+                and not isinstance(v, bool)
+                and v is not None
+                and not (isinstance(v, (str, bytes, list, tuple, set, dict)) and len(v) == 0)
+                else redact_options(v)
+            )
+            for k, v in data.items()
+        }
+    if isinstance(data, ChainMap):  # e.g. config["CONFIG"]
+        return ChainMap(*(redact_options(m) for m in data.maps))
+    if isinstance(data, list):
+        return [redact_options(v) for v in data]
+    if isinstance(data, tuple):
+        return tuple(redact_options(v) for v in data)
+    if isinstance(data, (set, frozenset)):
+        return {redact_options(v) for v in data}
+    return data
 
 
 def is_ip(to_check: str) -> bool:

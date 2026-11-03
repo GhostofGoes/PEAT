@@ -318,6 +318,17 @@ elastic_uefi_files_index: "uefi-files"
 # from a UEFI System and files.
 elastic_uefi_hashes_index: "uefi-hashes"
 
+# Configured and observed relationships between devices and other
+# endpoints, such as communication peers (e.g. DNP3 masters), ARP neighbors,
+# route next hops, time servers, serial links, and IEC 61850 GOOSE/SV
+# publications and subscriptions. One document per relationship per PEAT run.
+elastic_relationships_index: "ot-device-relationships"
+
+# Results (findings) of comparing devices against baselines, such as
+# factory defaults, vendor hardening recommendations, the first observed
+# state of a device, or an engineer-provided configuration.
+elastic_baseline_findings_index: "ot-device-baseline-findings"
+
 # -----------------------------------------------------------------------------
 
 # --- HEAT (High-fidelity Extraction of Artifacts from Traffic) ---
@@ -823,6 +834,28 @@ hosts:
   # IMPORTANT: Labels MUST be unique, and must not match any other device.
   - label: "example-host"
     comment: "User-specified text that may be included in results or other output (e.g. log messages)"
+
+    # Owner-supplied asset context, copied to "host.asset" in all results.
+    # PEAT never discovers these values; they come only from this file.
+    # criticality: low_impact | medium_impact | high_impact | extreme_impact
+    #   (same values as Elastic Security asset criticality; low/medium/high/extreme also work.
+    #    Elastic Security keeps criticality in its own index: upload them there via its
+    #    asset criticality CSV import or API to use them in Elastic Security.)
+    # tags: also exported as the ECS "host.tags" field
+    # purdue_level: 0, 1, 2, 3, 3.5, 4 or 5
+    asset:
+      id: "AT-00071"
+      criticality: "high_impact"
+      owner: "Protection Engineering"
+      business_unit: "Transmission"
+      site: "Substation North"
+      location: "Control house, panel 7"
+      zone: "station-bus"
+      conduits: ["station-to-control-center"]
+      purdue_level: "1"
+      safety: true
+      tags: ["protection", "feeder"]
+      description: "Feeder 7 protection relay"
 
     # Identifying information for the host.
     # NOTE: At least ONE identifier value must be set.

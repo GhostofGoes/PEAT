@@ -1,0 +1,16 @@
+lo0     Link type:Local loopback  Queue:none
+        inet 127.0.0.1  mask 255.0.0.0
+        UP RUNNING LOOPBACK MULTICAST NOARP ALLMULTI  MTU:1536  metric:1  VR:0  ifindex:1
+        RX packets:6 mcast:0 errors:0 dropped:0
+        TX packets:6 mcast:0 errors:0
+        collisions:0 unsupported proto:0
+        RX bytes:432  TX bytes:432
+
+fei0    Link type:Ethernet  HWaddr 00:a0:1e:01:02:03  Queue:none
+        capabilities: TXCSUM VLAN_MTU
+        inet 192.0.2.20  mask 255.255.255.0  broadcast 192.0.2.255
+        UP RUNNING SIMPLEX BROADCAST MULTICAST  MTU:1500  metric:1  VR:0  ifindex:2
+        RX packets:12000 mcast:250 errors:1 dropped:3
+        TX packets:9000 mcast:4 errors:2
+        collisions:5 unsupported proto:7
+        RX bytes:24M  TX bytes:1M

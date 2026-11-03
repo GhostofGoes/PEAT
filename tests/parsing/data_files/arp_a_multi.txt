@@ -1,0 +1,4 @@
+? (192.0.2.5) at b4:96:91:51:3a:67 [ether]  on eth0
+gateway (192.0.2.1) at 0:a0:1e:2:3:4 [ether] PERM on eth0
+? (192.0.2.9) at <incomplete>  on eth0
+? (192.0.2.20) at 00:00:5e:00:53:01 [ether] on eth0

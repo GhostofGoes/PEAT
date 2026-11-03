@@ -137,9 +137,10 @@ class SNMP:
         return self.ip
 
     def __repr__(self) -> str:
+        # NOTE: never show the community string (a secret), e.g. in logs
         return (
             f"{self.__class__.__name__}({self.ip}, {self.port}, {self.timeout}, "
-            f"'{self.community}', {self.snmp_version}, {self.mib_paths})"
+            f"'***', {self.snmp_version}, {self.mib_paths})"
         )
 
     def _save_all_output(self) -> None:

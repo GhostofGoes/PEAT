@@ -23,11 +23,14 @@ from peat import DeviceData, DeviceModule, Interface, Tag, datastore, utils
 from peat.file_signature import FileSignature
 from peat.modules.rockwell.l5x_parse import (
     get_comm_ports,
+    get_io_relationships,
     get_ip_address,
+    get_local_module_names,
     get_logic,
     get_modules_data,
     get_project_description,
     get_tags,
+    get_tasks,
 )
 from peat.protocols.enip import VENDOR_NAMES
 
@@ -134,13 +137,25 @@ class L5X(DeviceModule):
 
             dev.store("tag", tag_obj)
 
-        for module_dict in get_modules_data(project):
+        # Tasks (continuous, periodic, event) and the programs they run
+        tasks = get_tasks(project)
+        if tasks:
+            names = {task.name for task in tasks}
+            dev.logic.tasks = [t for t in dev.logic.tasks if t.name not in names] + tasks
+
+        modules_data = get_modules_data(project)
+        for module_dict in modules_data:
             if module_dict["name"] == "Controller":
                 cls._annotate_module_values(dev, module_dict)
 
             module_dev = DeviceData()
             cls._annotate_module_values(module_dev, module_dict)
             dev.store("module", module_dev, lookup="name")
+
+        # I/O tree: modules in the local chassis vs. modules reached over Ethernet
+        local_modules = get_local_module_names(modules_data)
+        for relationship in get_io_relationships(modules_data, local_modules):
+            dev.store("relationships", relationship)
 
         for comm_port_dict in get_comm_ports(project):
             interface_obj = Interface(
@@ -174,7 +189,9 @@ class L5X(DeviceModule):
         for module_obj in dev.module:
             if module_obj.related.ip:
                 dev.related.ip.update(module_obj.related.ip)
-            if module_obj.interface:
+            # Only the Ethernet ports of modules in the local chassis are interfaces
+            # of the controller. Remote modules (adapters etc.) are relationships.
+            if module_obj.interface and module_obj.name in local_modules:
                 for interface in module_obj.interface:
                     dev.store("interface", interface, lookup="ip")
                     if not dev.ip and interface.ip:

@@ -436,6 +436,52 @@ decrypt_config_examples = """
 peat decrypt-config -f '<my_path>/encrypted_config.yaml' -p secret -w '<my_path>/example_config.yaml'
 """  # End decrypt-config examples
 
+baseline_create_examples = """
+# See the "Baselines" section in the PEAT documentation
+
+# Create a "first observed" baseline from a previous pull of a device
+peat baseline-create -w relay-1-baseline.json peat_results/<run>/devices/192.0.2.10/device-data-full.json
+
+# Create an engineer-provided baseline from a parsed golden settings file
+peat parse -d selrelay -R golden -- SET_ALL.TXT
+peat baseline-create --kind engineer_provided --author "J. Engineer" -w relay-1-golden.json peat_results/golden/devices/
+
+# Create a "typical SEL-2032" profile from pulls of three units (keeps what all three share)
+peat baseline-create --scope device_type --baseline-name "Typical SEL-2032" -w sel-2032-typical.json pull-a/ pull-b/ pull-c/
+
+# Create one baseline per device of a run, in peat_results/<new run>/baselines/
+peat baseline-create peat_results/<run>/devices/
+"""  # End baseline-create examples
+
+baseline_compare_examples = """
+# See the "Baselines" section in the PEAT documentation
+
+# Compare a new pull against a baseline and the module's known defaults
+peat baseline-compare -b relay-1-baseline.json --known-defaults peat_results/<run>/devices/192.0.2.10/
+
+# Fail (exit code 3) if any medium or higher deviation is found (CI / scheduled checks)
+peat baseline-compare -b relay-1-golden.json --fail-on medium peat_results/<run>/
+
+# Inputs may also come first
+peat baseline-compare peat_results/<run>/ -b relay-1-golden.json -b sel-2032-typical.json --no-passed
+
+# Print the findings as JSON
+peat baseline-compare -E -q --known-defaults peat_results/<run>/devices/
+
+# Send findings to Elasticsearch
+peat baseline-compare --known-defaults -e http://localhost:9200 peat_results/<run>/
+"""  # End baseline-compare examples
+
+baseline_show_examples = """
+# See the "Baselines" section in the PEAT documentation
+
+# Show the known-default baselines PEAT has for SEL relays
+peat baseline-show --known-defaults -d selrelay
+
+# Show a baseline file
+peat baseline-show -b relay-1-golden.json
+"""  # End baseline-show examples
+
 ALL_EXAMPLES: dict[str, str] = {
     "scan": scan_examples,
     "pull": pull_examples,
@@ -447,6 +493,9 @@ ALL_EXAMPLES: dict[str, str] = {
     "decrypt_results": decrypt_results_examples,
     "encrypt_config": encrypt_config_examples,
     "decrypt_config": decrypt_config_examples,
+    "baseline_create": baseline_create_examples,
+    "baseline_compare": baseline_compare_examples,
+    "baseline_show": baseline_show_examples,
 }
 
 
@@ -608,6 +657,37 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         description=decrypt_results_description,
     )
     decrypt_results_parser.set_defaults(func="decrypt_results")
+
+    # Baseline commands
+    baseline_create_description = (
+        "Create a baseline (expected device state) from PEAT device data: a previous pull, "
+        "a parsed golden configuration, or several devices of one type"
+    )
+    baseline_create_parser = subparsers.add_parser(
+        name="baseline-create",
+        help=baseline_create_description,
+        description=baseline_create_description,
+    )
+    baseline_create_parser.set_defaults(func="baseline_create")
+
+    baseline_compare_description = (
+        "Compare PEAT device data against baselines and module known defaults "
+        "(factory defaults, vendor recommendations) and report findings"
+    )
+    baseline_compare_parser = subparsers.add_parser(
+        name="baseline-compare",
+        help=baseline_compare_description,
+        description=baseline_compare_description,
+    )
+    baseline_compare_parser.set_defaults(func="baseline_compare")
+
+    baseline_show_description = "Print baselines from files and/or module known defaults"
+    baseline_show_parser = subparsers.add_parser(
+        name="baseline-show",
+        help=baseline_show_description,
+        description=baseline_show_description,
+    )
+    baseline_show_parser.set_defaults(func="baseline_show")
 
     # Add arguments that we want specified after a command to all subparsers.
     # This is where any "general" peat arguments go (e.g "verbose").
@@ -1234,6 +1314,110 @@ def build_argument_parser(version: str = "0.0.0") -> argparse.ArgumentParser:
         help="Specify password to use to encrypt/decrypt zip",
     )
     add_list_module_args(decrypt_results_parser)  # Hack to add "--list-*" commands
+
+    # Baseline commands arguments
+    # NOTE: ONE positional per command. A second positional before a nargs="*"
+    # positional breaks on Python 3.11/3.12 when options precede the inputs.
+    # Options that take values take exactly one value (or use action="append"),
+    # so they never swallow the inputs.
+    for subp in (baseline_create_parser, baseline_compare_parser):
+        subp.add_argument(
+            "input_source",
+            type=str,
+            nargs="*",
+            default=[],
+            help="PEAT device data: device-data-full.json/summary files, parse summaries, "
+            'or directories containing them. "-" reads JSON from stdin.',
+        )
+    for subp in (baseline_compare_parser, baseline_show_parser):
+        subp.add_argument(
+            "-b",
+            "--baseline",
+            type=str,
+            metavar="FILE",
+            action="append",
+            default=None,
+            dest="baseline_files",
+            help="Baseline JSON file (one or more baselines). Can be repeated.",
+        )
+        subp.add_argument(
+            "--known-defaults",
+            action="store_true",
+            default=None,
+            dest="known_defaults",
+            help="Include the known-default baselines declared by PEAT modules "
+            "(factory defaults and vendor recommendations)",
+        )
+        subp.add_argument(
+            "-d",
+            "--device",
+            "--device-types",
+            "--peat-modules",
+            type=str,
+            metavar="TYPES",
+            action="append",
+            default=None,
+            dest="device_types",
+            help="Limit --known-defaults to these PEAT modules/aliases. Can be repeated.",
+        )
+    baseline_create_parser.add_argument(
+        "-w",
+        "--write-file",
+        type=str,
+        metavar="FILE",
+        default=None,
+        dest="baseline_output",
+        help="Output file (default: <run dir>/baselines/baseline-<device id>.json; "
+        "with several devices and -w, a JSON list)",
+    )
+    baseline_create_parser.add_argument(
+        "--kind",
+        choices=[
+            "factory_default",
+            "vendor_recommended",
+            "engineer_provided",
+            "first_observed",
+            "previous_observed",
+            "approved",
+        ],
+        default="first_observed",
+        dest="baseline_kind",
+        help="Provenance of the expected values (default: first_observed)",
+    )
+    baseline_create_parser.add_argument(
+        "--scope",
+        choices=["device", "device_type"],
+        default="device",
+        dest="baseline_scope",
+        help="device: one baseline per device; device_type: one profile of every device "
+        "of the type (per-unit identity removed; with several inputs, only what all share)",
+    )
+    for flag, dest, help_text in (
+        ("--baseline-id", "baseline_id", "Baseline ID"),
+        ("--baseline-name", "baseline_name", "Baseline name"),
+        ("--baseline-version", "baseline_version", "Baseline version (default: 1)"),
+        ("--author", "baseline_author", "Author (default: OS user name)"),
+        ("--description", "baseline_description", "Baseline description"),
+    ):
+        baseline_create_parser.add_argument(
+            flag, type=str, default=None, dest=dest, help=help_text
+        )
+    baseline_compare_parser.add_argument(
+        "--no-passed",
+        action="store_true",
+        default=None,
+        dest="no_passed",
+        help="Omit the findings of passed rules",
+    )
+    baseline_compare_parser.add_argument(
+        "--fail-on",
+        choices=["info", "low", "medium", "high", "critical"],
+        default=None,
+        dest="fail_on",
+        help="Exit with code 3 if a failed finding has this severity or higher",
+    )
+    for subp in (baseline_create_parser, baseline_compare_parser, baseline_show_parser):
+        add_list_module_args(subp)  # Hack to add "--list-*" commands
 
     return parser
 
