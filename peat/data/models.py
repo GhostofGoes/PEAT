@@ -3576,6 +3576,8 @@ class Route(BaseModel):
     - ``dynamic``
     - ``local``
     - ``blackhole``
+    - ``cache`` (a transient route cache entry for one recently used destination,
+      e.g. FortiGate ``diagnose ip rtcache list``; ignored by baseline comparisons)
     """
 
     protocol: constr(strip_whitespace=True, to_lower=True) = ""

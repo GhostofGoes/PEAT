@@ -206,6 +206,10 @@ VOLATILE_FILE_CATEGORIES = frozenset({"log", "event_record", "diagnostic", "repo
 # only in ARP/netstat/logs come and go between pulls (OT-13).
 STABLE_RELATIONSHIP_EVIDENCE = frozenset({"config", "scl", "user"})
 
+# Routes of these types are transient (e.g. FortiGate route cache entries, one per
+# recently used destination): they are never reported as missing, new or changed.
+VOLATILE_ROUTE_TYPES = frozenset({"cache"})
+
 # list field name -> ("first", fields) = first non-empty field identifies the item,
 #                    ("all", fields)   = tuple of all fields identifies the item
 LIST_KEYS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -475,6 +479,11 @@ def diff_docs(
     if path and is_ignored(path, ignore):
         return
     if isinstance(expected, dict) and isinstance(actual, dict):
+        if not path or plain_path(path).rsplit(".", 1)[-1] == "module":
+            # a device or module: route cache entries come and go between pulls,
+            # only compare its other routes
+            expected = _without_volatile_routes(expected)
+            actual = _without_volatile_routes(actual)
         for key in sorted(set(expected) | set(actual)):
             sub = f"{path}.{key}" if path else key
             if key not in actual:
@@ -541,6 +550,26 @@ def diff_docs(
         return
     if not _equal(expected, actual):
         out.append(("change", path, expected, actual))
+
+
+def _is_volatile_route(item: Any) -> bool:
+    return isinstance(item, dict) and str(item.get("type", "")).lower() in VOLATILE_ROUTE_TYPES
+
+
+def _without_volatile_routes(doc: dict) -> dict:
+    """
+    ``doc`` (a device or module) without the routes of :data:`VOLATILE_ROUTE_TYPES`,
+    and without ``routes`` if only those were in it (so an empty route table on the
+    other side is not reported as ``missing``/``unexpected`` ``routes``).
+    """
+    routes = doc.get("routes")
+    if not isinstance(routes, list) or not any(_is_volatile_route(r) for r in routes):
+        return doc
+    out = {k: v for k, v in doc.items() if k != "routes"}
+    kept = [r for r in routes if not _is_volatile_route(r)]
+    if kept:
+        out["routes"] = kept
+    return out
 
 
 def _without_ignored(value: Any, path: str, ignore: tuple[str, ...]) -> Any:
@@ -805,6 +834,7 @@ __all__ = [
     "PATH_CATEGORY",
     "STABLE_RELATIONSHIP_EVIDENCE",
     "VOLATILE_FILE_CATEGORIES",
+    "VOLATILE_ROUTE_TYPES",
     "compare_device",
     "device_to_doc",
     "device_type_profile",

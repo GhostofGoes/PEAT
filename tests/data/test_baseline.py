@@ -484,6 +484,71 @@ def test_snapshot_new_volatile_files_are_not_reported():
     }
 
 
+def _routes_device(*cache_destinations: str, static=("0.0.0.0/0",), module=False) -> DeviceData:
+    from peat.data.models import Route
+
+    dev = DeviceData(ip="192.0.2.40", id="192.0.2.40", name="FGT")
+    # a configured peer, so the relationships list never disappears entirely
+    dev.store(
+        "relationships",
+        Relationship(
+            type="depends_on",
+            protocol="dns",
+            remote=RelationshipEndpoint(ip="192.0.2.53", role="dns_server"),
+            evidence={"config"},
+        ),
+    )
+    target = DeviceData(slot="1", name="mod1") if module else dev
+    for dst in static:
+        target.store(
+            "routes",
+            Route(destination=dst, gateway="192.0.2.1", interface="port1", type="static"),
+        )
+    for dst in cache_destinations:  # FortiGate "diagnose ip rtcache list" entries
+        target.store(
+            "routes",
+            Route(destination=dst, gateway="192.0.2.1", interface="port1", type="cache"),
+        )
+    if module:
+        dev.module.append(target)
+    return dev
+
+
+@pytest.mark.parametrize("module", [False, True])
+def test_snapshot_route_cache_entries_are_not_compared(module):
+    def compare(cur: DeviceData, base: DeviceData) -> set:
+        return _diffs(bl.compare_device(_exported(cur), _snapshot(base, kind="previous_observed")))
+
+    base = _routes_device("198.51.100.7", module=module)
+    # other cache entries, or none at all
+    assert compare(_routes_device("198.51.100.8", module=module), base) == set()
+    assert compare(_routes_device(module=module), base) == set()
+    assert compare(base, _routes_device(module=module)) == set()
+    # only cache entries on one or both sides
+    only_cache = _routes_device("198.51.100.7", static=(), module=module)
+    assert compare(_routes_device("198.51.100.8", static=(), module=module), only_cache) == set()
+    assert compare(_routes_device(static=(), module=module), only_cache) == set()
+    # (the gateway of the cache entries is a new routes_via peer, which is reported)
+    assert not {
+        d
+        for d in compare(only_cache, _routes_device(static=(), module=module))
+        if "routes" in d[1]
+    }
+
+    # the other routes are still compared, as if the cache entries did not exist
+    prefix = "module[slot=1].routes" if module else "routes"
+    more = _routes_device("198.51.100.8", static=("0.0.0.0/0", "203.0.113.0/24"), module=module)
+    assert compare(more, base) == {
+        ("unexpected", f"{prefix}[destination=203.0.113.0/24,gateway=192.0.2.1,interface=port1]")
+    }
+    assert compare(base, more) == {
+        ("missing", f"{prefix}[destination=203.0.113.0/24,gateway=192.0.2.1,interface=port1]")
+    }
+    # (a route table with only cache entries is compared like an empty one)
+    assert compare(only_cache, base) == {("missing", prefix)}
+    assert compare(base, only_cache) == {("unexpected", prefix)}
+
+
 def _module_device(when, pid: int) -> DeviceData:
     from peat.data.models import Indicator, Interface
 
