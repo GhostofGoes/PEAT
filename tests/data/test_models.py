@@ -881,6 +881,31 @@ def test_event_severity_and_log_level():
     assert host_events[1]["severity"] == 4
 
 
+def test_event_severity_is_kept_in_sync_from_log_level():
+    """R6-9: the deprecated severity is filled from log_level; ES documents are unchanged."""
+    ev = Event(action="x", log_level="warning")
+    ev.annotate()
+    assert ev.severity == "warning"
+    # an existing severity is kept
+    ev = Event(action="x", severity="4", log_level="warning")
+    ev.annotate()
+    assert (ev.severity, ev.log_level) == ("4", "warning")
+
+    dev = DeviceData(ip="192.0.2.10")
+    dev.store("event", Event(action="a", log_level="warning", created=T0))
+    exported = dev.export()["event"][0]
+    assert (exported["severity"], exported["log_level"]) == ("warning", "warning")
+
+    host_event = dev.elastic()["event"][0]
+    assert "severity" not in host_event
+    assert host_event["log_level"] == "warning"
+
+    doc = Event(action="a", log_level="warning", created=T0).gen_elastic_content(dev)
+    assert "severity" not in doc["event"]
+    assert "log_level" not in doc["event"]
+    assert doc["log"] == {"level": "warning"}
+
+
 def test_store_default_lookups():
     sel = sel_relay()
     assert len(sel.relationships) == 1

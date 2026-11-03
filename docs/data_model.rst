@@ -16,7 +16,7 @@ Besides identity, hardware, firmware, logic, interfaces, services, files, users 
 - **Asset context** (:class:`~peat.data.models.Asset`): owner-supplied criticality, zone, Purdue level, owner, site and tags, read from the ``asset`` block of a ``hosts`` entry in the PEAT configuration file (see ``examples/peat-config.yaml``).
 - **IEC 61850** (:class:`~peat.data.models.IEC61850`): SCL configuration summary (access points, logical devices, GOOSE/SV publications, report control blocks, subscriptions).
 - **Baselines** (:class:`~peat.data.models.Baseline`, :class:`~peat.data.models.BaselineFinding`): expected device state (factory defaults, vendor recommendations, first observed state, engineer-provided configurations) and the findings of comparing devices against them, exported to their own index (``ot-device-baseline-findings``).
-- **Event details**: ``Event.reason`` (ECS ``event.reason``), ``Event.code`` (ECS ``event.code``) and ``Event.log_level`` (ECS ``log.level``).
+- **Event details**: ``Event.reason`` (ECS ``event.reason``), ``Event.code`` (ECS ``event.code``) and ``Event.log_level`` (ECS ``log.level``). Textual values of ``Event.severity`` are deprecated. ``annotate()`` keeps ``severity`` and ``log_level`` in sync: an empty ``severity`` is filled from ``log_level``, and an empty ``log_level`` from a textual ``severity``. Only numeric severities are exported as ECS ``event.severity``.
 
 Working with data
 =================

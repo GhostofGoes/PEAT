@@ -138,8 +138,12 @@ def test_process_logs_data(dev):
         dev,
     )
     assert [e.log_level for e in dev.event] == ["INFO", "ERROR"]
-    # Text levels are not numeric severities
-    assert all(e.severity == "" for e in dev.event)
+    # The deprecated severity is kept in sync from log_level (by annotate())
+    exported = dev.export()["event"]
+    assert [(e["severity"], e["log_level"]) for e in exported] == [
+        ("INFO", "INFO"),
+        ("ERROR", "ERROR"),
+    ]
 
     assert len(dev.files) == 1
     log_file = dev.files[0]

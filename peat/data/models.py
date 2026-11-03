@@ -3122,8 +3122,9 @@ class Event(BaseModel):
     """
     Original textual log level/severity as stored on the device. Exported as ECS
     ``log.level`` at the root of ``ot-device-events`` documents (and as
-    ``host.event.log_level`` in host documents). Auto-filled from a
-    non-numeric ``severity`` by ``annotate()``.
+    ``host.event.log_level`` in host documents). Kept in sync with the
+    deprecated ``severity`` by ``annotate()``: it is filled from a non-numeric
+    ``severity``, and an empty ``severity`` is filled from it.
 
     Examples
 
@@ -3190,7 +3191,10 @@ class Event(BaseModel):
 
     Numeric values are exported as ECS ``event.severity`` (a number).
     Textual values (e.g. ``INFO``) are **deprecated** here; use ``log_level``.
-    They are exported as ``log.level`` (``host.event.log_level`` in host documents).
+    They are exported as ``log.level`` (``host.event.log_level`` in host documents),
+    not as ``event.severity``. ``annotate()`` keeps the two in sync: an empty
+    ``severity`` is filled from ``log_level``, and an empty ``log_level``
+    from a textual ``severity``.
 
     Examples
 
@@ -3290,9 +3294,12 @@ class Event(BaseModel):
         elif self.kind and "event" not in self.kind:
             self.kind.add("event")
 
-        # Textual severities are log levels (Event.severity text is deprecated)
+        # Textual severities are log levels (Event.severity text is deprecated),
+        # and the deprecated severity is kept in sync from log_level
         if self.severity and not self.log_level and numeric_severity(self.severity) is None:
             self.log_level = self.severity
+        elif self.log_level and not self.severity:
+            self.severity = self.log_level
 
     def gen_elastic_content(self, dev: DeviceData | None = None) -> dict:
         self.annotate(dev)  # populate fields
