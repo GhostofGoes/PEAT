@@ -9,8 +9,9 @@ The baselines are used by ``peat baseline-compare --known-defaults``
   (severity ``info``), not a problem.
 - ``sel-relay-vendor-recommended`` (``kind="vendor_recommended"``): hardening
   checks for SEL relays.
-- ``sel-rtac-vendor-recommended`` (``kind="vendor_recommended"``): hardening
-  checks for SEL RTACs.
+
+SEL RTACs have no known defaults: no factory default credential is known for
+them, so a "no factory default password accepted" rule could never fail.
 
 Sources: ``docs/sel.rst`` (factory default RID/TID) and
 ``peat/modules/sel/sel_relay.py`` (default ports and access level passwords).
@@ -219,36 +220,6 @@ SEL_RELAY_KNOWN_DEFAULTS: Final[list[Baseline]] = [
 ]
 """Known-default baselines of :class:`~peat.modules.sel.sel_relay.SELRelay`."""
 
-SEL_RTAC_VENDOR_RECOMMENDED: Final[Baseline] = Baseline(
-    id="sel-rtac-vendor-recommended",
-    name="SEL RTAC hardening",
-    version="1",
-    kind="vendor_recommended",
-    scope="device_type",
-    selector=BaselineSelector(vendor_id="SEL", device_type="RTAC"),
-    provenance=BaselineProvenance(
-        author="SELRTAC",
-        reference="peat/modules/sel/sel_rtac.py",
-        description="Hardening checks for SEL RTACs: no factory default passwords",
-    ),
-    rules=[
-        BaselineRule(
-            id="sel.rtac.accounts.default-credentials",
-            name="No factory default passwords",
-            path="service[*].security.default_credentials",
-            operator="not_equals",
-            value=True,
-            category="accounts",
-            severity="high",
-            alert=True,
-            reason="A factory default password was accepted",
-        ),
-    ],
-)
-
-SEL_RTAC_KNOWN_DEFAULTS: Final[list[Baseline]] = [SEL_RTAC_VENDOR_RECOMMENDED]
-"""Known-default baselines of :class:`~peat.modules.sel.sel_rtac.SELRTAC`."""
-
 
 def credential_security(
     module: type,
@@ -297,7 +268,5 @@ __all__ = [
     "SEL_RELAY_FTP_DEFAULTS",
     "SEL_RELAY_KNOWN_DEFAULTS",
     "SEL_RELAY_VENDOR_RECOMMENDED",
-    "SEL_RTAC_KNOWN_DEFAULTS",
-    "SEL_RTAC_VENDOR_RECOMMENDED",
     "credential_security",
 ]

@@ -259,7 +259,7 @@ Modules can declare the factory defaults and vendor hardening recommendations of
 - ``<module>-factory-defaults`` (``kind="factory_default"``): the factory VALUES, e.g. "Telnet listens on 23", "the device name is ``AWESOME-PLC``". Use severity ``info`` and a reason like "... changed from factory default ...": a failed rule means the setting was changed from the factory default, which is information, not a problem.
 - ``<module>-vendor-recommended`` (``kind="vendor_recommended"``): the vendor's hardening guidance, e.g. "Telnet absent", "FTP disabled", "no factory default password accepted", "key switch in RUN". A failed rule is a deviation from the recommendation. Use ``alert=True`` for findings that need action (e.g. accepted factory default passwords).
 
-Do not add rules that are neither factory values nor hardening guidance, e.g. "the firmware is a version PEAT was tested with" or "the OS is VxWorks". Never put passwords or other secrets in rules: check ``service[*].security.default_credentials`` instead.
+Do not add rules that are neither factory values nor hardening guidance, e.g. "the firmware is a version PEAT was tested with" or "the OS is VxWorks". Never put passwords or other secrets in rules: check ``service[*].security.default_credentials`` instead. Only add rules that can fail: e.g. a ``default_credentials`` rule needs :attr:`~peat.device.DeviceModule.factory_default_credentials` (a ``not_equals`` rule passes when the path has no value), otherwise it stores a misleading ``pass`` finding for every device.
 
 Guidelines:
 

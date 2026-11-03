@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from peat import SELRTAC, DeviceData, datastore
+from peat.api.baseline_api import compare_to_known_defaults
 from peat.data.validators import ECS_EVENT_VALUES
 from peat.modules.sel.rtac_parse import parse_maincontroller
 from peat.modules.sel.sel_rtac import (
@@ -288,10 +289,19 @@ def test_rtac_tar_member_file():
     assert rtac_tar_member_file(info).mtime.year == 2023
 
 
-def test_rtac_known_defaults_and_credentials():
-    (baseline,) = SELRTAC.get_known_defaults()
-    assert baseline.id == "sel-rtac-vendor-recommended"
-    assert baseline.kind == "vendor_recommended"
-    assert baseline.selector.device_type == "RTAC"
+def test_rtac_no_known_defaults_without_factory_credentials():
+    # No factory default credential is known for RTACs, so a "no factory default
+    # password accepted" rule could never fail: no known defaults are declared,
+    # and comparing an RTAC stores no misleading "pass" findings
     assert SELRTAC.factory_default_credentials == set()
     assert not SELRTAC.is_factory_default_credential("admin", "admin")
+    assert SELRTAC.get_known_defaults() == []
+
+    dev = DeviceData(ip="192.0.2.30", type="RTAC")
+    dev.description.vendor.id = "SEL"
+    dev._module = SELRTAC
+    SELRTAC._store_login_security(dev, "https", 443, "admin", "admin")
+    assert dev.service[0].security.authentication_required is True
+    assert dev.service[0].security.default_credentials is None
+    assert compare_to_known_defaults(dev) == []
+    assert dev.baseline_findings == []

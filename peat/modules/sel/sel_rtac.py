@@ -81,7 +81,7 @@ from .rtac_parse import (
     parse_tagprocessor,
 )
 from .sel_consts import RTAC_DB_NAME, RTAC_DB_TABLES, RTAC_TRANSIENT_KEYS
-from .sel_defaults import SEL_RTAC_KNOWN_DEFAULTS, credential_security
+from .sel_defaults import credential_security
 from .sel_http import SELHTTP
 
 
@@ -417,12 +417,11 @@ class SELRTAC(DeviceModule):
         },
     }
 
-    # Hardening checks (peat/modules/sel/sel_defaults.py)
-    known_defaults = SEL_RTAC_KNOWN_DEFAULTS
-
     # NOTE: no factory default login is documented for the RTAC (the web and
     # PostgreSQL user/password lists in default_options are guesses PEAT tries,
-    # not vendor factory defaults), so none is declared here.
+    # not vendor factory defaults), so none is declared here. For the same reason
+    # there are no known defaults (known_defaults): a "no factory default password
+    # accepted" rule could never fail and would only store misleading "pass" findings.
     factory_default_credentials = set()
 
     _tag_to_parser_map = {
