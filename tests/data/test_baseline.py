@@ -14,6 +14,7 @@ from peat.data.models import (
     DeviceData,
     File,
     HostProcess,
+    Package,
     Relationship,
     RelationshipEndpoint,
     Service,
@@ -620,6 +621,53 @@ def test_same_named_list_items_of_different_counts_are_paired_by_their_values():
         ("unexpected", "processes[type=process,name=python3#1]")
     ]
     assert json.loads(findings[0].actual)["command_line"] == "python3 /opt/a.py"
+
+
+def _packages(*versions: str) -> DeviceData:
+    """A device with several versions of one package (e.g. the Sage OS components)."""
+    dev = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+    for version in versions:
+        dev.store(
+            "software",
+            Package(
+                name="IPNET", version=version, category="os_component", vendor="Wind River Systems"
+            ),
+        )
+    return dev
+
+
+def _golden_software(*versions: str) -> Baseline:
+    """A partial (engineer_provided) snapshot that only has package names and versions."""
+    software = [{"name": "IPNET", "version": v} for v in versions]
+    return Baseline.parse_obj(
+        {"id": "golden", "kind": "engineer_provided", "expected": {"software": software}}
+    )
+
+
+def test_same_named_items_of_a_partial_snapshot_are_paired_with_the_items_that_contain_them():
+    """
+    A partial snapshot item never equals the device item it describes (it has fewer
+    fields), so it is paired with the item that has its values, not by rank (R7-3).
+    """
+    # the approved version is installed, and an older one: only the older one is reported
+    findings = bl.compare_device(
+        _packages("2.7", "2.6"), _golden_software("2.7"), include_passed=False
+    )
+    assert [(f.difference, f.path) for f in findings] == [("unexpected", "software[name=IPNET#1]")]
+    assert json.loads(findings[0].actual)["version"] == "2.6"
+
+    # a compliant device has no findings, whatever the order of the items
+    for golden in (_golden_software("2.7", "2.6"), _golden_software("2.6", "2.7")):
+        assert bl.compare_device(_packages("2.6", "2.7"), golden, include_passed=False) == []
+        assert bl.compare_device(_packages("2.7", "2.6"), golden, include_passed=False) == []
+
+    # a missing approved version is still reported
+    findings = bl.compare_device(
+        _packages("2.6"), _golden_software("2.7", "2.6"), include_passed=False
+    )
+    assert [(f.difference, f.path, f.expected) for f in findings] == [
+        ("missing", "software[name=IPNET#1]", '{"name": "IPNET", "version": "2.7"}')
+    ]
 
 
 def _golden(*services: dict) -> Baseline:

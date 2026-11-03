@@ -547,6 +547,16 @@ def _compared_json(item: Any, ignore: tuple[str, ...], path: str) -> str:
     return _json(strip_paths(item, ignore, path) if ignore else item)
 
 
+def _contains(actual: Any, expected: Any) -> bool:
+    """
+    If ``actual`` has all values of ``expected``: the keys of a dict, recursively,
+    and the same other values (:func:`_equal`, so the diff finds no difference).
+    """
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return all(k in actual and _contains(actual[k], v) for k, v in expected.items())
+    return _equal(expected, actual)
+
+
 def pair_items(
     list_name: str,
     exp_idx: dict,
@@ -566,8 +576,13 @@ def pair_items(
        and ``udp/53``), none is paired.
     2. Items that share a key: an actual item is paired with an unpaired expected
        item with the same compared values (without the values ``ignore`` matches)
-       first, then the other items in the order of their compared values. The
-       remaining actual items get numbers after the expected ones (``unexpected``).
+       first, then with the lowest-numbered unpaired expected item whose compared
+       values it contains (:func:`_contains`, e.g. an item of a partial snapshot
+       that only lists the ``name`` and ``version`` of a package), then the other
+       items in the order of their compared values. The remaining actual items get
+       numbers after the expected ones (``unexpected``). An item only contains an
+       item with the same fields if they have the same values, so the second pass
+       pairs items of partial snapshots, and items that got new fields.
     """
     if list_name in ("service", "services"):
         _pair_missing_transport(exp_idx, act_idx)
@@ -586,11 +601,29 @@ def pair_items(
             unpaired.setdefault(_compared_json(exp_idx[(key, n)], ignore, path), []).append(n)
         items = {n: act_idx.pop((key, n)) for n in sorted(act_numbers)}
         numbers: dict[int, int] = {}
+        compared: dict[int, str] = {}
         for n, item in items.items():
-            same = unpaired.get(_compared_json(item, ignore, path))
+            compared[n] = _compared_json(item, ignore, path)
+            same = unpaired.get(compared[n])
             if same:
                 numbers[n] = same.pop()
         free = sorted(e for ns in unpaired.values() for e in ns)
+        if free and len(numbers) < len(items):
+            # expected items that only have some of the fields (partial snapshots)
+            exp_values = {
+                e: json.loads(_compared_json(exp_idx[(key, e)], ignore, path)) for e in free
+            }
+            for n in items:
+                if n in numbers:
+                    continue
+                values = json.loads(compared[n])
+                for e in free:
+                    if _contains(values, exp_values[e]):
+                        numbers[n] = e
+                        free.remove(e)
+                        break
+                if not free:
+                    break
         free.reverse()
         new = exp_numbers[-1] + 1
         for n in items:
