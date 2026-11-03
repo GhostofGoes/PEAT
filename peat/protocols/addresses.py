@@ -13,7 +13,7 @@ from ipaddress import (
 )
 from pathlib import Path
 
-from peat import ParseError, log, state
+from peat import ParseError, consts, log, state
 
 ADDR_RANGE_REGEX = re.compile(
     r"((\d{1,3}|\d{1,3}-\d{1,3})"
@@ -32,12 +32,17 @@ def address_to_pathname(address: str) -> str:
     identifiers that come from device data (e.g. an IED name in an SCL file):
     ``/`` and ``\\`` are replaced, a name of only dots (``.``, ``..``) has its
     dots replaced, and a Windows drive prefix (``d:``) has its colon replaced.
+    On Windows, characters and names that are not valid there are also replaced
+    (e.g. the ``:`` of IPv6 and MAC addresses, ``<>"|?*``, reserved device names
+    such as ``con`` or ``nul``, trailing dots).
     """
     name = address.strip().lower().replace("/", "_").replace("\\", "_").replace(" ", "_")
-    if not name.strip("."):  # "." or "..": the directory itself or its parent
-        name = name.replace(".", "_")
     if name[1:2] == ":":  # "d:x" is relative to the current directory of drive D: (Windows)
         name = f"{name[0]}_{name[2:]}"
+    if consts.WINDOWS and name:
+        name = consts.sanitize_filename(name) or "_"
+    if not name.strip("."):  # "." or "..": the directory itself or its parent
+        name = name.replace(".", "_")
     return name
 
 

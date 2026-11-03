@@ -295,6 +295,28 @@ def test_safe_join(tmp_path, rel_path, expected):
     assert result.is_relative_to(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("rel_path", "posix", "windows"),
+    [
+        ("/SETTINGS/SET:1.TXT", ("SETTINGS", "SET:1.TXT"), ("SETTINGS", "SET_1.TXT")),
+        ("logs/CON/x?.txt", ("logs", "CON", "x?.txt"), ("logs", "CON_", "x_.txt")),
+        ("a/b./c", ("a", "b.", "c"), ("a", "b", "c")),
+        ("a/. ./b", ("a", ". .", "b"), ("a", "b")),
+        ("C:/x", ("C:", "x"), ("C_", "x")),
+    ],
+)
+def test_safe_join_windows_names(tmp_path, monkeypatch, rel_path, posix, windows):
+    """On Windows, device file names are made valid Windows names (other OSes keep them)."""
+    from peat import consts
+
+    real_windows = consts.WINDOWS
+    monkeypatch.setattr(consts, "WINDOWS", True)
+    assert utils.safe_join(tmp_path, rel_path).relative_to(tmp_path).parts == windows
+    if not real_windows:  # (a "C:" component is a drive on Windows)
+        monkeypatch.setattr(consts, "WINDOWS", False)
+        assert utils.safe_join(tmp_path, rel_path).relative_to(tmp_path).parts == posix
+
+
 def test_time_now():
     assert utils.time_now()
     assert isinstance(utils.time_now(), str)

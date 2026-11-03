@@ -40,8 +40,11 @@ def _clean_datastore(mocker):
 @pytest.fixture(scope="module")
 def scl_raw() -> bytes:
     # SELRelay's CID signature also requires the text "IEC 61850" in the content
-    return SCD_PATH.read_bytes().replace(
-        b'toolID="PEAT synthetic fixture"', b'toolID="PEAT IEC 61850 fixture"'
+    # LF line endings whatever the checkout (CRLF on Windows)
+    return (
+        SCD_PATH.read_bytes()
+        .replace(b"\r\n", b"\n")
+        .replace(b'toolID="PEAT synthetic fixture"', b'toolID="PEAT IEC 61850 fixture"')
     )
 
 

@@ -4,7 +4,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
-from peat import PeatError
+from peat import PeatError, consts
 from peat.protocols import (
     address_to_pathname,
     clean_ipv4,
@@ -363,15 +363,55 @@ def test_sort_ips_mixed_families_never_raises():
         ("C:\\x", "c__x"),
     ],
 )
-def test_address_to_pathname(address, expected):
+def test_address_to_pathname(address, expected, monkeypatch):
+    monkeypatch.setattr(consts, "WINDOWS", False)
     assert address_to_pathname(address) == expected
 
 
 @pytest.mark.parametrize(
-    "address", ["..", ".", "...", " .. ", "../..", "..\\..\\x", "/etc", "\\\\h\\s", "d:x", "C:\\x"]
+    ("address", "expected"),
+    [
+        ("192.0.2.20", "192.0.2.20"),
+        ("fe80::1", "fe80__1"),
+        ("00:11:22:33:44:55", "00_11_22_33_44_55"),
+        ("PROT1", "prot1"),
+        ("CON", "con_"),
+        ("nul.txt", "nul_.txt"),
+        ("COM1", "com1_"),
+        ('a<b>c"d|e?f*g', "a_b_c_d_e_f_g"),
+        ("relay.", "relay"),
+        ("..", "__"),
+        (".", "_"),
+        ("d:x", "d_x"),
+    ],
 )
-def test_address_to_pathname_stays_in_directory(address):
+def test_address_to_pathname_windows(address, expected, monkeypatch):
+    """On Windows, IDs (IPv6 addresses, SCL IED names) become valid Windows names."""
+    monkeypatch.setattr(consts, "WINDOWS", True)
+    assert address_to_pathname(address) == expected
+
+
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize(
+    "address",
+    [
+        "..",
+        ".",
+        "...",
+        " .. ",
+        "../..",
+        "..\\..\\x",
+        "/etc",
+        "\\\\h\\s",
+        "d:x",
+        "C:\\x",
+        "..?",
+        "?..",
+    ],
+)
+def test_address_to_pathname_stays_in_directory(address, windows, monkeypatch):
     """A device ID (e.g. an IED name from an SCL file) never leaves the devices directory."""
+    monkeypatch.setattr(consts, "WINDOWS", windows)
     name = address_to_pathname(address)
     for base in (PurePosixPath("/out/devices"), PureWindowsPath("C:/out/devices")):
         joined = base / name

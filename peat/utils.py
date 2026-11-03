@@ -760,7 +760,9 @@ def safe_join(base: Path, rel_path: str | PurePath) -> Path:
 
     Empty, ``.`` and ``..`` components and any root are dropped (``/`` and
     ``\\`` both separate components), so both ``../../etc/x`` and ``/etc/x``
-    become ``<base>/etc/x``.
+    become ``<base>/etc/x``. On Windows, components are also made valid file
+    names there (e.g. ``:``, ``?`` and ``*`` replaced, reserved device names
+    such as ``CON`` changed, trailing dots removed).
 
     Args:
         base: Directory the result must stay in
@@ -770,6 +772,9 @@ def safe_join(base: Path, rel_path: str | PurePath) -> Path:
         The joined path (``base`` itself if ``rel_path`` has no usable components)
     """
     parts = [p for p in re.split(r"[\\/]+", str(rel_path)) if p not in ("", ".", "..")]
+    if consts.WINDOWS:
+        # Device file names can have characters or names that Windows does not allow
+        parts = [p for p in map(consts.sanitize_filename, parts) if p not in ("", ".", "..")]
     path = Path(base, *parts)
     if not path.is_relative_to(base):
         # A component with a drive ("C:") switches drives on Windows

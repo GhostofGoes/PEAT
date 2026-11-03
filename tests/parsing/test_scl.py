@@ -23,7 +23,8 @@ SCD_PATH = Path(__file__).resolve().parent / "data_files" / "scl" / "synthetic_s
 
 @pytest.fixture(scope="module")
 def raw() -> bytes:
-    return SCD_PATH.read_bytes()
+    # LF line endings whatever the checkout (CRLF on Windows): variants patch b"...\n"
+    return SCD_PATH.read_bytes().replace(b"\r\n", b"\n")
 
 
 @pytest.fixture
