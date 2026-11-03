@@ -22,8 +22,27 @@ from peat import (
 from .fortigate_consts import FG_TIMEZONES
 
 # Setting names that may hold secrets. Values of these are never copied
-# into the data model (e.g. into "extra").
+# into the data model (e.g. into "extra") or the parsed configuration files.
 _SECRET_KEY_RE = re.compile(r"pass|secret|psk|key|community|token|cert", re.IGNORECASE)
+
+# Words of setting names (split at "-") that _SECRET_KEY_RE matches, but that
+# are known not to hold secrets: IPsec SA lifetimes ("keylife", "keylifeseconds",
+# "keylifekbs", "keylife-type"), passive interfaces and peers of routing protocols
+# ("passive-interface", "passive") and names of certificates ("certificate",
+# "ca-cert", "admin-server-cert", ...). Other words of the name are still checked
+# (e.g. "cert-password" or "passive-psk" may hold secrets).
+_NON_SECRET_KEY_WORDS = frozenset(
+    {
+        "keylife",
+        "keylifeseconds",
+        "keylifekbs",
+        "passive",
+        "cert",
+        "certs",
+        "certificate",
+        "certificates",
+    }
+)
 
 # Interface "type" values of FortiOS aggregate interfaces -> Redundancy.protocol
 _AGGREGATE_TYPES = {"aggregate": "lag", "redundant": "failover"}
@@ -47,18 +66,31 @@ def _is_encrypted(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("ENC ")
 
 
+def _is_secret_key(key: Any) -> bool:
+    """
+    If a setting (or ``config`` block) may hold secrets: a word of its name
+    matches ``_SECRET_KEY_RE`` and is not in ``_NON_SECRET_KEY_WORDS``.
+    """
+    return any(
+        _SECRET_KEY_RE.search(word) and word.lower() not in _NON_SECRET_KEY_WORDS
+        for word in str(key).split("-")
+    )
+
+
 def _redacted_settings(settings: Any) -> Any:
     """
     Copy of ``settings`` without the settings that may hold secrets (names
-    matching ``_SECRET_KEY_RE`` and encrypted ``ENC ...`` values), also in nested
-    ``config`` blocks (e.g. ``config l2tp-client-settings`` / ``set password``
-    or ``config wifi-networks`` / ``set wifi-passphrase`` of an interface).
+    matching ``_SECRET_KEY_RE``, except known non-secret names such as
+    ``keylife`` or ``admin-server-cert``, and encrypted ``ENC ...`` values,
+    whatever the setting is named), also in nested ``config`` blocks (e.g.
+    ``config l2tp-client-settings`` / ``set password`` or ``config wifi-networks``
+    / ``set wifi-passphrase`` of an interface).
     """
     if isinstance(settings, dict):
         return {
             k: _redacted_settings(v)
             for k, v in settings.items()
-            if not _SECRET_KEY_RE.search(str(k)) and not _is_encrypted(v)
+            if not _is_secret_key(k) and not _is_encrypted(v)
         }
     if isinstance(settings, list):
         return [_redacted_settings(v) for v in settings if not _is_encrypted(v)]

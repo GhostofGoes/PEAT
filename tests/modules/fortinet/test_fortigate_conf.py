@@ -13,13 +13,18 @@ from pathlib import Path
 import pytest
 
 from peat import DeviceData, Fortigate, config, datastore
-from peat.modules.fortinet.fortigate_conf import fg_conf_to_dict, process_fg_conf
+from peat.modules.fortinet.fortigate_conf import (
+    _redacted_settings,
+    fg_conf_to_dict,
+    process_fg_conf,
+)
 
 SYNTHETIC_CONF = """\
 #config-version=FG100F-7.2.9-FW-build1688-240509:opmode=0:vdom=0:user=admin
 config system global
     set alias "FG100F-SUB1"
     set hostname "fg-sub1"
+    set admin-server-cert "Fortinet_Factory"
 end
 config system interface
     edit "port1"
@@ -132,10 +137,15 @@ config router static
         set comment "to control center"
     next
 end
+config router ospf
+    set router-id 192.0.2.1
+    set passive-interface "vlan100"
+end
 config vpn ipsec phase1-interface
     edit "to-cc"
         set interface "port1"
         set ike-version 2
+        set keylife 28800
         set peertype any
         set remote-gw 203.0.113.5
         set psksecret ENC xxxxxxxx
@@ -144,6 +154,13 @@ config vpn ipsec phase1-interface
         set type dynamic
         set interface "port1"
         set psksecret ENC xxxxxxxx
+    next
+end
+config vpn ipsec phase2-interface
+    edit "to-cc-p2"
+        set phase1name "to-cc"
+        set keylife-type seconds
+        set keylifeseconds 3600
     next
 end
 """
@@ -360,6 +377,32 @@ end
         assert "ENC " not in str(doc)
 
 
+def test_fortigate_redacted_settings_non_secret_names():
+    settings = {
+        "keylife": "28800",
+        "keylifekbs": "5120",
+        "passive": "enable",
+        "certificate": {"Fortinet_Factory": {"range": "global", "password": "ENC x=="}},
+        "ca-cert": "CA_Cert_1",
+        "ssl-certificate": "Fortinet_Factory",
+        # Secrets
+        "cert-password": "plaintext",
+        "private-key": "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        "passive-psk": "plaintext",
+        "passwd": "plaintext",
+        "keylife-token": "plaintext",
+        "keylifeseconds": "ENC x==",  # encrypted values are dropped whatever the name
+    }
+    assert _redacted_settings(settings) == {
+        "keylife": "28800",
+        "keylifekbs": "5120",
+        "passive": "enable",
+        "certificate": {"Fortinet_Factory": {"range": "global"}},
+        "ca-cert": "CA_Cert_1",
+        "ssl-certificate": "Fortinet_Factory",
+    }
+
+
 def test_fortigate_admin_encrypted_settings_not_in_user_extra():
     conf = """\
 config system admin
@@ -453,6 +496,16 @@ def _assert_side_file_has_no_secrets(out_config: Path, name: str) -> dict:
     assert parsed["vpn"]["ipsec"]["phase1-interface"]["to-cc"]["remote-gw"] == "203.0.113.5"
     assert parsed["system"]["snmp"]["sysinfo"]["location"] == "Substation 1"
     assert "community" not in parsed["system"]["snmp"]
+    # Known non-secret settings whose names look like secret names are kept
+    assert parsed["system"]["global"]["admin-server-cert"] == "Fortinet_Factory"
+    assert parsed["router"]["ospf"]["passive-interface"] == "vlan100"
+    assert parsed["vpn"]["ipsec"]["phase1-interface"]["to-cc"]["keylife"] == "28800"
+    assert "psksecret" not in parsed["vpn"]["ipsec"]["phase1-interface"]["to-cc"]
+    assert parsed["vpn"]["ipsec"]["phase2-interface"]["to-cc-p2"] == {
+        "phase1name": "to-cc",
+        "keylife-type": "seconds",
+        "keylifeseconds": "3600",
+    }
     return parsed
 
 
