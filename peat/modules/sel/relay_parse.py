@@ -1,5 +1,6 @@
 import copy
 import csv
+import ipaddress
 import re
 from datetime import datetime, timedelta
 from pathlib import Path, PurePath, PurePosixPath
@@ -1052,10 +1053,18 @@ _ETH_COUNTER_PATHS = {
 
 
 def _safe_ipv4(value: str) -> str:
-    """:func:`~peat.protocols.clean_ipv4`, returning ``""`` for invalid values."""
+    """
+    :func:`~peat.protocols.clean_ipv4`, returning ``""`` for a value that is not
+    a dotted IPv4 address (e.g. ``192.0.2.256``, ``192.0.2``, ``-1``).
+    """
     try:
-        return clean_ipv4(value.strip())
+        ip = clean_ipv4(value.strip())
+        if ip:
+            ipaddress.IPv4Address(ip)  # AddressValueError is a ValueError
+        return ip
     except (ValueError, AttributeError):
+        if isinstance(value, str) and value.strip().strip("-"):  # "---": no value
+            log.warning(f"Ignoring invalid IPv4 address '{value.strip()}'")
         return ""
 
 
@@ -1124,7 +1133,10 @@ def parse_eth_output(text: str) -> dict:
         r"^\s*MAC(\s*\d+)?\s*:\s*(\S+)", text, re.ASCII | re.IGNORECASE | re.MULTILINE
     ):
         mac = raw_mac.replace("-", ":").upper()
-        if mac not in macs:
+        if not utils.is_mac(mac):
+            if raw_mac.strip("-"):  # "---": no value
+                log.warning(f"Ignoring invalid MAC in ETH output: {raw_mac}")
+        elif mac not in macs:
             macs.append(mac)
     if macs:
         result["macs"] = macs

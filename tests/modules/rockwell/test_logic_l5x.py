@@ -262,3 +262,52 @@ def test_l5x_parse_synthetic(mocker, tmp_path):
     dev = L5X.parse(source_file)
     assert len(dev.logic.tasks) == 3
     assert len([r for r in dev.relationships if r.protocol == "cip"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("500", timedelta(milliseconds=500)),
+        ("0.5", timedelta(microseconds=500)),
+        ("1e20", None),
+        ("inf", None),
+        ("-inf", None),
+        ("nan", None),
+        ("-5", None),
+        ("abc", None),
+        (None, None),
+    ],
+)
+def test_l5x_milliseconds(value, expected):
+    assert l5x_parse._milliseconds(value) == expected
+
+
+def test_l5x_parse_out_of_range_task_times(mocker, tmp_path):
+    """A Rate or Watchdog too large for a timedelta doesn't abort the parse."""
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "device_results",
+            "TEMP_DIR": tmp_path / "temp_results",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    text = SYNTHETIC_L5X.replace(
+        'Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500"',
+        'Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="1e20"',
+    ).replace(
+        'Name="FastTask" Type="PERIODIC" Rate="10"', 'Name="FastTask" Type="PERIODIC" Rate="inf"'
+    )
+    assert text.count("1e20") == 1
+    assert text.count('Rate="inf"') == 1
+    source_file = tmp_path / "out_of_range_task_times.L5X"
+    source_file.write_text(text, encoding="utf-8")
+
+    dev = L5X.parse(source_file)
+
+    tasks = {t.name: t for t in dev.logic.tasks}
+    assert sorted(tasks) == ["FastTask", "MainTask", "OnInput"]
+    assert tasks["MainTask"].watchdog is None
+    assert tasks["FastTask"].interval is None
+    assert tasks["FastTask"].watchdog == timedelta(milliseconds=100)

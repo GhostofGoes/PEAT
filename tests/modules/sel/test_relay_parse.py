@@ -229,6 +229,33 @@ def test_apply_eth_output_prp_uses_existing_interface():
     assert len([i for i in dev.interface if i.name == "Port 1"]) == 1
 
 
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("IP ADDRESS: 192.0.2.10/24", "IP ADDRESS: 192.0.2"),
+        ("IP ADDRESS: 192.0.2.10/24", "IP ADDRESS: 192.0.2.256/24"),
+        ("DEFAULT GATEWAY: 192.0.2.1", "DEFAULT GATEWAY: 192.0.2.300"),
+        ("MAC: 00-30-A7-00-00-01", "MAC: 00-30-A7-00-00"),
+        ("MAC: 00-30-A7-00-00-01", "MAC: ---"),
+    ],
+)
+def test_apply_eth_output_drops_only_the_invalid_value(old, new):
+    """An invalid IP, gateway or MAC in the ETH output loses only that value."""
+    text = ETH_FAILOVER.replace(old, new)
+    assert text != ETH_FAILOVER
+    dev = _dev(ip="192.0.2.10")
+    apply_eth_output(parse_eth_output(text), dev, timestamp=T0)
+
+    ip_iface = _iface(dev, "Port 5")
+    assert ip_iface.ip == ("" if new.startswith("IP") else "192.0.2.10")
+    assert ip_iface.gateway == ("" if new.startswith("DEFAULT") else "192.0.2.1")
+    assert ip_iface.mac == ("" if new.startswith("MAC") else "00:30:A7:00:00:01")
+    assert ip_iface.statistics.ingress.bytes == 1664082074
+    assert ip_iface.redundancy.members == ["5A", "5B"]
+    assert _iface(dev, "5A").speed == 100
+    assert _iface(dev, "5B").redundancy.state == "active"
+
+
 def test_apply_eth_output_switched_has_no_port_state():
     text = ETH_FAILOVER.replace("NETMODE: FAILOVER", "NETMODE: SWITCHED")
     dev = _dev()
@@ -794,6 +821,31 @@ DNPIP1,"192.0.2.50","","","",""
 RID,"FEEDER 1","","","",""
 TID,"STATION A","","","",""
 """
+
+
+@pytest.mark.parametrize("value", ["192.0.2.256", "192.0.2", "10.0.0.1.5", "-1"])
+def test_parse_set_all_invalid_ip_setting(value):
+    """An invalid IP address setting is ignored; the rest of the port is parsed."""
+    from peat.modules.sel.relay_parse import parse_set_all
+
+    text = SET_ALL.replace('DNPIP1,"192.0.2.50"', f'DNPIP1,"{value}"')
+    assert text != SET_ALL
+    _, dev = parse_set_all(text)
+    assert [i.ip for i in dev.interface] == ["192.0.2.10"]
+    assert not [r for r in dev.relationships if r.protocol == "dnp3"]
+
+
+@pytest.mark.parametrize("key", ["DNPIP1", "MODIP1", "PMOIPA1", "SNTPPSIP"])
+def test_process_port_settings_invalid_ip_setting(key):
+    dev = _dev(ip="192.0.2.10")
+    process_port_settings("5", {**P5_SETTINGS, key: "192.0.2.256"}, dev)
+    dev.populate_fields()
+
+    assert [i.ip for i in dev.interface] == ["192.0.2.10"]
+    assert "192.0.2.256" not in {r.remote.ip for r in dev.relationships}
+    assert "192.0.2.256" not in {s.address for s in dev.clock.sources}
+    assert "192.0.2.256" not in dev.related.ip
+    assert len(dev.relationships) >= 3
 
 
 def test_parse_set_all_front_panel_and_relationships():

@@ -11,6 +11,7 @@ Authors
 - Christopher Goes
 """
 
+import math
 import xml.etree.ElementTree as ET
 from datetime import timedelta
 from typing import Final
@@ -142,10 +143,17 @@ def _l5x_bool(value: str | None) -> bool | None:
 
 
 def _milliseconds(value: str | None) -> timedelta | None:
-    """L5X time attribute in milliseconds (e.g. ``Rate="10"``, ``Watchdog="500"``)."""
+    """
+    L5X time attribute in milliseconds (e.g. ``Rate="10"``, ``Watchdog="500"``),
+    or :obj:`None` if it is not set, not a number, negative, not finite (e.g.
+    ``inf``) or too large for a :class:`~datetime.timedelta` (e.g. ``1e20``).
+    """
     try:
-        return timedelta(milliseconds=float(value))
-    except (TypeError, ValueError):
+        milliseconds = float(value)
+        if not math.isfinite(milliseconds) or milliseconds < 0:
+            return None
+        return timedelta(milliseconds=milliseconds)
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
