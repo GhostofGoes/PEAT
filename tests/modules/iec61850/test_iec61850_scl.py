@@ -444,9 +444,7 @@ def test_plain_xml_scl_claimed_by_signature(tmp_path, raw):
 
 @pytest.mark.parametrize("level", [1, 6, 9])  # zlib headers 7801, 789C, 78DA
 def test_zlib_cid_claimed_only_by_selrelay(tmp_path, raw, level):
-    # SELRelay's CID signature also looks for the text "IEC 61850" in the content
-    data = raw.replace(b'toolID="PEAT synthetic fixture"', b'toolID="PEAT IEC 61850 fixture"')
-    path = _write(tmp_path / "SET_61850.CID", zlib.compress(data, level))
+    path = _write(tmp_path / "SET_61850.CID", zlib.compress(raw, level))
     assert not _claims(IEC61850SCL, path)
     assert _claims(SELRelay, path)
     assert scl.is_scl(path)

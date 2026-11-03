@@ -124,7 +124,7 @@ To reduce noise:
 
 - files in the categories ``log``, ``event_record``, ``diagnostic`` and ``report`` change and appear on every pull: only their disappearance is reported, not changes or new files;
 - relationships learned only from ARP, socket tables or logs come and go: a missing relationship is only reported if it was configured (``evidence`` ``config``, ``scl`` or ``user``). A *new* peer is always reported;
-- the input files of ``peat parse`` (``files`` items whose ``path`` is their ``local_path``, e.g. an SCD file) are files on the PEAT host, not on the device: they are never reported as missing or unexpected, so the same SCD file parsed from another folder or under another name compares equal (an input file at the same path is still compared, e.g. its hash);
+- the input files of ``peat parse`` (``files`` items whose ``path`` is their ``local_path``, e.g. an SCD file or a SEL ``SET_61850.CID`` file) are files on the PEAT host, not on the device: they are never reported as missing or unexpected, so the same SCD file parsed from another folder or under another name compares equal (an input file at the same path is still compared, e.g. its hash);
 - routes of the type ``cache`` (transient route cache entries, one per recently used destination, e.g. from the FortiGate ``diagnose ip rtcache list``) are not compared (``VOLATILE_ROUTE_TYPES`` in :mod:`peat.data.baseline`): they are never reported as missing, new or changed, and a route table with only such entries is compared like an empty one (a new gateway they use is still reported as a new ``routes_via`` peer);
 - a change of ``key_switch`` or ``run_mode`` has severity ``high`` (a strong tampering indicator).
 

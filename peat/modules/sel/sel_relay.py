@@ -210,7 +210,9 @@ class SELRelay(DeviceModule):
     # Targeted function for file_signatures custom_check usage
     def is_cid(data):
         """
-        Take zlib compressed data and test if contains expected CID data.
+        Take zlib compressed data and test if it is a CID: data that decompresses
+        to IEC 61850 SCL, XML with the ``SCL`` element of the
+        ``http://www.iec.ch/61850/2003/SCL`` namespace (no other content is required).
 
         Decompression is limited to :data:`peat.parsing.scl.MAX_DECOMPRESSED_SIZE`
         (the limit of the CID parser): larger (zlib bomb), truncated and non-zlib
@@ -237,7 +239,6 @@ class SELRelay(DeviceModule):
         sig = FileSignature(
             default_filename="",
             xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
-            substrings=("IEC 61850",),
         )
         return sig.matches(decompressed_bytes)
 
@@ -1587,7 +1588,7 @@ class SELRelay(DeviceModule):
                 dev = datastore.get(f"selrelay_{file.stem.lower()}", "id")
 
             if is_cid_file:
-                cid_extracted = process_cid_file(raw_data, file, dev)
+                cid_extracted = process_cid_file(raw_data, file, dev, local_path=file)
 
                 if not cid_extracted:
                     return None

@@ -285,6 +285,36 @@ def test_parse_input_files_compare_equal(tmp_path, mocker):
         assert api.compare_to_baseline(cur, baseline, store=False) == [], kind
 
 
+@pytest.mark.usefixtures("run_dirs")
+def test_parse_input_sel_cid_compare_equal(tmp_path, mocker):
+    """The same zlib SEL CID parsed from another folder and name has no findings (R3-0)."""
+    import zlib
+
+    from peat import datastore
+
+    scd = Path(__file__).parents[1] / "parsing" / "data_files" / "scl" / "synthetic_substation.scd"
+    data = zlib.compress(scd.read_bytes())
+    mocker.patch.object(datastore, "objects", [])
+    first = tmp_path / "cid_v1" / "SET_61850.CID"
+    first.parent.mkdir()
+    first.write_bytes(data)
+    (dev,) = api.load_device_data(SELRelay.parse(first).export())
+    (cid,) = dev.files
+    assert cid.path is not None
+    assert cid.local_path is not None
+    assert cid.path.as_posix() == cid.local_path.as_posix()  # a "peat parse" input file
+    for kind in ("first_observed", "engineer_provided"):
+        baseline = api.create_baseline(dev, kind)
+        for name in ("SET_61850.CID", "relay2_61850.cid"):
+            datastore.objects.clear()
+            second = tmp_path / f"cid_v2_{kind}" / name
+            second.parent.mkdir(exist_ok=True)
+            second.write_bytes(data)
+            (cur,) = api.load_device_data(SELRelay.parse(second).export())
+            assert cur.files[0].path != dev.files[0].path
+            assert api.compare_to_baseline(cur, baseline, store=False) == [], (kind, name)
+
+
 # --------------------------------------------------------------------------- #
 # Creating, saving and loading baselines
 # --------------------------------------------------------------------------- #

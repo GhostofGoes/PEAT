@@ -39,13 +39,8 @@ def _clean_datastore(mocker):
 
 @pytest.fixture(scope="module")
 def scl_raw() -> bytes:
-    # SELRelay's CID signature also requires the text "IEC 61850" in the content
     # LF line endings whatever the checkout (CRLF on Windows)
-    return (
-        SCD_PATH.read_bytes()
-        .replace(b"\r\n", b"\n")
-        .replace(b'toolID="PEAT synthetic fixture"', b'toolID="PEAT IEC 61850 fixture"')
-    )
+    return SCD_PATH.read_bytes().replace(b"\r\n", b"\n")
 
 
 def _claims(module, path: Path) -> bool:
@@ -235,6 +230,16 @@ def test_zlib_cid_claimed_only_by_selrelay(tmp_path, scl_raw, level):
     path.write_bytes(zlib.compress(scl_raw, level))
     assert _claims(SELRelay, path)
     assert not _claims(IEC61850SCL, path)
+
+
+def test_zlib_scl_claimed_by_content_only(tmp_path, scl_raw):
+    """Any SCL document is enough: no "IEC 61850" text, whatever the file name (R3-23)."""
+    assert b"IEC 61850" not in scl_raw
+    path = tmp_path / "relay_settings.bin"
+    path.write_bytes(zlib.compress(scl_raw))
+    assert parsable_file_by_signature(path.as_posix(), SELRelay)
+    assert not parsable_file_by_signature(path.as_posix(), IEC61850SCL)
+    assert SELRelay.is_cid(io.BytesIO(zlib.compress(scl_raw))) is True
 
 
 def test_plain_xml_cid_not_claimed_by_selrelay(tmp_path, scl_raw):

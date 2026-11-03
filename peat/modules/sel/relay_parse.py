@@ -2,7 +2,7 @@ import copy
 import csv
 import re
 from datetime import datetime, timedelta
-from pathlib import PurePath, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 
 import olefile
@@ -2974,7 +2974,9 @@ def extract_cid_content(data: bytes) -> str:
     return decoded
 
 
-def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
+def process_cid_file(
+    data: bytes, filepath: PurePath, dev: DeviceData, local_path: Path | None = None
+) -> str:
     """
     .CID files are zlib-compressed data (zlib header ``0x78``, usually ``0x7801``).
     The only known CID file currently is ``SET_61850.CID``, which contains the
@@ -2985,6 +2987,15 @@ def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
     (with :func:`peat.parsing.scl.apply_iec61850`: MMS/GOOSE/SV services,
     publications/subscriptions/reports and their relationships). A failure to
     parse the SCL never loses the decompressed file or the rest of the pull.
+
+    Args:
+        data: Raw (zlib-compressed) content of the CID file
+        filepath: Path of the CID file on the relay (pull), or of the input file
+        dev: Device the CID file belongs to
+        local_path: The CID file on the system running PEAT, if it is a
+            ``peat parse`` input instead of a file pulled from the relay. Its
+            ``files`` record then has ``path`` = ``local_path``, like other
+            parse input files (baseline comparisons skip such records).
     """
     log.info(f"Extracting data from CID file '{filepath.name}'")
 
@@ -3008,17 +3019,30 @@ def process_cid_file(data: bytes, filepath: PurePath, dev: DeviceData) -> str:
         return ""
 
     cid_path = PurePosixPath(PurePath(filepath).as_posix())
-    dev.store(
-        "files",
-        File(
-            path=cid_path,
-            type="file",
-            size=len(data),
-            peat_module=_module_name(dev),
-            category={"configuration", "iec61850"},
-        ),
-        lookup="path",
-    )
+    if local_path is not None:
+        # "peat parse" input: process_file() sets path to the resolved local path
+        dev.store(
+            "files",
+            File(
+                local_path=Path(local_path),
+                type="file",
+                size=len(data),
+                peat_module=_module_name(dev),
+                category={"configuration", "iec61850"},
+            ),
+        )
+    else:
+        dev.store(
+            "files",
+            File(
+                path=cid_path,
+                type="file",
+                size=len(data),
+                peat_module=_module_name(dev),
+                category={"configuration", "iec61850"},
+            ),
+            lookup="path",
+        )
 
     # IEC 61850 SCL (DESIGN 7.4.1): after the decompressed file was written,
     # in its own try so a bad SCL never loses the file or the rest of the pull
