@@ -413,6 +413,8 @@ class SocketRelay:
         self.response_delay = response_delay
         self.pause_at = pause_at
         self.received = b""
+        #: Everything sent to the client so far
+        self.sent = b""
         relay.send = self._send
         relay.close = self._close
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -439,9 +441,11 @@ class SocketRelay:
     def _send_chunks(self, data: bytes) -> None:
         if not self.chunk_size:
             self.sock.sendall(data)
+            self.sent += data
             return
         for i in range(0, len(data), self.chunk_size):
             self.sock.sendall(data[i : i + self.chunk_size])
+            self.sent += data[i : i + self.chunk_size]
             if self.chunk_delay:
                 time.sleep(self.chunk_delay)
 
