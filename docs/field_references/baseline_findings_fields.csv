@@ -8,7 +8,7 @@ event.severity, long, 4, "Severity of a failed check: 1 (info) to 5 (critical). 
 event.dataset, keyword, peat.baseline, "Always ``peat.baseline``."
 event.ingested, date, 2026-10-30T12:00:00Z, "When PEAT generated the document."
 event.module, keyword, SELRelay, "PEAT module of the device."
-rule.id, keyword, sel.accounts.default-credentials, "Rule ID (ECS ``rule.id``). Empty for snapshot differences."
+rule.id, keyword, sel.accounts.default-credentials, "Rule ID (ECS ``rule.id``). Empty for snapshot differences. For a rule without an ID: ``<path>:<operator>``, plus ``:<value as JSON>`` if the rule has a value (e.g. ``service[*].port:not_in:[23]``)."
 rule.name, keyword, "No factory default passwords", "Rule name (ECS ``rule.name``)."
 rule.ruleset, keyword, "SEL relay hardening", "Name of the baseline (ECS ``rule.ruleset``)."
 rule.reference, keyword, "https://example.com/hardening-guide", "URL or document with details (ECS ``rule.reference``)."
