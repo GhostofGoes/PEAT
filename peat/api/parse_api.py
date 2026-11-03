@@ -224,9 +224,21 @@ def parse(
     # DeviceModule.parse() exports a device after each file: the state after a later
     # file of the same device went to "device-data-full.json.1", ".2", ... Like pull
     # and scan, "device-data-full.json" gets the final (merged) state of each device.
+    # Different devices can have the same output directory (IDs that differ only in
+    # case or separators, or the same name, e.g. SEL event files of one relay): only
+    # the first device overwrites its files, the others write numbered files.
     if config.DEVICE_DIR:
+        written: dict[Path, DeviceData] = {}  # output directory -> first device
         for f_dev in parse_devices:
-            f_dev.export_to_files(overwrite_existing=True)
+            out_dir = f_dev.get_out_dir()
+            first = written.setdefault(out_dir, f_dev)
+            if first is not f_dev:
+                log.warning(
+                    f"Devices {_dev_name(first)} and {_dev_name(f_dev)} have the same "
+                    f"output directory '{out_dir.as_posix()}': the final state of the "
+                    f"second device is in numbered files (device-data-full.json.<n>)"
+                )
+            f_dev.export_to_files(overwrite_existing=first is f_dev)
 
     # * Push results to Elasticsearch *
     if state.elastic:
@@ -286,6 +298,12 @@ def parse(
         f"Completed parsing of {len(parse_results)} files in {utils.fmt_duration(parse_duration)}"
     )
     return parse_summary
+
+
+def _dev_name(dev: DeviceData) -> str:
+    """Device ID for log messages, with its ``id`` if that is different."""
+    dev_id = dev.get_id()
+    return f"'{dev_id}' (id '{dev.id}')" if dev.id and dev.id != dev_id else f"'{dev_id}'"
 
 
 def parse_data(source: str | Path | TextIO, dev_cls: type[DeviceModule]) -> DeviceData | None:

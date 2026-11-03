@@ -193,9 +193,11 @@ def _devices_from_json(
 
     # Parse summary: device data is the host document in parse_results[*].results.
     # A device parsed from several files has an entry per file, with its state after
-    # that file: the last entry of each device (by device ID) is used.
+    # that file: the last entry of each device (by device ID and "id") is used.
+    # Different devices can have the same device ID (e.g. the name of the relay of
+    # several SEL event files, each a device with its own "id").
     if isinstance(data, dict) and "parse_results" in data:
-        last: dict[str, DeviceData] = {}  # device ID -> device of its last entry
+        last: dict[tuple[str, str], DeviceData] = {}  # device key -> its last entry
         for n, result in enumerate(data.get("parse_results") or []):
             if isinstance(result, dict) and isinstance(result.get("results"), dict):
                 dev = _device_from_dict(result["results"], origin, result.get("module", ""))
@@ -203,13 +205,13 @@ def _devices_from_json(
                     errors.append(f"{label}: parse_results[{n}]")
                     continue
                 dev._cache["omitted_keys"] = _PARSE_SUMMARY_OMITTED
-                dev_id = dev.get_id()
-                if dev_id in last:
+                dev_key = (dev.get_id(), dev.id)
+                if dev_key in last:
                     log.debug(
-                        f"Device '{dev_id}' has several parse results{where}: "
+                        f"Device '{dev_key[0]}' has several parse results{where}: "
                         f"using the last one (parse_results[{n}])"
                     )
-                last[dev_id] = dev
+                last[dev_key] = dev
         if not last:
             log.error(f"No device data found in the parse summary{where}")
             errors.append(label)

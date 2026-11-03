@@ -411,3 +411,100 @@ def test_parse_api_pushes_config_host_a_created_device_was_merged_into(test_dir,
     ]
     full = tmp_path / "devices" / "mu1" / "device-data-full.json"
     assert json.loads(full.read_text(encoding="utf-8"))["name"] == "MU1"
+
+
+def _full_files(device_dir) -> dict[str, dict]:
+    """device-data-full.json* files of a device directory, by file name."""
+    return {
+        p.name: json.loads(p.read_text(encoding="utf-8"))
+        for p in sorted(device_dir.glob("device-data-full.json*"))
+    }
+
+
+def test_parse_api_keeps_files_of_devices_with_the_same_output_directory(
+    examples_dir, tmp_path, mocker
+):
+    """
+    Different devices whose IDs give the same output directory (SCEPTRE "fep-1" and
+    "FEP-1") do not overwrite each other's final state: the first device's is in
+    device-data-full.json, the second's in a numbered file (R7-2).
+    """
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    src = tmp_path / "in"
+    src.mkdir()
+    sceptre = examples_dir / "devices" / "sceptre" / "bp"
+    shutil.copyfile(sceptre / "dnp3-client.xml", src / "r7_2_a_dnp3.xml")  # fep-1
+    modbus = (sceptre / "modbus-client.xml").read_text(encoding="utf-8")
+    assert "<name>fep-1</name>" in modbus
+    (src / "r7_2_b_modbus.xml").write_text(
+        modbus.replace("<name>fep-1</name>", "<name>FEP-1</name>"), encoding="utf-8"
+    )
+
+    summary = parse([src], ["SCEPTRE"])
+
+    assert summary["num_parse_successes"] == 2
+    assert [d.get_id() for d in datastore.objects] == ["fep-1", "FEP-1"]
+    assert [p.name for p in (tmp_path / "devices").iterdir()] == ["fep-1"]
+    files = _full_files(tmp_path / "devices" / "fep-1")
+    states = {
+        (name, data["name"], tuple(sorted(s["protocol"] for s in data["service"])))
+        for name, data in files.items()
+    }
+    assert ("device-data-full.json", "fep-1", ("dnp3",)) in states
+    assert {(dev_name, protocols) for _, dev_name, protocols in states} == {
+        ("fep-1", ("dnp3",)),
+        ("FEP-1", ("modbus_tcp",)),
+    }
+    summary_file = tmp_path / "devices" / "fep-1" / "device-data-summary.json"
+    assert json.loads(summary_file.read_text(encoding="utf-8"))["name"] == "fep-1"
+
+
+def test_parse_api_keeps_devices_with_the_same_device_id_apart(tmp_path, mocker):
+    """
+    The HISTORY.TXT and SER.TXT event files of one SEL relay are parsed as two devices
+    (ids selrelay_history and selrelay_ser) with the same device ID (the relay name):
+    the run directory and the parse summary have both devices (R7-4).
+    """
+    from peat.api.baseline_api import load_device_data
+    from tests.modules.sel.test_relay_parse import HISTORY, SER
+
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    src = tmp_path / "in"
+    src.mkdir()
+    paths = [src / "HISTORY.TXT", src / "SER.TXT"]
+    for path, text in zip(paths, [HISTORY, SER], strict=True):
+        path.write_bytes(text.encode())  # the same line endings on every OS
+
+    summary = parse(paths, ["SELRelay"])
+
+    assert summary["num_parse_successes"] == 2
+    devices = [(d.get_id(), d.id) for d in datastore.objects]
+    assert len(devices) == 2
+    assert devices[0][0] == devices[1][0]  # the same device ID
+    assert [dev_id for _, dev_id in devices] == ["selrelay_history", "selrelay_ser"]
+    device_dirs = list((tmp_path / "devices").iterdir())
+    assert len(device_dirs) == 1  # the directory of the relay name
+    files = _full_files(device_dirs[0])
+    assert {data["id"] for data in files.values()} == {"selrelay_history", "selrelay_ser"}
+    assert files["device-data-full.json"]["id"] == "selrelay_history"
+
+    from_summary = load_device_data(tmp_path / "summaries" / "parse-summary.json")
+    assert sorted(d.id for d in from_summary) == ["selrelay_history", "selrelay_ser"]
