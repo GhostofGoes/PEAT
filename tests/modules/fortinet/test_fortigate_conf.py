@@ -307,6 +307,56 @@ def test_fortigate_ntp_ipsec_ha():
     assert len(dev.routes) == 2
 
 
+def test_fortigate_secrets_in_nested_config_blocks_are_dropped():
+    conf = """\
+config system interface
+    edit "l2tp1"
+        set vdom "root"
+        set type physical
+        set password ENC TOPLEVELSECRET==
+        config l2tp-client-settings
+            set user "vpnuser"
+            set password ENC SECRETL2TPPASSWORDBASE64==
+            set peer-host "192.0.2.4"
+        end
+    next
+    edit "wifi"
+        set vdom "root"
+        config wifi-networks
+            edit 1
+                set wifi-ssid "fgt-ssid"
+                set wifi-passphrase ENC SECRETWIFIPASSPHRASE==
+                set wifi-key ENC SECRETWIFIKEY==
+            next
+        end
+        set auth-pwd ENC SECRETUNKNOWNNAME==
+    next
+end
+config system ha
+    set mode a-p
+    config secondary-vcluster
+        set psksecret ENC SECRETHAPSK==
+        set priority 200
+    end
+end
+"""
+    dev = DeviceData()
+    process_fg_conf(fg_conf_to_dict(conf), dev)
+    ifaces = {i.name: i for i in dev.interface}
+    assert ifaces["l2tp1"].extra == {
+        "vdom": "root",
+        "l2tp-client-settings": {"user": "vpnuser", "peer-host": "192.0.2.4"},
+    }
+    assert ifaces["wifi"].extra == {
+        "vdom": "root",
+        "wifi-networks": {"1": {"wifi-ssid": "fgt-ssid"}},
+    }
+    assert dev.extra["ha"] == {"mode": "a-p", "secondary-vcluster": {"priority": "200"}}
+    for doc in (dev.export(), dev.elastic()):
+        assert "SECRET" not in str(doc)
+        assert "ENC " not in str(doc)
+
+
 def test_fortigate_ipsec_tunnels_over_two_wan_links():
     conf = """\
 config vpn ipsec phase1-interface

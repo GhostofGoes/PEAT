@@ -486,7 +486,10 @@ def parse_fg_run_time(text: str) -> timedelta | None:
     """
     values = {
         unit: int(num)
-        for num, unit in re.findall(r"(\d+)\s*(day|hour|minute|second)s?", text, re.IGNORECASE)
+        # (?<!\d): only match at the start of a number (linear time on long digit runs)
+        for num, unit in re.findall(
+            r"(?<!\d)(\d+)\s*(day|hour|minute|second)s?", text, re.IGNORECASE
+        )
     }
     if not values:
         return None
@@ -615,7 +618,8 @@ def parse_fg_arp_list(lines: list[str]) -> list[dict]:
         ip = re.search(r"(?:^|\s)(\d{1,3}(?:\.\d{1,3}){3})(?:\s|$)", line)
         if not ip or not utils.is_ip(ip.group(1)):
             continue
-        entry = dict(re.findall(r"([\w-]+)=(\S*)", line))
+        # (?<![\w-]): only match at the start of a key (linear time on long words)
+        entry = dict(re.findall(r"(?<![\w-])([\w-]+)=(\S*)", line))
         entry["ip"] = ip.group(1)
         mac = re.search(MAC_RE_COLON, line)
         entry["mac"] = mac.group(0).upper() if mac else ""

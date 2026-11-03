@@ -8,6 +8,7 @@ administration guide), and the FG100F-style "get hardware nic" output the
 parser was written against. All values are made up.
 """
 
+import time
 from datetime import timedelta
 
 import pytest
@@ -322,6 +323,33 @@ def test_nic_unknown_status_values_do_not_abort():
     assert ifaces["port1"].connected is None
     assert ifaces["port1"].extra["link"] == "unknown"
     assert ifaces["port2"].connected is True
+
+
+def test_arp_list_and_run_time_parsing_are_linear_on_long_lines():
+    line = "index=5 ifname=port1 192.0.2.1 00:09:0f:00:00:01 state=00000002 use=170 ref=3"
+    assert fortigate_dbl.parse_fg_arp_list([line]) == [
+        {
+            "index": "5",
+            "ifname": "port1",
+            "state": "00000002",
+            "use": "170",
+            "ref": "3",
+            "ip": "192.0.2.1",
+            "mac": "00:09:0F:00:00:01",
+        }
+    ]
+    assert fortigate_dbl.parse_fg_run_time("4 days, 5 hours and 29 minutes") == timedelta(
+        days=4, hours=5, minutes=29
+    )
+
+    # A crafted debug log with long runs of word characters or digits must not
+    # stall the parse (quadratic matching took seconds here, minutes on 200 KB)
+    start = time.perf_counter()
+    assert fortigate_dbl.parse_fg_arp_list(["192.0.2.1 " + "a" * 40_000]) == [
+        {"ip": "192.0.2.1", "mac": ""}
+    ]
+    assert fortigate_dbl.parse_fg_run_time("1" * 20_000) is None
+    assert time.perf_counter() - start < 2
 
 
 def test_crashlog_reason():

@@ -1,6 +1,7 @@
 import ast
 import copy
 import re
+from typing import Any
 
 from peat import (
     DeviceData,
@@ -41,9 +42,27 @@ _DNS_SERVER_KEYS = (
 _UNSET_IPS = ("0.0.0.0", "::")
 
 
-def _without_secrets(settings: dict) -> dict:
-    """Copy of ``settings`` without values of keys that may hold secrets."""
-    return {k: v for k, v in settings.items() if not _SECRET_KEY_RE.search(str(k))}
+def _is_encrypted(value: Any) -> bool:
+    """FortiOS shows stored secrets as ``ENC <base64>``, whatever the setting is named."""
+    return isinstance(value, str) and value.startswith("ENC ")
+
+
+def _without_secrets(settings: Any) -> Any:
+    """
+    Copy of ``settings`` without the settings that may hold secrets (names
+    matching ``_SECRET_KEY_RE`` and encrypted ``ENC ...`` values), also in nested
+    ``config`` blocks (e.g. ``config l2tp-client-settings`` / ``set password``
+    or ``config wifi-networks`` / ``set wifi-passphrase`` of an interface).
+    """
+    if isinstance(settings, dict):
+        return {
+            k: _without_secrets(v)
+            for k, v in settings.items()
+            if not _SECRET_KEY_RE.search(str(k)) and not _is_encrypted(v)
+        }
+    if isinstance(settings, list):
+        return [_without_secrets(v) for v in settings if not _is_encrypted(v)]
+    return settings
 
 
 def _split_names(value: str) -> list[str]:
