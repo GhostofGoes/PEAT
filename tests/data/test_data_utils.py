@@ -265,6 +265,24 @@ def test_dedupe_model_list_keeps_services_of_other_transports():
     assert len(dedupe_model_list([Service(port=20000), tcp, udp])) == 2
 
 
+def test_dedupe_model_list_status_rule_keeps_other_transports():
+    """A service is not merged into a verified or open one on another transport (R6-2)."""
+    listener = Service(port=20000, transport="udp", status="open")
+    verified = Service(protocol="dnp3", port=20000, transport="tcp", status="verified")
+    assert dedupe_model_list([listener.copy(), verified.copy()]) == [listener, verified]
+
+    closed = Service(port=53, transport="tcp", status="closed")
+    opened = Service(port=53, transport="udp", status="open")
+    assert dedupe_model_list([opened.copy(), closed.copy()]) == [opened, closed]
+
+    # the same transport, or no transport on one side, is still merged
+    assert dedupe_model_list(
+        [Service(port=20000, transport="tcp", status="open"), verified.copy()]
+    ) == [verified]
+    assert dedupe_model_list([Service(port=20000, status="open"), verified.copy()]) == [verified]
+    assert dedupe_model_list([Service(port=53, status="closed"), opened.copy()]) == [opened]
+
+
 def test_merge_models():
     """assert there are no duplicates in various places."""
     assert merge_models(None, None) is None

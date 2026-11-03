@@ -425,7 +425,10 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
     :meth:`~peat.data.models.DeviceData.store`). This pass is linear.
 
     Models that are a subset of another (contains some keys and values)
-    will be merged together and their values combined.
+    will be merged together and their values combined. A
+    :class:`~peat.data.models.Service` is also merged into a ``verified``
+    service, and a ``closed`` one into an ``open`` one, when their ``port``,
+    ``protocol`` and ``transport`` are equal or unset on either side.
 
     .. warning::
        The subset pass is expensive, ~O(n^2 log n) algorithm (in)efficiency.
@@ -542,7 +545,9 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
                 break  # inner loop
 
             # If dict key sets are disjoint, then merge them
-            # If it's a Service, and "status" is "open", preserve that value
+            # If it's a Service, and "status" is "open", preserve that value.
+            # The port, protocol and transport must match where both are set
+            # (a listener on udp/161 is not merged into a verified tcp/161).
             # Using subset with "dict.items()": https://stackoverflow.com/a/41579450
             elif (item_dict.items() < comp_dict.items()) or (
                 model_type == "Service"
@@ -550,7 +555,7 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
                     comp_dict.get("status") == "verified"
                     or (comp_dict.get("status") == "open" and item_dict.get("status") == "closed")
                 )
-                and compare_dicts(item_dict, comp_dict, ["port", "protocol"])
+                and compare_dicts(item_dict, comp_dict, ["port", "protocol", "transport"])
             ):
                 # Update the underlying model which will be in the results
                 merge_models(model_cache[comp_id], model_cache[item_id])

@@ -695,6 +695,33 @@ def test_netstat_tcp_and_udp_listeners_on_one_port_are_exported(parser, data, as
     assert_no_errors()
 
 
+def test_netstat_listener_on_other_transport_than_verified_service_is_exported(
+    assert_no_errors,
+):
+    """A tcp/161 listener is not merged into the verified udp/161 SNMP service (R6-2)."""
+    dev = DeviceData(id="test_netstat_verified_other_transport", ip="192.0.2.10")
+    dev.store(
+        "service",
+        Service(protocol="snmp", port=161, transport="udp", status="verified"),
+        interface_lookup={"ip": dev.ip},
+    )
+    data = (
+        "Proto Recv-Q Send-Q Local Address  Foreign Address  State   PID/Program name\n"
+        "tcp        0      0 0.0.0.0:161    0.0.0.0:*        LISTEN  301/snmpd\n"
+        "udp        0      0 0.0.0.0:161    0.0.0.0:*                301/snmpd\n"
+    )
+    assert command_parsers.NetstatLinuxParser.parse_and_process(data, dev)
+    expected = {(161, "tcp"), (161, "udp")}
+    assert {(s.port, s.transport) for s in dev.service} == expected
+
+    exported = dev.export()["service"]
+    assert {(s["port"], s["transport"]) for s in exported} == expected
+    assert {(s["port"], s["transport"]) for s in dev.elastic()["service"]} == expected
+    udp = next(s for s in exported if s["transport"] == "udp")
+    assert (udp["protocol"], udp["status"]) == ("snmp", "verified")
+    assert_no_errors()
+
+
 def test_out_of_range_pid_and_metric_never_reach_elasticsearch(assert_no_errors):
     """A corrupted PID or route metric does not reject the host document (R5-10)."""
     big = "99999999999999999999"
