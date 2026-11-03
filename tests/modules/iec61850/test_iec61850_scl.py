@@ -5,6 +5,7 @@ Uses the synthetic SCL fixture of the SCL parser tests
 (tests/parsing/data_files/scl/synthetic_substation.scd); variants are derived at runtime.
 """
 
+import hashlib
 import io
 import json
 import zlib
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from peat import IEC61850SCL, DeviceData, SELRelay, config, datastore, module_api
+from peat import IEC61850SCL, DeviceData, File, SELRelay, config, datastore, module_api, utils
 from peat.api.parse_api import parsable_file_by_pattern, parsable_file_by_signature, parse
 from peat.modules.iec61850.iec61850_scl import is_plain_xml_scl
 from peat.parsing import scl
@@ -160,6 +161,29 @@ def test_parse_scd_one_device_per_ied(assert_glob_path):
         assert_glob_path(out_dir, "device-data-relationships.jsonl")
     # The input file is moved to the output directory of the returned device
     assert (dev.get_out_dir() / SCD_PATH.name).is_file()
+
+
+@pytest.mark.usefixtures("out_config")
+def test_scl_file_hashed_once(mocker):
+    """The SCL file is hashed once per parse, not read again for every IED (R3-21)."""
+    # The files record of each IED before the fix: hashed and sized from the local file
+    before = File(
+        local_path=SCD_PATH,
+        mime_type="application/xml",
+        category={"configuration", "iec61850"},
+    )
+    before.annotate()
+    gen_hashes = mocker.spy(utils, "gen_hashes")
+
+    assert IEC61850SCL.parse(SCD_PATH) is not None
+    assert len(datastore.objects) == 2
+    assert gen_hashes.call_count == 1
+    assert not isinstance(gen_hashes.call_args.args[0], Path)  # the bytes already read
+    sha256 = hashlib.sha256(SCD_PATH.read_bytes()).hexdigest().upper()
+    for ied_dev in datastore.objects:
+        (record,) = ied_dev.files
+        assert record.hash.sha256 == sha256
+        assert record.dict(exclude={"device"}) == before.dict(exclude={"device"})
 
 
 @pytest.mark.usefixtures("out_config")

@@ -589,6 +589,124 @@ def test_route_gateway_assignment_never_raises():
     assert r.gateway == "192.0.2.1"
 
 
+def _routes_via_device() -> DeviceData:
+    """300 routes via 2 gateways; the first routes have no interface."""
+    dev = DeviceData(ip="192.0.2.40")
+    dev.store("interface", Interface(name="port1", type="ethernet", ip="192.0.2.40"))
+    dev.store("interface", Interface(name="port2", type="wireless"))
+    # A module's edge to one of the gateways (merged with: evidence union)
+    dev.store(
+        "relationships",
+        Relationship(
+            type="routes_via",
+            remote=RelationshipEndpoint(ip="198.51.100.1", role="gateway"),
+            evidence={"config"},
+        ),
+    )
+    routes = [Route(destination="0.0.0.0/0", gateway="0.0.0.0")]
+    for i in range(300):
+        gateway = "192.0.2.1" if i % 2 else "198.51.100.1"
+        interface = "" if i < 4 else ("port2" if i % 4 == 0 else "port1")
+        routes.append(
+            Route(
+                destination=f"10.{i // 256}.{i % 256}.0/24", gateway=gateway, interface=interface
+            )
+        )
+    dev.routes = routes
+    return dev
+
+
+def test_routes_via_one_store_per_gateway(mocker):
+    """One routes_via store() per gateway, not per route, with the same result (R3-18)."""
+    # Reference: one store() per route (what _derive_relationships() did before)
+    expected = _routes_via_device()
+    for route in expected.routes:
+        if route.gateway and route.gateway not in ("0.0.0.0", "::"):
+            expected.store(
+                "relationships",
+                Relationship(
+                    type="routes_via",
+                    local=RelationshipEndpoint(interface=route.interface),
+                    remote=RelationshipEndpoint(ip=route.gateway, role="gateway"),
+                    evidence={"routing_table"},
+                ),
+            )
+
+    dev = _routes_via_device()
+    store = mocker.patch.object(DeviceData, "store", autospec=True, side_effect=DeviceData.store)
+    dev._derive_relationships()
+    assert [c.args[1] for c in store.call_args_list] == ["relationships", "relationships"]
+    assert dev.relationships == expected.relationships
+    edges = {r.remote.ip: r for r in dev.relationships}
+    assert len(edges) == 2
+    assert (edges["192.0.2.1"].local.interface, edges["192.0.2.1"].medium) == (
+        "port1",
+        "ethernet",
+    )
+    assert (edges["198.51.100.1"].local.interface, edges["198.51.100.1"].medium) == (
+        "port2",
+        "wireless",
+    )
+    assert edges["198.51.100.1"].evidence == {"config", "routing_table"}
+
+
+class _CountingList(list):
+    """A list that counts how often it is iterated."""
+
+    iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        return super().__iter__()
+
+
+def test_relationship_listening_ports_only_read_when_needed():
+    """The device's listening ports are only read by edges that use them (R3-20)."""
+    dev = DeviceData(ip="192.0.2.40")
+    dev.store("service", Service(protocol="dnp3", port=20000, transport="tcp", status="open"))
+    services = _CountingList(dev.service)
+    dev.__dict__["service"] = services  # bypass validation (it would copy the list)
+
+    neighbor = Relationship(
+        type="neighbor_of",
+        remote=RelationshipEndpoint(ip="192.0.2.1", mac="00:00:5E:00:53:01"),
+        evidence={"arp"},
+    )
+    route = Relationship(
+        type="routes_via",
+        remote=RelationshipEndpoint(ip="192.0.2.1", role="gateway"),
+        evidence={"routing_table"},
+    )
+    egress = Relationship(
+        direction="egress", protocol="dnp3", remote=RelationshipEndpoint(ip="192.0.2.9")
+    )
+    for rel in (neighbor, route, egress):
+        rel.annotate(dev)
+    assert services.iterations == 0
+    assert (neighbor.direction, neighbor.protocol, neighbor.transport) == ("", "", "")
+    assert (route.direction, route.protocol, route.transport) == ("", "", "")
+    assert (egress.direction, egress.protocol, egress.remote.port) == ("egress", "dnp3", None)
+
+    # Edges that infer their direction or fill in an ingress edge still use them
+    socket = Relationship(
+        transport="tcp",
+        local=RelationshipEndpoint(port=20000),
+        remote=RelationshipEndpoint(ip="192.0.2.5", port=49210),
+    )
+    socket.annotate(dev)
+    assert services.iterations == 1
+    assert (socket.direction, socket.protocol) == ("ingress", "dnp3")
+    log_edge = Relationship(
+        direction="ingress",
+        protocol="dnp3",
+        remote=RelationshipEndpoint(ip="192.0.2.5"),
+        evidence={"log"},
+    )
+    log_edge.annotate(dev)
+    assert services.iterations == 2
+    assert (log_edge.local.port, log_edge.transport) == (20000, "tcp")
+
+
 def test_indicator_state_assignment_is_normalized():
     ind = Indicator(name="RUN", type="led")
     ind.state = "lit"

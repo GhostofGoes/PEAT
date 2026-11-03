@@ -4112,13 +4112,16 @@ class Relationship(BaseModel):
             self.transport = "tcp"
         elif not self.transport and self.protocol in UDP_PROTOCOLS:
             self.transport = "udp"
+        lp, rp = self.local.port, self.remote.port
+        infer_direction = not self.direction and (self.transport in ("tcp", "udp") or lp or rp)
+        # The device's listening ports are only used to infer the direction and to
+        # fill in ingress edges: not built for other edges (e.g. ARP neighbors, routes)
         listening: dict[int, tuple[str, str]] = {}  # port -> (protocol, transport)
-        if dev is not None:
+        if dev is not None and (infer_direction or self.direction == "ingress"):
             for svc in [*dev.service, *(s for i in dev.interface for s in i.services)]:
                 if svc.port and svc.status not in ("closed",):
                     listening.setdefault(svc.port, (svc.protocol, svc.transport))
-        lp, rp = self.local.port, self.remote.port
-        if not self.direction and (self.transport in ("tcp", "udp") or lp or rp):
+        if infer_direction:
             if lp is not None and lp in listening:
                 self.direction = "ingress"
             elif (
@@ -7219,17 +7222,24 @@ class DeviceData(BaseModel):
                     evidence={"config"},
                 ),
             )
+        # Routes via the same gateway are one edge (the interface is not part of its
+        # identity): one store() per gateway, not per route (DESIGN 8.0), with the
+        # first non-empty interface (what merging one store() per route kept)
+        gateways: dict[str, str] = {}
         for route in self.routes:
             if route.gateway and route.gateway not in ("0.0.0.0", "::"):
-                self.store(
-                    "relationships",
-                    Relationship(
-                        type="routes_via",
-                        local=RelationshipEndpoint(interface=route.interface),
-                        remote=RelationshipEndpoint(ip=route.gateway, role="gateway"),
-                        evidence={"routing_table"},
-                    ),
-                )
+                if not gateways.get(route.gateway):
+                    gateways[route.gateway] = route.interface
+        for gateway, interface in gateways.items():
+            self.store(
+                "relationships",
+                Relationship(
+                    type="routes_via",
+                    local=RelationshipEndpoint(interface=interface),
+                    remote=RelationshipEndpoint(ip=gateway, role="gateway"),
+                    evidence={"routing_table"},
+                ),
+            )
 
     def _link_service_processes(self) -> None:
         """Fill Service.process_name from HostProcess with the same PID."""

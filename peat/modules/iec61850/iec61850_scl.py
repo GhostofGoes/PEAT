@@ -41,7 +41,17 @@ from typing import BinaryIO
 
 from lxml import etree
 
-from peat import IEC61850, DeviceData, DeviceModule, File, ParseError, config, datastore
+from peat import (
+    IEC61850,
+    DeviceData,
+    DeviceModule,
+    File,
+    Hash,
+    ParseError,
+    config,
+    datastore,
+    utils,
+)
 from peat.file_signature import FileSignature
 from peat.parsing import scl
 from peat.protocols.addresses import address_to_pathname
@@ -111,6 +121,15 @@ class IEC61850SCL(DeviceModule):
             )
             return None
 
+        # The files record of every IED: the file is hashed once, not once per IED
+        file_record = File(
+            local_path=file,
+            mime_type=mime_type,
+            size=len(data),
+            hash=Hash.parse_obj(utils.gen_hashes(data)),
+            category={"configuration", "iec61850"},
+        )
+
         main_dev: DeviceData | None = None
         devices: dict[str, DeviceData] = {}
         claimed: set[int] = set()  # id() of the devices of the IEDs of this file
@@ -123,7 +142,7 @@ class IEC61850SCL(DeviceModule):
                     ied_dev = dev
                 else:
                     ied_dev, created = cls._ied_device(ied, file, claimed)
-                cls._populate_ied(ied_dev, ied, file, mime_type)
+                cls._populate_ied(ied_dev, ied, file, file_record)
             except Exception as ex:
                 cls.log.warning(f"Failed to process IED '{name}' from '{file.name}': {ex}")
                 if created and ied_dev is not None:
@@ -267,7 +286,7 @@ class IEC61850SCL(DeviceModule):
         return other is None or other is dev
 
     @classmethod
-    def _populate_ied(cls, dev: DeviceData, ied: IEC61850, file: Path, mime_type: str) -> None:
+    def _populate_ied(cls, dev: DeviceData, ied: IEC61850, file: Path, file_record: File) -> None:
         ied.scl_file = file.as_posix()
         if not dev.name:
             dev.name = ied.ied_name
@@ -291,10 +310,7 @@ class IEC61850SCL(DeviceModule):
         if not identity_ok:  # store("interface") copies the first interface IP to dev.ip
             dev.ip, dev.id = ip_before, id_before
 
-        dev.store(
-            "files",
-            File(local_path=file, mime_type=mime_type, category={"configuration", "iec61850"}),
-        )
+        dev.store("files", file_record.copy(deep=True))
 
 
 __all__ = ["IEC61850SCL"]
