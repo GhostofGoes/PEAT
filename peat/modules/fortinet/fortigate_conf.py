@@ -47,7 +47,7 @@ def _is_encrypted(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("ENC ")
 
 
-def _without_secrets(settings: Any) -> Any:
+def _redacted_settings(settings: Any) -> Any:
     """
     Copy of ``settings`` without the settings that may hold secrets (names
     matching ``_SECRET_KEY_RE`` and encrypted ``ENC ...`` values), also in nested
@@ -56,12 +56,12 @@ def _without_secrets(settings: Any) -> Any:
     """
     if isinstance(settings, dict):
         return {
-            k: _without_secrets(v)
+            k: _redacted_settings(v)
             for k, v in settings.items()
             if not _SECRET_KEY_RE.search(str(k)) and not _is_encrypted(v)
         }
     if isinstance(settings, list):
-        return [_without_secrets(v) for v in settings if not _is_encrypted(v)]
+        return [_redacted_settings(v) for v in settings if not _is_encrypted(v)]
     return settings
 
 
@@ -259,7 +259,7 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
                     iface.services.append(svc)
 
         # save remaining parameters in "extra"
-        iface.extra = _without_secrets(si)
+        iface.extra = _redacted_settings(si)
         dev.store("interface", iface, lookup="id")
 
     # === accprofile ===
@@ -509,7 +509,7 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
 
     # High availability (FGCP). Device-level redundancy isn't modeled yet.
     if system.get("ha"):
-        dev.extra["ha"] = _without_secrets(system["ha"])
+        dev.extra["ha"] = _redacted_settings(system["ha"])
 
     # TODO: "system sdwan" => related.urls, related.protocol
 
@@ -619,7 +619,7 @@ def process_fg_log(log_conf: dict[str, dict], dev: DeviceData) -> None:
         local_ip = str(fas.get("source-ip", "")).strip()
         extra = {
             k.replace("-", "_"): v
-            for k, v in _without_secrets(fas).items()
+            for k, v in _redacted_settings(fas).items()
             if k not in ("server", "source-ip", "status")
         }
         dev.store(
