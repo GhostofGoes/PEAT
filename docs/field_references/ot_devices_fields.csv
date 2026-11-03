@@ -338,7 +338,7 @@ host.interface.uptime, long, 23345, "How long the interface has been connected, 
 host.interface.id, keyword, "Port 3", "Identifier for the interface. The meaning of this value is device-dependent."
 host.interface.ip, ip, 192.0.2.1, "The Internet Protocol (IP) version 4 address of the interface. This is usually applicable to Ethernet-type interfaces, but could be applicable to serial interfaces as well."
 host.interface.subnet_mask, ip, 255.255.255.0, "IPv4 subnet mask of the interface, in standard dotted-decimal notation."
-host.interface.gateway, ip, 192.0.2.254, "IPv4 address of the default gateway of the interface, in standard dotted-decimal notation."
+host.interface.gateway, ip, 192.0.2.254, "IPv4 address of the default gateway of the interface, in standard dotted-decimal notation. Modules store a configured default gateway here (e.g. SEL ``DEFRTR``, M340, Totus, Windows CE, IEC 61850 SCL access points); PEAT does not derive a route or a ``routes_via`` relationship from it."
 host.interface.serial_port, keyword, /dev/ttyS0, "Serial port on the local system connected to the device. This could be a Windows COM port, e.g. COM4, or a Linux file path, e.g. /dev/ttyS0. This is also used for USB connections."
 host.interface.baudrate, integer, 56700, Data rate of the serial link. Only applicable to serial interfaces.
 host.interface.data_bits, byte, 8, Number of data bits for a serial link. Only applicable to serial interfaces.
@@ -489,7 +489,7 @@ host.related.process, keyword, "telnetd", "Names of processes that are currently
 host.related.vlans, keyword, "'100'", "VLAN IDs (decimal strings) related to the device: configured on its interfaces, used by its relationships (e.g. GOOSE publications), or found in its configuration. PEAT-specific (ECS has no ``related.vlans``). VLAN ``0`` (priority tagging only) is never added."
 
 
-host.routes, object, {...}, "IP routing table. Gateways are also added as ``routes_via`` relationships."
+host.routes, object, {...}, "IP routing table entries the device reports. Some modules also report the default route here as ``0.0.0.0/0`` (e.g. the Sage VxWorks boot line gateway, FortiGate static routes); a configured default gateway of an interface is in ``host.interface.gateway``. Gateways are also added as ``routes_via`` relationships, except loopback addresses and addresses of the device."
 host.routes.destination, keyword, "0.0.0.0/0", "Destination network in CIDR notation (normalized). ``default`` is ``0.0.0.0/0``."
 host.routes.gateway, ip, "192.0.2.1", "Next-hop IP address. Empty for directly connected routes. Non-IP gateways never raise: a MAC (on-link host routes, GE UR) goes to ``extra['gateway_mac']``, anything else (BSD/VxWorks ``link#N``) to ``extra['gateway_raw']``, and ``type`` defaults to ``connected``."
 host.routes.interface, keyword, "eth0", "Outgoing interface name (``Interface.name``)."

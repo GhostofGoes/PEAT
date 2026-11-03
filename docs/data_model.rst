@@ -71,6 +71,10 @@ List fields of the host document (``host.interface``, ``host.indicators``, ``hos
 - the derived flattened field ``host.indicator_states.<name>`` (e.g. ``host.indicator_states.RUN:off``), which holds the live state or value of every indicator;
 - the Python API (``peat.data.models``) for other correlated questions.
 
+Routes and default gateways
+---------------------------
+A configured default gateway of an interface is stored in :attr:`Interface.gateway <peat.data.models.Interface.gateway>` (``host.interface.gateway``), e.g. by SEL relays, M340, Totus, Windows CE, ControlLogix and IEC 61850 SCL access points. :attr:`DeviceData.routes <peat.data.models.DeviceData.routes>` (``host.routes``) holds the routing table entries the device reports (static, connected or learned routes). Some modules also report the default route there as ``0.0.0.0/0``, e.g. the Sage VxWorks boot line gateway and FortiGate static routes. PEAT does not derive routes from ``Interface.gateway``, and only route gateways become ``routes_via`` relationships. To find the default gateways of all devices, query both fields, e.g. ``host.interface.gateway:* or host.routes.destination:"0.0.0.0/0"``, with terms aggregations on ``host.interface.gateway`` and ``host.routes.gateway``. ``host.routes.gateway`` also holds the next hops of the other routes of a matching device (object arrays, see above).
+
 Canonical vocabularies
 ======================
 Use the same lowercase, underscore-separated names everywhere (``Service.protocol``, ``Relationship.protocol``, ``NetworkStatistics.protocol``, ``related.protocols``). A relationship uses the same protocol string as the device's own :class:`~peat.data.models.Service`.

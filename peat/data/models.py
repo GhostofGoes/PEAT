@@ -2301,6 +2301,11 @@ class Interface(BaseModel):
     """
     IPv4 address of the default gateway of the interface.
 
+    This is where modules store a configured default gateway (e.g. SEL
+    ``DEFRTR``, M340, Totus, Windows CE, IEC 61850 SCL access points). PEAT
+    does not derive a :class:`Route` or a ``routes_via`` relationship from it;
+    routing table entries the device reports are in :attr:`DeviceData.routes`.
+
     Examples
 
     - ``192.0.2.1``
@@ -5678,7 +5683,12 @@ class DeviceData(BaseModel):
 
     routes: list[Route] = []
     """
-    IP routing table. Gateways are also added as ``routes_via`` relationships.
+    IP routing table entries the device reports (static, connected or learned).
+    Some modules also report the default route here as ``0.0.0.0/0`` (e.g. the
+    Sage VxWorks boot line gateway, FortiGate static routes); a configured
+    default gateway of an interface is in :attr:`Interface.gateway`. Gateways
+    are also added as ``routes_via`` relationships, except loopback addresses
+    and addresses of the device.
     """
 
     relationships: list[Relationship] = []
