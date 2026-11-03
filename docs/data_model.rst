@@ -39,7 +39,7 @@ Identity, merging and deduplication
    :header: "Model", "Identity fields", "Notes"
 
    ":class:`~peat.data.models.Interface`", "``name``", "``store()`` also matches ``mac``, ``ip``, ``serial_port``, ``id``"
-   ":class:`~peat.data.models.Service`", "``protocol``, ``port``, ``transport``", "``store()`` without a ``lookup`` merges into the first service with the same ``protocol``, else the same ``port``; de-duplication keeps ``tcp/53`` and ``udp/53`` apart"
+   ":class:`~peat.data.models.Service`", "``protocol``, ``port``, ``transport``", "``store()`` without a ``lookup`` merges into the first service with the same ``protocol``, else the same ``port``; de-duplication keeps ``tcp/53`` and ``udp/53`` apart, also when one of them is ``open`` or ``verified``"
    ":class:`~peat.data.models.Relationship`", "``id``", "computed by ``annotate()`` from the edge (see below)"
    ":class:`~peat.data.models.NetworkStatistics`", "``interface``, ``type``, ``transport``, ``protocol``", "``protocol_statistics`` entries"
    ":class:`~peat.data.models.Route`", "``destination``, ``gateway``, ``interface``", ""

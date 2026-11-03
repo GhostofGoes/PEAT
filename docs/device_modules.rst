@@ -116,11 +116,11 @@ own ``parse_results`` entry in the :ref:`parse-summary`), with:
   (IP addresses, MMS port, authentication, PRP/HSR redundancy, physical ports),
   logical devices and nodes, GOOSE/SV/report control blocks with their MAC
   address, APPID and VLAN, and subscriptions (``ExtRef`` inputs)
-- network interfaces, services (``mms`` server, ``goose``/``sv`` publisher, with
-  their security settings) and relationships (``publishes_to``,
-  ``subscribes_to``, ``reports_to``). The ``reference`` of a relationship
-  (e.g. ``PROT1PRO/LLN0$GO$gcbTrip``) is the same on the publisher and on each
-  subscriber, which joins both ends across devices
+- network interfaces (``application`` ``iec61850``), services (``mms`` server,
+  ``goose``/``sv`` publisher, with their security settings) and relationships
+  (``publishes_to``, ``subscribes_to``, ``reports_to``). The ``reference`` of a
+  relationship (e.g. ``PROT1PRO/LLN0$GO$gcbTrip``) is the same on the publisher
+  and on each subscriber, which joins both ends across devices
 - ``scl-validation`` alert events for duplicate or out-of-range GOOSE/SV APPIDs
   (within an IED and across the IEDs of one file on the same VLAN) and for
   invalid address values
