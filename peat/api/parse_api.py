@@ -189,8 +189,16 @@ def parse(
                 parse_ids.add(id(c_dev))  # each device once
                 other_devices.setdefault(id(result), []).append(c_dev)
     # Devices that are not part of this parse (neither parsed nor filled by it) are
-    # not pushed
+    # neither exported nor pushed
     parse_devices = [d for d in datastore.objects if id(d) in parse_ids]
+
+    # * Export the final state of the devices to files *
+    # DeviceModule.parse() exports a device after each file: the state after a later
+    # file of the same device went to "device-data-full.json.1", ".2", ... Like pull
+    # and scan, "device-data-full.json" gets the final (merged) state of each device.
+    if config.DEVICE_DIR:
+        for f_dev in parse_devices:
+            f_dev.export_to_files(overwrite_existing=True)
 
     # * Push results to Elasticsearch *
     if state.elastic:

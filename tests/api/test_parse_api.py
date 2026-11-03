@@ -1,3 +1,6 @@
+import json
+import shutil
+
 import pytest
 
 from peat import DeviceData, __version__, config, datastore, state
@@ -278,3 +281,57 @@ def test_parse_api_pushes_ied_that_reused_a_config_placeholder(
     assert sorted(r["results"]["id"] for r in results) == sorted(["192.0.2.10", mu1_id])
     assert {r["name"] for r in results} == {scd.name}
     assert not any("parse_devices" in d._cache for d in datastore.objects)
+
+
+def test_parse_api_exports_final_state_of_device_parsed_from_several_files(
+    examples_dir, tmp_path, mocker
+):
+    """
+    A device parsed from several files (SCEPTRE fep-1: dnp3-client.xml, then
+    modbus-client.xml) has its final merged state in device-data-full.json, and
+    the run directory and the parse summary give the baseline commands that
+    state (R6-5).
+    """
+    from peat.api import baseline_api
+
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    src = tmp_path / "in"
+    src.mkdir()
+    for name in ("dnp3-client.xml", "modbus-client.xml"):
+        shutil.copyfile(examples_dir / "devices" / "sceptre" / "bp" / name, src / name)
+
+    summary = parse([src], ["SCEPTRE"])
+    assert summary["num_parse_successes"] == 2
+    assert [d.get_id() for d in datastore.objects] == ["fep-1"]
+
+    def protocols(dev_data: dict | DeviceData) -> set[str]:
+        if isinstance(dev_data, DeviceData):
+            return {s.protocol for s in dev_data.service}
+        return {s["protocol"] for s in dev_data.get("service", [])}
+
+    both = {"dnp3", "modbus_tcp"}
+    full = tmp_path / "devices" / "fep-1" / "device-data-full.json"
+    assert protocols(json.loads(full.read_text(encoding="utf-8"))) == both
+    summary_file = tmp_path / "summaries" / "parse-summary.json"
+    # the parse summary keeps an entry per file: the state after that file
+    assert [protocols(r["results"]) for r in summary["parse_results"]] == [{"dnp3"}, both]
+
+    from_run = baseline_api.load_device_data(tmp_path)
+    from_summary = baseline_api.load_device_data(summary_file)
+    assert [(d.get_id(), protocols(d)) for d in from_run] == [("fep-1", both)]
+    assert [(d.get_id(), protocols(d)) for d in from_summary] == [("fep-1", both)]
+
+    # the unchanged run compared to a baseline of its final state: no findings
+    baseline = baseline_api.create_baseline(from_run[0])
+    for dev in from_run + from_summary:
+        findings = baseline_api.compare_to_baseline(dev, baseline, include_passed=False)
+        assert findings == []

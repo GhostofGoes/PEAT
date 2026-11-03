@@ -94,7 +94,8 @@ def load_device_data(
 
     - a ``device-data-full.json`` or ``device-data-summary.json`` file (the
       top-level ``created`` key is removed and kept as ``dev._cache["observed"]``)
-    - a parse summary (``parse-summary.json``, from ``parse_results[*].results``)
+    - a parse summary (``parse-summary.json``, from ``parse_results[*].results``;
+      the last entry of each device ID, the state after its last parsed file)
     - a JSON file with a list of device dicts
     - a directory: every ``device-data-full.json`` below it (recursively), or
       every ``device-data-summary.json`` if there are no full files
@@ -190,9 +191,11 @@ def _devices_from_json(
     where = f" in '{origin}'" if origin else ""
     label = origin or "input"
 
-    # Parse summary: device data is the host document in parse_results[*].results
+    # Parse summary: device data is the host document in parse_results[*].results.
+    # A device parsed from several files has an entry per file, with its state after
+    # that file: the last entry of each device (by device ID) is used.
     if isinstance(data, dict) and "parse_results" in data:
-        devices = []
+        last: dict[str, DeviceData] = {}  # device ID -> device of its last entry
         for n, result in enumerate(data.get("parse_results") or []):
             if isinstance(result, dict) and isinstance(result.get("results"), dict):
                 dev = _device_from_dict(result["results"], origin, result.get("module", ""))
@@ -200,11 +203,17 @@ def _devices_from_json(
                     errors.append(f"{label}: parse_results[{n}]")
                     continue
                 dev._cache["omitted_keys"] = _PARSE_SUMMARY_OMITTED
-                devices.append(dev)
-        if not devices:
+                dev_id = dev.get_id()
+                if dev_id in last:
+                    log.debug(
+                        f"Device '{dev_id}' has several parse results{where}: "
+                        f"using the last one (parse_results[{n}])"
+                    )
+                last[dev_id] = dev
+        if not last:
             log.error(f"No device data found in the parse summary{where}")
             errors.append(label)
-        return devices
+        return list(last.values())
 
     name = Path(origin).name if origin else ""
 

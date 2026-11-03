@@ -159,6 +159,30 @@ def test_load_device_data_formats(mocker):
     assert dev._cache["source_file"] == "stdin"
 
 
+def test_load_parse_summary_uses_the_last_entry_of_each_device():
+    """
+    A parse summary has an entry per parsed file of a device, with its state after
+    that file: the last entry of each device is loaded (R6-5).
+    """
+
+    def entry(ip: str, protocols: list[str]) -> dict:
+        doc = {"ip": ip, "service": [{"protocol": p, "port": 1} for p in protocols]}
+        return {"name": f"{ip}-{len(protocols)}.xml", "module": "SCEPTRE", "results": doc}
+
+    parse_summary = {
+        "parse_results": [
+            entry("192.0.2.10", ["dnp3"]),
+            entry("192.0.2.11", ["ftp"]),
+            entry("192.0.2.10", ["dnp3", "modbus_tcp"]),
+        ]
+    }
+    devices = api.load_device_data(parse_summary)
+    assert [(d.get_id(), sorted(s.protocol for s in d.service)) for d in devices] == [
+        ("192.0.2.10", ["dnp3", "modbus_tcp"]),
+        ("192.0.2.11", ["ftp"]),
+    ]
+
+
 def test_load_device_data_errors(tmp_path, caplog):
     assert api.load_device_data(tmp_path / "nope.json") == []
     assert "does not exist" in caplog.text
