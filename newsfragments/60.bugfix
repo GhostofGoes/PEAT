@@ -1,0 +1,1 @@
+SEL: ``SELAscii.show_mac()`` now reads the ``Port 1 MAC Address:`` format of the SEL-351S and SEL-751A manuals, as well as the ``(IP) MAC`` format, and the ``ETH`` output from Telnet and serial is parsed.

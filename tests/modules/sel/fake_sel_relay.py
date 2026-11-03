@@ -18,6 +18,9 @@ User's Guide Section 4 and Reference Manual Section 5):
   (Y/N)?", and N aborts it (SEL-421 IM 20130627, Table 9.125).
 - STA C asks "Reboot the relay and clear status" / "Are you sure (Y/N) ?",
   then answers "Rebooting the relay" (300 series dialog, 351S IM p.10.79).
+- ``GRO`` shows the active group, and ``GRO n`` asks "Are you sure (Y/N)?".
+- Other commands answer with the canned output in ``outputs`` (keyed by the
+  normalized command, e.g. ``"TIM Q"``), or "Invalid Command".
 
 The engine (:class:`FakeSELRelay`) isn't tied to a transport: :class:`SocketRelay`
 serves it on a socket (TCP on 127.0.0.1, or a socket pair), and
@@ -33,6 +36,7 @@ import time
 from collections.abc import Callable
 
 from peat.modules.sel.sel_cascii import format_record
+from peat.modules.sel.sel_commands import normalize_command
 
 STX = b"\x02"
 ETX = b"\x03"
@@ -65,6 +69,8 @@ class FakeSELRelay:
         prompt_prefix: bytes = b"\r\n",
         ignore_can: bool = False,
         sta_question: bool = False,
+        outputs: dict[str, list[str] | str] | None = None,
+        close_after: str = "",
     ) -> None:
         """
         Args:
@@ -87,6 +93,12 @@ class FakeSELRelay:
                 sends a space, ``<STX> <PROMPT><ETX>``)
             ignore_can: Ignore CAN: a password dialog stays open
             sta_question: STA at level 2 asks about a new hardware configuration
+            outputs: Output of other commands, keyed by the normalized command
+                (refer to ``normalize_command``), as lines (sent as a message),
+                or as text (sent as it is, e.g. Compressed ASCII with its framing).
+                Commands at level 0 (``CAS``, ``SNS``, ``DNA``, ``BNA``) work at
+                any level, the others need level 1.
+            close_after: Close the connection after this (normalized) command
         """
         self.fid = fid
         self.passwords = (
@@ -108,6 +120,9 @@ class FakeSELRelay:
         self.prompt_prefix = prompt_prefix
         self.ignore_can = ignore_can
         self.sta_question = sta_question
+        self.outputs = outputs or {}
+        self.close_after = close_after
+        self.group = "1"
 
         self.send: Callable[[bytes], None] = lambda _data: None
         self.close: Callable[[], None] = lambda: None
@@ -257,6 +272,25 @@ class FakeSELRelay:
         words = text.strip().split()
         cmd = words[0].upper()[:3] if words else ""
         args = words[1:]
+        normalized = normalize_command(text)
+
+        if self.close_after and normalized == self.close_after:
+            self.closed = True
+            self.close()
+            return
+
+        if normalized in self.outputs and not (
+            cmd == "STA" and self.sta_question and RANKS[self.level] >= 2
+        ):
+            if RANKS[self.level] < 1 and cmd not in ("CAS", "SNS", "DNA", "BNA"):
+                self.respond(text="Invalid Access Level\r\n")
+                return
+            output = self.outputs[normalized]
+            if isinstance(output, str):
+                self.send(output.encode("latin-1") + self.prompt())
+            else:
+                self.respond(output)
+            return
 
         if cmd == "":
             self.send(self.prompt())
@@ -296,6 +330,12 @@ class FakeSELRelay:
                 self._pending_confirm = "STA"
             else:
                 self.respond([f"FID={self.fid}  CID=59A0", "Relay Enabled"])
+        elif cmd == "GRO" and RANKS[self.level] >= 1:
+            if args:
+                self.send(b"Change to Group " + args[0].encode() + b"\r\nAre you sure (Y/N) ? ")
+                self._pending_confirm = f"GRO {args[0]}"
+            else:
+                self.respond([f"Active Group = {self.group}"])
         elif cmd == "DAT":
             self.respond(["02/02/09"])
         elif cmd == "TIM":
@@ -357,6 +397,10 @@ class FakeSELRelay:
         self.answers.append((command, answer))
         if answer != "Y":
             self.respond(text="Command aborted\r\n" if command == "STA" else "Canceled\r\n")
+            return
+        if command.startswith("GRO "):
+            self.group = command.split()[1]
+            self.respond([f"Active Group = {self.group}"])
             return
         if command != "STA C" or self.sta_c == "hardware":
             self.respond(text="Hardware configuration accepted\r\n")

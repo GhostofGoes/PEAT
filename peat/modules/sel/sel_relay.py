@@ -135,6 +135,7 @@ from .relay_parse import (
     read_rdb_streams,
 )
 from .sel_ascii import RestartResult, SELAscii
+from .sel_commands import SHOW_SETTINGS_DEFAULT
 from .sel_comms import populate_file_listing, pull_files
 from .sel_default_creds import (
     MAX_DEFAULT_FTP_ATTEMPTS,
@@ -155,6 +156,12 @@ from .sel_files import (
     write_and_record_file,
 )
 from .sel_http import SELHTTP
+from .sel_more_commands import (
+    SHOW_SETTINGS_CACHE_KEY,
+    MoreCommands,
+    process_outputs,
+    save_command_outputs,
+)
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
 
@@ -336,6 +343,8 @@ class SELRelay(DeviceModule):
                 "telnet",
             ],
             "attempt_more_commands": False,
+            # SHO commands run with attempt_more_commands ("{group}" is the active group)
+            "show_settings": list(SHOW_SETTINGS_DEFAULT),
             "allow_telnet_file_download": True,
             "force_telnet_file_download": False,
             "force_serial_pull": False,
@@ -405,13 +414,17 @@ class SELRelay(DeviceModule):
     def _forget_ascii_passwords(cls, dev: DeviceData) -> None:
         """
         SEL ASCII sessions remember which passwords failed on a device for the
-        whole process (refer to SELAscii.forget_passwords). Forget them at the
-        start of a pull or restart, so a password that was fixed on the device
-        (or configured again) is tried again when PEAT runs as a library or service.
+        whole process (refer to SELAscii.forget_passwords), and which commands
+        it answered with "Invalid Command" (refer to
+        SELAscii.forget_unsupported_commands). Forget them at the start of a pull
+        or restart, so a password that was fixed on the device (or configured
+        again) is tried again, and a command that was rejected once (e.g. garbled
+        on a noisy serial line) is sent again, when PEAT runs as a library or service.
         """
         for address in (dev.ip, dev.serial_port):
             if address:
                 SELAscii.forget_passwords(address)
+                SELAscii.forget_unsupported_commands(address)
 
     @classmethod
     def _level_passwords(cls, dev: DeviceData) -> dict[str, list[Credential]]:
@@ -881,153 +894,103 @@ class SELRelay(DeviceModule):
     @classmethod
     def pull_more_commands(cls, dev: DeviceData, comms: SELTelnet | SELSerial) -> bool:
         """
-        Attempt to get more info via terminal commands
-        (get_sta, show_eth, show_status, etc.).
+        Run more read-only SEL ASCII commands (``sel.attempt_more_commands``),
+        and parse their output into the data model.
 
-        If any of the commands are successful, this returns true.
+        The commands, and the order they're run in (the same for Telnet and
+        serial), are in :mod:`peat.modules.sel.sel_more_commands`, and every
+        command is checked by :mod:`peat.modules.sel.sel_commands`, so nothing
+        that changes the state of the relay is sent. The output of each command
+        is saved and hashed (``ascii_commands/<name>.txt``), and all results are
+        saved in ``additional-command-outputs.json``, as before. Results that
+        weren't parsed are in ``extra.additional_command_outputs``.
+
+        Returns:
+            If any of the commands were successful (:obj:`False` if the session
+            halted, refer to :attr:`~peat.modules.sel.sel_ascii.SELAscii.halted`)
         """
-
-        comms.model = dev.description.model  # leak some hints
         cls._prepare_ascii(dev, comms)
+        if dev.firmware.id and not comms.fid:
+            comms.fid = dev.firmware.id
+
         comms.elevate(1, cls._configured_ascii_creds(dev))
         if comms.halted:
             cls.log.error(f"Not running SEL terminal commands on {dev.address}: {comms.halted}")
             return False
 
-        # NOTE: the SEL-2032 is no longer supported by SEL,
-        # so how PEAT accesses it shouldn't need to change.
-        if dev.description.model == "2032":
-            comms.POST_WRITE_SLEEP = 4.0
-            commands = {
-                "ser": comms.show_ser,  # list[str] (parse with parsing funcs)
-                "sta": comms.get_sta,  # dict[str, Union[datetime, str]], with FID and other info
-                "dnpmap": functools.partial(comms.exec_read, "dnpmap", added_delay=2.0),
-                # "modmap": functools.partial(comms.exec_read, "modmap", added_delay=2.0),
-                "who": functools.partial(comms.exec_read, "who", added_delay=3.0),
-                "status": functools.partial(comms.exec_read, "status", added_delay=4.0),
-                "card_17": functools.partial(comms.exec_read, "card 17", added_delay=4.0),
-                "card_18": functools.partial(comms.exec_read, "card 18", added_delay=4.0),
-            }
-        else:
-            commands = {
-                # History commands first
-                # TODO: ser has timeout issues on large SER logs
-                "ser": comms.show_ser,  # list[str] (parse with parsing funcs)
-                "his": comms.show_his,  # list[str] (parse with parsing funcs)
-                "sta": comms.get_sta,  # dict[str, Union[datetime, str]], with FID and other info
-                "device_time": comms.get_device_time,  # datetime
-                "active_group": comms.get_active_group,
-                # TODO: fix parsing code in SELAscii.show_mac()
-                "mac": comms.show_mac,  # dict[str, str]
-                "eth": comms.show_eth,  # list[str]  (this is pretty raw)
-                "bre": comms.show_bre,  # list[str]
-                "eve": comms.show_eve,  # list[str]
-                "sum": comms.show_sum,  # list[str]
-                "status": comms.show_status,  # list[str]
-            }
-
-            # required by most models for SER and HIS
-            # if elevation fails, continue anyway (unless nothing can be sent)
-            comms.elevate(2, cls._configured_ascii_creds(dev))
-            if comms.halted:
-                cls.log.error(
-                    f"Not running SEL terminal commands on {dev.address}: {comms.halted}"
-                )
-                return False
-
-        cls.log.info(f"Attempting to run {len(commands)} SEL terminal commands on {dev.address}")
-
-        results = {}
-        for cmd, func in commands.items():
-            if comms.halted:
-                # e.g. the relay asked a question and didn't show its prompt after N
-                cls.log.error(f"Stopped running commands on {dev.address}: {comms.halted}")
-                break
-            try:
-                raw_res = func()
-                if raw_res:
-                    # save timestamp of when each command was run
-                    results[cmd] = {
-                        "cmd": cmd,
-                        "func": repr(func),
-                        "timestamp": utils.utc_now(),
-                        "result": raw_res,
-                    }
-                else:
-                    cls.log.warning(f"No output from '{cmd}' function on {dev.address}")
-            except Exception as ex:
-                cls.log.warning(f"Failed to run function '{cmd}' on {dev.address}: {ex}")
+        collector = MoreCommands(
+            dev,
+            comms,
+            creds=cls._configured_ascii_creds(dev),
+            show_settings=dev.options["sel"]["show_settings"],
+        )
+        cls.log.info(f"Attempting to run SEL terminal commands on {dev.address}")
+        results = collector.run()
 
         if not results:
             cls.log.error(f"No commands were successful on {dev.address}")
             return False
-        else:
-            cls.log.info(
-                f"{len(results)} commands successful on {dev.address} "
-                f"(total attempted: {len(commands)})"
-            )
+
+        successful = [name for name, entry in results.items() if "error" not in entry]
+        cls.log.info(
+            f"{len(successful)} commands successful on {dev.address} "
+            f"(total attempted: {collector.attempted})"
+        )
+
+        transport = "telnet" if isinstance(comms, SELTelnet) else "serial"
 
         # Dump all of the commands to disk for debugging or investigation
         write_and_record_file(
             dev=dev,
             data=results,
             filename="additional-command-outputs.json",
-            transport="telnet" if isinstance(comms, SELTelnet) else "serial",
+            transport=transport,
             source=SOURCE_COMMAND_OUTPUT,
             peat_module=cls.__name__,
             description="Output of the SEL ASCII commands run by PEAT",
         )
+        save_command_outputs(collector, transport=transport, peat_module=cls.__name__)
 
         # Parse the results
         try:
-            if results.get("sta"):
-                process_info_into_dev(results.pop("sta")["result"], dev=dev)
-
-            if results.get("device_time"):
-                dev.extra["device_time"] = results.pop("device_time")["result"]
-
-            if results.get("ser"):
-                ser_data = "\n".join(results.pop("ser")["result"])
-                parse_and_process_events(ser_data, dataset="SER", dev=dev)
-
-            if results.get("his"):
-                his_data = "\n".join(results.pop("his")["result"])
-                parse_and_process_events(his_data, dataset="HIS", dev=dev)
-
-            # NOTE: on SEL-400 series relays, "ser" without arguments only
-            # returns the 20 newest records, so the power-up record often
-            # isn't included and only a lower bound of the uptime is known.
-            cls._apply_uptime(dev, live=True)
-
-            if results.get("mac"):
-                for mac_name, mac_value in results.pop("mac")["result"].items():
-                    dev.related.mac.add(mac_value)
-                    dev.extra[mac_name] = mac_value
-
-            if results.get("active_group"):
-                active_group = results.pop("active_group")["result"]
-                dev.extra["active_settings_group"] = active_group
-
-            # if results.get("eth"):
-            #     pass  # TODO
-            # if results.get("bre"):
-            #     pass  # TODO
-            # if results.get("eve"):
-            #     pass  # TODO
-            # if results.get("sum"):
-            #     pass  # TODO
-            # if results.get("status"):
-            #     pass  # TODO
+            unparsed = process_outputs(collector)
         except Exception:
             cls.log.exception(f"Unexpected error processing command results from {dev.address}")
             dev.extra["additional_command_outputs"] = results
             return False
 
-        # Only add to Extra what wasn't parsed or used
-        if results:
-            dev.extra["additional_command_outputs"] = results
+        # NOTE: on SEL-400 series relays, PEAT asks for the 1000 newest SER
+        # records ("SER 1000"), or uses CSE, since "SER" without arguments
+        # only returns the 20 newest records.
+        cls._apply_uptime(dev, live=True)
 
-        return True
+        # Only add to Extra what wasn't parsed or used
+        if unparsed:
+            dev.extra["additional_command_outputs"] = unparsed
+
+        if comms.halted:
+            return False
+
+        return bool(successful)
+
+    @classmethod
+    def _use_show_settings(cls, dev: DeviceData) -> None:
+        """
+        If no settings file (e.g. ``SET_ALL.TXT``) was pulled from the relay, parse
+        the settings from the ``SHO`` commands (``sel.attempt_more_commands``),
+        e.g. from a relay without FTP or ``FILE SHOW``.
+        """
+        show_text = dev._cache.pop(SHOW_SETTINGS_CACHE_KEY, "")
+        if not show_text or dev.logic.original:
+            return
+
+        cls.log.info(
+            f"No settings file was pulled from {dev.address}, using the "
+            f"settings from the SHO commands"
+        )
+        if cls.parse_config(show_text, dev):
+            dev.extra["settings_source"] = "sho_commands"
+            cls.update_dev(dev)
 
     @classmethod
     def pull_telnet(cls, dev: DeviceData, pull_files: bool = True) -> bool:
@@ -1066,6 +1029,7 @@ class SELRelay(DeviceModule):
             else:
                 cls.log.debug(f"Skipping file pull via Telnet for {dev.ip}")
 
+            cls._use_show_settings(dev)
             return successful
 
     @classmethod
@@ -1113,19 +1077,23 @@ class SELRelay(DeviceModule):
 
             successful = True
 
-            if not cls.pull_configs(dev, ser):
-                cls.log.warning(
-                    f"There were issues downloading files via Serial for {dev.serial_port}"
-                )
-                successful = False
-
-            # Get more info via terminal commands (get_sta, show_eth, show_status, etc.)
+            # Get more info via terminal commands (get_sta, show_eth, show_status, etc.).
+            # The commands are run before the files are downloaded, as with Telnet:
+            # on SEL-400 series relays, reading SER.TXT with FILE READ clears the
+            # SER records viewed from this port ("SER CV").
             if dev.options["sel"]["attempt_more_commands"]:
                 # At least one command should succeed
                 if not cls.pull_more_commands(dev=dev, comms=ser):
                     cls.log.error("Failed to pull more serial commands")
                     successful = False
 
+            if not cls.pull_configs(dev, ser):
+                cls.log.warning(
+                    f"There were issues downloading files via Serial for {dev.serial_port}"
+                )
+                successful = False
+
+            cls._use_show_settings(dev)
             return successful
 
     @classmethod
@@ -2155,6 +2123,9 @@ class SELRelay(DeviceModule):
         # Save the configuration and logic to the data model and a file
         dev.logic.original = set_all
         dev.logic.parsed = formatted_logic
+        # Set again by _use_show_settings() if these are the SHO commands, e.g.
+        # not if a later pull method (FTP after Telnet) downloaded a settings file
+        dev.extra.pop("settings_source", None)
 
         dev.write_file(raw_logic, "raw-logic.json")
         dev.write_file(formatted_logic, "formatted-logic.txt")

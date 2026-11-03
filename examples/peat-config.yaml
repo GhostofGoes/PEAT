@@ -472,7 +472,20 @@ device_options:
     # aren't able to be retrieved for whatever reason.
     # This is disabled by default as it is relatively untested and
     # can potentially be very slow.
+    # Only read-only commands are run (e.g. VER, ETH, TIM Q, GOO, SER,
+    # CSE, SHO). Refer to "Additional ASCII commands" in the SEL docs.
     attempt_more_commands: false
+
+    # Settings classes shown with the SHO command when attempt_more_commands
+    # is enabled ("SHO G", "SHO 1", ...). "{group}" is the active settings
+    # group. The settings are used if no settings file could be downloaded.
+    # Set to an empty list to not run SHO.
+    show_settings:
+      - G
+      - "{group}"
+      - "L {group}"
+      - P
+      - R
 
     # Enable PEAT to attempt to download files via Telnet, if able to,
     # and if the files haven't already been downloaded via FTP.

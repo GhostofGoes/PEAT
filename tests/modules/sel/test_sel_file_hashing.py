@@ -19,6 +19,7 @@ from requests import Response
 from peat import DeviceData, SELRelay, config, datastore, utils
 from peat.modules.sel import sel_comms, sel_files
 from peat.modules.sel.relay_parse import read_rdb_streams
+from peat.modules.sel.sel_ascii import SELResponse
 from peat.modules.sel.sel_files import record_downloaded_file, write_and_record_file
 from peat.modules.sel.sel_http import SELHTTP
 from peat.modules.sel.sel_serial import SELSerial
@@ -479,6 +480,13 @@ def test_pull_more_commands(mocker):
     for name in ["show_eth", "show_bre", "show_eve", "show_sum", "show_status"]:
         mocker.patch.object(tn, name, return_value=[f"{name} output"])
     mocker.patch.object(tn, "get_active_group", return_value="1")
+    # The commands that were added later (ID, HELP, CAS, VER, ...) aren't known by this relay
+    mocker.patch.object(tn, "get_id", return_value={})
+    mocker.patch.object(
+        tn,
+        "run_read_command",
+        side_effect=lambda command, **_: SELResponse(command, error="Invalid Command"),
+    )
     dev = datastore.get("192.0.2.14", "ip")
 
     assert SELRelay.pull_more_commands(dev, tn) is True
