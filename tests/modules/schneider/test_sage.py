@@ -611,13 +611,16 @@ def test_parse_config_tar_member_cannot_escape(tmp_path):
     tar_path = tmp_path / "in" / "config.tar.gz"
     tar_path.parent.mkdir()
     rtusetup = b"<RTU_SETUP><CPU><RTU><NAME>RTU1</NAME></RTU></CPU></RTU_SETUP>"
+    # A name no other test writes: the search below covers the tmp directories of
+    # every test of this worker, and Windows globbing ignores case.
+    canary = "sage-tar-member-escaped-canary.txt"
     with tarfile.open(tar_path, "w:gz") as tar:
-        for name, data in [("xml/rtusetup.xml", rtusetup), ("../../../../ESCAPED.txt", b"x")]:
+        for name, data in [("xml/rtusetup.xml", rtusetup), (f"../../../../{canary}", b"x")]:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
     Sage.parse(tar_path)
-    assert list(tmp_path.parent.rglob("ESCAPED.txt")) == []
+    assert list(tmp_path.parent.rglob(canary)) == []
 
 
 @pytest.mark.usefixtures("out_config")
