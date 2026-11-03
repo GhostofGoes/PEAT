@@ -325,6 +325,66 @@ def test_run_baseline_errors(tmp_path, run_dir, mocker, caplog):
     assert not (run_dir / "baselines").exists()
 
 
+def test_run_baseline_create_unwritable_output(tmp_path, run_dir, caplog):
+    # A baseline file that can't be written is an error (exit code 1), not a traceback
+    first, _ = _pulls(tmp_path)
+    out_dir = tmp_path / "out-dir"
+    out_dir.mkdir()
+    args = _args("baseline_create", input_source=[str(first)], baseline_output=str(out_dir))
+    assert run_baseline(args) == 1
+    assert "Failed to write baseline file" in caplog.text
+
+    caplog.clear()
+    not_a_dir = tmp_path / "not-a-dir.txt"
+    not_a_dir.write_text("x", encoding="utf-8")
+    args["baseline_output"] = str(not_a_dir / "baseline.json")
+    assert run_baseline(args) == 1
+    assert "Failed to write baseline file" in caplog.text
+
+    # the default output directory "<run dir>/baselines" is a file
+    caplog.clear()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "baselines").write_text("x", encoding="utf-8")
+    assert run_baseline(_args("baseline_create", input_source=[str(first)])) == 1
+    assert "Failed to write baseline file" in caplog.text
+
+
+def test_run_baseline_duplicate_inputs(tmp_path, run_dir, caplog):
+    # The same device in two inputs: baseline-create creates one baseline from each
+    # (its files are not overwritten), baseline-compare overwrites its results
+    dev = sel_relay()
+    first = write_pull(tmp_path, dev, name="copy1")
+    copy = tmp_path / "copy2" / "devices" / dev.ip / "device-data-full.json"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(first.read_bytes())
+    inputs = [str(first.parent.parent.parent), str(copy.parent.parent.parent)]
+
+    assert run_baseline(_args("baseline_create", input_source=inputs)) == 0
+    assert "is in 2 inputs: one baseline is created from each" in caplog.text
+    assert "the last one wins" not in caplog.text
+    saved = sorted(p.name for p in (run_dir / "baselines").iterdir())
+    assert saved == [f"baseline-{dev.ip}-2.json", f"baseline-{dev.ip}.json"]
+    # same device and observation time -> same default ID
+    assert "2 baselines have the ID" in caplog.text
+
+    caplog.clear()
+    profile = tmp_path / "profile.json"
+    args = _args(
+        "baseline_create",
+        input_source=inputs,
+        baseline_scope="device_type",
+        baseline_output=str(profile),
+    )
+    assert run_baseline(args) == 0
+    assert "is in 2 inputs: each one is part of the profile" in caplog.text
+    assert "the last one wins" not in caplog.text
+
+    caplog.clear()
+    args = _args("baseline_compare", input_source=inputs, baseline_files=[str(profile)])
+    assert run_baseline(args) == 0
+    assert "is in 2 inputs: its results are written to the same files" in caplog.text
+
+
 @pytest.mark.usefixtures("run_dir")
 def test_export_findings_is_used(tmp_path, mocker):
     first, second = _pulls(tmp_path)

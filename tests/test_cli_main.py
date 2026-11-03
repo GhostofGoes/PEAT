@@ -166,3 +166,10 @@ def test_oneshot_main_dispatches_baseline_commands(mocker):
     run.return_value = 1
     assert cli_main.oneshot_main(args) is False
     assert args["_exit_code"] == 1
+
+    # An unexpected error fails the command like other commands (no traceback
+    # out of oneshot_main, so the end-of-run handling of run_peat still runs)
+    args["_exit_code"] = 0
+    run.side_effect = OSError("disk full")
+    assert cli_main.oneshot_main(args) is False
+    assert args["_exit_code"] == 1

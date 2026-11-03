@@ -110,7 +110,7 @@ def load_device_data(
     missing keys are kept as ``dev._cache["omitted_keys"]`` and are not compared.
     The format of other inputs (standard input, other file names, a :class:`dict`
     or :class:`list`) is not known: a device without any of the lists a summary
-    omits, or without ``relationships`` (e.g. a host document from ``peat pull -P``),
+    omits, or without ``relationships`` (e.g. a host document from ``peat pull -E``),
     is treated the same way, so the disappearance of all items of such a list is
     only detected with ``device-data-full.json`` files.
 
@@ -253,7 +253,7 @@ def _omitted_keys(data: dict, file_name: str) -> tuple[str, ...]:
     is guessed from the keys, since empty lists are absent from every format: a
     document without any of these lists may be a device summary, and one without
     ``relationships`` may be a host document (``DeviceData.elastic()``, e.g. the
-    output of ``peat pull -P``). A list such a document has is still compared.
+    output of ``peat pull -E``). A list such a document has is still compared.
     """
     if file_name == "device-data-full.json":
         return ()
@@ -589,13 +589,19 @@ def save_baselines(baselines: Baseline | list[Baseline], path: str | Path) -> Pa
 
     Returns:
         Path of the written file
+
+    Raises:
+        PeatError: the file can't be written (e.g. ``path`` is a directory)
     """
     items = baselines if isinstance(baselines, list) else [baselines]
     docs = [json.loads(b.json(exclude_defaults=True)) for b in items]
     file = Path(os.path.expanduser(str(path)))
-    file.parent.mkdir(parents=True, exist_ok=True)
     data = docs[0] if len(docs) == 1 else docs
-    file.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
+    try:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
+    except OSError as ex:
+        raise PeatError(f"Failed to write baseline file '{file}': {ex}") from ex
     log.debug(f"Saved {len(docs)} baselines to '{file}'")
     return file
 
@@ -797,10 +803,12 @@ def run_baseline(args: dict[str, Any]) -> int:
         args: Command line arguments (from :mod:`peat.cli_args`)
 
     Returns:
-        Exit code: 0 (success, even if there are findings), 1 (error: bad input,
-        unreadable files, no device data, or no baseline applies to any device),
-        or 3 (``baseline-compare --fail-on``: a failed finding with that severity
-        or higher)
+        The exit code, 0 (success, even if there are findings), 1 (an error, e.g.
+        invalid option combinations, unreadable inputs or baseline files, a baseline
+        file that can't be written, no device data, no baseline applies to any device
+        or a failed Elasticsearch export) or 3 (``baseline-compare --fail-on``: a
+        failed finding with that severity or higher). Invalid command lines are
+        rejected by :mod:`argparse` before this runs (exit code 2).
     """
     func = args.get("func")
     if func not in _BASELINE_COMMANDS:
@@ -822,10 +830,11 @@ def run_baseline(args: dict[str, Any]) -> int:
         return 1
 
 
-def _load_inputs(inputs: list[str]) -> list[DeviceData] | None:
+def _load_inputs(inputs: list[str], duplicates: str) -> list[DeviceData] | None:
     """
     Load all inputs; None if any input, or any file or device in an input,
-    fails to load (the error is logged).
+    fails to load (the error is logged). ``duplicates`` completes the warning
+    logged for a device that is in several inputs (what the command does with it).
     """
     devices: list[DeviceData] = []
     for source in inputs:
@@ -845,10 +854,7 @@ def _load_inputs(inputs: list[str]) -> list[DeviceData] | None:
     counts = Counter(d.get_id() for d in devices)
     for dev_id, count in sorted(counts.items()):
         if count > 1:
-            log.warning(
-                f"Device '{dev_id}' is in {count} inputs: its results are "
-                f"written to the same files (the last one wins)"
-            )
+            log.warning(f"Device '{dev_id}' is in {count} inputs: {duplicates}")
     return devices
 
 
@@ -872,11 +878,16 @@ def _run_create(args: dict[str, Any]) -> int:
         )
         return 1
 
-    devices = _load_inputs(inputs)
+    scope = args.get("baseline_scope") or "device"
+    devices = _load_inputs(
+        inputs,
+        "each one is part of the profile"
+        if scope == "device_type"
+        else "one baseline is created from each",
+    )
     if devices is None:
         return 1
 
-    scope = args.get("baseline_scope") or "device"
     options = {
         "kind": args.get("baseline_kind") or "first_observed",
         "name": args.get("baseline_name") or "",
@@ -900,6 +911,12 @@ def _run_create(args: dict[str, Any]) -> int:
             create_baseline(dev, baseline_id=args.get("baseline_id") or "", **options)
             for dev in devices
         ]
+        for baseline_id, count in sorted(Counter(b.id for b in baselines).items()):
+            if count > 1:
+                log.warning(
+                    f"{count} baselines have the ID '{baseline_id}': give each one "
+                    f"a unique 'id' (findings are identified by the baseline ID)"
+                )
 
     output = args.get("baseline_output")
     if output:
@@ -942,7 +959,7 @@ def _run_compare(args: dict[str, Any]) -> int:
         return 1
 
     baselines, use_known, device_types = _load_baseline_args(args)
-    devices = _load_inputs(inputs)
+    devices = _load_inputs(inputs, "its results are written to the same files (the last one wins)")
     if devices is None:
         return 1
 

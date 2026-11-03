@@ -250,7 +250,11 @@ def oneshot_main(args: dict[str, Any]) -> bool:
     # Baselines: "peat baseline-create", "peat baseline-compare", "peat baseline-show"
     # Exit codes: 0 = success, 1 = error, 3 = "--fail-on" threshold reached
     if args["func"] in ("baseline_create", "baseline_compare", "baseline_show"):
-        rc = run_baseline(args)
+        try:
+            rc = run_baseline(args)
+        except Exception:
+            log.exception(f"{args['func']} failed due to unhandled exception")
+            rc = 1
         args["_exit_code"] = rc
         return rc in (0, 3)
 

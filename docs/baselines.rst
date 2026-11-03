@@ -166,11 +166,11 @@ Command line
 ============
 Three commands work with baselines. Inputs are PEAT device data: ``device-data-full.json`` (or ``device-data-summary.json``) files, parse summaries (``parse-summary.json``), directories containing them (searched recursively, e.g. a run directory or ``peat_results/``), or ``-`` (JSON from standard input). The inputs can be given before or after the options, but not on both sides. If any file or device in an input fails to load (e.g. a truncated ``device-data-full.json`` in a directory), the command fails with exit code ``1``.
 
-Parse summaries and ``device-data-summary.json`` files do not have all device data: parse summaries have no ``relationships``, and device summaries also no ``files``, ``registers``, ``tag``, ``io``, ``event`` and ``memory``. These keys are not compared for such inputs, and a baseline created from them adds them to its ``ignore`` list (with a warning). The format of other inputs (``-``, files with other names) is not known, and empty lists are absent from every format: a device that has none of these lists is treated like a device summary, and a device without ``relationships`` like a parse summary (e.g. the host documents printed by ``peat pull -P``). Lists such an input has are compared. Use ``device-data-full.json`` files for complete comparisons: only they report the disappearance of all items of these lists.
+Parse summaries and ``device-data-summary.json`` files do not have all device data: parse summaries have no ``relationships``, and device summaries also no ``files``, ``registers``, ``tag``, ``io``, ``event`` and ``memory``. These keys are not compared for such inputs, and a baseline created from them adds them to its ``ignore`` list (with a warning). The format of other inputs (``-``, files with other names) is not known, and empty lists are absent from every format: a device that has none of these lists is treated like a device summary, and a device without ``relationships`` like a parse summary (e.g. the host documents printed by ``peat pull -E``). Lists such an input has are compared. Use ``device-data-full.json`` files for complete comparisons: only they report the disappearance of all items of these lists.
 
 ``peat baseline-create``
 ------------------------
-Creates baselines from device data. With ``--scope device`` (default), one baseline per device; with ``--scope device_type``, one profile of all the given devices (which must have the same vendor and model). Options: ``--kind`` (default ``first_observed``), ``--baseline-id``, ``--baseline-name``, ``--baseline-version`` (default ``1``), ``--author`` (default: the OS user name) and ``--description``. The baselines are written to ``-w/--write-file`` (a JSON list if there are several), or to ``<run dir>/baselines/baseline-<device id>.json``. ``-E`` also prints them.
+Creates baselines from device data. With ``--scope device`` (default), one baseline per device; with ``--scope device_type``, one profile of all the given devices (which must have the same vendor and model). Options: ``--kind`` (default ``first_observed``), ``--baseline-id``, ``--baseline-name``, ``--baseline-version`` (default ``1``), ``--author`` (default: the OS user name) and ``--description``. The baselines are written to ``-w/--write-file`` (a JSON list if there are several), or to ``<run dir>/baselines/baseline-<device id>.json``. ``-E`` also prints them. A device that is in several inputs gets a baseline from each input (``baseline-<device id>-2.json``, ...); their default IDs can be the same, e.g. if the inputs have the same observation time (a warning is logged): give them unique IDs.
 
 Default IDs are ``<device id>@<observation time>`` (e.g. ``192.0.2.10@20261030T120000Z``) and ``<vendor>-<model>-typical`` (e.g. ``SEL-2032-typical``, with the case of the vendor ID and model). A device baseline applies to the device with the same ``id`` (normally its IP address, else its host name, name or MAC address); edit the ``selector`` to match on other fields, e.g. the serial number. The glob characters ``*``, ``?`` and ``[`` in the selector values of a new baseline are escaped (e.g. ``[[]``), so they match only themselves (e.g. the ID ``TEMPLATE@bay[1]`` of an IED in an ICD file).
 
@@ -197,10 +197,11 @@ Example output:
    medium    fail     unexpected  service[protocol=http,port=80]  service[protocol=http,port=80] unexpected compared to baseline '192.0.2.10 first_observed'
    192.0.2.10: 3 findings, 3 failed, 0 passed (max severity: high)
 
-Exit codes:
+Exit codes (of all ``baseline-*`` commands; ``3`` only of ``baseline-compare``):
 
 - ``0``: success, even if there are findings;
-- ``1``: error (bad arguments, unreadable inputs or baseline files, no device data, no baseline applies to any device, failed Elasticsearch export);
+- ``1``: error (invalid option combinations, e.g. no ``-b`` or ``--known-defaults``, or ``--baseline-id`` with several devices; unreadable inputs or baseline files, a baseline file that can't be written, no device data, no baseline applies to any device, failed Elasticsearch export);
+- ``2``: invalid command line (an unknown option, or an invalid ``--kind``, ``--scope`` or ``--fail-on`` value);
 - ``3``: ``--fail-on SEVERITY`` was given and a failed finding has that severity or higher (for scripts, CI jobs and scheduled checks).
 
 ``peat baseline-show``
