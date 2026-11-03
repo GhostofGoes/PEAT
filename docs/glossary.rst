@@ -7,9 +7,6 @@ Terms link here from the pages that use them.
 .. glossary::
    :sorted:
 
-   ACL
-      Access Control List. Common form of firewalling. Is often used in a network context to refer to firewalls in general.
-
    AcSELerator QuickSet
       :term:`SEL`'s engineering software (SEL-5030) for configuring relays. Stores device settings in ``.rdb`` project databases, which PEAT can parse.
 
@@ -83,14 +80,8 @@ Terms link here from the pages that use them.
    CPU
       Central Processing Unit. In a desktop computer, this is the primary processor. In a modular :term:`PLC`, this is usually the controller module in the rack, which other modules (communication, I/O) attach to.
 
-   CSV
-      Comma Separated Values. Commonly used table-structured data format.
-
    Datastore
       PEAT's registry of :term:`device data <Device data>` objects for a run (:data:`peat.datastore`). Devices are looked up by identifier, and duplicates are merged before export.
-
-   db
-      Database, used generally (though often referring to :term:`Elasticsearch`)
 
    DCS
       Distributed Control System
@@ -111,20 +102,11 @@ Terms link here from the pages that use them.
    DGA
       Dissolved Gas Analyzer. A transformer monitoring device; the Camlin Totus is one.
 
-   dict
-      :term:`Python` dictionary
-
-   dir
-      Filesystem directory
-
    DNP3
       Distributed Network Protocol 3.0. :term:`SCADA` communication protocol commonly seen in the electric power industry in the U.S.
 
    DNS
       Domain Name System
-
-   DPI
-      Deep Packet Inspection
 
    Docker
       Docker is a system for building and running containers. Docker is a set of platform as a service products that use OS-level virtualization to deliver software in packages called containers. Containers are isolated from one another and bundle their own software, libraries and configuration files. Similar to :term:`Podman`. Further reading: `Docker documentation <https://docs.docker.com/>`__
@@ -190,9 +172,6 @@ Terms link here from the pages that use them.
    GUI
       Graphical User Interface
 
-   GUID
-      Globally Unique Identifier
-
    Golden Image
       General term for a known-good ("golden") device configuration or firmware image. Derives from the :term:`IT` term for a :term:`VM` base-image that is used to create many instances of the same virtual machine.
 
@@ -202,14 +181,8 @@ Terms link here from the pages that use them.
    HMI
       Human-Machine Interface. The operator's screen for a process, often a Windows or Windows CE panel.
 
-   HTML
-      Hyper-Text Markup Language. Format used to render data in a browser.
-
    HTTP
       Hyper-Text Transfer Protocol. Plaintext protocol commonly used for transferring web information or making requests to a :term:`REST` :term:`API`. Many :term:`OT` devices have web interfaces PEAT scrapes.
-
-   HTTPS
-      :term:`HTTP` over :term:`TLS`.
 
    ICMP
       Internet Control Message Protocol. :term:`OSI Model` Layer 3 protocol commonly used to determine if a host is alive and responding ("ping").
@@ -225,9 +198,6 @@ Terms link here from the pages that use them.
 
    IED
       Intelligent Electronic Device. Generic term for microprocessor-based substation devices such as protection relays.
-
-   INI
-      File format, often used for software configurations
 
    Intensive scan
       A scan mode (``--intensive-scan``) that runs every identification method against every target regardless of open ports and doesn't stop at the first success. Thorough, slow, and hard on devices. See :doc:`/user_guide/scan`.
@@ -260,12 +230,6 @@ Terms link here from the pages that use them.
    Ladder logic
       A graphical PLC programming language resembling relay wiring diagrams; one of the IEC 61131-3 languages. PEAT decompiles ControlLogix ladder logic to text.
 
-   "layer <x>"
-      Layer in the :term:`OSI Model` commonly used by network engineers (ex: "Layer 3" is the "network" or IP layer).
-
-   LDRD
-      Laboratory-Directed Research and Development
-
    Loguru
       The Python logging library PEAT uses. See :doc:`/contributing/logging`.
 
@@ -284,17 +248,8 @@ Terms link here from the pages that use them.
    Modbus
       A simple, ubiquitous industrial protocol for reading and writing registers and coils, over serial (Modbus RTU) or TCP port 502 (Modbus/TCP). Schneider's :term:`UMAS` rides on top of it.
 
-   MR
-      Merge Request, used when talking about GitLab
-
-   MTU
-      Maximum Transfer Unit
-
    NIC
       Network Interface Card. Often used to refer generally to network interfaces on a host, both physical and virtual.
-
-   NTP
-      Network Time Protocol
 
    Nmap
       The Network Mapper. Open-source tool for active mapping of IP networks. PEAT's scan is a gentler, :term:`OT`-specific analogue. Further reading: `Nmap website <https://nmap.org/>`__
@@ -341,9 +296,6 @@ Terms link here from the pages that use them.
    PEAT
       Process Extraction and Analysis Tool. PEAT is a multifunction utility and library for interrogating and mapping :term:`ICS` and :term:`OT` devices, including network discovery, acquiring and parsing artifacts (firmware, logic, etc.), uploading artifacts, and sending commands.
 
-   pickle
-      Python's Pickle protocol, which serializes arbitrary :term:`Python` objects into a stream of bytes. Further reading: :mod:`pickle`
-
    Pillage
    Pillager
       :term:`PEAT` capability (``peat pillage``) to collect artifacts (e.g. device configs or project files) from engineering workstation disk images or live machines. Refer to :doc:`/user_guide/pillage` for details.
@@ -359,12 +311,6 @@ Terms link here from the pages that use them.
 
    Podman
       Red Hat's container solution. Similar to :term:`Docker`. Further reading: `Podman documentation <https://docs.podman.io/en/latest/>`__
-
-   Port
-      Commonly used to refer to network ports. It is an integer used by :term:`TCP` and :term:`UDP` to address applications on a host over a :term:`IP` network.
-
-   PR
-      Pull Request, used when talking about GitHub
 
    Project file
       A file saved by vendor engineering software containing a device's program and configuration (SEL ``.rdb``, Rockwell ``.L5X``/``.ACD``, Schneider ``.apx``/``.stu``, Woodward ``.wset``). Often richer than what can be pulled from the device; PEAT parses several formats.
@@ -383,9 +329,6 @@ Terms link here from the pages that use them.
 
    Python
       The Python programming language. This is the language :term:`PEAT` is implemented in.
-
-   py
-      Shorthand for "Python", e.g. "py3" for "Python 3", "py312" for "Python 3.12"
 
    RAM
       Random-access Memory
@@ -457,26 +400,17 @@ Terms link here from the pages that use them.
    SNMP
       Simple Network Management Protocol. UDP port 161; PEAT reads device information from it where supported.
 
-   SNTP
-      Simple Network Time Protocol
-
    SOE
       Sequence of Events log. Refers to the system log from SEL RTAC devices aka ``soe.csv``.
 
    Sphinx
       The documentation generator that builds these pages from reStructuredText. See :doc:`/contributing/documentation`.
 
-   SSH
-      Secure Shell protocol
-
    SFTP
       SSH File Transfer Protocol. Basically :term:`FTP` over a SSH connection.
 
    StaticX
       A tool that bundles system shared libraries into a :term:`PyInstaller` executable, making the Linux ``peat`` executable portable across distributions. See :doc:`/contributing/building`.
-
-   str
-      :term:`Python` string
 
    Structured Text
       A textual IEC 61131-3 PLC programming language resembling Pascal. PEAT extracts Modicon logic as Structured Text.
@@ -490,17 +424,11 @@ Terms link here from the pages that use them.
    TCP
       Transmission Control Protocol
 
-   TLS
-      Transport Layer Security. The encryption layer under :term:`HTTPS`.
-
    Towncrier
       The tool that assembles PEAT's changelog from per-change news fragments. See :doc:`/contributing/releases`.
 
    TRL
       Technology Readiness Level. A 1 to 9 scale of maturity (1: basic principles, 9: proven in operation). PEAT uses it to estimate how mature each :term:`device module <Device module>` is; see :doc:`/getting_started/supported_devices`.
-
-   TXT
-      Text file or text data (e.g. ".txt")
 
    UDP
       User Datagram Protocol
@@ -514,9 +442,6 @@ Terms link here from the pages that use them.
    Unicast scan
       The normal scan: probing each target address individually. Compare :term:`broadcast scan <Broadcast scan>`.
 
-   USB
-      Universal Serial Bus
-
    UTC
       Coordinated Universal Time. All PEAT timestamps are in UTC.
 
@@ -528,9 +453,6 @@ Terms link here from the pages that use them.
 
    VM
       Virtual Machine
-
-   VPN
-      Virtual Private Network
 
    VxWorks
       Wind River's real-time operating system, found on many :term:`PLCs <PLC>` and :term:`RTUs <RTU>` (ControlLogix, M340, Sage, Woodward).
@@ -552,9 +474,6 @@ Terms link here from the pages that use them.
 
    YMODEM
       A serial file transfer protocol. Needed to download files from some :term:`SEL` relays over serial; PEAT uses the ``rz``/``sz`` tools from ``lrzsz`` for it (Linux and macOS).
-
-   yml
-      File extension commonly used for :term:`YAML` files
 
    Zeek
       An open-source network security monitor (formerly Bro) that parses traffic into logs and can extract transferred files. :term:`HEAT`'s FTP extractor uses it.
