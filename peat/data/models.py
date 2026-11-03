@@ -7494,6 +7494,19 @@ class Baseline(BaseModel):
     expected: DeviceData | None = None
     """Expected device state snapshot (optional)."""
 
+    complete: bool = False
+    """
+    The ``expected`` snapshot is the complete observed state of the device (or
+    device type), so values and list items that are absent from it are reported
+    (``unexpected``) when they appear. :func:`~peat.api.baseline_api.create_baseline`
+    sets it for snapshots of the kinds ``first_observed``, ``previous_observed`` and
+    ``approved`` (a reviewed copy of an observed state), and it is kept when the
+    ``kind`` of a saved baseline is changed. Other snapshots (``engineer_provided``,
+    ``vendor_recommended``, ``factory_default`` and hand-written baselines) only
+    check what they specify. ``first_observed`` and ``previous_observed`` snapshots
+    are always compared as complete.
+    """
+
     rules: list[BaselineRule] = []
     """Explicit rules (optional)."""
 

@@ -33,6 +33,7 @@ A :class:`~peat.data.models.Baseline` has:
 - ``selector``: which devices it applies to (:class:`~peat.data.models.BaselineSelector`). All non-empty selector fields must match the device, as case-insensitive :mod:`fnmatch` globs (e.g. ``firmware_version: "R5*"``). Fields: ``peat_module``, ``vendor_id``, ``model``, ``product``, ``part_number``, ``device_type``, ``firmware_version``, ``device_id``, ``serial_number``. A baseline whose selector does not match a device produces no findings for it;
 - ``provenance``: where the expected values came from (:class:`~peat.data.models.BaselineProvenance`): creation time, author, source file and its SHA-256, source device, observation time, PEAT run ID and version, and approval (``approved_by``, ``approved``, ``change_ticket``);
 - the expectations, as an ``expected`` :class:`~peat.data.models.DeviceData` snapshot, as ``rules``, or both;
+- ``complete``: the snapshot is the complete observed state of the device (or device type), so values and list items that are absent from it are reported when they appear (see below);
 - ``ignore``: extra path patterns to skip in snapshot comparisons.
 
 Kinds
@@ -45,7 +46,7 @@ Kinds
    "``engineer_provided``", "An approved or golden configuration provided by an engineer.", "``peat parse`` of approved settings or project files"
    "``first_observed``", "The state when PEAT first saw the device (trust on first use).", "First PEAT pull or parse"
    "``previous_observed``", "The state at the previous pull (drift detection).", "Previous PEAT pull"
-   "``approved``", "A reviewed baseline (NERC CIP-010 R1), typically an approved copy of another kind.", "Review of another baseline"
+   "``approved``", "A reviewed baseline (NERC CIP-010 R1), typically an approved copy of another kind. An approved copy of an observed state is ``complete`` like the state it copies.", "Review of another baseline"
 
 Snapshots and rules
 -------------------
@@ -53,9 +54,11 @@ Snapshots and rules
 
 - ``change``: the value differs;
 - ``missing``: an expected value or list item (e.g. a service) is absent;
-- ``unexpected``: a list item (e.g. a new service or user) is present but not expected. For ``first_observed`` and ``previous_observed`` baselines, which captured the complete device state, new values (e.g. a new ``os.version``) are also ``unexpected``. Other kinds only check the values they specify, so a partial "golden" snapshot can hold just the settings that matter.
+- ``unexpected``: a list item (e.g. a new service or user) is present but not expected.
 
-List items are aligned by their identity, e.g. services by protocol and port, users by name, files by path (``LIST_KEYS`` in :mod:`peat.data.baseline`), so the order of items never matters. Items without identity values (e.g. an interface with neither name nor address) are aligned by the values that are compared, never by ignored values such as their ``statistics``.
+Baselines that captured the complete device state also report new values (e.g. an ``os.name`` the snapshot does not have) and the items of lists the snapshot does not have (e.g. the first user or service of a device that had none) as ``unexpected``: ``first_observed`` and ``previous_observed`` baselines, and baselines with ``complete: true`` (:attr:`Baseline.complete <peat.data.models.Baseline.complete>`). ``peat baseline-create`` (:func:`~peat.api.baseline_api.create_baseline`) sets ``complete`` for the baselines it creates with the kinds ``first_observed``, ``previous_observed`` and ``approved``, and the flag stays when the ``kind`` of a saved baseline is changed. Other baselines (``engineer_provided``, ``vendor_recommended`` and ``factory_default`` snapshots, and hand-written baselines without ``complete: true``) only check the values they specify, so a partial "golden" snapshot can hold just the settings that matter. They still report new items of the lists they have.
+
+List items are aligned by their identity, e.g. services by protocol and port, users by name, files by path (``LIST_KEYS`` in :mod:`peat.data.baseline`), so the order of items never matters. Items without identity values (e.g. an interface with neither name nor address) are aligned by the values that are compared, never by ignored values such as their ``statistics``. A list that only one side has (empty lists are not exported) is compared item by item with an empty list, so each item is reported on its own and the noise rules below apply (e.g. a device whose only ARP neighbor is gone has no findings).
 
 **Rules** (``rules``, :class:`~peat.data.models.BaselineRule`): constraints a snapshot cannot express, such as absence, negation, membership, patterns or ranges. Every enabled rule produces one finding with ``result`` ``pass``, ``fail``, ``unknown`` (no value to check) or ``error`` (e.g. a non-numeric value for ``min``), and ``difference: mismatch`` when it fails. A rule has a ``path``, an ``operator`` and a ``value``, plus ``id``, ``name``, ``category``, ``severity`` (default ``medium``), ``alert``, ``reason``, ``reference`` and ``standards``. ``reason`` may use ``{expected}``, ``{actual}`` and ``{path}``.
 
@@ -131,7 +134,7 @@ To reduce noise:
 
 Device type profiles
 --------------------
-A ``device_type`` baseline ("typical SEL-2032") describes every device of a type. It is built from one or more devices of ONE vendor and model, without per-unit identity (``DEVICE_TYPE_IGNORE`` in :mod:`peat.data.baseline`: addresses (also module interface addresses), names, serial numbers, file hashes, certificates, relationships, routes, IEC 61850 addressing, ...), the service listen addresses that are an address of the unit itself, and the input files of ``peat parse``. A wildcard (``0.0.0.0``, ``::``) or loopback listen address is part of the profile, so a service that moves from the loopback address to all addresses is reported. With several devices, the profile keeps only what all of them share, and the values that differ between them are added to ``ignore``. Its selector matches the vendor ID and model. Comparisons remove the same identity values from both sides.
+A ``device_type`` baseline ("typical SEL-2032") describes every device of a type. It is built from one or more devices of ONE vendor and model, without per-unit identity (``DEVICE_TYPE_IGNORE`` in :mod:`peat.data.baseline`: addresses (also module interface addresses), names, serial numbers, file hashes, certificates, relationships, routes, IEC 61850 addressing, ...), the service listen addresses that are an address of the unit itself, and the input files of ``peat parse``. A wildcard (``0.0.0.0``, ``::``) or loopback listen address is part of the profile, so a service that moves from the loopback address to all addresses is reported. A service that moves from the address of the unit itself to all addresses is a new ``listen_address`` (``unexpected``): only complete profiles report it (``complete: true``, e.g. created with the kind ``first_observed`` or ``approved``). Profiles that only check what they specify do not report it, but they report the reverse move (from all addresses to the address of the unit) as a ``missing`` ``listen_address``. With several devices, the profile keeps only what all of them share, and the values that differ between them are added to ``ignore``. Its selector matches the vendor ID and model. Comparisons remove the same identity values from both sides.
 
 Severity and categories
 -----------------------
@@ -169,6 +172,8 @@ Parse summaries and ``device-data-summary.json`` files do not have all device da
 Creates baselines from device data. With ``--scope device`` (default), one baseline per device; with ``--scope device_type``, one profile of all the given devices (which must have the same vendor and model). Options: ``--kind`` (default ``first_observed``), ``--baseline-id``, ``--baseline-name``, ``--baseline-version`` (default ``1``), ``--author`` (default: the OS user name) and ``--description``. The baselines are written to ``-w/--write-file`` (a JSON list if there are several), or to ``<run dir>/baselines/baseline-<device id>.json``. ``-E`` also prints them.
 
 Default IDs are ``<device id>@<observation time>`` (e.g. ``192.0.2.10@20261030T120000Z``) and ``<vendor>-<model>-typical`` (e.g. ``SEL-2032-typical``, with the case of the vendor ID and model). A device baseline applies to the device with the same ``id`` (normally its IP address, else its host name, name or MAC address); edit the ``selector`` to match on other fields, e.g. the serial number. The glob characters ``*``, ``?`` and ``[`` in the selector values of a new baseline are escaped (e.g. ``[[]``), so they match only themselves (e.g. the ID ``TEMPLATE@bay[1]`` of an IED in an ICD file).
+
+Baselines of the kinds ``first_observed`` (default), ``previous_observed`` and ``approved`` are complete (``complete: true``): they report values and list items the device did not have when they appear. Baselines of the other kinds only check what they specify.
 
 ``peat baseline-compare``
 -------------------------
@@ -232,7 +237,7 @@ Change management workflow (NERC CIP-010)
       peat baseline-create -w relay-1-first.json peat_results/relay-1-initial/devices/
 
 #. Review the baseline. Remove values that should not be enforced (or add them to ``ignore``), and add rules for requirements, e.g. ports and services that must stay disabled.
-#. Save an approved copy: set ``kind`` to ``approved``, a new ``id`` and ``version``, and ``provenance.approved_by``, ``provenance.approved`` and ``provenance.change_ticket``. Keep the file under version control.
+#. Save an approved copy: set ``kind`` to ``approved``, a new ``id`` and ``version``, and ``provenance.approved_by``, ``provenance.approved`` and ``provenance.change_ticket``. Keep ``complete: true``, so the approved copy still reports values, accounts, services and peers the device did not have (e.g. the first user account of a device that had none). Keep the file under version control.
 #. Compare every new pull against it (e.g. monthly, CIP-010 R2.1), and fail the job on relevant deviations:
 
    .. code-block:: bash

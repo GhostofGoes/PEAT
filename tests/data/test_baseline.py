@@ -535,10 +535,38 @@ def test_snapshot_observed_vs_partial_kinds():
     assert ("change", "firmware.version") in diffs
 
 
+def _arp_peer() -> Relationship:
+    return Relationship(
+        type="neighbor_of", remote=RelationshipEndpoint(ip="192.0.2.99"), evidence={"arp"}
+    )
+
+
+def test_snapshot_complete_baselines_report_new_values():
+    """Complete snapshots (e.g. an approved copy of an observed state) report new values."""
+    dev = sel_relay()
+    cur = sel_relay()
+    cur.os.name = "VxWorks"
+    cur = _exported(cur)
+    for kind in ("approved", "engineer_provided"):
+        complete = _snapshot(dev, kind, complete=True)
+        assert _diffs(bl.compare_device(cur, complete)) == {("unexpected", "os")}, kind
+        assert bl.compare_device(cur, _snapshot(dev, kind)) == [], kind
+    assert bl.reports_new_values(Baseline(kind="previous_observed"))
+    assert bl.reports_new_values(Baseline(kind="approved", complete=True))
+    assert not bl.reports_new_values(Baseline(kind="approved"))
+
+
 def test_snapshot_volatile_files_and_relationships():
     dev = sel_relay()
     dev.store("files", File(path="/logs/SER.TXT", category={"event_record"}, size=10))
+    dev.store("relationships", _arp_peer())
     baseline = _snapshot(dev)
+    configured = {
+        f"relationships[id={r.id}]"
+        for r in baseline.expected.relationships
+        if r.evidence & bl.STABLE_RELATIONSHIP_EVIDENCE
+    }
+    assert len(configured) == len(baseline.expected.relationships) - 1
 
     cur = sel_relay()
     cur.store("files", File(path="/logs/SER.TXT", category={"event_record"}, size=99))
@@ -552,8 +580,9 @@ def test_snapshot_volatile_files_and_relationships():
     cur.relationships = []
     diffs = _diffs(bl.compare_device(cur, baseline))
     assert ("missing", "files[path=/logs/SER.TXT]") in diffs
-    missing_rels = [p for d, p in diffs if p.startswith("relationships")]
-    assert len(missing_rels) == 1  # the configured DNP3 master only
+    # the configured peers (DNP3 master, SNTP servers), not the ARP neighbor
+    assert {p for d, p in diffs if p.startswith("relationships")} == configured
+    assert {d for d, p in diffs if p.startswith("relationships")} == {"missing"}
 
     # a NEW peer is reported, even if only observed
     new = sel_relay()
@@ -567,6 +596,43 @@ def test_snapshot_volatile_files_and_relationships():
     )
     diffs = _diffs(bl.compare_device(_exported(new), baseline))
     assert [d for d, p in diffs if p.startswith("relationships")] == ["unexpected"]
+
+
+def test_snapshot_list_on_one_side_is_compared_item_by_item():
+    """A list only one side has follows the rules for list items (R3-12)."""
+
+    def device(field: str = "", item=None) -> DeviceData:
+        dev = DeviceData(ip="192.0.2.20", id="192.0.2.20", name="PLC")
+        if field:
+            dev.store(field, item)
+        return _exported(dev)
+
+    empty = device()
+    # the only peer is gone: an observed-only peer is not reported ...
+    arp = _snapshot(device("relationships", _arp_peer()))
+    assert bl.compare_device(empty, arp) == []
+    # ... a configured peer is (on its own)
+    configured = Relationship(
+        protocol="modbus_tcp",
+        remote=RelationshipEndpoint(ip="192.0.2.9", port=502),
+        evidence={"config"},
+    )
+    config = _snapshot(device("relationships", configured))
+    (rel_id,) = [r.id for r in config.expected.relationships]
+    assert _diffs(bl.compare_device(empty, config)) == {("missing", f"relationships[id={rel_id}]")}
+
+    # the first file of a device without files: a log file is not reported ...
+    log_file = File(path="/LOGS/A.LOG", category={"log"})
+    assert bl.compare_device(device("files", log_file), _snapshot(empty)) == []
+    # ... a configuration file is
+    cfg = device("files", File(path="/CFG/X.TXT", category={"configuration"}))
+    assert _diffs(bl.compare_device(cfg, _snapshot(empty))) == {
+        ("unexpected", "files[path=/CFG/X.TXT]")
+    }
+    # ... unless the snapshot only checks what it specifies
+    assert bl.compare_device(cfg, _snapshot(empty, kind="engineer_provided")) == []
+    golden = Baseline(id="golden", kind="engineer_provided", expected=DeviceData(name="PLC"))
+    assert bl.compare_device(device("service", Service(protocol="telnet", port=23)), golden) == []
 
 
 def test_snapshot_new_volatile_files_are_not_reported():
@@ -646,8 +712,9 @@ def test_snapshot_route_cache_entries_are_not_compared(module):
         ("missing", f"{prefix}[destination=203.0.113.0/24,gateway=192.0.2.1,interface=port1]")
     }
     # (a route table with only cache entries is compared like an empty one)
-    assert compare(only_cache, base) == {("missing", prefix)}
-    assert compare(base, only_cache) == {("unexpected", prefix)}
+    default = f"{prefix}[destination=0.0.0.0/0,gateway=192.0.2.1,interface=port1]"
+    assert compare(only_cache, base) == {("missing", default)}
+    assert compare(base, only_cache) == {("unexpected", default)}
 
 
 def _module_device(when, pid: int) -> DeviceData:
@@ -768,6 +835,32 @@ def test_device_type_profile_compares_wildcard_and_loopback_listen_addresses():
     assert "listen_address" not in bl.device_to_doc(own)["service"][0]
     wildcard = bl.device_type_profile([unit(1, "::")])
     assert bl.device_to_doc(wildcard)["service"][0]["listen_address"] == "::"
+
+    # own address -> all addresses: a new listen address, reported by complete
+    # profiles (R3-1) ...
+    own_profile = Baseline(
+        id="x-y-typical",
+        kind="approved",
+        complete=True,
+        scope="device_type",
+        selector=BaselineSelector(vendor_id="X", model="Y"),
+        expected=own,
+    )
+    assert bl.compare_device(unit(3, ""), own_profile) == []
+    assert _diffs(bl.compare_device(unit(3, "0.0.0.0"), own_profile)) == {
+        ("unexpected", ssh),
+        ("unexpected", http),
+    }
+    # ... not by profiles that only check what they specify
+    own_profile.complete = False
+    assert bl.compare_device(unit(3, "0.0.0.0"), own_profile) == []
+    # a device baseline without listen addresses (e.g. from a configuration file)
+    # that only checks what it specifies has no finding for a pulled wildcard address
+    configured = _exported(DeviceData(ip="192.0.2.3", id="192.0.2.3"))
+    configured.store("service", Service(protocol="ssh", port=22, transport="tcp"))
+    for kind in ("approved", "engineer_provided"):
+        baseline = Baseline(id="unit-3", kind=kind, scope="device", expected=configured)
+        assert bl.compare_device(unit(3, "0.0.0.0"), baseline) == [], kind
 
 
 def test_snapshot_ignores_relationship_client_ports():

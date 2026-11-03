@@ -62,6 +62,10 @@ _SNAPSHOT_EXCLUDE = ("event", "memory", "uefi_image", "uefi_hashes", "baseline_f
 
 _BASELINE_COMMANDS = ("baseline_create", "baseline_compare", "baseline_show")
 
+# Kinds of baselines created from device data whose snapshot is the complete observed
+# state (Baseline.complete): "approved" is a reviewed copy of an observed state
+_COMPLETE_KINDS = ("first_observed", "previous_observed", "approved")
+
 # Device data keys that lossy input formats do not contain (dev._cache["omitted_keys"]):
 # comparing them would report everything as "missing"/"unexpected"
 _PARSE_SUMMARY_OMITTED = ("relationships", "baseline_findings")
@@ -345,7 +349,12 @@ def create_baseline(
       ``vendor_id`` and ``model`` of the devices.
 
     The selector values are escaped, so glob characters in them (``*``, ``?``,
-    ``[``) match only themselves.
+    ``[``) match only themselves. Baselines of the kinds ``first_observed``,
+    ``previous_observed`` and ``approved`` are
+    :attr:`complete <peat.data.models.Baseline.complete>`: values and list items
+    that the device did not have are reported when they appear, also after the
+    ``kind`` of the saved baseline is changed (e.g. to ``approved``). Snapshots of
+    the other kinds only check what they specify.
 
     Defaults: ID ``<device id>@<observed time>`` (device) or
     ``<vendor>-<model>-typical`` (device type), name ``<device id> <kind>``
@@ -491,6 +500,7 @@ def create_baseline(
             selector=selector,
             provenance=provenance,
             expected=expected,
+            complete=kind in _COMPLETE_KINDS,
             ignore=ignore,
         )
     except ValidationError as ex:

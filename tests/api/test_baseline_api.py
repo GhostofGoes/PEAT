@@ -23,6 +23,7 @@ from peat.data.models import (
     BaselineRule,
     BaselineSelector,
     Service,
+    User,
 )
 from tests.data.example_devices import sel_relay
 
@@ -505,6 +506,72 @@ def test_create_baseline_selector_matches_only_the_device():
     profile = api.create_baseline(rtac("RTAC [3530]"), scope="device_type")
     assert profile.selector.matches(rtac("rtac [3530]"))
     assert not profile.selector.matches(rtac("RTAC 3"))
+
+
+def test_complete_baselines_report_new_values(tmp_path):
+    """
+    Baselines created from an observed state, including approved copies of them,
+    report values and list items the device did not have (R3-14, R3-24).
+    """
+    dev = DeviceData(ip="192.0.2.20", id="192.0.2.20")
+    dev.firmware.version = "1.0"
+    cur = DeviceData(ip="192.0.2.20", id="192.0.2.20")
+    cur.firmware.version = "1.0"
+    cur.os.name = "VxWorks"
+    cur.store("users", User(name="backdoor"))
+    cur.store("service", Service(protocol="telnet", port=23, transport="tcp"))
+    new = {
+        ("unexpected", "os"),
+        ("unexpected", "users[name=backdoor]"),
+        ("unexpected", "service[protocol=telnet,port=23]"),
+    }
+
+    def diffs(baseline: Baseline) -> set:
+        return {
+            (f.difference, f.path) for f in api.compare_to_baseline(cur, baseline, store=False)
+        }
+
+    for kind in ("first_observed", "previous_observed", "approved"):
+        baseline = api.create_baseline(dev, kind)
+        assert baseline.complete, kind
+        assert diffs(baseline) == new, kind
+    for kind in ("engineer_provided", "vendor_recommended", "factory_default"):
+        baseline = api.create_baseline(dev, kind)
+        assert not baseline.complete, kind
+        assert diffs(baseline) == set(), kind
+
+    # NERC CIP-010 workflow: the reviewed first_observed baseline is saved as approved
+    path = api.save_baselines(api.create_baseline(dev), tmp_path / "relay-1.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["complete"] is True
+    data.update(kind="approved", id="relay-1-approved", version="2")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    (approved,) = api.load_baselines(path)
+    assert (approved.kind, approved.complete) == ("approved", True)
+    assert diffs(approved) == new
+    # a hand-written approved baseline only checks what it specifies
+    del data["complete"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    (written,) = api.load_baselines(path)
+    assert diffs(written) == set()
+
+    # complete device type profiles report a service that moves from the address
+    # of the unit itself to all addresses (R3-1)
+    def unit(n: int, listen: str = "") -> DeviceData:
+        ip = f"192.0.2.{n}"
+        unit_dev = DeviceData(ip=ip, id=ip)
+        unit_dev.description.vendor.id = "X"
+        unit_dev.description.model = "Y"
+        unit_dev.store("service", Service(protocol="ssh", port=22, listen_address=listen or ip))
+        return unit_dev
+
+    profile = api.create_baseline([unit(1), unit(2)], "approved", scope="device_type")
+    assert profile.complete
+    assert api.compare_to_baseline(unit(3), profile, store=False) == []
+    findings = api.compare_to_baseline(unit(3, "0.0.0.0"), profile, store=False)
+    assert [(f.difference, f.path) for f in findings] == [
+        ("unexpected", "service[protocol=ssh,port=22].listen_address")
+    ]
 
 
 def _unit(n: int, firmware: str = "R516") -> DeviceData:

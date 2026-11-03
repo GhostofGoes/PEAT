@@ -297,7 +297,9 @@ PATH_CATEGORY: dict[str, tuple[str, str]] = {
     "clock": ("settings", "medium"),
 }
 # Baseline kinds that captured a COMPLETE device state: new values are reported as
-# "unexpected". Other kinds (engineer/factory snapshots) only check what they specify.
+# "unexpected". Other kinds (engineer/factory snapshots) only check what they specify,
+# unless the baseline is marked complete (Baseline.complete, e.g. an approved copy
+# of an observed state, see reports_new_values()).
 OBSERVED_KINDS = ("first_observed", "previous_observed")
 
 # Maximum number of snapshot differences reported per device and baseline
@@ -583,18 +585,22 @@ def diff_docs(
             actual = _without_volatile_routes(actual)
         for key in sorted(set(expected) | set(actual)):
             sub = f"{path}.{key}" if path else key
-            if key not in actual:
+            if key not in actual and not _is_object_list(expected[key]):
                 value = _without_ignored(expected[key], sub, ignore)
                 if value is not None:
                     out.append(("missing", sub, value, None))
-            elif key not in expected:
+            elif key not in expected and not (report_new_leaves and _is_object_list(actual[key])):
                 value = _without_ignored(actual[key], sub, ignore) if report_new_leaves else None
                 if value is not None:
                     out.append(("unexpected", sub, None, value))
             else:
+                # A list of objects on one side only (empty lists are not exported)
+                # is compared item by item with an empty list, so the rules for
+                # missing and new list items apply (e.g. observed-only peers, new
+                # log files). A new list is only reported if new values are.
                 diff_docs(
-                    expected[key],
-                    actual[key],
+                    expected.get(key, []),
+                    actual.get(key, []),
                     sub,
                     ignore=ignore,
                     report_new_leaves=report_new_leaves,
@@ -656,6 +662,10 @@ def diff_docs(
         return
     if not _equal(expected, actual):
         out.append(("change", path, expected, actual))
+
+
+def _is_object_list(value: Any) -> bool:
+    return isinstance(value, list) and any(isinstance(x, dict) for x in value)
 
 
 def _is_volatile_route(item: Any) -> bool:
@@ -881,6 +891,16 @@ def device_type_profile(devices: list[DeviceData]) -> DeviceData:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
+def reports_new_values(baseline: Baseline) -> bool:
+    """
+    If values and list items that are absent from the snapshot of ``baseline`` are
+    reported as ``unexpected``: its kind is in :data:`OBSERVED_KINDS`, or it is
+    :attr:`complete <peat.data.models.Baseline.complete>`. Otherwise the snapshot only
+    checks what it specifies (new items of the lists it has are still reported).
+    """
+    return baseline.kind in OBSERVED_KINDS or baseline.complete
+
+
 def compare_device(
     dev: DeviceData,
     baseline: Baseline,
@@ -965,7 +985,7 @@ def compare_device(
             actual_doc,
             "",
             ignore=ignore,
-            report_new_leaves=baseline.kind in OBSERVED_KINDS,
+            report_new_leaves=reports_new_values(baseline),
             out=diffs,
         )
         for difference, path, exp, act in diffs[:MAX_FINDINGS_PER_BASELINE]:
@@ -1013,6 +1033,7 @@ __all__ = [
     "item_label",
     "plain_path",
     "posix_path",
+    "reports_new_values",
     "resolve_path",
     "split_path",
     "store_findings",
