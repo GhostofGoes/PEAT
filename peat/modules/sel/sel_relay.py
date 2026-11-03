@@ -113,6 +113,7 @@ from peat import (
     utils,
 )
 from peat.file_signature import FileSignature
+from peat.parsing import scl
 from peat.protocols import FTP, check_tcp_port
 
 from .relay_parse import (
@@ -209,20 +210,36 @@ class SELRelay(DeviceModule):
     # Targeted function for file_signatures custom_check usage
     def is_cid(data):
         """
-        Take zlib compressed data and test if contains expected CID data
+        Take zlib compressed data and test if contains expected CID data.
+
+        Decompression is limited to :data:`peat.parsing.scl.MAX_DECOMPRESSED_SIZE`
+        (the limit of the CID parser): larger (zlib bomb), truncated and non-zlib
+        data is not a CID. The file signature runs this check on every file
+        checked by ``peat parse``, even if the magic number doesn't match.
         """
         import zlib
 
+        header = data.read(2)
+        # zlib header: CMF 0x78 (deflate, 32K window) and a FLG with valid check bits
+        if len(header) != 2 or header[0] != 0x78 or int.from_bytes(header, "big") % 31:
+            return False
+
+        decompressor = zlib.decompressobj()
         try:
-            decompressed_bytes = zlib.decompress(data.read())
-            sig = FileSignature(
-                default_filename="",
-                xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
-                substrings=("IEC 61850",),
+            decompressed_bytes = decompressor.decompress(
+                header + data.read(), scl.MAX_DECOMPRESSED_SIZE
             )
-            return sig.matches(decompressed_bytes)
         except zlib.error:
             return False
+        if not decompressor.eof:  # larger than the limit, or truncated
+            return False
+
+        sig = FileSignature(
+            default_filename="",
+            xml_tags=("{http://www.iec.ch/61850/2003/SCL}SCL",),
+            substrings=("IEC 61850",),
+        )
+        return sig.matches(decompressed_bytes)
 
     file_signatures = [
         FileSignature(

@@ -28,6 +28,7 @@ from peat.modules.sel.relay_parse import (
     process_info_into_dev,
     process_port_settings,
     sel_file_categories,
+    sel_led_colors,
     split_lines,
 )
 
@@ -703,8 +704,12 @@ def test_front_panel_indicators():
         "T01LEDL": {"value": "Y", "comment": ""},
         "T01LEDC": {"value": "RO", "comment": ""},
         "T02_LED": "50P1",
+        "T02LEDC": "OG",
+        "T03_LED": "79LO",
+        "T03LEDC": "XY",
         "PB1_LED": {"value": "!LT01", "comment": "RECLOSE OFF"},
         "PB1LEDL": "N",
+        "PB1LEDC": "a",
         "FP_TO": {"value": "15", "comment": ""},
     }
     indicators, remaining = front_panel_indicators(settings)
@@ -713,16 +718,39 @@ def test_front_panel_indicators():
     assert (t01.type, t01.category) == ("led", "target")
     assert t01.equation == "51P1T OR 51G1T"
     assert t01.latched is True
-    assert t01.color == "ro"
+    assert t01.color == "red"  # asserted color of "RO"
+    assert t01.extra == {"deasserted_color": "off"}
     assert t01.label == "TIME OC"
     assert t01.state == ""
     assert t01.timestamp is None
     assert by_name["T02"].equation == "50P1"
     assert by_name["T02"].latched is None
+    assert by_name["T02"].color == ""  # off when asserted
+    assert by_name["T02"].extra == {"deasserted_color": "green"}
+    assert by_name["T03"].color == ""
+    assert by_name["T03"].extra == {"color_code": "XY"}
+    assert by_name["PB1"].color == "amber"
+    assert by_name["PB1"].extra == {}
     pb1 = by_name["PB1"]
     assert (pb1.type, pb1.category, pb1.latched) == ("pushbutton", "pushbutton", False)
     assert pb1.label == "RECLOSE OFF"
     assert remaining == {"FP_TO": {"value": "15", "comment": ""}}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("RO", ("red", "off")),
+        ("ag", ("amber", "green")),
+        (" G ", ("green", "")),
+        ("OR", ("off", "red")),
+        ("", None),
+        ("RED", None),
+        ("XY", None),
+    ],
+)
+def test_sel_led_colors(code, expected):
+    assert sel_led_colors(code) == expected
 
 
 SET_ALL = """\

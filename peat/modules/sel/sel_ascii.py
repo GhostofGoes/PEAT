@@ -20,11 +20,14 @@ def hours_to_utc_offset(hours: str) -> str:
     commands to ``+HH:MM``: ``"-08.0"`` -> ``"-08:00"``, ``"5.5"`` -> ``"+05:30"``.
 
     Returns:
-        The offset, or ``""`` if the value isn't a number
+        The offset, or ``""`` if the value isn't a finite number or is outside
+        the range of real UTC offsets (-12 to +14 hours)
     """
     try:
         value = float(hours.strip())
     except (ValueError, AttributeError):
+        return ""
+    if not -12 <= value <= 14:  # also NaN and infinity
         return ""
     sign = "-" if value < 0 else "+"
     minutes = round(abs(value) * 60)

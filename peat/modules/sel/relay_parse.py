@@ -417,6 +417,28 @@ _FP_PATTERNS = (
     (re.compile(r"^(T\d+|PB\d+)_?LEDC$", re.IGNORECASE), "color"),
 )
 
+# Letters of SEL LED color settings (e.g. "T01LEDC := RO")
+_SEL_LED_COLORS = {"R": "red", "G": "green", "A": "amber", "O": "off"}
+
+
+def sel_led_colors(code: str) -> tuple[str, str] | None:
+    """
+    Decode a SEL LED color setting (``T01LEDC``): the first letter is the color
+    of the asserted LED, the optional second letter the color of the deasserted
+    LED (``R`` red, ``G`` green, ``A`` amber, ``O`` off).
+
+    ``"RO"`` -> ``("red", "off")``, ``"AG"`` -> ``("amber", "green")``,
+    ``"G"`` -> ``("green", "")``.
+
+    Returns:
+        The asserted and deasserted colors, or :data:`None` if `code` isn't
+        a known color code
+    """
+    code = str(code).strip().upper()
+    if not 1 <= len(code) <= 2 or any(c not in _SEL_LED_COLORS for c in code):
+        return None
+    return _SEL_LED_COLORS[code[0]], _SEL_LED_COLORS[code[1]] if len(code) == 2 else ""
+
 
 def front_panel_indicators(settings: dict) -> tuple[list[Indicator], dict]:
     """
@@ -425,7 +447,10 @@ def front_panel_indicators(settings: dict) -> tuple[list[Indicator], dict]:
 
     - ``T01_LED``/``PB1_LED`` (SELogic equation) -> ``Indicator.equation``
     - ``T01LEDL`` (latch, ``Y``/``N``) -> ``Indicator.latched``
-    - ``T01LEDC`` (color) -> ``Indicator.color`` (lowercased)
+    - ``T01LEDC`` (color, see :func:`sel_led_colors`) -> ``Indicator.color``
+      (asserted color, empty if the LED is off when asserted) and
+      ``Indicator.extra["deasserted_color"]``; an unknown code is kept in
+      ``Indicator.extra["color_code"]``
     - a ``comment`` of the setting (``SHO F`` web page) -> ``Indicator.label``
 
     Targets (``T*``) are ``type="led"``, ``category="target"``; pushbuttons
@@ -465,8 +490,16 @@ def front_panel_indicators(settings: dict) -> tuple[list[Indicator], dict]:
             name=stem,
             label=definition.get("label", ""),
             equation=definition.get("equation", ""),
-            color=definition.get("color", "").lower(),
         )
+        if definition.get("color"):
+            colors = sel_led_colors(definition["color"])
+            if colors is None:
+                indicator.extra["color_code"] = definition["color"]
+            else:
+                if colors[0] != "off":
+                    indicator.color = colors[0]
+                if colors[1]:
+                    indicator.extra["deasserted_color"] = colors[1]
         if definition.get("latched"):
             indicator.latched = value_is_enabled(definition["latched"])
         indicators.append(indicator)

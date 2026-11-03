@@ -4,6 +4,7 @@ claiming and SCL parsing, file inventory (peat/modules/sel/sel_relay.py,
 sel_comms.py, sel_defaults.py, sel_ascii.py).
 """
 
+import io
 import zlib
 from pathlib import Path, PurePosixPath
 
@@ -286,6 +287,51 @@ def test_extract_cid_content_bounded(mocker):
     write.assert_not_called()
 
 
+def test_is_cid_bounded(mocker, scl_raw):
+    """A CID larger than the parser's limit (zlib bomb) is not inflated or claimed (R2-11)."""
+    from peat.parsing import scl
+
+    big = zlib.compress(scl_raw + b"<!--" + b" " * (2 * len(scl_raw)) + b"-->", 9)
+    assert SELRelay.is_cid(io.BytesIO(big)) is True
+    mocker.patch.object(scl, "MAX_DECOMPRESSED_SIZE", len(scl_raw))
+    decompressobj = mocker.spy(zlib, "decompressobj")
+    assert SELRelay.is_cid(io.BytesIO(big)) is False
+    decompressobj.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"",
+        b"x",
+        b"<?xml version='1.0'?><SCL/>",
+        b"x\x00not zlib: bad header check bits",
+        b"x\x9c garbage that looks like zlib",
+    ],
+)
+def test_is_cid_rejects_non_zlib(mocker, data):
+    decompressobj = mocker.spy(zlib, "decompressobj")
+    assert SELRelay.is_cid(io.BytesIO(data)) is False
+    if data[:2] != b"x\x9c":
+        decompressobj.assert_not_called()  # invalid zlib header: not read or inflated
+
+
+def test_is_cid_truncated(scl_raw):
+    data = zlib.compress(scl_raw)
+    assert SELRelay.is_cid(io.BytesIO(data)) is True
+    assert SELRelay.is_cid(io.BytesIO(data[:-8])) is False
+
+
+def test_zlib_bomb_not_claimed(mocker, tmp_path, scl_raw):
+    from peat.parsing import scl
+
+    path = tmp_path / "firmware.bin"
+    path.write_bytes(zlib.compress(scl_raw + b"<!--" + b" " * 8192 + b"-->"))
+    assert _claims(SELRelay, path)
+    mocker.patch.object(scl, "MAX_DECOMPRESSED_SIZE", 4096)
+    assert not _claims(SELRelay, path)
+
+
 def test_parse_zlib_cid_any_name(mocker, tmp_path, scl_raw):
     mocker.patch.object(DeviceData, "write_file", return_value=tmp_path / "x")
     path = tmp_path / "relay_61850_export.bin"
@@ -381,7 +427,25 @@ def test_pull_files_merges_downloads(mocker, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"), [("-08.0", "-08:00"), ("5.5", "+05:30"), ("0.0", "+00:00"), ("x", "")]
+    ("raw", "expected"),
+    [
+        ("-08.0", "-08:00"),
+        ("5.5", "+05:30"),
+        ("0.0", "+00:00"),
+        ("x", ""),
+        ("-12", "-12:00"),
+        ("14.0", "+14:00"),
+        # not a real UTC offset: would crash the time parse or export (R2-22)
+        ("nan", ""),
+        ("inf", ""),
+        ("-inf", ""),
+        ("1e400", ""),
+        ("30", ""),
+        ("-30.0", ""),
+        ("99999", ""),
+        ("14.5", ""),
+        ("-12.5", ""),
+    ],
 )
 def test_hours_to_utc_offset(raw, expected):
     assert hours_to_utc_offset(raw) == expected
