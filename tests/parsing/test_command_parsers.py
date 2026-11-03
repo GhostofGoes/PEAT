@@ -518,6 +518,35 @@ def test_netstat_vxworks(text_data, mocker, tmp_path, assert_no_errors):
     assert_no_errors()
 
 
+def test_netstat_vxworks_bad_lines_skipped(text_data, mocker, tmp_path, assert_no_errors):
+    """A corrupted socket line does not drop the rest of the socket table (R3-22)."""
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    lines = text_data("netstat_anP.txt").splitlines()
+    bad = [
+        # letter "O" in the listening port
+        "TCP         0      0 0.0.0.0.2O            0.0.0.0.*             LISTEN      0x1c8f0e0",
+        # peer port above 65535
+        "TCP         0      0 192.0.2.20.1026       192.0.2.77.70000      ESTABLISHED 0x1ca0000",
+        # Recv-Q is not a number
+        "TCP         x      0 192.0.2.20.1027       192.0.2.78.502        ESTABLISHED 0x1ca0000",
+    ]
+    data = "\n".join(lines[:2] + bad + lines[2:])
+    parser = command_parsers.NetstatSocketsVxWorksParser
+    assert len(parser.parse(data)) == 8  # the line with the bad Recv-Q is skipped
+
+    dev = DeviceData(id="test_netstat_vxworks_bad_lines", ip="192.0.2.20")
+    assert parser.parse_and_process(data, dev)
+    assert {(s.port, s.transport) for s in dev.service} == {
+        (23, "tcp"),
+        (20000, "tcp"),
+        (161, "udp"),
+    }
+    assert {r.remote.ip for r in dev.relationships} == {"192.0.2.5", "192.0.2.9"}
+    assert not {"192.0.2.77", "192.0.2.78"} & dev.related.ip
+    assert 70000 not in dev.related.ports
+    assert_no_errors()
+
+
 def test_task_id_to_pid():
     assert command_parsers.task_id_to_pid("0x1c8f0e0") == 0x1C8F0E0
     assert command_parsers.task_id_to_pid("1c8f0e0") == 0x1C8F0E0

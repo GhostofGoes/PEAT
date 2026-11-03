@@ -1320,6 +1320,9 @@ class NetstatSocketsVxWorksParser(NixParserBase):
             if len(parts) < 6 or len(parts) > 7:
                 log.warning(f"Bad netstat line with length {len(line)}: '{line}'")
                 continue
+            if not (parts[1].isdigit() and parts[2].isdigit()):
+                log.warning(f"Bad netstat line with invalid queue sizes: '{line}'")
+                continue
 
             skt = {
                 "protocol": parts[0],  # Prot
@@ -1363,58 +1366,63 @@ class NetstatSocketsVxWorksParser(NixParserBase):
                 transport = skt["protocol"].lower()
             pid = task_id_to_pid(skt["tid"])
 
-            if (
-                skt["foreign_address"] == "0.0.0.0"
-                and skt["foreign_port"] == "*"
-                and skt["local_port"] != "*"
-            ):
-                svc = Service(
-                    port=int(skt["local_port"]),
-                    transport=transport,
-                    status="open",
-                    listen_address=skt["local_address"],
-                    process_pid=pid,
-                    process_name=_process_name(dev, "task", pid),
-                    extra={
-                        "receive_queue": skt["recv_q"],
-                        "send_queue": skt["send_q"],
-                        "task_id": skt["tid"],  # TID as hex
-                    },
-                )
-
-                # TODO: associate with all interfaces
-                if skt["local_address"] == "0.0.0.0":
-                    # listening on all interfaces
-                    store_listening_service(dev, svc)
-                elif utils.is_ip(skt["local_address"]):
-                    # listening on localhost or a specific interface
-                    store_listening_service(
-                        dev, svc, interface_lookup={"ip": skt["local_address"]}
-                    )
-                else:
-                    log.warning(f"netstat: unknown local_address '{skt['local_address']}'")
-            elif (
-                skt["foreign_port"].isdigit()
-                and skt["local_port"].isdigit()
-                and skt["foreign_address"] != "0.0.0.0"
-                and utils.is_ip(skt["foreign_address"])
-            ):
-                local_ip = skt["local_address"]
-                connections.append(
-                    Relationship(
+            try:
+                if (
+                    skt["foreign_address"] == "0.0.0.0"
+                    and skt["foreign_port"] == "*"
+                    and skt["local_port"] != "*"
+                ):
+                    svc = Service(
+                        port=int(skt["local_port"]),
                         transport=transport,
-                        local=RelationshipEndpoint(
-                            ip=local_ip if utils.is_ip(local_ip) and local_ip != "0.0.0.0" else "",
-                            port=int(skt["local_port"]),
-                        ),
-                        remote=RelationshipEndpoint(
-                            ip=skt["foreign_address"],
-                            port=int(skt["foreign_port"]),
-                        ),
-                        state=skt["state"].lower(),
-                        evidence={"netstat"},
+                        status="open",
+                        listen_address=skt["local_address"],
+                        process_pid=pid,
+                        process_name=_process_name(dev, "task", pid),
+                        extra={
+                            "receive_queue": skt["recv_q"],
+                            "send_queue": skt["send_q"],
+                            "task_id": skt["tid"],  # TID as hex
+                        },
                     )
-                )
+
+                    # TODO: associate with all interfaces
+                    if skt["local_address"] == "0.0.0.0":
+                        # listening on all interfaces
+                        store_listening_service(dev, svc)
+                    elif utils.is_ip(skt["local_address"]):
+                        # listening on localhost or a specific interface
+                        store_listening_service(
+                            dev, svc, interface_lookup={"ip": skt["local_address"]}
+                        )
+                    else:
+                        log.warning(f"netstat: unknown local_address '{skt['local_address']}'")
+                elif (
+                    skt["foreign_port"].isdigit()
+                    and skt["local_port"].isdigit()
+                    and skt["foreign_address"] != "0.0.0.0"
+                    and utils.is_ip(skt["foreign_address"])
+                ):
+                    local_ip = skt["local_address"]
+                    if not utils.is_ip(local_ip) or local_ip == "0.0.0.0":
+                        local_ip = ""
+                    connections.append(
+                        Relationship(
+                            transport=transport,
+                            local=RelationshipEndpoint(ip=local_ip, port=int(skt["local_port"])),
+                            remote=RelationshipEndpoint(
+                                ip=skt["foreign_address"],
+                                port=int(skt["foreign_port"]),
+                            ),
+                            state=skt["state"].lower(),
+                            evidence={"netstat"},
+                        )
+                    )
+            except ValueError as ex:
+                # One unexpected line (e.g. a corrupted port) must not drop the
+                # rest of the socket table
+                log.warning(f"{cls.__name__}: skipping socket {skt}: {ex}")
+                continue
 
             # Add IPs and ports to related.ip and related.ports
             for key in ["local", "foreign"]:
