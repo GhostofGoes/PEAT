@@ -892,15 +892,19 @@ def _match_modules(dev: DeviceData, entries: dict[str, dict]) -> dict[str, Devic
 
     An entry matches the module in its slot. Otherwise, it matches by its
     product (the ``Device`` of ``DINF``, the SNMP model name) only if exactly
-    one of the other modules has that product and no other entry has it. This
-    never mixes up the data of two modules of the same product (e.g. two
-    ``BMX NOE 0100`` in a rack).
+    one module has that product, and at most one entry without a slot and at
+    most one entry with an unknown slot have it. A module (its slot matched or
+    not) can have both an SNMP entry (with its slot) and a ``DINF`` entry (no
+    slot). With more than one module of a product (e.g. two ``BMX NOE 0100``
+    in a rack), which module an entry without a slot describes is unknown:
+    this never mixes up the data of two modules of the same product.
 
     Returns:
-        Entry key -> matched module, or :obj:`None` if no module matches (a
-        new module is created). Entries without a slot that match more than
-        one module, or that have neither a slot nor a product, are left out
-        (their data stays in ``dev.extra``).
+        Entry key -> matched module, or :obj:`None` if no module has the
+        product (a new module is created). Entries without a slot that can't
+        be told apart (more than one module or more than one entry without a
+        slot has their product), and entries with neither a slot nor a
+        product, are left out (their data stays in ``dev.extra``).
     """
     matched: dict[str, DeviceData | None] = {}
     by_product: dict[str, list[str]] = {}
@@ -912,17 +916,15 @@ def _match_modules(dev: DeviceData, entries: dict[str, dict]) -> dict[str, Devic
         if matched[key] is None and _product(info):
             by_product.setdefault(_product(info), []).append(key)
 
-    slot_matched = {id(m) for m in matched.values() if m is not None}
     for product, keys in by_product.items():
-        candidates = [
-            m for m in dev.module if m.description.product == product and id(m) not in slot_matched
-        ]
-        if len(candidates) == 1 and len(keys) == 1:
-            matched[keys[0]] = candidates[0]
-        elif candidates:
+        candidates = [m for m in dev.module if m.description.product == product]
+        slotless = [key for key in keys if not _slot(entries[key])]
+        if len(candidates) == 1 and len(slotless) <= 1 and len(keys) - len(slotless) <= 1:
             for key in keys:
-                if not _slot(entries[key]):
-                    del matched[key]
+                matched[key] = candidates[0]
+        elif candidates:
+            for key in slotless:
+                del matched[key]
     return matched
 
 
@@ -951,84 +953,90 @@ def process_network_config(dev: DeviceData, net_config: dict) -> dict:
         for key, value in net_config.items()
         if isinstance(value, dict) and (key.startswith("module_") or key.startswith("device_"))
     }
-    matched_modules = _match_modules(dev, module_entries)
-
     for key, value in net_config.items():
-        if key == "firmware_version":
-            continue  # in dev.firmware.version (and the SNMP module's firmware)
-        if key not in module_entries:
+        # firmware_version: in dev.firmware.version (and the SNMP module's firmware)
+        if key != "firmware_version" and key not in module_entries:
             remaining[key] = value
-            continue
 
-        module_info = dict(value)
-        # module_<slot> comes from SNMP (the module running the SNMP agent)
-        is_snmp_module = key.startswith("module_") and "slot" in module_info
+    # The entries with a slot (SNMP module_<slot>) first: the entries without
+    # a slot (DINF device_<n>) are matched after the modules of the slot
+    # entries exist (e.g. the module running the SNMP agent, when the rack
+    # isn't known from a project file)
+    slot_entries = {key: value for key, value in module_entries.items() if _slot(value)}
+    slotless_entries = {k: v for k, v in module_entries.items() if k not in slot_entries}
+    for entries in (slot_entries, slotless_entries):
+        matched_modules = _match_modules(dev, entries)
+        for key, value in entries.items():
+            module_info = dict(value)
+            # module_<slot> comes from SNMP (the module running the SNMP agent)
+            is_snmp_module = key.startswith("module_") and "slot" in module_info
 
-        if module_info.get("port_502"):
-            dev.store(
-                "service",
-                port_502_service(module_info["port_502"], timestamp),
-                interface_lookup={"ip": dev.ip} if dev.ip else None,
-            )
-        if module_info.get("web_server"):
-            dev.store(
-                "service",
-                web_service(module_info["web_server"], timestamp),
-                interface_lookup={"ip": dev.ip} if dev.ip else None,
-            )
-        if module_info.get("smtp_server"):
-            svc, rel = smtp_service(module_info["smtp_server"], timestamp)
-            dev.store("service", svc, interface_lookup={"ip": dev.ip} if dev.ip else None)
-            if rel:
-                dev.store("relationships", rel)
+            if module_info.get("port_502"):
+                dev.store(
+                    "service",
+                    port_502_service(module_info["port_502"], timestamp),
+                    interface_lookup={"ip": dev.ip} if dev.ip else None,
+                )
+            if module_info.get("web_server"):
+                dev.store(
+                    "service",
+                    web_service(module_info["web_server"], timestamp),
+                    interface_lookup={"ip": dev.ip} if dev.ip else None,
+                )
+            if module_info.get("smtp_server"):
+                svc, rel = smtp_service(module_info["smtp_server"], timestamp)
+                dev.store("service", svc, interface_lookup={"ip": dev.ip} if dev.ip else None)
+                if rel:
+                    dev.store("relationships", rel)
 
-        if key not in matched_modules:
-            # The module can't be told apart from other modules with the same
-            # product: keep its data (MAC, firmware ID, ...) in dev.extra
-            unmapped = {k: v for k, v in module_info.items() if k not in _SERVICE_KEYS}
+            if key not in matched_modules:
+                # The module can't be told apart from other modules with the same
+                # product: keep its data (MAC, firmware ID, ...) in dev.extra
+                unmapped = {k: v for k, v in module_info.items() if k not in _SERVICE_KEYS}
+                if unmapped:
+                    remaining[key] = unmapped
+                continue
+
+            module = matched_modules[key]
+            new_module = module is None
+            if new_module:
+                module = DeviceData()
+                if module_info.get("slot") is not None:
+                    module.slot = str(module_info["slot"])
+                if _product(module_info):
+                    module.description.product = _product(module_info)
+
+            if module_info.get("module_status") in ("ok", "nok"):
+                module.status = module_info["module_status"]
+                module.health = "normal" if module_info["module_status"] == "ok" else "failure"
+            if module_info.get("mac_address") and utils.is_mac(module_info["mac_address"]):
+                module.mac = module_info["mac_address"].upper()
+                ip = module_info.get("configured_ipv4_address") or module.ip
+                iface = dev.retrieve("interface", {"ip": ip}) if ip else None
+                if iface is not None and not iface.mac:
+                    iface.mac = module.mac
+            if module_info.get("fw_id"):
+                module.firmware.id = _text(module_info["fw_id"])
+            if module_info.get("hardware_id"):
+                module.hardware.id = _text(module_info["hardware_id"])
+            if is_snmp_module and net_config.get("firmware_version"):
+                module.firmware.version = _text(net_config["firmware_version"])
+
+            for indicator in led_indicators(module_info, timestamp):
+                module.store("indicators", indicator)
+
+            unmapped = {
+                k: v
+                for k, v in module_info.items()
+                if k not in _MOVED_MODULE_KEYS and not re.fullmatch(r"led_\d+", str(k))
+            }
+            if new_module and (module.slot or module.description.product):
+                dev.store("module", module, lookup="slot" if module.slot else None)
             if unmapped:
                 remaining[key] = unmapped
-            continue
 
-        module = matched_modules[key]
-        new_module = module is None
-        if new_module:
-            module = DeviceData()
-            if module_info.get("slot") is not None:
-                module.slot = str(module_info["slot"])
-            if module_info.get("device"):
-                module.description.product = _text(module_info["device"])
-
-        if module_info.get("module_status") in ("ok", "nok"):
-            module.status = module_info["module_status"]
-            module.health = "normal" if module_info["module_status"] == "ok" else "failure"
-        if module_info.get("mac_address") and utils.is_mac(module_info["mac_address"]):
-            module.mac = module_info["mac_address"].upper()
-            ip = module_info.get("configured_ipv4_address") or module.ip
-            iface = dev.retrieve("interface", {"ip": ip}) if ip else None
-            if iface is not None and not iface.mac:
-                iface.mac = module.mac
-        if module_info.get("fw_id"):
-            module.firmware.id = _text(module_info["fw_id"])
-        if module_info.get("hardware_id"):
-            module.hardware.id = _text(module_info["hardware_id"])
-        if is_snmp_module and net_config.get("firmware_version"):
-            module.firmware.version = _text(net_config["firmware_version"])
-
-        for indicator in led_indicators(module_info, timestamp):
-            module.store("indicators", indicator)
-
-        unmapped = {
-            k: v
-            for k, v in module_info.items()
-            if k not in _MOVED_MODULE_KEYS and not re.fullmatch(r"led_\d+", str(k))
-        }
-        if new_module and (module.slot or module.description.product):
-            dev.store("module", module, lookup="slot" if module.slot else None)
-        if unmapped:
-            remaining[key] = unmapped
-
-    return remaining
+    # The keys in the order of the pulled data
+    return {key: remaining[key] for key in net_config if key in remaining}
 
 
 def redact_snmp_communities(device_info: dict) -> None:

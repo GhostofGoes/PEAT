@@ -200,6 +200,81 @@ def test_process_network_config_same_product_modules_pulled_only():
     }
 
 
+def _cpu_dinf_and_snmp_entries() -> dict:
+    # In pull order: FTP (DINF, no slot) first, then SNMP (module_<slot>) of
+    # the same module, the CPU that runs the SNMP agent
+    return {
+        "device_0": {
+            "fw_loc": "0",
+            "hardware_id": "0x0201",
+            "fw_id": "0x0C11",
+            "device": "BMX P34 2020",
+            "mac_address": "00:80:F4:01:02:03",
+        },
+        "firmware_version": "V2.70",
+        "module_0": {"slot": 0, "model_name": "BMX P34 2020", "module_status": "ok"},
+    }
+
+
+def _module_summary(dev: DeviceData) -> list[tuple]:
+    return [
+        (m.slot, m.description.product, m.mac, m.firmware.id, m.hardware.id, m.status)
+        for m in dev.module
+    ]
+
+
+def test_process_network_config_dinf_and_snmp_entry_of_one_module_in_project():
+    dev = DeviceData(ip="192.0.2.20")
+    cpu = DeviceData(slot="0")
+    cpu.description.product = "BMX P34 2020"
+    dev.store("module", cpu, lookup="slot")
+
+    remaining = m340_parse.process_network_config(dev, _cpu_dinf_and_snmp_entries())
+
+    # The only P34 in the rack: the DINF entry is the module of the SNMP entry
+    assert _module_summary(dev) == [
+        ("0", "BMX P34 2020", "00:80:F4:01:02:03", "0x0C11", "0x0201", "ok")
+    ]
+    assert dev.module[0].firmware.version == "V2.70"
+    assert remaining == {
+        "device_0": {"fw_loc": "0", "device": "BMX P34 2020"},
+        "module_0": {"slot": 0, "model_name": "BMX P34 2020"},
+    }
+
+
+def test_process_network_config_dinf_and_snmp_entry_of_one_module_pulled_only():
+    dev = DeviceData(ip="192.0.2.20")
+    m340_parse.process_network_config(dev, _cpu_dinf_and_snmp_entries())
+
+    # One module, with the slot (SNMP), the product (SNMP model name) and the
+    # DINF data, not a module without a slot next to a module without a product
+    assert _module_summary(dev) == [
+        ("0", "BMX P34 2020", "00:80:F4:01:02:03", "0x0C11", "0x0201", "ok")
+    ]
+
+
+def test_process_network_config_dinf_entry_of_same_product_as_slot_matched_entry():
+    dev = DeviceData(ip="192.0.2.20")
+    for slot in ("2", "3"):
+        noe = DeviceData(slot=slot)
+        noe.description.product = "BMX NOE 0100"
+        dev.store("module", noe, lookup="slot")
+    net_config = {
+        "device_0": _two_noe_dinf_entries()["device_0"],
+        "module_2": {"slot": 2, "model_name": "BMX NOE 0100", "module_status": "ok"},
+    }
+
+    remaining = m340_parse.process_network_config(dev, net_config)
+
+    # The DINF entry can be either NOE (the one in slot 2 answered SNMP): its
+    # data is not put on the NOE in slot 3, and stays in dev.extra
+    assert _module_summary(dev) == [
+        ("2", "BMX NOE 0100", "", "", "", "ok"),
+        ("3", "BMX NOE 0100", "", "", "", ""),
+    ]
+    assert remaining["device_0"] == _two_noe_dinf_entries()["device_0"]
+
+
 def test_snmp_project_config_and_redaction():
     device_info = {
         "network_configurations": {
