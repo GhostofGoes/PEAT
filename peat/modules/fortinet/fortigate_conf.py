@@ -287,8 +287,9 @@ def process_fg_system(system: dict[str, dict], dev: DeviceData) -> None:
         ]:
             sa.pop(key, None)
 
-        # store remaining values
-        user.extra = sa
+        # store remaining values, except encrypted ("ENC ...") secrets
+        # (the public "ssh-public-key<N>" values are kept)
+        user.extra = {k: v for k, v in sa.items() if not _is_encrypted(v)}
 
         dev.store("users", user, lookup="name")
 

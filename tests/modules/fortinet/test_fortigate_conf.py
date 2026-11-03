@@ -7,6 +7,9 @@ authored for PEAT, not captured from a device; all addresses are documentation
 ranges (RFC 5737).
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from peat import DeviceData, Fortigate, config, datastore
@@ -357,6 +360,23 @@ end
         assert "ENC " not in str(doc)
 
 
+def test_fortigate_admin_encrypted_settings_not_in_user_extra():
+    conf = """\
+config system admin
+    edit "admin2"
+        set accprofile "prof_admin"
+        set password ENC SECRETADMINPASSWORD==
+        set unknown-secret-setting ENC SECRETADMINOTHER==
+        set ssh-public-key1 "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPEAT"
+    next
+end
+"""
+    dev = DeviceData()
+    process_fg_conf(fg_conf_to_dict(conf), dev)
+    assert dev.users[0].extra == {"ssh-public-key1": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPEAT"}
+    assert "SECRET" not in str(dev.export())
+
+
 def test_fortigate_ipsec_tunnels_over_two_wan_links():
     conf = """\
 config vpn ipsec phase1-interface
@@ -416,3 +436,45 @@ def test_fortigate_parse_conf_file(out_config):
     exported = dev.export()
     assert "fortianalyzer" not in exported.get("extra", {})
     assert "ENC xxxxxxxx" not in str(exported)
+
+
+def _assert_side_file_has_no_secrets(out_config: Path, name: str) -> dict:
+    files = list((out_config / "devices").rglob("*.json"))
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert "ENC " not in text, path
+        assert "notpublic" not in text, path  # SNMP community name
+
+    side_file = next(p for p in files if p.name == name)
+    parsed = json.loads(side_file.read_text(encoding="utf-8"))
+    # Non-secret settings are kept
+    assert parsed["system"]["ntp"]["ntpserver"]["1"]["server"] == "192.0.2.123"
+    assert parsed["system"]["ha"] == {"group-name": "sub1-ha", "mode": "a-p", "hbdev": "ha 0"}
+    assert parsed["vpn"]["ipsec"]["phase1-interface"]["to-cc"]["remote-gw"] == "203.0.113.5"
+    assert parsed["system"]["snmp"]["sysinfo"]["location"] == "Substation 1"
+    assert "community" not in parsed["system"]["snmp"]
+    return parsed
+
+
+def test_fortigate_parsed_config_side_file_has_no_secrets(out_config):
+    """Bug fix: parsed_config_<name>.json had the ENC passwords, PSKs and SNMP community."""
+    conf = out_config / "fortigate-side1.conf"
+    conf.write_text(SYNTHETIC_CONF, encoding="utf-8")
+    Fortigate.parse(conf)
+    _assert_side_file_has_no_secrets(out_config, "parsed_config_fortigate-side1.json")
+
+
+def test_fortigate_pulled_config_side_file_has_no_secrets(out_config, mocker):
+    """Bug fix: parsed_sys_config.json had the ENC passwords, PSKs and SNMP community."""
+
+    def fake_get(remote_path, local_path, **kwargs):  # noqa: ARG001
+        Path(local_path).write_text(SYNTHETIC_CONF, encoding="utf-8")
+
+    scp = mocker.patch("peat.modules.fortinet.fortigate.SCPClient")
+    scp.return_value.__enter__.return_value.get.side_effect = fake_get
+    dev = DeviceData(ip="192.0.2.1")
+    dev._cache["ssh_session"] = mocker.MagicMock()
+
+    assert Fortigate.pull_ssh(dev)
+    assert dev.hostname == "fg-sub1"
+    _assert_side_file_has_no_secrets(out_config, "parsed_sys_config.json")

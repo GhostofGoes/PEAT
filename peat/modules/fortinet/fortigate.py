@@ -24,7 +24,7 @@ from peat.api.identify_methods import IPMethod
 from peat.file_signature import FileSignature
 from peat.protocols import HTTP, SSH
 
-from .fortigate_conf import fg_conf_to_dict, process_fg_conf
+from .fortigate_conf import _without_secrets, fg_conf_to_dict, process_fg_conf
 from .fortigate_dbl import parse_fg_debug_log, process_fg_debug_log
 from .fortigate_events import parse_fg_events, process_fg_events
 
@@ -128,7 +128,8 @@ class Fortigate(DeviceModule):
         if path.suffix == ".conf":
             res = fg_conf_to_dict(raw_data)
             process_fg_conf(res, dev)
-            dev.write_file(res, f"parsed_config_{path.stem}.json")
+            # Same as the device data: never write secrets (ENC values, PSKs, ...)
+            dev.write_file(_without_secrets(res), f"parsed_config_{path.stem}.json")
         # TODO: peek at file contents to determine if it should be parsed
         elif path.suffix == ".log" and "debug" in path.stem:
             res = parse_fg_debug_log(raw_data)
@@ -247,7 +248,7 @@ class Fortigate(DeviceModule):
             cls.log.info(f"Parsing pulled config: {local_path.name}")
             res = fg_conf_to_dict(local_path.read_text(encoding="utf-8"))
             process_fg_conf(res, dev)
-            dev.write_file(res, "parsed_sys_config.json")
+            dev.write_file(_without_secrets(res), "parsed_sys_config.json")
             return True
         except Exception as ex:
             cls.log.exception(f"SSH pull failed from {dev.ip}: {ex}")
