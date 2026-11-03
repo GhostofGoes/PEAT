@@ -582,6 +582,60 @@ def test_merge_models_newer_indicator_unknown_state():
     assert dst.state == ""
 
 
+def test_merge_models_equal_timestamps_incoming_wins():
+    """
+    Two reads can get the same timestamp (coarse clock, e.g. on Windows): the
+    incoming (later stored) sample wins, for every newest-wins model.
+    """
+    dst = NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=1))
+    merge_models(dst, NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=2)))
+    assert dst.ingress.packets == 2
+    # counters are still never mixed
+    merge_models(dst, NetworkStatistics(timestamp=T0, egress=NetworkTraffic(packets=5)))
+    assert (dst.ingress.packets, dst.egress.packets) == (None, 5)
+
+    dst = Indicator(name="KEY", type="switch", value="REMOTE", label="Key", timestamp=T0)
+    merge_models(
+        dst, Indicator(name="KEY", type="switch", value="RUN", timestamp=T0, extra={"a": 2})
+    )
+    assert (dst.value, dst.label) == ("RUN", "Key")
+    assert dst.extra == {"a": 2}
+
+    dst = Clock(time=T0 + timedelta(seconds=10), observed=T0)
+    dst.annotate()
+    merge_models(dst, Clock(time=T0 + timedelta(seconds=3), observed=T0))
+    dst.annotate()
+    assert (dst.time, dst.offset) == (T0 + timedelta(seconds=3), 3.0)
+
+    rel = Relationship(remote=RelationshipEndpoint(ip="192.0.2.50"), last_seen=T0, state="a")
+    merge_models(
+        rel, Relationship(remote=RelationshipEndpoint(ip="192.0.2.50"), last_seen=T0, state="b")
+    )
+    assert rel.state == "b"
+
+    # a sample that adds nothing (e.g. a copy, or one without a reading) changes nothing
+    dst = Indicator(name="RUN", type="led", state="on", health="normal", timestamp=T0)
+    merge_models(dst, Indicator(name="RUN", type="led", state="on", timestamp=T0))
+    merge_models(dst, Indicator(name="RUN", type="led", label="RUN", timestamp=T0))
+    assert (dst.state, dst.health, dst.label) == ("on", "normal", "RUN")
+    dst = NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=1, errors=2))
+    merge_models(dst, NetworkStatistics(timestamp=T0, ingress=NetworkTraffic(packets=1)))
+    assert dst.ingress.errors == 2
+
+    # the same through store() and dedupe_model_list() (order of storing)
+    dev = DeviceData()
+    for packets in (1, 2):
+        dev.store(
+            "protocol_statistics",
+            NetworkStatistics(type="ipv4", timestamp=T0, ingress=NetworkTraffic(packets=packets)),
+        )
+    assert [s.ingress.packets for s in dev.protocol_statistics] == [2]
+    items = [
+        Indicator(name="KEY", type="switch", value=v, timestamp=T0) for v in ("REMOTE", "RUN")
+    ]
+    assert [i.value for i in dedupe_model_list(items)] == ["RUN"]
+
+
 def test_merge_models_relationship_rules():
     dst = Relationship(
         remote=RelationshipEndpoint(ip="192.0.2.50"),

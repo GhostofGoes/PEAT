@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+import functools
 import hashlib
 import inspect
 import ipaddress
@@ -9,11 +10,12 @@ import json
 import mimetypes
 import re
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path, PurePath
 from typing import Any, AnyStr, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from dateutil.zoneinfo import get_zonefile_instance
 from pydantic import (
     Field,
     PositiveInt,
@@ -182,6 +184,29 @@ def _parse_utc_offset(value: str) -> timezone | None:
     return timezone(-delta if m.group(1) == "-" else delta)
 
 
+@functools.lru_cache(maxsize=128)
+def resolve_timezone(name: str) -> tzinfo | None:
+    """
+    The tzinfo of an IANA time zone name or abbreviation (e.g. ``America/Denver``,
+    ``MST``), or :obj:`None` if it is unknown.
+
+    The system time zone database is used first (:mod:`zoneinfo`), then the
+    database bundled with ``python-dateutil``, so names also resolve on systems
+    without one (Windows, where the ``tzdata`` package is not installed).
+    An unknown name is logged once (debug).
+    """
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        pass
+    zone = get_zonefile_instance().get(name)
+    if zone is None:
+        log.debug(f"Unknown timezone '{name}', naive times with it are assumed to be UTC")
+    return zone
+
+
 def _utc(ts: datetime | None, tz: str = "") -> datetime | None:
     """
     Normalize a datetime to tz-aware UTC. Naive values are device-local time
@@ -191,12 +216,8 @@ def _utc(ts: datetime | None, tz: str = "") -> datetime | None:
     if ts is None:
         return None
     if ts.tzinfo is None:
-        if tz:
-            try:
-                return ts.replace(tzinfo=ZoneInfo(tz)).astimezone(UTC)
-            except (ZoneInfoNotFoundError, ValueError):
-                log.debug(f"Unknown timezone '{tz}', assuming UTC for {ts}")
-        return ts.replace(tzinfo=UTC)
+        zone = resolve_timezone(tz) if tz else None
+        return ts.replace(tzinfo=zone if zone is not None else UTC).astimezone(UTC)
     return ts.astimezone(UTC)
 
 

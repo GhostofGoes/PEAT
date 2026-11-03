@@ -1198,6 +1198,39 @@ def test_naive_datetimes_are_device_local():
     mix.export()
 
 
+def test_naive_datetimes_without_system_tz_database(mocker):
+    """
+    Windows has no system time zone database (and ``tzdata`` is not a dependency):
+    the database bundled with python-dateutil resolves the device time zone.
+    """
+    from zoneinfo import ZoneInfoNotFoundError
+
+    from peat.data import models
+
+    def no_tz_database(key: str):
+        raise ZoneInfoNotFoundError(f"No time zone found with key {key}")
+
+    mocker.patch.object(models, "ZoneInfo", side_effect=no_tz_database)
+    models.resolve_timezone.cache_clear()
+    try:
+        dev = DeviceData(ip="192.0.2.12")
+        dev.geo.timezone = "America/Denver"
+        dev.store("processes", HostProcess(pid=7, name="init", start=datetime(2026, 7, 1, 8, 0)))
+        assert dev.processes[0].start == datetime(2026, 7, 1, 14, 0, tzinfo=UTC)  # MDT
+        winter = datetime(2026, 1, 15, 8, 0)
+        assert models.resolve_timezone("America/Denver").utcoffset(winter) == timedelta(hours=-7)
+        assert models.resolve_timezone("EST").utcoffset(winter) == timedelta(hours=-5)
+
+        # an unknown name: naive times are UTC, logged once (debug)
+        logger = mocker.patch.object(models, "log")
+        assert models.resolve_timezone("Not/AZone") is None
+        assert models.resolve_timezone("Not/AZone") is None
+        assert logger.debug.call_count == 1
+        assert models._utc(winter, "Not/AZone") == winter.replace(tzinfo=UTC)
+    finally:
+        models.resolve_timezone.cache_clear()
+
+
 @pytest.mark.usefixtures("siprotec_hosts")
 def test_export_summary_elastic_exclusions():
     for builder in (sel_relay, controllogix, sage_rtu, fortigate, siprotec):

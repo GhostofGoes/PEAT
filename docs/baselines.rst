@@ -73,7 +73,7 @@ Paths address the exported device data (the same structure as ``device-data-full
    iec61850.publications[type=GOOSE].security
    clock.utc_offset
 
-Finding paths of snapshot differences use the identity of list items, e.g. ``service[protocol=http,port=80]`` or ``files[path=/SETTINGS/SET_1.TXT].hash.sha256``.
+Finding paths of snapshot differences use the identity of list items, e.g. ``service[protocol=http,port=80]`` or ``files[path=/SETTINGS/SET_1.TXT].hash.sha256``. File paths are always compared and written with ``/`` separators, whatever the OS that created the baseline or the device data (e.g. a baseline created on Linux can be compared on Windows).
 
 Rule operators
 --------------

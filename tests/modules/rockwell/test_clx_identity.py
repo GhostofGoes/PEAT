@@ -6,7 +6,9 @@ Identity object (ODVA CIP Vol. 1, Wireshark ``packet-cip.c``) and the Logix key
 switch table of pycomm3 (``status = 0x3160`` is REMOTE + run mode + minor fault).
 """
 
-from peat import ControlLogix, DeviceData
+from datetime import UTC, datetime
+
+from peat import ControlLogix, DeviceData, utils
 from peat.data.baseline import compare_device, split_path
 from peat.modules.rockwell.clx_defaults import CLX_KNOWN_DEFAULTS
 from peat.modules.rockwell.clx_identity import (
@@ -104,7 +106,9 @@ def test_most_severe_health():
     assert most_severe_health("check_function", "failure") == "failure"
 
 
-def test_apply_identity_status():
+def test_apply_identity_status(mocker):
+    # Every reading gets the same timestamp (as with a coarse clock, e.g. on Windows)
+    mocker.patch.object(utils, "utc_now", return_value=datetime(2026, 11, 3, tzinfo=UTC))
     dev = DeviceData(ip="192.0.2.10")
     apply_identity_status(dev, 0x3160, 3, "PLC")
     assert dev.key_switch == "remote"
@@ -113,7 +117,8 @@ def test_apply_identity_status():
     assert dev.run_mode == ""  # never set from the identity status
     assert len(dev.indicators) == 9
 
-    # A newer reading replaces the older one (same indicators, newest wins)
+    # A newer reading replaces the older one (same indicators, newest wins; on an
+    # equal timestamp the reading stored later wins)
     apply_identity_status(dev, 0x1060, 3, "PLC")
     assert len(dev.indicators) == 9
     assert dev.key_switch == "run"

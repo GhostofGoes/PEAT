@@ -28,6 +28,7 @@ import ipaddress
 import json
 import re
 from datetime import UTC, datetime
+from pathlib import PurePath
 from typing import Any
 
 from peat import consts, log
@@ -300,9 +301,33 @@ def device_to_doc(dev: DeviceData) -> dict:
     """
     JSON-friendly dict of a DeviceData for comparison. Does NOT call
     populate_fields()/export() (no DNS/ARP side effects).
+
+    Paths (e.g. ``files[].path``) are in POSIX form on every OS (see
+    :func:`posix_path`), so they align and match rule selectors the same way
+    whichever OS created the baseline or the device data.
     """
     raw = strip_key(dev.dict(exclude_defaults=True), "original", ("files", "module"))
-    return strip_empty_and_private(consts.convert(raw))
+    return strip_empty_and_private(consts.convert(_posix_paths(raw)))
+
+
+def posix_path(path: PurePath) -> str:
+    """
+    A device file path in POSIX form: ``/SETTINGS/SET_1.TXT``. ``str()`` of a path
+    is OS-dependent (``\\SETTINGS\\SET_1.TXT`` on Windows), and paths in device
+    data written on Windows have backslashes, which are separators here too.
+    """
+    return path.as_posix().replace("\\", "/")
+
+
+def _posix_paths(value: Any) -> Any:
+    """Recursively convert :class:`~pathlib.PurePath` values with :func:`posix_path`."""
+    if isinstance(value, PurePath):
+        return posix_path(value)
+    if isinstance(value, dict):
+        return {k: _posix_paths(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_posix_paths(v) for v in value]
+    return value
 
 
 def split_path(path: str) -> list[tuple[str, dict[str, str] | None]]:
@@ -927,6 +952,7 @@ __all__ = [
     "item_key",
     "item_label",
     "plain_path",
+    "posix_path",
     "resolve_path",
     "split_path",
     "store_findings",

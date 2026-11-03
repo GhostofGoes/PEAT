@@ -298,6 +298,38 @@ def _is_newer(src_ts: datetime | None, dst_ts: datetime | None) -> bool:
     return bool(src_ts and dst_ts and as_utc(src_ts) > as_utc(dst_ts))
 
 
+def _has_reading(model: BaseModel) -> bool:
+    """If a timestamped sample carries a reading (counters, Indicator state, Clock time)."""
+    model_type = model.__repr_name__()
+    if model_type == "NetworkStatistics":
+        return model.has_counters()
+    fields = _READING_FIELDS.get(model_type)
+    return not fields or any(not model.is_default(f) for f in fields)
+
+
+def _incoming_wins_tie(dest: BaseModel, source: BaseModel, field: str) -> bool:
+    """
+    Two samples with EQUAL timestamps (e.g. read within the clock resolution of
+    Windows): the incoming (later stored) ``source`` wins as if it were newer, if
+    it carries a reading and is not contained in ``dest`` (a sample that adds
+    nothing, e.g. an identical copy, never replaces the destination).
+    """
+    src_ts, dst_ts = getattr(source, field), getattr(dest, field)
+    if not (src_ts and dst_ts and as_utc(src_ts) == as_utc(dst_ts)) or not _has_reading(source):
+        return False
+    return not _contains(
+        dest.dict(exclude_defaults=True, exclude_none=True),
+        source.dict(exclude_defaults=True, exclude_none=True),
+    )
+
+
+def _contains(big: Any, small: Any) -> bool:
+    """If every value of ``small`` is in ``big`` (recursively for dicts)."""
+    if isinstance(small, dict) and isinstance(big, dict):
+        return all(k in big and _contains(big[k], v) for k, v in small.items())
+    return big == small
+
+
 @functools.cache
 def nested_list_fields(cls: type) -> tuple[str, ...]:
     """Names of fields of ``cls`` that are ``list[<model>]`` (excluding DeviceData)."""
@@ -458,7 +490,8 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
     # Pass 1 (O(n)): items with the same non-empty identity key are ONE item.
     # The EARLIEST item survives and later items are merged into it, exactly
     # like store() ("first stored wins"). Newest-wins and Relationship rules
-    # are applied by merge_models() and do not depend on order.
+    # are applied by merge_models() and do not depend on order (except that on
+    # EQUAL timestamps the later item wins, see merge_models()).
     survivors = []  # type: list[BaseModel]
     complete = set()  # type: set[int]  # ids of survivors whose key has no empty field
     if key_fields:
@@ -610,12 +643,15 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
       (``state``, ``value``, ``health``, ``blink_rate``; its ``extra`` keys
       win) and the ``time``/``offset`` of the newer ``Clock`` sample are kept
       even when empty, whichever argument is newer. Other fields (e.g.
-      ``label``, ``latched``) still fill gaps.
+      ``label``, ``latched``) still fill gaps. On EQUAL timestamps the
+      incoming ``source`` (stored later) wins as if it were newer, if it carries
+      a reading and adds something to ``dest``.
     - ``NetworkStatistics`` samples are never mixed: a newer sample replaces
       the destination wholesale, an empty destination takes the source
       wholesale, otherwise the source is ignored.
     - ``Relationship``: ``first_seen`` is the minimum, ``last_seen`` the
-      maximum (with its ``state``), ``count`` the maximum and ``evidence`` the union.
+      maximum (with its ``state``; the source's ``state`` wins when ``last_seen``
+      is equal), ``count`` the maximum and ``evidence`` the union.
     """
     if not dest or not source:
         return
@@ -629,10 +665,13 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
     if dst_type != src_type:
         raise PeatError(f"merge_models: '{dst_type}' != '{src_type}'")
 
-    # "Newest wins" for models that define _newest_wins_field
+    # "Newest wins" for models that define _newest_wins_field. On equal timestamps
+    # the incoming (source) sample wins, so the result does not depend on the
+    # resolution of the clock (two reads can get the same timestamp on Windows).
     newest_field = getattr(dest, "_newest_wins_field", "") or ""
-    newer = bool(newest_field) and _is_newer(
-        getattr(source, newest_field), getattr(dest, newest_field)
+    newer = bool(newest_field) and (
+        _is_newer(getattr(source, newest_field), getattr(dest, newest_field))
+        or _incoming_wins_tie(dest, source, newest_field)
     )
     older = bool(newest_field) and _is_newer(
         getattr(dest, newest_field), getattr(source, newest_field)
@@ -640,9 +679,10 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
 
     if dst_type == "NetworkStatistics":
         # Counters from different samples are NEVER mixed:
-        # - newer source sample -> replaces the destination wholesale
+        # - newer source sample (or one with an equal timestamp) -> replaces the
+        #   destination wholesale
         # - destination already holds a sample -> source ignored (first complete
-        #   sample wins when a timestamp is missing or equal)
+        #   sample wins when a timestamp is missing)
         # - empty destination -> source copied wholesale
         if newer or (
             not dest.has_counters() and (source.has_counters() or dest.timestamp is None)
@@ -792,7 +832,7 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
         ):
             dest.first_seen = source.first_seen
         if source.last_seen and (
-            not dest.last_seen or as_utc(source.last_seen) > as_utc(dest.last_seen)
+            not dest.last_seen or as_utc(source.last_seen) >= as_utc(dest.last_seen)
         ):
             dest.last_seen = source.last_seen
             if source.state:

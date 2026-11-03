@@ -5,7 +5,7 @@ of the parsed web pages (``parse_ge_html()``) and Telnet menus.
 
 import pytest
 
-from peat import DeviceData, GERelay, config, datastore
+from peat import DeviceData, GERelay, config, datastore, utils
 from peat.modules.ge import ge_relay, ge_rtu
 
 
@@ -174,7 +174,7 @@ def test_process_error_log():
     assert "192.0.2.5" in dev.related.ip
 
 
-def test_internet_stats_to_statistics():
+def test_internet_stats_to_statistics(mocker):
     ip = ge_rtu.internet_stats_to_statistics(
         {"in_receives": "1000", "out_requests": "900", "in_discards": "3", "frag_ok": "7"},
         "ip",
@@ -195,6 +195,9 @@ def test_internet_stats_to_statistics():
     assert tcp.ingress.packets == 50
     assert tcp.extra == {"retrans_t_o": 1, "state": "n/a"}
 
+    # Both samples get the same timestamp (as with a coarse clock, e.g. on Windows):
+    # the sample stored later wins
+    mocker.patch.object(utils, "utc_now", return_value=ip.timestamp)
     dev = DeviceData()
     for kind, stats in [("ip", {"in_receives": "1"}), ("udp", {"in_datagrams": "5"})]:
         dev.store("protocol_statistics", ge_rtu.internet_stats_to_statistics(stats, kind))
@@ -204,3 +207,4 @@ def test_internet_stats_to_statistics():
     assert len(dev.protocol_statistics) == 2
     ip_stats = next(s for s in dev.protocol_statistics if s.type == "ipv4")
     assert ip_stats.ingress.packets == 2  # newest sample wins
+    assert ip_stats.timestamp == ip.timestamp

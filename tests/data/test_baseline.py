@@ -1,5 +1,6 @@
 import json
 from datetime import timedelta
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -190,6 +191,64 @@ def test_device_to_doc_is_json_friendly_and_has_no_original():
     dev.ip = "192.0.2.99"
     bl.device_to_doc(dev)
     assert "192.0.2.99" not in dev.related.ip  # no populate_fields()
+
+
+def test_device_to_doc_file_paths_are_posix():
+    """str() of a Windows path has backslashes: device paths are compared in POSIX form."""
+    dev = DeviceData(ip="192.0.2.10")
+    dev.store("files", File(path=PureWindowsPath("/SETTINGS/SET_1.TXT")))
+    dev.store("files", File(path=PureWindowsPath("/EVENTS/HR"), target_path=PureWindowsPath("x")))
+    # a path from device data written on Windows, loaded on Linux
+    dev.store("files", File(path=PurePosixPath("\\LOGS\\SER.TXT")))
+    files = bl.device_to_doc(dev)["files"]
+    assert [f["path"] for f in files] == ["/SETTINGS/SET_1.TXT", "/EVENTS/HR", "/LOGS/SER.TXT"]
+    assert files[1]["target_path"] == "x"
+    assert bl.posix_path(PureWindowsPath("C:\\peat\\in.scd")) == "C:/peat/in.scd"
+    assert bl.posix_path(PurePosixPath("/SETTINGS/SET_1.TXT")) == "/SETTINGS/SET_1.TXT"
+
+
+def _with_path_flavour(dev: DeviceData, path_cls: type) -> DeviceData:
+    """The device as built on another OS (``PurePath`` is ``PureWindowsPath`` on Windows)."""
+    for f in dev.files:
+        if f.path is not None:
+            f.path = path_cls(f.path.as_posix())
+    return dev
+
+
+@pytest.mark.parametrize(
+    ("baseline_paths", "device_paths"),
+    [(PurePosixPath, PureWindowsPath), (PureWindowsPath, PurePosixPath)],
+)
+def test_snapshot_file_paths_compare_across_operating_systems(baseline_paths, device_paths):
+    """A baseline made on Linux compares cleanly on Windows, and vice versa."""
+    dev = sel_relay()
+    dev.files[0].hash.sha256 = "A" * 64
+    baseline = _snapshot(dev)
+    baseline.expected = _with_path_flavour(baseline.expected, baseline_paths)
+
+    cur = _with_path_flavour(_exported(sel_relay()), device_paths)
+    cur.files[0].hash.sha256 = "A" * 64
+    assert bl.compare_device(cur, baseline) == []
+    cur.files[0].hash.sha256 = "B" * 64
+    assert _diffs(bl.compare_device(cur, baseline)) == {
+        ("change", "files[path=/SETTINGS/SET_1.TXT].hash.sha256")
+    }
+
+    # rule selectors use POSIX paths on every OS
+    rules = Baseline(
+        id="files",
+        kind="engineer_provided",
+        rules=[
+            BaselineRule(
+                id="set1",
+                path="files[path=/SETTINGS/SET_1.TXT].name",
+                operator="equals",
+                value="SET_1.TXT",
+            )
+        ],
+    )
+    (finding,) = bl.compare_device(cur, rules)
+    assert (finding.result, finding.actual) == ("pass", "SET_1.TXT")
 
 
 def test_is_ignored():

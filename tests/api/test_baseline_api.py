@@ -1,7 +1,7 @@
 import io
 import json
 from datetime import UTC
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -344,6 +344,30 @@ def test_create_save_load_compare(tmp_path):
     path = api.save_baselines([baseline, reloaded], tmp_path / "two.json")
     assert len(json.loads(path.read_text())) == 2
     assert len(api.load_baselines(path)) == 2
+
+
+@pytest.mark.parametrize(
+    ("created_with", "compared_with"),
+    [(PureWindowsPath, PurePosixPath), (PurePosixPath, PureWindowsPath)],
+)
+def test_baseline_file_compares_across_operating_systems(tmp_path, created_with, compared_with):
+    """A baseline file made on Windows compares cleanly on Linux, and vice versa."""
+
+    def relay(path_cls: type) -> DeviceData:
+        dev = sel_relay()
+        for f in dev.files:  # PurePath("/SETTINGS/SET_1.TXT") is a PureWindowsPath on Windows
+            if f.path is not None:
+                f.path = path_cls(f.path.as_posix())
+        dev.export()
+        return dev
+
+    baseline = api.create_baseline(relay(created_with))
+    path = api.save_baselines(baseline, tmp_path / "baseline.json")
+    saved = json.loads(path.read_text(encoding="utf-8"))["expected"]["files"]
+    assert saved
+    assert all(f["path"].startswith("/") for f in saved if "path" in f)
+    (loaded,) = api.load_baselines(path)
+    assert api.compare_to_baseline(relay(compared_with), loaded, store=False) == []
 
 
 def test_create_baseline_errors():
