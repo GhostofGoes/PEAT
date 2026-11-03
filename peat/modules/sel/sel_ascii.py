@@ -476,9 +476,9 @@ class SELAscii(ABC):
 
         if hasattr(self, "baud"):
             data["baudrate"] = getattr(self, "baud", 0)
+        data.update(self._protocol_log_extra())
 
-        # "/dev/ttyUSB0" => "ttyUSB0"
-        basename = f"selascii-protocol-data_{self.address.split('/')[-1]}"
+        basename = f"selascii-protocol-data_{self._protocol_log_name()}"
         if data.get("baudrate") is not None:
             basename += f"_{data['baudrate']}"
         f_path = config.LOG_DIR / consts.sanitize_filename(f"{basename}.json")
@@ -496,6 +496,15 @@ class SELAscii(ABC):
         else:
             # Write a new file with a list with a single dict
             return utils.write_file([data], f_path)
+
+    def _protocol_log_name(self) -> str:
+        """Name of the device in the name of the protocol log file (refer to
+        :meth:`_save_state_to_file`), e.g. ``"ttyUSB0"`` for ``"/dev/ttyUSB0"``."""
+        return self.address.split("/")[-1]
+
+    def _protocol_log_extra(self) -> dict[str, Any]:
+        """More information about the connection for the protocol log file."""
+        return {}
 
     @property
     @abstractmethod

@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from time import sleep
 
-from peat import datastore
+from peat import DeviceData, datastore
 from peat.protocols import Telnet
 from peat.protocols.expect import ExpectResult, PatternLike
 
@@ -43,6 +43,9 @@ class SELTelnet(SELAscii):
         self.port: int = port
         self.telnet_download_capable: bool | None = None
         self._comm: Telnet | None = None
+        #: Device that downloaded files and the raw output are saved to. If it
+        #: isn't set, it's the device with the address of this connection.
+        self.output_dev: DeviceData | None = None
 
         self.log.trace(f"Initialized {repr(self)}")
 
@@ -50,6 +53,7 @@ class SELTelnet(SELAscii):
     def comm(self) -> Telnet:
         if not self._comm:
             self._comm = Telnet(self.address, self.port, self.timeout)
+            self._comm.output_dev = self.output_dev
             # TODO: hack to copy attributes since Telnet isn't a superclass
             self._comm.ENCODING = self.ENCODING
             self._comm.PRE_WRITE_SLEEP = self.PRE_WRITE_SLEEP
@@ -257,7 +261,8 @@ class SELTelnet(SELAscii):
             filename: *Case-insensitive* name of the file to download or the
                 directory and file pair, separated by a space.
             save_to_file: If the data should be automatically written to a file
-                in the output directory for the device matching ``self.address``.
+                in the output directory of ``output_dev``, or of the device
+                matching ``self.address`` if it isn't set.
 
         Returns:
             The contents of the file, or :obj:`None` if there was an error
@@ -290,7 +295,8 @@ class SELTelnet(SELAscii):
         self.log.info(f"Finished reading file '{filename}' from {self.address}")
 
         if data and save_to_file:
-            datastore.get(self.address).write_file(data, filename)
+            dev = self.output_dev if self.output_dev is not None else datastore.get(self.address)
+            dev.write_file(data, filename)
         if data:
             data = data.replace("\x02", "").replace("\x03", "")
 

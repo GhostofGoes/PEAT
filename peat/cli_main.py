@@ -438,6 +438,10 @@ def get_targets(args: dict[str, Any]) -> TargetsType:
                 raise PeatError(
                     "No IP hosts found in YAML config. Add 'identifiers: ip:' to each host entry."
                 )
+        elif args.get("rtac_tunnels"):
+            # Only the SEL relays behind SEL RTACs (--rtac-tunnel), refer to pull_api.pull()
+            comm_type = "unicast_ip"
+            targets = []
         else:
             raise PeatError(
                 "No hosts specified. Provide -i/-s/-f/-b or define hosts in a YAML config with -c."

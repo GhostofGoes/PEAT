@@ -136,7 +136,7 @@ from .relay_parse import (
 )
 from .sel_ascii import RestartResult, SELAscii
 from .sel_commands import SHOW_SETTINGS_DEFAULT
-from .sel_comms import populate_file_listing, pull_files
+from .sel_comms import device_label, populate_file_listing, pull_files
 from .sel_default_creds import (
     MAX_DEFAULT_FTP_ATTEMPTS,
     Credential,
@@ -155,6 +155,8 @@ from .sel_files import (
     record_downloaded_file,
     write_and_record_file,
 )
+from .sel_gateway import pull_downstream as _pull_downstream
+from .sel_gateway import pull_through_tunnel
 from .sel_http import SELHTTP
 from .sel_more_commands import (
     SHOW_SETTINGS_CACHE_KEY,
@@ -164,6 +166,7 @@ from .sel_more_commands import (
 )
 from .sel_serial import SELSerial
 from .sel_telnet import SELTelnet
+from .sel_tunnel import RTACTunnel
 
 #: Names of files on relays, parsed by SELRelay._parse_relay_files().
 #: Individual settings files (SET_*.TXT) and *.CID files are also included.
@@ -359,6 +362,13 @@ class SELRelay(DeviceModule):
             "legacy_ascii_timing": False,
             "ascii_idle_timeout": 30.0,
             "cal_clarke_fallback": False,
+            # Relays behind SEL RTACs, through engineering access tunnels (all off
+            # by default, refer to "RTAC engineering tunnels" in docs/sel.rst)
+            "rtac_tunnels": [],
+            "rtac_pull_downstream": False,
+            "allow_direct_tunnels": False,
+            "tunnel_file_transfer": False,
+            "rtac_tunnel_creds": {"user": "", "pass": "", "acc": ""},
             "old_ftp": False,
             "handle_download_errors": True,
             # These are PEAT's generic defaults. Unless credentials are configured,
@@ -689,7 +699,7 @@ class SELRelay(DeviceModule):
     @classmethod
     def pull_configs(cls, dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -> bool:
         if getattr(comms, "halted", ""):
-            cls.log.error(f"Not downloading files from {dev.address}: {comms.halted}")
+            cls.log.error(f"Not downloading files from {device_label(dev)}: {comms.halted}")
             return False
 
         all_files = pull_files(dev, comms)
@@ -711,7 +721,7 @@ class SELRelay(DeviceModule):
             try:
                 cfg_configs = parse_cfg_txt(all_files["CFG.TXT"]["data"], dev)
             except Exception as ex:
-                cls.log.warning(f"Failed to parse CFG.TXT pulled from {dev.address}: {ex}")
+                cls.log.warning(f"Failed to parse CFG.TXT pulled from {device_label(dev)}: {ex}")
                 successful = False
             else:
                 # Add the settings class checksums to the settings files
@@ -733,7 +743,7 @@ class SELRelay(DeviceModule):
 
             if has_settings_sections(combined):
                 cls.log.info(
-                    f"SET_ALL.TXT wasn't pulled from {dev.address}, using settings "
+                    f"SET_ALL.TXT wasn't pulled from {device_label(dev)}, using settings "
                     f"combined from the individual settings files (SET_*.TXT)"
                 )
                 cls._write_combined_set_all(dev, combined, list(settings_files))
@@ -760,13 +770,13 @@ class SELRelay(DeviceModule):
 
             parse_res = cls.parse_config(set_all["data"], dev)
             if not parse_res:
-                cls.log.error(f"Failed to parse SET_ALL.TXT pulled from {dev.address}")
+                cls.log.error(f"Failed to parse SET_ALL.TXT pulled from {device_label(dev)}")
                 successful = False
 
             cls.update_dev(dev)  # Populate any fields that are unset
         else:
             cls.log.warning(
-                f"SET_ALL.TXT was not pulled from {dev.address} and so logic "
+                f"SET_ALL.TXT was not pulled from {device_label(dev)} and so logic "
                 f"parsing was skipped. The file may not exist on this device model."
             )
 
@@ -892,7 +902,12 @@ class SELRelay(DeviceModule):
             cls.log.warning(f"Failed to record parsed file {path}: {ex}")
 
     @classmethod
-    def pull_more_commands(cls, dev: DeviceData, comms: SELTelnet | SELSerial) -> bool:
+    def pull_more_commands(
+        cls,
+        dev: DeviceData,
+        comms: SELTelnet | SELSerial,
+        collector_cls: type[MoreCommands] = MoreCommands,
+    ) -> bool:
         """
         Run more read-only SEL ASCII commands (``sel.attempt_more_commands``),
         and parse their output into the data model.
@@ -905,6 +920,12 @@ class SELRelay(DeviceModule):
         saved in ``additional-command-outputs.json``, as before. Results that
         weren't parsed are in ``extra.additional_command_outputs``.
 
+        Args:
+            dev: The device
+            comms: SEL ASCII session (Telnet, serial, or a RTAC tunnel)
+            collector_cls: The commands to run (a relay behind a RTAC uses
+                :class:`~peat.modules.sel.sel_gateway.GatewayCommands`)
+
         Returns:
             If any of the commands were successful (:obj:`False` if the session
             halted, refer to :attr:`~peat.modules.sel.sel_ascii.SELAscii.halted`)
@@ -915,29 +936,33 @@ class SELRelay(DeviceModule):
 
         comms.elevate(1, cls._configured_ascii_creds(dev))
         if comms.halted:
-            cls.log.error(f"Not running SEL terminal commands on {dev.address}: {comms.halted}")
+            cls.log.error(
+                f"Not running SEL terminal commands on {device_label(dev)}: {comms.halted}"
+            )
             return False
 
-        collector = MoreCommands(
+        collector = collector_cls(
             dev,
             comms,
             creds=cls._configured_ascii_creds(dev),
             show_settings=dev.options["sel"]["show_settings"],
         )
-        cls.log.info(f"Attempting to run SEL terminal commands on {dev.address}")
+        cls.log.info(f"Attempting to run SEL terminal commands on {device_label(dev)}")
         results = collector.run()
 
         if not results:
-            cls.log.error(f"No commands were successful on {dev.address}")
+            cls.log.error(f"No commands were successful on {device_label(dev)}")
             return False
 
         successful = [name for name, entry in results.items() if "error" not in entry]
         cls.log.info(
-            f"{len(successful)} commands successful on {dev.address} "
+            f"{len(successful)} commands successful on {device_label(dev)} "
             f"(total attempted: {collector.attempted})"
         )
 
-        transport = "telnet" if isinstance(comms, SELTelnet) else "serial"
+        transport = getattr(comms, "transport_name", "") or (
+            "telnet" if isinstance(comms, SELTelnet) else "serial"
+        )
 
         # Dump all of the commands to disk for debugging or investigation
         write_and_record_file(
@@ -955,7 +980,9 @@ class SELRelay(DeviceModule):
         try:
             unparsed = process_outputs(collector)
         except Exception:
-            cls.log.exception(f"Unexpected error processing command results from {dev.address}")
+            cls.log.exception(
+                f"Unexpected error processing command results from {device_label(dev)}"
+            )
             dev.extra["additional_command_outputs"] = results
             return False
 
@@ -985,12 +1012,75 @@ class SELRelay(DeviceModule):
             return
 
         cls.log.info(
-            f"No settings file was pulled from {dev.address}, using the "
+            f"No settings file was pulled from {device_label(dev)}, using the "
             f"settings from the SHO commands"
         )
         if cls.parse_config(show_text, dev):
             dev.extra["settings_source"] = "sho_commands"
             cls.update_dev(dev)
+
+    @classmethod
+    def pull_via_gateway(
+        cls,
+        target: RTACTunnel | dict | str,
+        gateway: DeviceData | None = None,
+    ) -> DeviceData | None:
+        """
+        Pull a relay behind a SEL RTAC, through one of the RTAC's engineering
+        access tunnels (:class:`~peat.modules.sel.sel_tunnel.SELTunnel`). Refer to
+        "RTAC engineering tunnels" in the SEL documentation, and to
+        :mod:`peat.modules.sel.sel_gateway`.
+
+        PEAT reads the relay's ``ID`` and runs read-only commands (by default at
+        access level 1: ``STA``, ``SER``/``CSE``, ``HIS``, ``DAT``/``TIM``, ``GRO``,
+        ``VER``, and the ``SHO`` commands, whose settings are parsed). FTP and HTTP
+        aren't used, and files are only downloaded with ``sel.tunnel_file_transfer``.
+        A direct route needs ``sel.allow_direct_tunnels``.
+
+        Args:
+            target: The path to the relay: a
+                :class:`~peat.modules.sel.sel_tunnel.RTACTunnel`, an engineering
+                access entry (:class:`dict`), or a string in the format of
+                ``--rtac-tunnel`` (e.g. ``"192.0.2.10:3254:1"``)
+            gateway: The RTAC's device, if it's known. Its host options are used for the relay.
+
+        Returns:
+            The relay's device (a new device in the datastore, without an IP
+            address), or :obj:`None` if it wasn't pulled
+        """
+        default_ip = gateway.ip if gateway is not None and gateway.ip else ""
+        try:
+            tunnel = RTACTunnel.coerce(target, default_rtac_ip=default_ip)
+        except (ValueError, TypeError) as ex:
+            cls.log.error(f"Invalid RTAC tunnel: {ex}")
+            return None
+        return pull_through_tunnel(cls, tunnel, gateway)
+
+    @classmethod
+    def pull_downstream(
+        cls,
+        gateway_targets: list[tuple[DeviceData, list[dict]]],
+        selected: bool = True,
+    ) -> list[DeviceData]:
+        """
+        Pull the relays behind SEL RTACs: the configured paths (``sel.rtac_tunnels``
+        and ``--rtac-tunnel``), if this module was selected for the pull, and the
+        paths of the RTACs that were pulled, if ``sel.rtac_pull_downstream`` is
+        enabled for them. This is called by :func:`peat.api.pull_api.pull_downstream`
+        after the pull, and does nothing if none are configured. Refer to
+        :mod:`peat.modules.sel.sel_gateway`.
+
+        Args:
+            gateway_targets: The devices that were pulled, with the result of
+                ``downstream_targets()`` of their module
+            selected: If this module was selected for the pull (``-d``). If it
+                wasn't, e.g. ``peat pull -d clx`` with ``sel.rtac_tunnels`` in a
+                shared configuration file, the configured paths aren't pulled.
+
+        Returns:
+            The devices of the relays that were pulled
+        """
+        return _pull_downstream(cls, gateway_targets, include_configured=selected)
 
     @classmethod
     def pull_telnet(cls, dev: DeviceData, pull_files: bool = True) -> bool:

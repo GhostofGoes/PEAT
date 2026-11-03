@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 import select
 import socket
+import ssl
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from time import monotonic, sleep
@@ -350,17 +351,22 @@ class Expecter:
 
 def socket_reader(sock: socket.socket) -> ReadChunk:
     """
-    :data:`ReadChunk` for a connected socket (TCP, or a ``socket.socketpair()`` in tests).
-    A reset connection is reported as the end of the connection.
+    :data:`ReadChunk` for a connected socket (TCP, a :class:`ssl.SSLSocket`, or a
+    ``socket.socketpair()`` in tests). A reset connection is reported as the end
+    of the connection.
     """
+    # A TLS socket can have decrypted data buffered, which select() doesn't see
+    pending = getattr(sock, "pending", None)
 
     def read_chunk(wait: float) -> bytes:
-        readable, _, _ = select.select([sock], [], [], wait)
-        if not readable:
-            return b""
+        if not (pending and pending()):
+            readable, _, _ = select.select([sock], [], [], wait)
+            if not readable:
+                return b""
         try:
             data = sock.recv(65536)
-        except (BlockingIOError, InterruptedError):
+        except (BlockingIOError, InterruptedError, TimeoutError, ssl.SSLWantReadError):
+            # e.g. only part of a TLS record arrived
             return b""
         except OSError as ex:  # e.g. ConnectionResetError
             raise EOFError(str(ex)) from ex

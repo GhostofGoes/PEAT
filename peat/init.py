@@ -23,6 +23,18 @@ from peat.data.default_options import DEFAULT_OPTIONS
 from .log_utils import print_logo, setup_logging
 
 
+def add_rtac_tunnels(tunnels: list[str]) -> None:
+    """
+    Add paths to SEL relays behind SEL RTACs (the ``--rtac-tunnel`` CLI argument)
+    to the global ``sel.rtac_tunnels`` option, after the ones in the configuration
+    file (refer to "RTAC engineering tunnels" in the SEL documentation).
+    """
+    sel_options = dict(datastore.global_options.get("sel") or {})
+    existing = list(sel_options.get("rtac_tunnels") or [])
+    sel_options["rtac_tunnels"] = existing + [t for t in tunnels if t not in existing]
+    datastore.global_options["sel"] = sel_options
+
+
 def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -> None:
     """
     Various initialization steps for most PEAT use cases.
@@ -258,6 +270,10 @@ def initialize_peat(conf: dict, entrypoint: consts.EntrypointType = "Package") -
                     v["timeout"] = config.DEVICE_OPTIONS["timeout"]
 
         datastore.global_options.update(config.DEVICE_OPTIONS)
+
+    # Paths to SEL relays behind SEL RTACs from the CLI (--rtac-tunnel)
+    if conf.get("rtac_tunnels"):
+        add_rtac_tunnels(conf["rtac_tunnels"])
 
     # Load host-specific options
     if config.HOSTS:

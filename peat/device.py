@@ -176,6 +176,31 @@ class DeviceModule:
         pass
 
     @classmethod
+    def downstream_targets(cls, dev: DeviceData) -> list[dict]:  # noqa: ARG003
+        """
+        Devices that can be reached through this device, if it's a gateway to
+        other devices, e.g. the relays behind the engineering access tunnels of
+        a SEL RTAC. Modules of gateways can implement this.
+
+        After a pull, :func:`peat.api.pull_api.pull_downstream` calls this for
+        every device that was pulled (it uses ``getattr()``, so modules that
+        don't inherit this method work too), and gives the results to the modules
+        that pull devices through gateways (the modules with a ``pull_downstream()``
+        class method). They decide whether to pull them: pulling through a gateway
+        is opt-in, since it can affect the gateway and the devices behind it.
+
+        Args:
+            dev: The device that was pulled
+
+        Returns:
+            How to reach each device, as dicts. The keys are defined by the
+            module of the gateway (e.g. ``extra.engineering_access`` of a SEL RTAC,
+            refer to "RTAC engineering tunnels" in the SEL documentation). This
+            returns an empty list by default.
+        """
+        return []
+
+    @classmethod
     def push(
         cls,
         dev: DeviceData,

@@ -5,7 +5,7 @@ pull_duration, double, 5.114307479001582, "Approximate time pull took, in second
 pull_modules, keyword, SELRelay, "PEAT device modules used to perform the pull"
 pull_targets, keyword, "192.0.2.0/24", "Targets used by the pull. These are the actual targets used after PEAT has parsed them into usable targets and removed duplicates."
 pull_original_targets, keyword, "``['eth1', '192.0.2.255', '10.1.2.255/24']``", "Original arguments used for the pull. This is the targets as provided by the user prior to PEAT parsing them into usable targets and removing duplicates."
-pull_devices, keyword, "192.0.2.36", "Devices that were pulled from. Note that this may differ from ``pull_targets`` based on the results of scanning and/or de-duplication."
+pull_devices, keyword, "192.0.2.36", "Devices that were pulled from. Note that this may differ from ``pull_targets`` based on the results of scanning and/or de-duplication. Devices behind gateways (e.g. relays behind a SEL RTAC) are listed by their ID."
 pull_comm_type, keyword, "unicast_ip", "Type of pull. ``serial``, ``unicast_ip``, or ``broadcast_ip``."
 num_pull_results, long, 1, "Number of hosts that were pulled from"
 pull_results, nested, {...}, "Data of hosts that were pulled, with some fields excluded (such as binary blobs)"
