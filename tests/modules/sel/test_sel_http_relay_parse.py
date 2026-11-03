@@ -16,6 +16,7 @@ from requests import Response
 
 from peat import DeviceData, PeatError, config, datastore
 from peat.modules.sel import relay_command_parse, relay_parse, sel_http
+from peat.modules.sel.sel_default_creds import web_candidates
 from peat.modules.sel.sel_http import SELHTTP
 from peat.modules.sel.sel_relay import SELRelay
 from peat.protocols import HTTP
@@ -1118,7 +1119,7 @@ def test_verify_http_tries_next_credentials_when_rejected(relay_login):
     assert SELRelay._verify_http(dev) is False
 
     posts = [r for r in mock.request_history if r.method == "POST"]
-    assert len(posts) == len(dev.options["sel"]["creds"])
+    assert len(posts) == len(web_candidates(SELRelay._level_passwords(dev)))
 
 
 def test_login_token_without_value(requests_mock):

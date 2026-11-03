@@ -1,4 +1,6 @@
+import re
 import traceback
+from collections.abc import Sequence
 from time import sleep
 from typing import Any
 
@@ -6,6 +8,10 @@ import peat
 from peat import CommError, log
 
 from . import forked_telnetlib as telnetlib
+from .expect import AcceptMatch, Expecter, ExpectResult, PatternLike, telnet_reader
+
+#: Text that replaces secrets (e.g. passwords) in the recorded output
+REDACTED = "<redacted>"
 
 
 class Telnet:
@@ -19,6 +25,7 @@ class Telnet:
     - Logging messages
     - Records all commands and responses and saves to a file
     - Simpler function calls
+    - Waiting for patterns in the output (:meth:`expect`)
     """
 
     # These will vary by device and should be overridden as needed
@@ -46,6 +53,8 @@ class Telnet:
 
         self.successful_creds: tuple[str, str] | None = None
         self._comm: telnetlib.Telnet = telnetlib.Telnet()
+        self._expecter: Expecter | None = None
+        self._secrets: set[str] = set()
 
         self.log.trace2(f"Initialized {repr(self)}")
 
@@ -105,6 +114,7 @@ class Telnet:
         if self.connected and self._comm:
             self._comm.close()
             self.connected = False
+            self._expecter = None
             self.log.debug(f"Disconnected from {self.ip}")
 
             if self.all_output:
@@ -147,6 +157,114 @@ class Telnet:
         if flush:
             self.comm.read_very_eager()
 
+    def write_raw(self, data: bytes, sensitive: bool = False) -> None:
+        """
+        Send bytes to the device as they are, without a line terminator or delays.
+
+        IAC bytes (``0xFF``) are doubled, as Telnet requires.
+
+        Args:
+            data: Bytes to send
+            sensitive: The data is a secret, such as a password, so it's not
+                logged. To also remove it from the recorded output if the
+                device echoes it, use :meth:`register_secret`.
+        """
+        if sensitive:
+            # Don't use telnetlib's write(), it logs the data
+            sock = self.comm.get_socket()
+            if sock is None:
+                raise CommError(f"Not connected to {self.ip}:{self.port}")
+            sock.sendall(data.replace(telnetlib.IAC, telnetlib.IAC + telnetlib.IAC))
+        else:
+            self.comm.write(data)
+
+    def register_secret(self, secret: str) -> None:
+        """
+        Replace ``secret`` with ``<redacted>`` in the recorded output
+        (``all_output`` and ``raw_output``, which are saved to files),
+        in case the device echoes it.
+        """
+        if secret:
+            self._secrets.add(secret)
+
+    def _redact(self, text: str) -> str:
+        for secret in self._secrets:
+            text = text.replace(secret, REDACTED)
+        return text
+
+    def _redact_bytes(self, data: bytes) -> bytes:
+        for secret in self._secrets:
+            try:
+                data = data.replace(secret.encode(self.ENCODING), REDACTED.encode("ascii"))
+            except UnicodeEncodeError:
+                pass
+        return data
+
+    @property
+    def expecter(self) -> Expecter:
+        """
+        :class:`~peat.protocols.expect.Expecter` reading from the connection
+        (it's created when it's first used, and connects if needed).
+        """
+        if self._expecter is None:
+            self._expecter = Expecter(telnet_reader(self.comm))
+        return self._expecter
+
+    def expect(
+        self,
+        patterns: Sequence[PatternLike],
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        settle: float | Sequence[float] = 0.0,
+        window: int | None = None,
+        accept: AcceptMatch | None = None,
+    ) -> ExpectResult:
+        """
+        Read until one of the patterns matches the output.
+
+        Refer to :meth:`peat.protocols.expect.Expecter.expect` for the arguments.
+        Unlike ``telnetlib.Telnet.expect()``, this always has a timeout
+        (by default, the timeout of this object), and the end of the
+        connection is reported in the result (``eof``) instead of raising
+        :class:`EOFError`. Data after the match is kept for the next call
+        (of this method, :meth:`read` or :meth:`read_until`).
+        All the data that was read is added to ``all_output`` and ``raw_output``.
+
+        Returns:
+            The result, which has the data that was read (``data``), the match,
+            and if the read timed out (``timed_out``) or the connection
+            was closed (``eof``).
+        """
+        if timeout is None:
+            timeout = self.timeout
+
+        result = self.expecter.expect(
+            patterns,
+            timeout,
+            idle_timeout=idle_timeout,
+            settle=settle,
+            window=window,
+            accept=accept,
+        )
+
+        if result.data:
+            self._add_data(result.data, strip_whitespace=False, errors="replace")
+
+        if result.eof:
+            self.log.debug("Connection closed by the device")
+
+        return result
+
+    def read_available(self) -> bytes:
+        """
+        Read everything that's available now, without waiting, as bytes.
+        The data is added to ``all_output`` and ``raw_output``.
+        """
+        data = self.expecter.read_available()
+        if data:
+            self._add_data(data, strip_whitespace=False, errors="replace")
+        return data
+
     def login(self, user: str, passwd: str) -> dict | None:
         """
         Login to the telnet device.
@@ -173,7 +291,15 @@ class Telnet:
 
         sleep(delay)
 
-        return self._add_data(self.comm.read_very_eager(), strip_whitespace)
+        if self._expecter:
+            # Data buffered by expect() comes first
+            data = self._expecter.read_available()
+            if not data and self._expecter.eof:
+                raise EOFError("telnet connection closed")
+        else:
+            data = self.comm.read_very_eager()
+
+        return self._add_data(data, strip_whitespace)
 
     def read_until(
         self,
@@ -207,16 +333,26 @@ class Telnet:
 
         sleep(delay)
 
+        if self._expecter and self._expecter.buffered:
+            # Data buffered by expect() comes first
+            result = self._expecter.expect([re.escape(until)], timeout)
+            return self._add_data(result.data, strip_whitespace)
+
         return self._add_data(self.comm.read_until(until, timeout), strip_whitespace)
 
-    def _add_data(self, raw_data: bytes, strip_whitespace: bool = True) -> str:
+    def _add_data(
+        self, raw_data: bytes, strip_whitespace: bool = True, errors: str = "strict"
+    ) -> str:
         """
         Decodes and saves responses from device.
-        """
-        self.raw_output.append(raw_data)
 
-        data = raw_data.decode(self.ENCODING)
-        self.all_output.append(data)
+        Secrets (refer to :meth:`register_secret`) are replaced in the
+        saved data, but not in the returned data.
+        """
+        self.raw_output.append(self._redact_bytes(raw_data) if self._secrets else raw_data)
+
+        data = raw_data.decode(self.ENCODING, errors=errors)
+        self.all_output.append(self._redact(data) if self._secrets else data)
 
         if "Goodbye" in data:
             self.log.debug("Device said goodbye")

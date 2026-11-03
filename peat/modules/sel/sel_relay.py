@@ -88,11 +88,10 @@ Authors
 import functools
 import time
 import timeit
-from copy import deepcopy
 from fnmatch import fnmatchcase
 from pathlib import Path
 from pprint import pformat
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import olefile
 import serial
@@ -135,7 +134,17 @@ from .relay_parse import (
     process_info_into_dev,
     read_rdb_streams,
 )
+from .sel_ascii import RestartResult, SELAscii
 from .sel_comms import populate_file_listing, pull_files
+from .sel_default_creds import (
+    MAX_DEFAULT_FTP_ATTEMPTS,
+    Credential,
+    configured_option,
+    ftp_candidates,
+    normalize_model,
+    resolve_level_passwords,
+    web_candidates,
+)
 from .sel_files import (
     SOURCE_COMMAND_OUTPUT,
     SOURCE_DERIVED,
@@ -336,8 +345,15 @@ class SELRelay(DeviceModule):
             "never_download_files": [],  # ["CFG.XML", "SWCFG.ZIP"]
             "never_download_dirs": [],  # ["EVENTS", "HMI"]
             "restart_after_push": False,
+            "restart_timeout": 300.0,
+            "restart_verify": True,
+            "legacy_ascii_timing": False,
+            "ascii_idle_timeout": 30.0,
+            "cal_clarke_fallback": False,
             "old_ftp": False,
             "handle_download_errors": True,
+            # These are PEAT's generic defaults. Unless credentials are configured,
+            # the defaults for the model are used (refer to sel_default_creds.py).
             "creds": {
                 "acc": "OTTER",
                 # bac: "BREAKER" access level (present on 351S and others)
@@ -352,6 +368,58 @@ class SELRelay(DeviceModule):
 
     # 57600 used by ymodem and by 351 by default
     sel_fallback_baudrates = [9600, 57600, 19200]
+
+    # How often the relay's port is checked while it restarts, and how long to wait
+    # for it to go down (a fast restart may be missed), in seconds
+    restart_poll_interval = 5.0
+    restart_down_timeout = 60.0
+    # Seconds to wait for the confirmation question after STA C, and
+    # for the relay to respond after it's answered (refer to restart_device())
+    restart_confirm_timeout = 10.0
+    restart_reboot_timeout = 10.0
+
+    @classmethod
+    def _ascii_options(cls, dev: DeviceData) -> dict:
+        """Arguments for SELTelnet and SELSerial from the device options."""
+        return {
+            "legacy_timing": bool(dev.options["sel"]["legacy_ascii_timing"]),
+            "idle_timeout": float(dev.options["sel"]["ascii_idle_timeout"]),
+        }
+
+    @classmethod
+    def _prepare_ascii(cls, dev: DeviceData, comm: SELTelnet | SELSerial) -> None:
+        """Give a SEL ASCII session what it needs to pick the default passwords."""
+        if dev.description.model:
+            comm.model = dev.description.model
+        comm.cal_fallback = bool(dev.options["sel"]["cal_clarke_fallback"])
+
+    @classmethod
+    def _configured_ascii_creds(cls, dev: DeviceData) -> dict:
+        """
+        Access level passwords set in the configuration (``sel.creds``). Levels
+        that aren't set use the defaults for the model, in SELAscii.elevate().
+        """
+        return configured_option(dev, "sel", "creds") or {}
+
+    @classmethod
+    def _forget_ascii_passwords(cls, dev: DeviceData) -> None:
+        """
+        SEL ASCII sessions remember which passwords failed on a device for the
+        whole process (refer to SELAscii.forget_passwords). Forget them at the
+        start of a pull or restart, so a password that was fixed on the device
+        (or configured again) is tried again when PEAT runs as a library or service.
+        """
+        for address in (dev.ip, dev.serial_port):
+            if address:
+                SELAscii.forget_passwords(address)
+
+    @classmethod
+    def _level_passwords(cls, dev: DeviceData) -> dict[str, list[Credential]]:
+        return resolve_level_passwords(
+            dev.description.model,
+            cls._configured_ascii_creds(dev),
+            cal_fallback=bool(dev.options["sel"]["cal_clarke_fallback"]),
+        )
 
     @classmethod
     def _verify_serial(cls, dev: DeviceData) -> bool:
@@ -377,6 +445,7 @@ class SELRelay(DeviceModule):
                     serial_port=dev.serial_port,
                     baudrate=baudrate,
                     timeout=timeout,
+                    **cls._ascii_options(dev),
                 ) as ser:
                     if not ser.test_connection():
                         cls.log.debug(
@@ -437,7 +506,7 @@ class SELRelay(DeviceModule):
         cls.log.debug(f"Verifying Telnet for {dev.ip}:{port} (timeout: {timeout})")
 
         try:
-            with SELTelnet(dev.ip, port, timeout) as tn:
+            with SELTelnet(dev.ip, port, timeout, **cls._ascii_options(dev)) as tn:
                 if not cls._selascii_get_id(dev, tn):
                     return False
 
@@ -487,9 +556,10 @@ class SELRelay(DeviceModule):
         #   Check if in output after login (do a read())
         #   Check if in output after exit
         exit_info = {}
-        if "exit" in comm.all_output[-1] or "quit" in comm.all_output[-1]:
+        exit_output = comm.exit_output or (comm.all_output[-1] if comm.all_output else "")
+        if "exit" in exit_output or "quit" in exit_output:
             try:
-                exit_info.update(comm.parse_exit_info(comm.all_output[-1]))
+                exit_info.update(comm.parse_exit_info(exit_output))
             except Exception as ex:
                 cls.log.error(f"Failed to parse {comm.type} exit info: {ex}")
 
@@ -544,21 +614,21 @@ class SELRelay(DeviceModule):
             )
         else:
             if dev.options["web"]["user"] and dev.options["web"]["pass"]:
-                creds = {dev.options["web"]["user"]: dev.options["web"]["pass"]}
+                web = dev.options["web"]
+                creds = [Credential(web["user"], web["pass"], "configured")]
             else:
-                creds = dev.options["sel"]["creds"]
+                # Levels 1 and 2, with their configured or default passwords
+                creds = web_candidates(cls._level_passwords(dev))
 
-            for username, password in creds.items():
-                cls.log.debug(
-                    f"Attempting SEL Relay HTTP login to {dev.ip} with user '{username}'"
-                )
+            for cred in creds:
+                cls.log.debug(f"Attempting SEL Relay HTTP login to {dev.ip} with user {cred}")
 
-                logged_in = session.login(username, password, protocol)
+                logged_in = session.login(cred.user, cred.password, protocol)
 
                 if logged_in:
-                    dev._cache["verified_web_user"] = username
-                    dev._cache["verified_web_pass"] = password
-                    dev.related.user.add(username)
+                    dev._cache["verified_web_user"] = cred.user
+                    dev._cache["verified_web_pass"] = cred.password
+                    dev.related.user.add(cred.user)
                     break
 
         if logged_in:
@@ -605,6 +675,10 @@ class SELRelay(DeviceModule):
 
     @classmethod
     def pull_configs(cls, dev: DeviceData, comms: FTP | SELTelnet | SELSerial) -> bool:
+        if getattr(comms, "halted", ""):
+            cls.log.error(f"Not downloading files from {dev.address}: {comms.halted}")
+            return False
+
         all_files = pull_files(dev, comms)
 
         if not all_files:
@@ -814,7 +888,11 @@ class SELRelay(DeviceModule):
         """
 
         comms.model = dev.description.model  # leak some hints
-        comms.elevate(1, dev.options["sel"]["creds"])
+        cls._prepare_ascii(dev, comms)
+        comms.elevate(1, cls._configured_ascii_creds(dev))
+        if comms.halted:
+            cls.log.error(f"Not running SEL terminal commands on {dev.address}: {comms.halted}")
+            return False
 
         # NOTE: the SEL-2032 is no longer supported by SEL,
         # so how PEAT accesses it shouldn't need to change.
@@ -849,13 +927,22 @@ class SELRelay(DeviceModule):
             }
 
             # required by most models for SER and HIS
-            # if elevation fails, continue anyway
-            comms.elevate(2, dev.options["sel"]["creds"])
+            # if elevation fails, continue anyway (unless nothing can be sent)
+            comms.elevate(2, cls._configured_ascii_creds(dev))
+            if comms.halted:
+                cls.log.error(
+                    f"Not running SEL terminal commands on {dev.address}: {comms.halted}"
+                )
+                return False
 
         cls.log.info(f"Attempting to run {len(commands)} SEL terminal commands on {dev.address}")
 
         results = {}
         for cmd, func in commands.items():
+            if comms.halted:
+                # e.g. the relay asked a question and didn't show its prompt after N
+                cls.log.error(f"Stopped running commands on {dev.address}: {comms.halted}")
+                break
             try:
                 raw_res = func()
                 if raw_res:
@@ -951,12 +1038,14 @@ class SELRelay(DeviceModule):
             ip=dev.ip,
             port=dev.options["telnet"]["port"],
             timeout=dev.options["telnet"]["timeout"],
+            **cls._ascii_options(dev),
         ) as tn:
             if not tn.test_connection():
                 cls.log.error(f"Failed Telnet pull from {dev.ip}: failed to connect")
                 return False
 
-            if not tn.elevate(1, dev.options["sel"]["creds"]):
+            cls._prepare_ascii(dev, tn)
+            if not tn.elevate(1, cls._configured_ascii_creds(dev)):
                 cls.log.error(f"Failed Telnet pull from {dev.ip}: login failed")
                 return False
 
@@ -1000,12 +1089,14 @@ class SELRelay(DeviceModule):
             baudrate=dev.options["serial"]["baudrate"],
             timeout=dev.options["timeout"],
             force_ymodem=dev.options["sel"]["force_ymodem"],
+            **cls._ascii_options(dev),
         ) as ser:
             if not ser.test_connection():
                 cls.log.error(f"Failed pull from {dev.serial_port}: connection failed")
                 return False
 
-            if not ser.elevate(1, dev.options["sel"]["creds"]):
+            cls._prepare_ascii(dev, ser)
+            if not ser.elevate(1, cls._configured_ascii_creds(dev)):
                 cls.log.error(f"Failed pull from {dev.serial_port}: login failed")
                 return False
 
@@ -1118,14 +1209,16 @@ class SELRelay(DeviceModule):
             username = dev._cache.get("verified_web_user")
             if not username:
                 username = dev.options["web"]["user"]
-            if not username:
-                username = "ACC"
 
             password = dev._cache.get("verified_web_pass")
             if not password:
                 password = dev.options["web"]["pass"]
-            if not password:
-                password = "OTTER"
+
+            if not username or not password:
+                # The level 1 user and its configured or default password
+                default = web_candidates(cls._level_passwords(dev))[0]
+                username = username or default.user.upper()
+                password = password or default.password
 
             if not session.login(username, password, protocol):
                 cls.log.error(
@@ -1205,6 +1298,8 @@ class SELRelay(DeviceModule):
         """
         Pull and parse all configuration files and data from the SEL relay.
         """
+        # Passwords that failed in an earlier pull are tried again
+        cls._forget_ascii_passwords(dev)
 
         # If the user hasn't specified a protocol to use, there's a
         # serial port configured for the host, and the type of operation
@@ -1500,7 +1595,14 @@ class SELRelay(DeviceModule):
                 pre_delay = 5
                 cls.log.info(f"Waiting {pre_delay} seconds before restarting {dev.ip}")
                 time.sleep(pre_delay)
-                return cls.restart_relay_telnet(dev)
+                restarted = cls.restart_relay(dev, comm_type="telnet")
+                if not restarted:
+                    cls.log.error(
+                        f"The configs were pushed to {dev.ip}, but the restart failed "
+                        f"or wasn't verified (details are in 'restart' in the device's "
+                        f"extra data)"
+                    )
+                return restarted
             else:
                 cls.log.info(
                     "Note: the relay was NOT restarted, as most config changes "
@@ -1534,42 +1636,32 @@ class SELRelay(DeviceModule):
                 svc = Service(port=port, transport="tcp", status="open")
                 dev.store("service", svc, lookup="port")
 
-        # TODO: document this behavior
-        #   formally codify this as "default fallback behavior"
-        #   based on what we know from manuals and experience
-        #   with different models. if creds are known, then
-        #   they should be specified in the PEAT config YAML.
-        if not dev._runtime_options.get("ftp"):
-            dev._runtime_options["ftp"] = deepcopy(cls.default_options["ftp"])
-        elif not dev._runtime_options["ftp"].get("creds"):
-            dev._runtime_options["ftp"]["creds"] = deepcopy(cls.default_options["ftp"]["creds"])
-
-        # Set informed defaults if login credentials aren't manually specified
-        if dev.options["ftp"]["creds"] == cls.default_options["ftp"]["creds"]:
-            cls.log.trace(f"FTP creds for {dev.ip} are: INFORMED DEFAULTS")
-
-            if dev.description.model in ["351S", "700G", "710", "751"]:
-                utils.move_item(dev._runtime_options["ftp"]["creds"], 0, ("FTPUSER", "TAIL"))
-            elif dev.description.model in ["451", "411L", "487E"]:
-                utils.move_item(dev._runtime_options["ftp"]["creds"], 0, ("2AC", "TAIL"))
-                dev._runtime_options["ftp"]["creds"].insert(1, ("ACC", "OTTER"))
-            elif dev.description.model in ["351"]:
-                utils.move_item(dev._runtime_options["ftp"]["creds"], 0, ("FTP", "TAIL"))
-            elif dev.description.model in ["2032"]:
-                utils.move_item(dev._runtime_options["ftp"]["creds"], 0, ("2AC", "TAIL"))
-        else:
+        # Credentials in the configuration (ftp.creds) are used as they are.
+        # Otherwise, the defaults for the model are tried (sel_default_creds.py).
+        configured = configured_option(dev, "ftp", "creds")
+        if configured:
             cls.log.trace(f"FTP creds for {dev.ip} are: USER PROVIDED")
+            candidates = [Credential(str(c[0]), str(c[1]), "configured") for c in configured]
+            if len(candidates) > MAX_DEFAULT_FTP_ATTEMPTS:
+                cls.log.warning(
+                    f"{len(candidates)} FTP credentials are configured for {dev.ip}. "
+                    f"Many relays lock out FTP after 5 failed logins."
+                )
+        else:
+            cls.log.trace(f"FTP creds for {dev.ip} are: INFORMED DEFAULTS")
+            candidates = cls._default_ftp_candidates(dev)
 
         timeout = dev.options["ftp"]["timeout"]
         delay = dev.options["ftp"]["pull_delay"]
         attempts = 0
 
-        for creds in dev.options["ftp"]["creds"]:
+        for cred in candidates:
             attempts += 1
+            cls.log.debug(f"Attempting FTP login to {dev.ip} with user {cred}")
             try:
                 with FTP(dev.ip, port, timeout) as relay:
-                    if not relay.login(creds[0], creds[1]):
-                        cls.log.trace(f"FTP login creds {creds} failed for {dev.ip}")
+                    if not relay.login(cred.user, cred.password):
+                        cls.log.trace(f"FTP login with user {cred} failed for {dev.ip}")
                         continue
 
                     cls.log.trace(
@@ -1588,10 +1680,12 @@ class SELRelay(DeviceModule):
 
                     cls.log.debug(f"FTP login succeeded on {dev.ip} after {attempts} attempt(s)")
 
-                    dev._runtime_options["ftp"]["user"] = creds[0]
-                    dev._runtime_options["ftp"]["pass"] = creds[1]
+                    if not dev._runtime_options.get("ftp"):
+                        dev._runtime_options["ftp"] = {}
+                    dev._runtime_options["ftp"]["user"] = cred.user
+                    dev._runtime_options["ftp"]["pass"] = cred.password
 
-                    dev.related.user.add(creds[0])
+                    dev.related.user.add(cred.user)
 
                     ftp_svc = Service(
                         protocol="ftp", port=port, status="verified", transport="tcp"
@@ -1615,6 +1709,32 @@ class SELRelay(DeviceModule):
         )
 
         return False
+
+    @classmethod
+    def _default_ftp_candidates(cls, dev: DeviceData) -> list[Credential]:
+        """
+        Default FTP logins for the relay, using its model, the access level
+        passwords, and the FTP settings parsed before (``FTPUSER``, ``FTPANMS``).
+        Refer to :func:`~peat.modules.sel.sel_default_creds.ftp_candidates`.
+        """
+        ftp_user = None
+        anonymous = False
+
+        services = dev.retrieve("service", {"protocol": "ftp"})
+        if services and not isinstance(services, list):
+            services = [services]
+        for svc in services or []:
+            if svc.extra.get("user") and not ftp_user:
+                ftp_user = str(svc.extra["user"])
+            if svc.extra.get("anonymous_login_enabled"):
+                anonymous = True
+
+        return ftp_candidates(
+            dev.description.model,
+            cls._level_passwords(dev),
+            ftp_user=ftp_user,
+            anonymous_enabled=anonymous,
+        )
 
     @classmethod
     def _parse(cls, file: Path, dev: DeviceData | None = None) -> DeviceData | None:
@@ -2046,27 +2166,299 @@ class SELRelay(DeviceModule):
     def restart_relay_telnet(cls, dev: DeviceData) -> bool:
         """
         Execute a system restart on the SEL relay via Telnet.
-        """
-        cls.log.info(f"Restarting device {dev.ip} via Telnet...")
 
-        with SELTelnet(
-            ip=dev.ip,
-            port=dev.options["telnet"]["port"],
-            timeout=dev.options["telnet"]["timeout"],
-        ) as tn:
-            if not tn.elevate(2, dev.options["sel"]["creds"]):
-                cls.log.error(f"Failed to restart {dev.ip} via Telnet: login failed")
+        Refer to :meth:`restart_relay`, which this calls.
+        """
+        return cls.restart_relay(dev, comm_type="telnet")
+
+    @classmethod
+    def restart_relay(
+        cls,
+        dev: DeviceData,
+        comm_type: Literal["telnet", "serial"] | None = None,
+    ) -> bool:
+        """
+        Restart (reboot) the SEL relay with the ``STA C`` command, and check that it
+        comes back.
+
+        #. Connect via Telnet or serial (with a few retries if the connection fails),
+           and elevate to access level 2. Login failures aren't retried.
+        #. Run :meth:`~peat.modules.sel.sel_ascii.SELAscii.restart_device`, which
+           checks the level 2 prompt, records the FID, and answers the relay's
+           confirmation question.
+        #. If ``sel.restart_verify`` is enabled (the default): Telnet: wait for the
+           Telnet port to close (up to ``restart_down_timeout`` seconds) and then
+           to open again (up to ``sel.restart_timeout`` seconds), then reconnect
+           and check the FID. Serial: wait for the prompt (the relay sends it when
+           it starts, if the port's AUTO setting is Y, otherwise PEAT sends a
+           carriage return every few seconds) and check the FID.
+
+        The details are saved in ``dev.extra["restart"]``.
+
+        .. warning::
+           A restart interrupts protection, and clears the relay's self-test
+           warnings and failures. Never use this on a relay in service without
+           the approval of the asset owner.
+
+        Other ways to restart a relay are never used: ``L_D`` starts the firmware
+        loader (SELBOOT) and disables the relay, ``R_S`` restores the factory
+        settings, and a DNP3 cold or warm restart only restarts the DNP3 port on
+        some relays (e.g. the SEL-421 and SEL-487B). The SEL-2030 and SEL-2032 have
+        no SEL ASCII command to restart them, so they're not supported.
+
+        Args:
+            dev: The relay
+            comm_type: ``"telnet"`` or ``"serial"``. If not set, serial is used
+                if a serial port is configured and the run is a serial run (as in
+                ``_pull()``), otherwise Telnet.
+
+        Returns:
+            If the restart was initiated and, if ``sel.restart_verify`` is
+            enabled, the relay came back with the same FID
+        """
+        if comm_type is None:
+            if dev.options["sel"]["force_serial_pull"] or (
+                dev.serial_port and state.comm_type == "serial"
+            ):
+                comm_type = "serial"
+            else:
+                comm_type = "telnet"
+
+        record: dict[str, Any] = {
+            "method": comm_type,
+            "requested_at": utils.utc_now().isoformat(),
+            "status": "failed",
+            "reason": "",
+            "verified": False,
+        }
+        dev.extra["restart"] = record
+
+        model = normalize_model(dev.description.model)
+        if model in ("2030", "2032"):
+            record["status"] = "unsupported"
+            record["reason"] = f"the SEL-{model} has no SEL ASCII command to restart it"
+            cls.log.error(f"Can't restart {dev.get_id()}: {record['reason']}")
+            return False
+
+        cls.log.warning(f"Restarting relay {dev.get_id()} via {comm_type} (STA C)")
+        cls._forget_ascii_passwords(dev)
+
+        if comm_type == "serial":
+            return cls._restart_serial(dev, record)
+        return cls._restart_telnet(dev, record)
+
+    @classmethod
+    def _record_restart(cls, record: dict, result: RestartResult) -> None:
+        record.update(result.to_dict())
+        record["initiated"] = result.initiated
+        # "reason" is updated by the verification, this is why the restart is initiated
+        record["restart_reason"] = result.reason
+        if not result:
+            cls.log.error(f"Restart failed ({result.status}): {result.reason}")
+
+    @classmethod
+    def _restart_telnet(cls, dev: DeviceData, record: dict) -> bool:
+        port = dev.options["telnet"]["port"]
+        timeout = dev.options["telnet"]["timeout"]
+        result = None  # type: RestartResult | None
+        halted = ""
+
+        for attempt in range(3):
+            if attempt:
+                wait = cls.restart_poll_interval * attempt
+                cls.log.info(f"Retrying the Telnet connection to {dev.ip} in {wait} seconds")
+                time.sleep(wait)
+
+            with SELTelnet(dev.ip, port, timeout, **cls._ascii_options(dev)) as tn:
+                if not tn.test_connection():
+                    record["reason"] = f"failed to connect to {dev.ip}:{port}"
+                    continue
+
+                cls._prepare_ascii(dev, tn)
+                # A failed login isn't retried, so it can't cause a lockout
+                if not tn.elevate(2, cls._configured_ascii_creds(dev)):
+                    record["reason"] = "failed to elevate to access level 2"
+                    cls.log.error(f"Failed to restart {dev.ip} via Telnet: login failed")
+                    return False
+
+                dev.related.user.update(tn.successful_usernames)
+                result = tn.restart_device(
+                    confirm_timeout=cls.restart_confirm_timeout,
+                    reboot_timeout=cls.restart_reboot_timeout,
+                )
+                halted = tn.halted
+                break
+
+        if result is None:
+            cls.log.error(f"Failed to restart {dev.ip} via Telnet: {record['reason']}")
+            return False
+
+        cls._record_restart(record, result)
+        if not result:
+            return False
+        if halted:
+            # e.g. the relay restarted in SELBOOT. Nothing more is sent to it,
+            # so it isn't verified (no new connection).
+            record["reason"] = f"the restart was initiated, but {halted}"
+            cls.log.error(f"Restart of {dev.ip}: {record['reason']}")
+            return False
+
+        if not dev.options["sel"]["restart_verify"]:
+            cls.log.info(f"Restart of {dev.ip} initiated (not verified, sel.restart_verify)")
+            return True
+
+        return cls._verify_restart_telnet(dev, record, result)
+
+    @classmethod
+    def _verify_restart_telnet(cls, dev: DeviceData, record: dict, result: RestartResult) -> bool:
+        port = dev.options["telnet"]["port"]
+        restart_timeout = float(dev.options["sel"]["restart_timeout"])
+        poll = cls.restart_poll_interval
+        started = time.monotonic()
+
+        # The port closes while the relay restarts. This can be missed if the
+        # relay restarts within one poll interval.
+        went_down = False
+        while time.monotonic() - started < cls.restart_down_timeout:
+            if not check_tcp_port(dev.ip, port, timeout=poll, reset=True):
+                went_down = True
+                break
+            time.sleep(poll)
+        record["port_went_down"] = went_down
+
+        came_back = False
+        while time.monotonic() - started < restart_timeout:
+            if check_tcp_port(dev.ip, port, timeout=poll, reset=True):
+                came_back = True
+                break
+            time.sleep(poll)
+
+        if not came_back:
+            record["reason"] = (
+                f"the relay's Telnet port didn't open again within {restart_timeout} seconds"
+            )
+            cls.log.error(f"Restart of {dev.ip}: {record['reason']}")
+            return False
+
+        record["back_at"] = utils.utc_now().isoformat()
+        record["duration_s"] = round(time.monotonic() - started, 1)
+
+        # The port can open before the relay answers commands
+        fid_after = ""
+        for _ in range(3):
+            try:
+                with SELTelnet(
+                    dev.ip, port, dev.options["telnet"]["timeout"], **cls._ascii_options(dev)
+                ) as tn:
+                    fid_after = str(tn.get_id().get("FID", ""))
+            except Exception as ex:
+                cls.log.debug(f"ID after the restart of {dev.ip} failed: {ex}")
+            if fid_after:
+                break
+            time.sleep(poll)
+
+        return cls._check_restart_fid(dev, record, result, fid_after, went_down)
+
+    @classmethod
+    def _check_restart_fid(
+        cls,
+        dev: DeviceData,
+        record: dict,
+        result: RestartResult,
+        fid_after: str,
+        observed: bool,
+    ) -> bool:
+        record["fid_after"] = fid_after
+
+        if not fid_after:
+            record["reason"] = "the relay didn't answer the ID command after the restart"
+        elif result.fid and fid_after != result.fid:
+            record["reason"] = (
+                f"the FID changed from '{result.fid}' to '{fid_after}', "
+                f"this may not be the same device"
+            )
+        elif not observed:
+            record["reason"] = (
+                "the relay answered, but PEAT didn't see it restart (the port didn't "
+                "close, or the prompt didn't change), so the restart wasn't confirmed"
+            )
+        else:
+            record["verified"] = True
+            record["reason"] = "the relay restarted and answered with the same FID"
+            cls.log.info(
+                f"Relay {dev.get_id()} restarted and is back after "
+                f"{record.get('duration_s', '?')} seconds"
+            )
+            return True
+
+        cls.log.warning(f"Restart of {dev.get_id()} wasn't verified: {record['reason']}")
+        return False
+
+    @classmethod
+    def _restart_serial(cls, dev: DeviceData, record: dict) -> bool:
+        if not dev.options["serial"]["baudrate"] and not cls._verify_serial(dev):
+            record["reason"] = f"failed to connect to {dev.serial_port}"
+            cls.log.error(f"Failed to restart {dev.serial_port}: {record['reason']}")
+            return False
+
+        with SELSerial(
+            serial_port=dev.serial_port,
+            baudrate=dev.options["serial"]["baudrate"],
+            timeout=dev.options["timeout"],
+            force_ymodem=dev.options["sel"]["force_ymodem"],
+            **cls._ascii_options(dev),
+        ) as ser:
+            if not ser.test_connection():
+                record["reason"] = f"failed to connect to {dev.serial_port}"
+                cls.log.error(f"Failed to restart {dev.serial_port}: {record['reason']}")
                 return False
 
-            dev.related.user.update(tn.successful_usernames)
+            cls._prepare_ascii(dev, ser)
+            if not ser.elevate(2, cls._configured_ascii_creds(dev)):
+                record["reason"] = "failed to elevate to access level 2"
+                cls.log.error(f"Failed to restart {dev.serial_port}: login failed")
+                return False
 
-            if tn.restart_device():
-                cls.log.info(f"Successfully restarted device {dev.ip} via Telnet")
+            dev.related.user.update(ser.successful_usernames)
+            result = ser.restart_device(
+                confirm_timeout=cls.restart_confirm_timeout,
+                reboot_timeout=cls.restart_reboot_timeout,
+            )
+            cls._record_restart(record, result)
+            if not result:
+                return False
+            if ser.halted:
+                # e.g. the relay restarted in SELBOOT
+                record["reason"] = f"the restart was initiated, but {ser.halted}"
+                cls.log.error(f"Restart of {dev.serial_port}: {record['reason']}")
+                return False
+
+            if not dev.options["sel"]["restart_verify"]:
                 return True
 
-            cls.log.error(f"Failed to restart device {dev.ip} via Telnet")
+            # A restarted relay starts at access level 0. With AUTO=Y, it
+            # sends a power-up message and the prompt by itself.
+            started = time.monotonic()
+            back = ser.wait_for_prompt(
+                timeout=float(dev.options["sel"]["restart_timeout"]),
+                poke_interval=cls.restart_poll_interval,
+            )
+            if not back:
+                record["reason"] = "the relay didn't show its prompt after the restart"
+                cls.log.error(f"Restart of {dev.serial_port}: {record['reason']}")
+                return False
 
-            return False
+            record["back_at"] = utils.utc_now().isoformat()
+            record["duration_s"] = round(time.monotonic() - started, 1)
+            if ser.halted:
+                # e.g. the relay came back in SELBOOT
+                record["reason"] = f"the relay came back, but {ser.halted}"
+                cls.log.error(f"Restart of {dev.serial_port}: {record['reason']}")
+                return False
+            observed = ser.access_level == "0"
+            fid_after = str(ser.get_id().get("FID", ""))
+
+        return cls._check_restart_fid(dev, record, result, fid_after, observed)
 
 
 def sel_port_check(dev: DeviceData, protocol: str) -> bool:

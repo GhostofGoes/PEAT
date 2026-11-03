@@ -2,40 +2,306 @@ import json
 import re
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
-from time import sleep
+from time import monotonic, sleep
+from typing import Any, ClassVar, Final
 
 from dateutil.parser import parse as date_parse
 
-from peat import DeviceError, config, consts, exit_handler, log, state, utils
-from peat.protocols import Telnet
+from peat import CommError, DeviceError, config, consts, exit_handler, log, state, utils
 from peat.protocols.common import MAC_RE_DASH
+from peat.protocols.expect import ExpectResult, PatternLike
 
 from .relay_parse import parse_status_output
 from .sel_cascii import parse_id_output
+from .sel_default_creds import (
+    GENERIC_PASSWORDS,
+    LEVEL_COMMANDS,
+    Credential,
+    normalize_model,
+    resolve_level_passwords,
+)
+
+# Prompts of each access level, longest first, so "=>>" isn't read as "=>".
+#
+# - 300, 400, and 700 series relays (SEL-421 IM 20130627 Table 4.3, SEL-351S IM
+#   20171023 Section 10): "=" level 0, "=>" level 1, "==>" level B, "=>>" level 2,
+#   "==>>" level C. The 400 series also has "P=>", "A=>", and "O=>" (levels P, A, O).
+# - SEL-734B meters: "E=>" (level E).
+# - SEL-2030/2032 communications processors: "*", "*>", "*>>" (SEL-2032 IM 20120126).
+# - SEL-2701/2702 Ethernet cards: "#", "#>", "#>>" (SEL-421 IM Table 4.11).
+# - SELBOOT (firmware loader, the relay is disabled): "!>".
+_PROMPT_ALTERNATIVES: Final = rb"==>>|=>>|==>|[PAOE]=>|=>|=|\*>>|\*>|\*|#>>|#>|#|!>"
+
+#: A prompt in its own message, e.g. ``b"\x02\r\n=>>\x03"`` (after the ETX of the output).
+#: The SEL-2032 sends a space before the prompt: ``<ETX><STX> <PROMPT><ETX>``
+#: (SEL-2032 IM 20120126, Figure 8.1 "Noninteractive Message Format").
+FRAMED_PROMPT_RE: Final = re.compile(
+    rb"\x02[\r\n \t]*(?P<prompt>" + _PROMPT_ALTERNATIVES + rb")[ \t]*\x03"
+)
+
+#: A prompt that isn't framed, at the start of a line, at the end of the data so far.
+#: A prompt right after a STX is the start of a framed prompt, so it's excluded.
+UNFRAMED_PROMPT_RE: Final = re.compile(
+    rb"(?:\A|(?<=[\r\n]))(?<!\x02\r\n)(?<!\x02\n)(?<!\x02\r)(?P<prompt>"
+    + _PROMPT_ALTERNATIVES
+    + rb")[ \t]*\Z"
+)
+
+#: A prompt at the end of output, framed or not (for output read without waiting for it)
+TRAILING_PROMPT_RE: Final = re.compile(
+    rb"(?:\A|[\r\n]|\x02[ \t]*)(?P<prompt>" + _PROMPT_ALTERNATIVES + rb")[ \t\x03]*\Z"
+)
+
+#: The relay asks for a password ("Password: ?"). It asks again if the password was wrong.
+PASSWORD_RE: Final = re.compile(rb"Password:\s*\?")
+
+#: The relay asks for confirmation, e.g. "Are you sure (Y/N) ?" or "Save settings (Y,N) ?"
+CONFIRM_RE: Final = re.compile(rb"\((?:Y/N|Y,N)\)\s*\?", re.IGNORECASE)
+
+#: A confirmation question at the end of the data so far: the relay is waiting
+#: for the answer. Used to notice a question after a command that shouldn't ask one.
+PENDING_CONFIRM_RE: Final = re.compile(rb"\((?:Y/N|Y,N)\)[ \t]*\?[ \t]*\Z", re.IGNORECASE)
+
+#: The relay says it's restarting, after STA C is confirmed ("Rebooting the relay")
+REBOOTING_RE: Final = re.compile(rb"reboot|restart|resetting", re.IGNORECASE)
+
+#: The relay is ready to send a file with YMODEM (``FILE READ``)
+READY_TO_SEND_RE: Final = re.compile(rb"ready to send", re.IGNORECASE)
+
+#: Error messages from the relay, e.g. "Invalid Command" or "Invalid Access Level"
+ERROR_RE: Final = re.compile(r"\s*(Invalid\b[^\r\n]*)", re.IGNORECASE)
+
+#: Messages the relay sends instead of a file (``FILE SHOW``). Like all of its
+#: messages, they can be framed with STX and ETX, like the contents of a file.
+FILE_ERROR_RE: Final = re.compile(
+    r"\s*(?:Invalid\b|File specified does not exist|Command requires)", re.IGNORECASE
+)
+
+#: Confirmation questions that PEAT must never answer with "Y". The SEL-400 series
+#: may ask "Accept new hardware configuration (Y/N)?" after a board change.
+NEVER_CONFIRM_RE: Final = re.compile(r"hardware|firmware|default|erase|disable", re.IGNORECASE)
+
+#: Access level shown by each prompt
+PROMPT_LEVELS: Final[dict[str, str]] = {
+    "=": "0",
+    "=>": "1",
+    "==>": "B",
+    "P=>": "P",
+    "A=>": "A",
+    "O=>": "O",
+    "E=>": "E",
+    "=>>": "2",
+    "==>>": "C",
+    "*": "0",
+    "*>": "1",
+    "*>>": "2",
+    "#": "0",
+    "#>": "1",
+    "#>>": "2",
+    "!>": "SELBOOT",
+}
+
+#: Rank of each access level, as used by ``priv_level`` (levels B, P, A, O, and E are
+#: between levels 1 and 2: they're reached from level 1, and 2AC works from them)
+LEVEL_RANKS: Final[dict[str, int]] = {
+    "0": 0,
+    "1": 1,
+    "B": 1,
+    "P": 1,
+    "A": 1,
+    "O": 1,
+    "E": 1,
+    "2": 2,
+    "C": 3,
+    "SELBOOT": 0,
+}
+
+#: Level to elevate to from each rank, and its name in the credentials
+_NEXT_LEVEL: Final[dict[int, str]] = {0: "acc", 1: "2ac", 2: "cal"}
+_LEVEL_TARGET: Final[dict[str, int]] = {"acc": 1, "2ac": 2, "cal": 3}
+
+#: Recorded instead of a password in ``all_writes``
+REDACTED_WRITE: Final = b"<redacted>"
+
+#: Cancel character (Ctrl+X), aborts the current output or dialog
+CAN: Final = b"\x18"
+
+STX: Final = "\x02"
+ETX: Final = "\x03"
+
+
+class SELSessionHalted(CommError):
+    """
+    PEAT stopped sending to a SEL device on this connection (refer to
+    :attr:`SELAscii.halted`), because anything it sent could be taken as an
+    answer to a dialog, e.g. as another wrong password.
+    """
+
+
+def _in_open_message(buffer: bytes | bytearray, pos: int) -> bool:
+    """If ``pos`` is after a STX that hasn't been closed by an ETX."""
+    return buffer.rfind(b"\x02", 0, pos) > buffer.rfind(b"\x03", 0, pos)
+
+
+def clean_lines(text: str) -> list[str]:
+    """
+    Split SEL ASCII output into lines, without the STX and ETX characters,
+    surrounding whitespace, and empty lines.
+    """
+    lines = []
+    for line in re.split(r"\r\n|\r|\n", text):
+        line = line.replace(STX, "").replace(ETX, "").strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+@dataclass
+class SELResponse:
+    """
+    Output of a SEL ASCII command, from :meth:`SELAscii.run_command`.
+    """
+
+    #: The command that was sent
+    command: str
+    #: Everything that was received, including the echo of the command and the prompt
+    raw: str = ""
+    #: What was received before the prompt (the echo and the output)
+    body: str = ""
+    #: Lines of the output, without the echo of the command, framing, or the prompt
+    lines: list[str] = field(default_factory=list)
+    #: The prompt at the end of the output (e.g. ``"=>>"``), or empty if it wasn't seen
+    prompt: str = ""
+    #: The access level shown by the prompt (e.g. ``"2"``), or empty
+    level: str = ""
+    #: The prompt wasn't seen before the timeout
+    timed_out: bool = False
+    #: The connection was closed
+    eof: bool = False
+    #: Error message in the output, e.g. ``"Invalid Command"``
+    error: str = ""
+
+    @property
+    def complete(self) -> bool:
+        """If the output ended with a prompt."""
+        return bool(self.prompt)
+
+
+@dataclass
+class RestartResult:
+    """
+    Result of :meth:`SELAscii.restart_device`. It's "truthy" if the restart was initiated.
+    """
+
+    #: ``"initiated"``, ``"failed"``, ``"unsupported"``, or ``"unknown"``
+    #: (the connection was lost before the relay confirmed the command)
+    status: str
+    #: Why the restart failed, or how PEAT knows it was initiated
+    reason: str = ""
+    #: The dialog with the relay
+    transcript: list[str] = field(default_factory=list)
+    #: FID of the relay before the restart
+    fid: str = ""
+    #: Time on the relay before the restart, if it was read
+    device_time: datetime | None = None
+    #: When the restart was confirmed (UTC)
+    initiated_at: datetime | None = None
+
+    def __bool__(self) -> bool:
+        return self.status == "initiated"
+
+    @property
+    def initiated(self) -> bool:
+        """If the relay accepted the restart."""
+        return self.status == "initiated"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "fid": self.fid,
+            "device_time": self.device_time.isoformat() if self.device_time else None,
+            "initiated_at": self.initiated_at.isoformat() if self.initiated_at else None,
+            "transcript": self.transcript,
+        }
 
 
 class SELAscii(ABC):
     """
     Commands and parsers for the SEL ASCII command interface.
+
+    PEAT sends a command and waits for the relay's prompt, which ends the output
+    of every command (refer to "Command timing" in the SEL documentation, ``docs/sel.rst``).
+    The prompt also shows the current access level, which is tracked in
+    ``access_level`` and ``priv_level``.
+
+    Transports (:class:`~peat.modules.sel.sel_telnet.SELTelnet` and
+    :class:`~peat.modules.sel.sel_serial.SELSerial`) implement :meth:`_write_raw`,
+    :meth:`_read_available`, and :meth:`_expect_raw`.
+
+    If ``legacy_timing`` is set, PEAT instead sleeps for a fixed time after each
+    command and reads what arrived, as PEAT did before. Logins and the restart
+    dialog always wait for the prompts.
     """
 
     DATA_REGEX = re.compile(r"\x02([^\x03]*)\x03", re.ASCII)
     ENCODING = "ascii"
+    # These are only used with legacy_timing
     PRE_WRITE_SLEEP = 0.15
     POST_WRITE_SLEEP = 0.1
     READ_DELAY = 0.15
     LINE_TERMINATOR = "\r\n"
-    DEFAULT_CREDS = {
-        "acc": "OTTER",  # Access level 1
-        "bac": "EDITH",  # Access level B
-        "2ac": "TAIL",  # Access level 2
-        "cal": "CLARKE",  # Access level C
-    }
+    #: Kept for compatibility. The defaults depend on the model, refer to
+    #: :mod:`peat.modules.sel.sel_default_creds`.
+    DEFAULT_CREDS = dict(GENERIC_PASSWORDS)
 
-    def __init__(self, address: str, timeout: int | float = 5.0) -> None:
+    #: Maximum seconds to wait for the prompt after a command with little output
+    COMMAND_TIMEOUT: float = 15.0
+    #: Maximum seconds to wait for the prompt after a command with a lot of output
+    #: (e.g. SER or FILE SHOW). The idle timeout usually ends the wait earlier.
+    LONG_COMMAND_TIMEOUT: float = 900.0
+    #: Seconds to wait for more data after something that looks like a prompt,
+    #: but isn't framed with STX and ETX, before treating it as the prompt
+    PROMPT_SETTLE: float = 0.3
+    #: Seconds to wait for more data after a confirmation question at the end
+    #: of the output, before treating it as a question (the relay waits for the
+    #: answer, so this only costs time if it's output that looks like a question)
+    QUESTION_SETTLE: float = 1.0
+    #: Seconds to wait for output to stop when the connection is first used
+    #: (e.g. a banner), so it isn't mistaken for the response to the first command
+    FIRST_COMMAND_QUIET: float = 0.3
+    #: Only search for the prompt in this many bytes before new data
+    PROMPT_WINDOW: int = 4096
+
+    # Passwords that failed (or worked) for an address and level, shared by
+    # instances, so a password that failed isn't tried again on a new connection.
+    _failed_passwords: ClassVar[dict[tuple[str, str], set[str]]] = {}
+    _good_passwords: ClassVar[dict[tuple[str, str], str]] = {}
+
+    def __init__(
+        self,
+        address: str,
+        timeout: int | float = 5.0,
+        legacy_timing: bool = False,
+        idle_timeout: float = 30.0,
+    ) -> None:
+        """
+        Args:
+            address: Address of the device (IP address or serial port)
+            timeout: Seconds to wait for a response to a command with little output,
+                and for the connection
+            legacy_timing: Use fixed delays instead of waiting for prompts
+                (refer to the class docstring)
+            idle_timeout: Seconds without any output from the relay after which
+                PEAT stops waiting for the end of a command with a lot of output
+        """
         self.address: str = address
         self.timeout: int | float = timeout
+        self.legacy_timing: bool = legacy_timing
+        self.idle_timeout: float = idle_timeout
 
         self.log = log.bind(classname=self.__class__.__name__, target=self.address)
 
@@ -43,7 +309,23 @@ class SELAscii(ABC):
         self.all_output: list[str] = []
         self.raw_output: list[bytes] = []
         self.successful_usernames: set[str] = set()
+
+        #: Rank of the current access level: 0, 1 (levels 1, B, P, A, O), 2, or 3 (level C)
         self.priv_level: int = 0
+        #: Current access level from the last prompt ("0", "1", "B", "2", "C", ...),
+        #: or an empty string if it isn't known
+        self.access_level: str = ""
+
+        #: Passwords of each level (``{"acc": "...", "2ac": "..."}``), set by
+        #: :meth:`elevate`. Levels that aren't set use the model's defaults.
+        self.creds: dict[str, Any] = {}
+        #: Also try "CLARKE" for level C on 400 series relays (``sel.cal_clarke_fallback``)
+        self.cal_fallback: bool = False
+
+        #: The response to the last command
+        self.last_response: SELResponse | None = None
+        #: Output of the commands sent when disconnecting (QUIT and EXIT)
+        self.exit_output: str = ""
 
         # A hint about what the model is. This is helpful
         # for devices where we're pretty confident in the
@@ -52,6 +334,23 @@ class SELAscii(ABC):
 
         # friendly name of the communication method, either Telnet or Serial
         self.type = self.__class__.__name__.partition("SEL")[2].capitalize()
+
+        self._secrets: set[str] = set()
+        # Levels a password was sent for on this connection (each is tried once)
+        self._attempted_levels: set[str] = set()
+        self._first_command: bool = True
+        self._seen_prompt: bool = False
+        # Don't send anything when disconnecting: a dialog may still be waiting for
+        # input (e.g. a password), or the relay is restarting.
+        self._no_exit_commands: bool = False
+        #: Why PEAT stopped sending anything on this connection, or an empty string.
+        #: It's set if the relay may still be waiting for an answer that PEAT
+        #: can't give safely (e.g. it didn't show its prompt after CAN at a password
+        #: prompt), or shows the SELBOOT prompt. Writes then raise
+        #: :class:`SELSessionHalted`. A Telnet connection is usable again after
+        #: :meth:`disconnect`. A serial port keeps its state when it's closed,
+        #: so on serial it stays set: use a new object to try again.
+        self.halted: str = ""
 
         if config.LOG_DIR and config.OUT_DIR:
             # Ensure data gets saved when PEAT exits if it doesn't exit with context
@@ -85,16 +384,50 @@ class SELAscii(ABC):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(address={self.address}, timeout={self.timeout})"
 
+    @classmethod
+    def forget_passwords(cls, address: str | None = None) -> None:
+        """
+        Forget which passwords failed (and worked) on a device, so they're tried
+        again on the next connection. PEAT remembers them for the whole process
+        otherwise. :class:`~peat.modules.sel.sel_relay.SELRelay` calls this at
+        the start of each pull and restart.
+
+        Args:
+            address: Address of the device (IP address or serial port), or
+                :obj:`None` for all devices
+        """
+        for memory in (cls._failed_passwords, cls._good_passwords):
+            for key in [k for k in memory if address is None or k[0] == address]:
+                del memory[key]
+
+    def _check_halted(self) -> None:
+        """Raise :class:`SELSessionHalted` if nothing may be sent (:attr:`halted`)."""
+        if self.halted:
+            raise SELSessionHalted(f"not sending anything to {self.address}: {self.halted}")
+
+    def _halt(self, reason: str) -> None:
+        """Stop sending anything on this connection (refer to :attr:`halted`)."""
+        if not self.halted:
+            self.log.error(
+                f"PEAT won't send anything else to {self.address} on this connection: {reason}"
+            )
+            self.halted = reason
+        self._no_exit_commands = True
+
     def _save_state_to_file(self) -> bool:
         """
         Save all data sent/received to a file in ``peat_results/<run-dir>/logs/``.
+
+        Passwords sent to the device are replaced with ``<redacted>``.
         """
         data = {
             "class": self.__class__.__name__,
             "address": self.address,
             "timeout": self.timeout,
+            "legacy_timing": self.legacy_timing,
             "successful_usernames": sorted(self.successful_usernames),
             "final_privilege_level": self.priv_level,
+            "final_access_level": self.access_level,
             "all_writes": self.all_writes,
             "all_output": self.all_output,
             "raw_output": self.raw_output,
@@ -153,15 +486,104 @@ class SELAscii(ABC):
 
     @abstractmethod
     def read(self, delay: float | None = None, strip_whitespace: bool = True) -> str:
+        """
+        Sleep, then read everything that arrived (this is how PEAT read output before
+        it waited for prompts, and it's used with ``legacy_timing``).
+        """
         pass
 
-    def write(self, command: bytes | str | int) -> None:
+    @abstractmethod
+    def read_until(self, until: bytes | str, strip_whitespace: bool = True) -> str:
+        """
+        Read until a string is received, or the timeout.
+        """
+        pass
+
+    @abstractmethod
+    def _write_raw(self, data: bytes, sensitive: bool = False) -> None:
+        """
+        Send bytes to the device as they are. If ``sensitive``, they must not be logged.
+        """
+        pass
+
+    @abstractmethod
+    def _read_available(self) -> bytes:
+        """
+        Read everything that's available now, without waiting
+        (including data that was buffered by :meth:`_expect_raw`).
+        """
+        pass
+
+    @abstractmethod
+    def _expect_raw(
+        self,
+        patterns: Sequence[PatternLike],
+        timeout: float,
+        idle_timeout: float | None = None,
+        settle: float | Sequence[float] = 0.0,
+        window: int | None = None,
+        accept=None,
+    ) -> ExpectResult:
+        """
+        Read until a pattern matches, refer to
+        :meth:`peat.protocols.expect.Expecter.expect`.
+        """
+        pass
+
+    # ---------------------------------------------------------------------
+    # Sending, receiving, and recording
+    # ---------------------------------------------------------------------
+
+    def register_secret(self, secret: str) -> None:
+        """
+        Replace ``secret`` with ``<redacted>`` in the recorded output
+        (``all_output`` and ``raw_output``), in case the device echoes it.
+        """
+        if secret:
+            self._secrets.add(secret)
+
+    def _decode(self, data: bytes) -> str:
+        try:
+            return data.decode(self.ENCODING)
+        except UnicodeDecodeError:
+            # e.g. a degree sign in an event report. Latin-1 decodes every byte.
+            return data.decode("latin-1")
+
+    def _record(self, data: bytes) -> str:
+        """Save received data in ``raw_output`` and ``all_output``, and decode it."""
+        text = self._decode(data)
+
+        raw = data
+        recorded = text
+        for secret in self._secrets:
+            recorded = recorded.replace(secret, "<redacted>")
+            raw = raw.replace(secret.encode(self.ENCODING, errors="replace"), b"<redacted>")
+
+        self.raw_output.append(raw)
+        self.all_output.append(recorded)
+        return text
+
+    def write(self, command: bytes | str | int, sensitive: bool = False) -> None:
         """
         Send a command to the device.
 
         Args:
-            command: Command to send (this will be automatically encoded)
+            command: Command to send (this will be automatically encoded,
+                and the line terminator is added)
+            sensitive: The command is a secret, e.g. a password. It's recorded
+                as ``<redacted>`` in ``all_writes`` and isn't logged.
         """
+        self._send(command, sensitive=sensitive)
+
+    def _send(
+        self,
+        command: bytes | str | int,
+        sensitive: bool = False,
+        terminator: bool = True,
+    ) -> None:
+        # Every write goes through here, so this is the one place to refuse them
+        self._check_halted()
+
         # If it's an int, first convert to a string, which will then be encoded
         if isinstance(command, int):
             command = str(command)
@@ -170,23 +592,270 @@ class SELAscii(ABC):
         if isinstance(command, str):
             command = command.encode(self.ENCODING)
 
-        # Append the line terminator (encode here to ensure proper encoding)
-        command += self.LINE_TERMINATOR.encode(self.ENCODING)
-        self.all_writes.append(command)
+        if terminator:
+            # Append the line terminator (encode here to ensure proper encoding)
+            command += self.LINE_TERMINATOR.encode(self.ENCODING)
 
-        # If we don't sleep, errors can occur.
-        if self.PRE_WRITE_SLEEP:
+        if sensitive:
+            self.all_writes.append(REDACTED_WRITE + (b"\r\n" if terminator else b""))
+        else:
+            self.all_writes.append(command)
+
+        # Before PEAT waited for prompts, it slept around every write
+        if self.legacy_timing and self.PRE_WRITE_SLEEP:
             sleep(self.PRE_WRITE_SLEEP)
 
-        # NOTE: calling telnetlib object directly is a bit of a hack,
-        #   the peat.protocols.Telnet wrapper mostly duplicates what we do.
-        if isinstance(self.comm, Telnet):
-            self.comm.comm.write(command)
-        else:
-            self.comm.write(command)
+        self._write_raw(command, sensitive=sensitive)
 
-        if self.POST_WRITE_SLEEP:
+        if self.legacy_timing and self.POST_WRITE_SLEEP:
             sleep(self.POST_WRITE_SLEEP)
+
+    def _flush(self) -> str:
+        """
+        Read and record whatever output is waiting, so it isn't mistaken for the
+        output of the next command. The first time, wait until the output stops
+        (e.g. a banner when the connection is opened).
+        """
+        data = self._read_available()
+
+        if self._first_command:
+            self._first_command = False
+            quiet_until = monotonic() + self.FIRST_COMMAND_QUIET
+            deadline = monotonic() + max(self.timeout, self.FIRST_COMMAND_QUIET)
+            while monotonic() < min(quiet_until, deadline):
+                result = self._expect_raw([], timeout=quiet_until - monotonic())
+                if result.data:
+                    data += result.data
+                    quiet_until = monotonic() + self.FIRST_COMMAND_QUIET
+                if result.eof:
+                    break
+
+        if not data:
+            return ""
+
+        text = self._record(data)
+        self._note_prompt_in_text(text)
+        return text
+
+    def _accept_prompt(self, index: int, match: re.Match, buffer: bytearray) -> bool:
+        # Index 1 is the unframed prompt. Something that looks like a prompt
+        # inside a message (after a STX, before its ETX) is output, e.g. a file.
+        if index == 1:
+            return not _in_open_message(buffer, match.start())
+        return True
+
+    def _expect(
+        self,
+        extra: Sequence[re.Pattern] = (),
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        extra_settle: float = 0.0,
+        extra_outside_messages: bool = False,
+    ) -> ExpectResult:
+        """
+        Wait for a prompt (patterns 0 and 1), or one of the ``extra`` patterns
+        (patterns 2, 3, ...). The data is recorded, and the access level is
+        updated from the prompt.
+
+        Args:
+            extra: More patterns to wait for
+            timeout: Maximum seconds to wait
+            idle_timeout: Stop waiting if nothing arrives for this many seconds
+            extra_settle: Seconds to wait for more data after an ``extra`` pattern
+                matched at the end of the data, before using it
+            extra_outside_messages: Ignore ``extra`` patterns inside a message
+                that hasn't ended yet (after a STX, before its ETX), e.g. in a file
+        """
+        if timeout is None:
+            timeout = self.COMMAND_TIMEOUT
+
+        patterns = [FRAMED_PROMPT_RE, UNFRAMED_PROMPT_RE, *extra]
+        settle = [0.0, self.PROMPT_SETTLE] + [extra_settle] * len(extra)
+
+        def accept(index: int, match: re.Match, buffer: bytearray) -> bool:
+            if index >= 2 and extra_outside_messages:
+                return not _in_open_message(buffer, match.start())
+            return self._accept_prompt(index, match, buffer)
+
+        result = self._expect_raw(
+            patterns,
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            settle=settle,
+            window=self.PROMPT_WINDOW,
+            accept=accept,
+        )
+
+        if result.data:
+            self._record(result.data)
+
+        if result.match is not None and result.index in (0, 1):
+            self._set_level_from_prompt(result.match.group("prompt").decode("ascii"))
+        elif not result.matched:
+            # The relay may be in the middle of something, so the level is unknown
+            self.access_level = ""
+
+        return result
+
+    def _set_level_from_prompt(self, prompt: str) -> bool:
+        """
+        Set the access level from a prompt, e.g. ``"=>>"``. Returns if it was a prompt.
+
+        This works on Telnet and serial. If you disconnect from a serial connection
+        without running ``quit``, the access level is preserved when you reconnect,
+        and the prompt is how PEAT finds out.
+        """
+        level = PROMPT_LEVELS.get(prompt.strip())
+        if level is None:
+            return False
+
+        if level == "SELBOOT":
+            self.log.critical(
+                f"{self.address} shows the SELBOOT prompt ('!>'): the relay is "
+                f"disabled and in its firmware loader. PEAT won't send commands to it."
+            )
+            self._halt("the relay is in SELBOOT (its firmware loader)")
+
+        self.access_level = level
+        self.priv_level = LEVEL_RANKS[level]
+        self._seen_prompt = True
+        return True
+
+    def _note_prompt_in_text(self, text: str) -> None:
+        # The prompt at the end of output that was read without waiting for it
+        match = TRAILING_PROMPT_RE.search(text.rstrip().encode(self.ENCODING, errors="replace"))
+        if match:
+            self._set_level_from_prompt(match.group("prompt").decode("ascii"))
+
+    def _make_response(self, command: str, result: ExpectResult) -> SELResponse:
+        raw = self._decode(result.data)
+        response = SELResponse(
+            command=command,
+            raw=raw,
+            timed_out=result.timed_out or result.overflow,
+            eof=result.eof,
+        )
+
+        if result.match is not None and result.index in (0, 1):
+            response.prompt = result.match.group("prompt").decode("ascii")
+            response.level = PROMPT_LEVELS.get(response.prompt, "")
+            response.body = self._decode(result.data[: result.match.start()])
+        else:
+            response.body = raw
+
+        response.lines = self._output_lines(command, response.body)
+        response.error = self._error_message(response.lines)
+        return response
+
+    @staticmethod
+    def _output_lines(command: str, text: str) -> list[str]:
+        lines = clean_lines(text)
+        # The relay echoes the command
+        if lines and command.strip() and lines[0].casefold().endswith(command.strip().casefold()):
+            lines = lines[1:]
+        return lines
+
+    @staticmethod
+    def _error_message(lines: list[str]) -> str:
+        # An error is the only output of a command. Other lines starting with
+        # "Invalid" can be output, e.g. the "Invalid Data" SER record.
+        error = ERROR_RE.match(lines[0]) if lines else None
+        return error.group(1).strip() if error else ""
+
+    def run_command(
+        self,
+        command: str,
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        long: bool = False,
+        legacy_delay: float | None = None,
+    ) -> SELResponse:
+        """
+        Send a command, and wait for the prompt that ends its output.
+
+        Args:
+            command: The command, e.g. ``"ID"``
+            timeout: Maximum seconds to wait for the prompt (the default depends on ``long``)
+            idle_timeout: Stop waiting if the relay doesn't send anything for this many
+                seconds (default: ``timeout`` of this object, or ``idle_timeout``
+                of this object if ``long``)
+            long: The command may have a lot of output or take a while to start
+                (e.g. SER, HIS, FILE DIR, FILE SHOW)
+            legacy_delay: With ``legacy_timing``, sleep this many seconds before
+                reading the output (instead of waiting for the prompt)
+
+        Returns:
+            The output. If the prompt wasn't seen, ``timed_out`` or ``eof`` is set.
+
+        Raises:
+            SELSessionHalted: Nothing may be sent on this connection (:attr:`halted`)
+        """
+        # Before reading, which could open the connection again
+        self._check_halted()
+
+        if self.legacy_timing:
+            response = self._legacy_run_command(command, legacy_delay)
+        else:
+            if timeout is None:
+                timeout = self.LONG_COMMAND_TIMEOUT if long else self.COMMAND_TIMEOUT
+            if idle_timeout is None:
+                idle_timeout = self.idle_timeout if long else self.timeout
+
+            self._flush()
+            self._send(command)
+            # A question at the end of the output (outside of a message, so not
+            # in a file) means the relay is waiting for an answer, e.g. STA at
+            # level 2 on a SEL-400 after a board change: "Accept new hardware
+            # configuration (Y/N)?" (SEL-421 IM 20130627, Table 9.125). Without
+            # this, the next command would be taken as the answer.
+            result = self._expect(
+                [PENDING_CONFIRM_RE],
+                timeout=timeout,
+                idle_timeout=idle_timeout,
+                extra_settle=self.QUESTION_SETTLE,
+                extra_outside_messages=True,
+            )
+            response = self._make_response(command, result)
+
+            if result.index == 2:
+                question = (clean_lines(self._decode(result.data)) or ["?"])[-1]
+                response.error = f"Unexpected question: {question}"
+                self.log.error(
+                    f"{self.address} asked '{question}' after '{command}'. "
+                    f"PEAT doesn't answer questions it doesn't expect with Y, answering N."
+                )
+                self._decline(question)
+            elif response.timed_out:
+                message = (
+                    f"No prompt from {self.address} after '{command}' "
+                    f"({len(result.data)} bytes received). The output may be "
+                    f"incomplete. If this happens for every command, try the "
+                    f"'sel.legacy_ascii_timing' option."
+                )
+                if self._seen_prompt:
+                    self.log.warning(message)
+                else:
+                    # e.g. a device that isn't a SEL device, during a scan
+                    self.log.debug(message)
+            elif response.eof:
+                self.log.warning(f"Connection to {self.address} closed after '{command}'")
+
+        self.last_response = response
+        return response
+
+    def _legacy_run_command(self, command: str, delay: float | None) -> SELResponse:
+        self.read()  # Flush any output from previous operations
+        self._send(command)
+        if delay:
+            sleep(delay)
+        raw = self.read(strip_whitespace=False)
+        self._note_prompt_in_text(raw)
+
+        response = SELResponse(command=command, raw=raw, body=raw)
+        lines = self._output_lines(command, raw)
+        response.lines = [x for x in lines if x not in PROMPT_LEVELS]
+        response.error = self._error_message(response.lines)
+        return response
 
     def read_lines(self, exclude_command: bool = True, read_until_str: bool = False) -> list[str]:
         """
@@ -226,6 +895,7 @@ class SELAscii(ABC):
         return_lines: bool = True,
         added_delay: float | None = None,
         read_until_prompt: bool = False,
+        timeout: float | None = None,
     ) -> str | list[str]:
         """
         Execute a command and return the results.
@@ -235,22 +905,57 @@ class SELAscii(ABC):
             return_lines: If the return value should be a list of
                 cleaned and trimmed strings. If False, then the raw
                 output is returned unmodified.
-            added_delay: Add a sleep between executing the command
-                and reading the reply. Needed for commands that take
-                a while to execute on the device.
-            read_until_prompt: Dynamic way of waiting for large
-                outputs or latency
+            added_delay: With ``legacy_timing``, sleep this long before reading the
+                output. Otherwise, PEAT waits for the prompt, and stops waiting if the
+                relay doesn't send anything for this long (at least ``timeout`` of this
+                object), so the output can take longer than :attr:`COMMAND_TIMEOUT`.
+                Until PEAT has seen a SEL prompt on the connection, it stops waiting
+                after this long (at least ``timeout`` of this object) in any case.
+            read_until_prompt: The command may have a lot of output, or take a while
+                to start (refer to ``long`` in :meth:`run_command`)
+            timeout: Maximum seconds to wait for the prompt
+
+        Returns:
+            The output. :attr:`last_response` has the details, e.g. if the prompt
+            wasn't seen before the timeout (``timed_out``).
+
+        Raises:
+            SELSessionHalted: Nothing may be sent on this connection (:attr:`halted`)
         """
-        self.read()  # Flush any output from previous operations
-        self.write(command)
+        self._check_halted()
 
-        if added_delay:
-            # longer delays for commands with a lot of output
-            sleep(added_delay)
+        if self.legacy_timing:
+            self.read()  # Flush any output from previous operations
+            self.write(command)
+            if added_delay:
+                sleep(added_delay)
+            if return_lines:
+                return self.read_lines(True, read_until_prompt)
+            return self.read()
+
+        idle_timeout = None
+        if added_delay and not read_until_prompt:
+            idle_timeout = max(float(self.timeout), added_delay)
+            if timeout is None:
+                if self._seen_prompt:
+                    timeout = self.LONG_COMMAND_TIMEOUT
+                else:
+                    # Not known to be a SEL device yet (e.g. "id" during a scan):
+                    # a device that keeps sending data, but never a SEL prompt,
+                    # isn't read for longer than the old fixed delay.
+                    timeout = idle_timeout
+
+        response = self.run_command(
+            command,
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            long=read_until_prompt,
+        )
+
         if return_lines:
-            return self.read_lines(True, read_until_prompt)
+            return response.lines
 
-        return self.read()
+        return response.raw.strip()
 
     def extract(self, raw_data: str) -> str:
         """
@@ -266,9 +971,14 @@ class SELAscii(ABC):
 
         return match.groups()[0].strip()
 
+    # ---------------------------------------------------------------------
+    # Access levels
+    # ---------------------------------------------------------------------
+
     def _ensure_priv(self, method_name: str, level: int = 1) -> None:
         """
         Ensure the current command terminal is at a certain privilege level.
+        The credentials given to :meth:`elevate` before are used.
         """
         if self.priv_level < level:
             self.log.info(
@@ -277,16 +987,232 @@ class SELAscii(ABC):
                 f"to elevate automatically..."
             )
 
-            if not self.elevate(level):
+            if not self.elevate(level, self.creds or None):
                 raise DeviceError(f"failed to auto-elevate privilege level on {self.address}")
 
-    def elevate(self, level: int, creds: dict | None = None) -> bool:
+    def sync_access_level(self) -> str:
+        """
+        Find out the current access level, by sending an empty line,
+        which makes the relay show its prompt.
+
+        Returns:
+            The access level (e.g. ``"1"``), or an empty string if no prompt was seen
+        """
+        if self.legacy_timing:
+            self.read()
+            self._send("")
+            self._note_prompt_in_text(self.read(strip_whitespace=False))
+            return self.access_level
+
+        self._flush()
+        self._send("")
+        self._expect(timeout=self.timeout)
+        return self.access_level
+
+    def wait_for_prompt(self, timeout: float, poke_interval: float = 5.0) -> bool:
+        """
+        Wait until the relay shows its prompt, e.g. after it restarted.
+
+        If the relay doesn't send anything for ``poke_interval`` seconds, a
+        carriage return is sent, which makes the relay show its prompt once it's
+        ready. With ``AUTO=Y``, a relay on a serial port sends a power-up message
+        and the prompt by itself when it starts.
+
+        Returns:
+            If the prompt was seen before the timeout (if it's the SELBOOT prompt,
+            :attr:`halted` is set)
+        """
+        if self.halted:
+            self.log.error(f"Not waiting for the prompt of {self.address}: {self.halted}")
+            return False
+
+        deadline = monotonic() + timeout
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return False
+
+            result = self._expect(timeout=min(poke_interval, remaining))
+            if result.index in (0, 1):
+                self._no_exit_commands = self.access_level == "SELBOOT"
+                return True
+            if result.eof:
+                return False
+            if deadline - monotonic() > 0:
+                self._send("")
+
+    def _cancel_dialog(self) -> bool:
+        """
+        Send CAN (Ctrl+X) to end a dialog that's waiting for input, e.g. a password
+        prompt, without sending anything the relay would take as an answer.
+
+        Returns:
+            If the relay showed its prompt again. If it didn't, nothing else is
+            sent on this connection (not even QUIT when disconnecting), since it
+            would be taken as an answer, e.g. another wrong password (refer to
+            :attr:`halted`).
+        """
+        try:
+            self._send(CAN, terminator=False)
+            result = self._expect(timeout=self.timeout)
+        except Exception as ex:
+            self.log.warning(f"Failed to cancel the dialog on {self.address}: {ex}")
+            result = None
+
+        if result is None or result.index not in (0, 1):
+            self._halt(
+                "the relay didn't show its prompt after CAN, so it may still be "
+                "waiting for input (e.g. a password)"
+            )
+            return False
+        return True
+
+    def _decline(self, question: str) -> ExpectResult | None:
+        """
+        Answer ``N`` to a confirmation question, and wait for the prompt. The
+        SEL-421 manual documents ``N`` as the way to abort (e.g. "Command aborted").
+        If the relay doesn't show its prompt, nothing else is sent on this connection.
+
+        Returns:
+            What the relay sent after ``N``, or :obj:`None` if it couldn't be sent
+        """
+        try:
+            self._send("N")
+            result = self._expect(timeout=self.timeout)
+        except Exception as ex:
+            self.log.warning(f"Failed to answer N on {self.address}: {ex}")
+            result = None
+
+        if result is None or result.index not in (0, 1):
+            self._halt(f"the relay didn't show its prompt after PEAT answered N to '{question}'")
+        return result
+
+    def _password_candidates(self, level: str) -> list[Credential]:
+        candidates = resolve_level_passwords(
+            self.model, self.creds, cal_fallback=self.cal_fallback
+        ).get(level, [])
+
+        failed = SELAscii._failed_passwords.get((self.address, level), set())
+        remaining = [c for c in candidates if c.password not in failed]
+
+        good = SELAscii._good_passwords.get((self.address, level))
+        remaining.sort(key=lambda c: c.password != good)
+        return remaining
+
+    def _login_level(self, level: str) -> bool:
+        """
+        Change to an access level with its command (ACC, 2AC, or CAL), and one
+        password at most. Refer to :meth:`elevate`.
+        """
+        command = LEVEL_COMMANDS[level]
+        target = _LEVEL_TARGET[level]
+
+        if level in self._attempted_levels:
+            self.log.error(
+                f"A {command} password was already sent on this connection to "
+                f"{self.address}, not trying again (to avoid a lockout)"
+            )
+            return False
+
+        candidates = self._password_candidates(level)
+        if not candidates:
+            self.log.error(f"No {command} password left to try for {self.address}")
+            return False
+        cred = candidates[0]
+
+        self.log.debug(f"Elevating to level {target} ({command})")
+        self._flush()
+        self._send(command)
+        first = self._expect(
+            [PASSWORD_RE], timeout=self.COMMAND_TIMEOUT, idle_timeout=self.timeout
+        )
+
+        if not first.matched:
+            self.log.error(
+                f"No response from {self.address} to {command} "
+                f"({'connection closed' if first.eof else 'timed out'})"
+            )
+            if not first.eof and b"assword" in first.data:
+                # Probably a password prompt PEAT doesn't know. Anything sent
+                # now would be taken as a password.
+                self._cancel_dialog()
+            return False
+
+        if first.index == 2:  # Password prompt
+            self._attempted_levels.add(level)
+            if cred.source == "configured":
+                self.register_secret(cred.password)
+
+            self.log.debug(f"Sending {command} password {cred}")
+            self._send(cred.password, sensitive=True)
+            second = self._expect(
+                [PASSWORD_RE], timeout=self.COMMAND_TIMEOUT, idle_timeout=self.timeout
+            )
+
+            if second.index == 2:
+                # A wrong password: the relay asks again. After three wrong
+                # passwords, the relay blocks access for 30 s and pulses BADPASS.
+                SELAscii._failed_passwords.setdefault((self.address, level), set()).add(
+                    cred.password
+                )
+                self.log.error(
+                    f"{self.address} rejected the {command} password {cred}. "
+                    f"Not trying another password on this connection, to avoid "
+                    f"an alarm or a lockout."
+                )
+                self._cancel_dialog()
+                return False
+
+            if not second.matched:
+                self.log.error(
+                    f"No prompt from {self.address} after the {command} password "
+                    f"({'connection closed' if second.eof else 'timed out'})"
+                )
+                if not second.eof:
+                    # The relay may still be asking for the password
+                    self._cancel_dialog()
+                return False
+            response = self._make_response(command, second)
+        else:
+            # A prompt without a password prompt: no password is needed
+            # (e.g. the access jumper is installed), or the level isn't allowed
+            response = self._make_response(command, first)
+
+        if self.priv_level >= target:
+            self.successful_usernames.add(level)
+            if first.index == 2:
+                SELAscii._good_passwords[(self.address, level)] = cred.password
+            self.log.debug(f"Now at access level {self.access_level} ({response.prompt})")
+            return True
+
+        text = response.error or " ".join(response.lines)[:200]
+        if "access level" in text.lower() and level != "acc":
+            self.log.error(
+                f"{self.address} refused {command}: '{text}'. The port's maximum "
+                f"access level (MAXACC setting) probably doesn't allow it."
+            )
+        else:
+            self.log.error(
+                f"{command} failed on {self.address}: the access level is "
+                f"'{self.access_level or 'unknown'}' after the command ('{text}')"
+            )
+        if first.index == 2:
+            SELAscii._failed_passwords.setdefault((self.address, level), set()).add(cred.password)
+        return False
+
+    def elevate(self, level: int, creds: Mapping[str, Any] | None = None) -> bool:
         """
         Elevates user privileges on the device.
 
-        .. warning::
-           This does not handle non-standard privilege levels, such as ``bac``,
-           that are not the standard three levels for SEL (acc/1, 2ac/2, cal/3).
+        PEAT sends the command for each level (ACC, then 2AC, then CAL), waits
+        for the relay to ask for the password, sends it, and checks the prompt
+        the relay shows next. If the relay asks for the password again, it was
+        wrong: PEAT cancels the dialog (CAN) and doesn't try another password on
+        the same connection, since three wrong passwords lock out access for 30
+        seconds and assert the BADPASS alarm. A password that failed isn't tried
+        again for the same device (until :meth:`forget_passwords`), but the next
+        candidate (if any) is tried on a new connection. If the relay doesn't show
+        its prompt after CAN, nothing else is sent on the connection (:attr:`halted`).
 
         Args:
             level: Privilege level to elevate to, as a :class:`int`. Available levels:
@@ -295,8 +1221,11 @@ class SELAscii(ABC):
                 - ``2`` : The ``2ac`` level
                 - ``3`` : The ``cal`` level (aka the ``calibration`` level)
             creds: Login credentials to use for each level, as a :class:`dict`.
-                If not specified or :obj:`None`, SEL's default creds are used.
-                Example: ``{"acc": "l1pass", "2ac": "l2pass", "cal": "calpass"}``
+                Example: ``{"acc": "l1pass", "2ac": "l2pass", "cal": "calpass"}``.
+                A value can also be a list of passwords to try (one per connection).
+                Levels that aren't set use the factory defaults for the model
+                (``model``), refer to :mod:`peat.modules.sel.sel_default_creds`.
+                The credentials are remembered and used for automatic elevations.
 
         Returns:
             If the privilege elevation was successful
@@ -307,51 +1236,38 @@ class SELAscii(ABC):
             self.log.error(f"Invalid SEL privilege level: {level}")
             return False
 
-        if level == self.priv_level:
-            self.log.debug(f"Already at privilege level {level}, no elevation commands sent")
-            return True
+        if creds:
+            self.creds = {str(k).lower(): v for k, v in creds.items()}
 
-        if not creds:
-            creds = self.DEFAULT_CREDS
+        if self.halted:
+            self.log.error(f"Not elevating on {self.address}: {self.halted}")
+            return False
 
         try:
+            if not self.access_level:
+                self.sync_access_level()
+
+            if self.access_level == "SELBOOT":
+                self.log.error(f"Not elevating on {self.address}: the relay is in SELBOOT")
+                return False
+
+            if self.priv_level >= level:
+                self.log.debug(f"Already at privilege level {level}, no elevation commands sent")
+                return True
+
             while self.priv_level < level:
-                if self.priv_level == 0:
-                    self.log.debug("Elevating to level 1 (acc)")
-                    self.write("acc")
-                    self.read()
-                    self.write(creds["acc"])
-                    if "invalid" in self.read().lower():
-                        self.log.error("Invalid level 1 (acc) password")
-                        return False
-                    self.priv_level = 1
-                    self.successful_usernames.add("acc")
-
-                elif self.priv_level == 1:
-                    self.log.debug("Elevating to level 2 (2ac)")
-                    self.write("2ac")
-                    self.read()
-                    self.write(creds["2ac"])
-                    if "invalid" in self.read().lower():
-                        self.log.error("Invalid level 2 (2ac) password")
-                        return False
-                    self.priv_level = 2
-                    self.successful_usernames.add("2ac")
-
-                elif self.priv_level == 2:
-                    self.log.debug("Elevating to level 3 (cal)")
-                    self.write("cal")
-                    self.write(creds["cal"])
-                    if "invalid" in self.read().lower():
-                        self.log.error("Invalid level 3 (cal) password")
-                        return False
-                    self.priv_level = 3
-                    self.successful_usernames.add("cal")
-
-                else:
+                next_level = _NEXT_LEVEL.get(self.priv_level)
+                if next_level is None:
                     self.log.critical(f"Unexpected elevation level: {level}")
                     state.error = True
                     return False
+                if not self._login_level(next_level):
+                    return False
+        except SELSessionHalted as ex:
+            # Keep the connection: disconnecting could reopen it (and on Telnet,
+            # it would forget that it's halted)
+            self.log.error(f"Failed elevation to privilege level {level}: {ex}")
+            return False
         except Exception as ex:
             self.log.debug(
                 f"Failed elevation to privilege level {level} from {self.priv_level}: {ex}"
@@ -361,6 +1277,35 @@ class SELAscii(ABC):
 
         self.log.info(f"Elevated to privilege level {level}")
         return True
+
+    # ---------------------------------------------------------------------
+    # Commands
+    # ---------------------------------------------------------------------
+
+    def _confirm_dialog(self, command: str, answer: str = "Y") -> tuple[bool, list[str]]:
+        """
+        Send a command that asks for confirmation, and answer it.
+        Returns if the command was confirmed, and the dialog.
+        """
+        transcript = []
+        self._flush()
+        self._send(command)
+        result = self._expect([CONFIRM_RE], timeout=self.COMMAND_TIMEOUT)
+        text = self._decode(result.data)
+        transcript.append(text)
+
+        if result.index != 2:
+            return False, transcript
+
+        if NEVER_CONFIRM_RE.search(text):
+            self.log.error(f"Unexpected question from {self.address}, answering N: {text!r}")
+            self._decline(text.strip())
+            return False, transcript
+
+        self._send(answer)
+        after = self._expect(timeout=self.COMMAND_TIMEOUT)
+        transcript.append(self._decode(after.data))
+        return True, transcript
 
     def get_active_group(self) -> str:
         """
@@ -374,7 +1319,7 @@ class SELAscii(ABC):
         # "gro" command requires level 1 (show the active group)
         self._ensure_priv("get_active_group", level=1)
 
-        raw_grp = self.exec_read("gro", False, self.POST_WRITE_SLEEP)
+        raw_grp = self.run_command("gro", legacy_delay=self.POST_WRITE_SLEEP).raw
         active_res = re.search(
             r".*Active\s+Group\s+=\s+(\d+).*", raw_grp, re.ASCII | re.IGNORECASE
         )
@@ -404,7 +1349,6 @@ class SELAscii(ABC):
             new_group: Group to change to. Examples: ``"6"``, ``"1"``
         """
         # TODO: validate the group number is valid
-        # TODO: error handling if the active group change failed
         current_group = self.get_active_group()
 
         if not current_group:
@@ -418,36 +1362,170 @@ class SELAscii(ABC):
 
         self.log.info(f"Changing active group from '{current_group}' to '{new_group}'")
 
-        self.write(f"gro {new_group}")
-        sleep(self.POST_WRITE_SLEEP)
-        self.write("y")  # answer yes to prompt
+        if self.legacy_timing:
+            self.write(f"gro {new_group}")
+            sleep(self.POST_WRITE_SLEEP)
+            self.write("y")  # answer yes to prompt
+        else:
+            confirmed, transcript = self._confirm_dialog(f"gro {new_group}")
+            if not confirmed:
+                self.log.error(f"Active group change was not confirmed: {transcript}")
+                return
 
         self.log.info(f"Active group changed to '{new_group}'")
 
-    def restart_device(self) -> bool:
+    def restart_device(
+        self,
+        confirm_timeout: float = 10.0,
+        reboot_timeout: float = 10.0,
+    ) -> RestartResult:
         """
-        Execute a system restart on the SEL relay (``STA C`` command)
+        Execute a system restart on the SEL relay (``STA C`` command).
+
+        PEAT checks that the relay shows the level 2 prompt (``=>>``), records the
+        FID and the relay's time, sends ``STA C``, and waits for the confirmation question
+        ("Are you sure (Y/N) ?"). It answers ``Y`` and then the relay says it's
+        rebooting ("Rebooting the relay"), closes the connection, or stops
+        responding, any of which mean the restart was initiated. If the relay
+        answers with an error (e.g. "Invalid Access Level") or the prompt, or
+        doesn't ask for confirmation, the restart failed. Questions about the
+        hardware configuration, firmware, or defaults are answered with ``N``.
+
+        After the restart was initiated, nothing else is sent on this
+        connection (the relay isn't sent QUIT when disconnecting).
 
         .. warning::
-           This will clear all relay self-test warnings and failures
+           This interrupts protection while the relay restarts, and clears all
+           relay self-test warnings and failures
+
+        Args:
+            confirm_timeout: Seconds to wait for the confirmation question
+            reboot_timeout: Seconds to wait for the relay to respond after ``Y``.
+                If it doesn't, it's assumed to be restarting.
 
         Returns:
-            If the restart initiation was successful
+            The result. It's "truthy" if the restart was initiated, so it can be
+            used like the :class:`bool` this method returned before.
         """
-        self.log.debug("Restarting relay...")
+        self.log.warning(f"Restarting relay {self.address} (STA C)")
 
-        self._ensure_priv("restart_device", level=2)
+        if self.model and normalize_model(self.model) in ("2030", "2032"):
+            return RestartResult(
+                "unsupported",
+                f"the SEL-{normalize_model(self.model)} has no SEL ASCII command to restart it",
+            )
+
+        result = RestartResult("failed")
 
         try:
-            self.write("sta c")
-            sleep(self.POST_WRITE_SLEEP)
-            self.write("y")
+            self._ensure_priv("restart_device", level=2)
+
+            # The level must be shown by the relay, not assumed
+            self.sync_access_level()
+            if LEVEL_RANKS.get(self.access_level, 0) < 2:
+                result.reason = (
+                    f"the relay isn't at access level 2 (prompt shows level "
+                    f"'{self.access_level or 'unknown'}')"
+                )
+                return result
+
+            info = self.get_id()
+            result.fid = str(info.get("FID", ""))
+            try:
+                # The relay's clock, to compare with the power-up record in the SER
+                result.device_time = self.get_device_time()
+            except Exception as ex:
+                self.log.debug(f"Failed to read the time before the restart: {ex}")
+
+            self._flush()
+            self._send("STA C")
+            confirm = self._expect([CONFIRM_RE], timeout=confirm_timeout)
+            text = self._decode(confirm.data)
+            result.transcript.append(text)
+
+            if confirm.eof:
+                result.status = "unknown"
+                result.reason = "the connection closed before the relay asked for confirmation"
+                self._no_exit_commands = True
+                return result
+
+            if confirm.index != 2:
+                response = self._make_response("STA C", confirm)
+                if response.error:
+                    result.reason = f"the relay answered '{response.error}'"
+                elif confirm.matched:
+                    result.reason = "the relay showed its prompt without asking for confirmation"
+                else:
+                    result.reason = (
+                        f"the relay didn't ask for confirmation within {confirm_timeout} s"
+                    )
+                    self._cancel_dialog()
+                return result
+
+            if NEVER_CONFIRM_RE.search(text):
+                result.reason = f"unexpected question, answered N: {text.strip()!r}"
+                declined = self._decline(text.strip())
+                if declined is not None:
+                    result.transcript.append(self._decode(declined.data))
+                return result
+
+            result.initiated_at = utils.utc_now()
+            try:
+                self._send("Y")
+                after = self._expect([REBOOTING_RE], timeout=reboot_timeout)
+                result.transcript.append(self._decode(after.data))
+            except (OSError, EOFError) as ex:  # e.g. ConnectionResetError
+                after = None
+                result.transcript.append(f"<{type(ex).__name__}: {ex}>")
+
+            if after is None or after.eof:
+                result.status = "initiated"
+                result.reason = "the relay closed the connection"
+            elif after.index == 2:
+                result.status = "initiated"
+                result.reason = "the relay said it's restarting"
+            elif after.timed_out:
+                result.status = "initiated"
+                result.reason = f"the relay stopped responding for {reboot_timeout} s"
+            elif self.access_level == "SELBOOT":
+                # It restarted, but in its firmware loader (nothing is sent to it now)
+                result.status = "initiated"
+                result.reason = "the relay showed the SELBOOT prompt (it restarted in SELBOOT)"
+                self.priv_level = 0
+                self.log.critical(f"Relay {self.address} restarted in SELBOOT")
+                return result
+            elif self.access_level == "0":
+                # A relay that restarted starts at level 0. On a serial port with
+                # AUTO=Y, it sends a power-up message and the prompt.
+                result.status = "initiated"
+                result.reason = "the relay showed the access level 0 prompt (it restarted)"
+                self._no_exit_commands = False
+                self.priv_level = 0
+                self.log.warning(f"Relay {self.address} restarted: {result.reason}")
+                return result
+            else:
+                response = self._make_response("Y", after)
+                result.reason = (
+                    f"the relay showed its prompt after Y ('{' '.join(response.lines)}')"
+                )
+                return result
+        except DeviceError as ex:
+            result.reason = f"failed to elevate to level 2: {ex}"
+            return result
         except Exception as ex:
             self.log.error(f"Exception during restart: {ex}")
-            return False
+            result.reason = f"exception: {ex}"
+            if result.initiated_at:
+                # The relay may have dropped the connection when it restarted
+                result.status = "unknown"
+            return result
 
-        self.log.info("Successfully initiated relay restart!")
-        return True
+        # The relay is restarting. Don't send anything else on this connection.
+        self._no_exit_commands = True
+        self.priv_level = 0
+        self.access_level = ""
+        self.log.warning(f"Relay {self.address} restart initiated: {result.reason}")
+        return result
 
     def get_sta(self) -> dict[str, datetime | str]:
         """
@@ -463,7 +1541,10 @@ class SELAscii(ABC):
         """
         self._ensure_priv("get_sta", level=1)
 
-        output = self.exec_read("sta", read_until_prompt=True)
+        if self.legacy_timing:
+            output = self.exec_read("sta", read_until_prompt=True)
+        else:
+            output = self.run_command("sta", long=True).lines
 
         return parse_status_output(output)
 
@@ -495,6 +1576,10 @@ class SELAscii(ABC):
             return {}
 
         info = parse_id_output(raw)
+
+        # The model determines the default passwords
+        if not self.model and info.get("FID"):
+            self.model = normalize_model(str(info["FID"]))
 
         self.log.trace2(f"** get_id() => 'info' **\n{info}")
         return info
@@ -568,24 +1653,24 @@ class SELAscii(ABC):
 
         self.log.info(f"Reading file listing of {dir_name}")
 
-        self.read()  # Flush any output from previous operations
+        command = f"fil dir {directory}" if directory else "fil dir"
+        # It takes 5-15 seconds for the listing to start on some relays
+        response = self.run_command(command, long=True, legacy_delay=10.0)
 
-        if directory:
-            self.write(f"fil dir {directory}")
-        else:
-            self.write("fil dir")
-
-        # ... takes ~5-15 seconds to get results ...
-        sleep(10.0)  # Give telnet time to load file
+        if response.timed_out:
+            self.log.warning(f"The file listing of {dir_name} may be incomplete")
 
         # parse the filenames into a list of strings
         parsed_file_list = []
 
-        for line in self.read_lines():
+        for line in response.lines:
             # If directory is empty or doesn't exist
             if "file specified does not exist" in line.lower():
                 self.log.warning(f"{dir_name} is empty or doesn't exist")
                 return []
+
+            if line in PROMPT_LEVELS or ERROR_RE.match(line):
+                continue
 
             m = re.search(r"(?P<item>[\w.]+)\s+(?P<type>\w)", line, re.ASCII | re.IGNORECASE)
 
@@ -598,6 +1683,55 @@ class SELAscii(ABC):
 
         self.log.trace(f"** File listing of {dir_name} **\n{parsed_file_list}")
         return parsed_file_list
+
+    def show_file(self, filename: str) -> str | None:
+        """
+        Read a file with the ``FILE SHOW`` command (``fil show <filename>``).
+
+        PEAT waits for the end of the file (ETX) and the prompt, so slow
+        connections don't cut the file off.
+
+        Args:
+            filename: Name of the file, or the directory and file name
+                separated by a space (e.g. ``"SETTINGS SET_1.TXT"``)
+
+        Returns:
+            The contents of the file (without the framing), or :obj:`None`
+            if it wasn't received completely or the relay returned an error
+        """
+        command = f"fil show {filename}"
+        response = self.run_command(command, long=True)
+
+        match = self.DATA_REGEX.search(response.body)
+        if match:
+            # The relay frames an error message with STX and ETX, like a file
+            # (SEL-2032 IM 20120126, Figure 8.1), e.g. "\x02\r\nInvalid File Name\r\n\x03"
+            message = self._output_lines(command, match.group(1))
+            if len(message) == 1 and FILE_ERROR_RE.match(message[0]):
+                response.error = response.error or message[0]
+                self.log.error(f"Failed to read '{filename}': '{message[0]}'")
+                return None
+
+        if not match:
+            if response.error:
+                self.log.error(f"Failed to read '{filename}': '{response.error}'")
+            elif response.timed_out or response.eof:
+                self.log.error(
+                    f"Failed to read '{filename}' from {self.address}: no end of file "
+                    f"was received ({len(response.raw)} characters received)"
+                )
+            else:
+                self.log.error(
+                    f"Failed to find the data in the output of 'fil show {filename}' "
+                    f"from {self.address}"
+                )
+            return None
+
+        if response.timed_out:
+            # The file was received completely (ETX), only the prompt is missing
+            self.log.warning(f"No prompt after the end of '{filename}' from {self.address}")
+
+        return match.group(1)
 
     def show_bre(self) -> list[str]:
         """
@@ -720,16 +1854,15 @@ class SELAscii(ABC):
         ``ser`` command. Sequential Event Recorder (SER).
 
         NOTE: this can take a while if the SER has a lot of entries.
+        PEAT waits until the relay stops sending (refer to ``idle_timeout``).
         """
         # On the SEL-2032, this requires an argument.
         # SEL-2032 RTU has per-port SER logs. Maybe we could
         # be smarter about this in the future, and issue multiple
         # queries for each port's log?
-        if self.model == "2032":
+        if normalize_model(self.model) == "2032":
             result = self.exec_read("ser GLOBAL 100", added_delay=5.0)
         else:
-            # TODO: use the same buffering technique as for "fil dir"
-            # TODO: handle large SER log (like on the 700G on the PEAT rack)
             result = self.exec_read("ser", read_until_prompt=True, added_delay=10.0)
 
         return result
@@ -752,4 +1885,4 @@ class SELAscii(ABC):
         return self.exec_read("eve", added_delay=2.0)
 
 
-__all__ = ["SELAscii"]
+__all__ = ["RestartResult", "SELAscii", "SELResponse", "SELSessionHalted", "clean_lines"]

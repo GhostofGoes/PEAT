@@ -50,7 +50,98 @@ Relays
 
 Relay communications
 ^^^^^^^^^^^^^^^^^^^^
-There are several methods PEAT can interact with a SEL relay: FTP, Telnet, HTTP/HTTPS, and directly connected via serial (currently, EIA-232/RS-232 is supported for serial communications). Device verification and commands (such as relay restart) can be performed via Telnet or Serial, and pulling/pushing of device configuration via FTP or serial.
+There are several methods PEAT can interact with a SEL relay: FTP, Telnet, HTTP/HTTPS, and directly connected via serial (currently, EIA-232/RS-232 is supported for serial communications). Devices are verified and commands are run via Telnet or serial, device configuration is pulled via HTTP, FTP, Telnet, or serial, and pushed via FTP. PEAT only restarts a relay after a push, if ``sel.restart_after_push`` is enabled (refer to `Restarting relays`_).
+
+Command timing
+^^^^^^^^^^^^^^
+Over Telnet and serial, PEAT sends a SEL ASCII command and waits for the relay's prompt, which the relay sends when the command's output is complete. Before, PEAT slept for a fixed time after each command (e.g. 5 seconds for ``ID`` and 10 seconds for each ``FILE DIR``) and read whatever had arrived, which was slow, and cut off the output on slow links (a file download stopped at the first pause in the data).
+
+- The relay sends the output of a command as a message (STX, the lines, ETX), and then the prompt as its own message, e.g. ``\x03\x02\r\n=>>\x03`` (refer to `Telnet notes`_), or ``\x03\x02 *>>\x03`` on the SEL-2032 (IM 20120126, Figure 8.1). PEAT uses the framed prompt as the end of the output. A prompt that isn't framed counts if it's at the start of a line at the end of the data, and no more data arrives within 0.3 seconds (so ``=>`` isn't taken for the beginning of ``=>>``). Text that looks like a prompt inside a message that hasn't ended (e.g. a line of a file) isn't the prompt.
+- The prompt shows the access level, which PEAT tracks on Telnet and serial: ``=`` (0), ``=>`` (1), ``==>`` (B), ``P=>``, ``A=>``, ``O=>`` (P, A, O on 400 series relays), ``=>>`` (2), ``==>>`` (C), ``*``, ``*>``, ``*>>`` (SEL-2030/2032), ``#``, ``#>``, ``#>>`` (SEL-2701 Ethernet card), and ``!>`` (SELBOOT: the relay is disabled, and PEAT doesn't send anything else on the connection). A relay keeps its access level on a serial port after PEAT disconnects, so PEAT checks the prompt before it elevates, and sends ``QUIT`` before it disconnects.
+- Commands with little output (e.g. ``ID``, ``ACC``) wait at most until nothing arrives for the connection timeout (``telnet.timeout`` or ``timeout``, 5 seconds by default; at least 5 seconds for ``ID``, the delay it had before). Until PEAT has seen a SEL prompt on the connection, it stops reading the output of ``ID`` after that time, even if the device keeps sending data, so scanning a device that isn't a SEL device doesn't take much longer than before. Commands with a lot of output, or that take a while to start (``SER``, ``HIS``, ``STA``, ``FILE DIR``, ``FILE SHOW``), wait as long as data keeps arriving, until nothing arrives for ``sel.ascii_idle_timeout`` seconds (30 by default; increase it for slow links).
+- If the prompt doesn't arrive, PEAT logs a warning and uses the output it has. A file read with ``FILE SHOW`` is only used if the end of the file (ETX) arrived, so a file is never saved partially. Relays frame error messages with STX and ETX like a file, so a one-line message such as "Invalid File Name" is treated as an error, not as the file.
+- If the relay asks a question (``(Y/N)`` or ``(Y,N)``, outside of a message) after a command that shouldn't ask one, PEAT answers ``N`` and the command fails, instead of taking the next command as the answer. For example, ``STA`` at level 2 on a SEL-400 series relay asks "Accept new hardware configuration (Y/N)?" after a board change, and ``N`` aborts it (SEL-421 IM 20130627, Table 9.125).
+- Output that arrives right after the connection is opened (e.g. a banner) is read and discarded before the first command.
+- With ``sel.legacy_ascii_timing: true``, PEAT uses the fixed delays of earlier versions instead of waiting for the prompt. Only use this if commands time out on a device. Logins and the restart dialog always wait for the relay's prompts.
+
+The waiting is done by :class:`~peat.protocols.expect.Expecter` (:mod:`peat.protocols.expect`), which reads from a Telnet connection (:meth:`peat.protocols.telnet.Telnet.expect`), a socket, a pyserial port, or a SSH channel, until a regular expression matches. ``pexpect`` isn't used, since it doesn't work with serial ports on Windows.
+
+Logins (``ACC``, ``2AC``, ``CAL``) work like this:
+
+#. PEAT sends the command and waits for "Password: ?" or a prompt. If the relay shows a prompt instead, no password is needed (e.g. the access jumper is installed), or the level isn't allowed: "Invalid Access Level" for ``2AC`` usually means that the port's maximum access level (``MAXACC``) is lower.
+#. PEAT sends the password and checks the next prompt. If the relay asks for the password again, the password was wrong: PEAT sends CAN (Ctrl+X) to end the dialog, and doesn't try another password for that level on the connection. Relays block access for 30 seconds and assert the BADPASS alarm bit after three wrong passwords in a row (SEL-351S Instruction Manual, Section 10). A password that was rejected isn't sent to the same device again until the next pull or restart.
+#. If the relay doesn't show its prompt after CAN (or after ``N`` to a question), anything PEAT sends could be taken as an answer, e.g. another wrong password. PEAT then sends nothing else on the connection: commands raise :class:`~peat.modules.sel.sel_ascii.SELSessionHalted` (``halted`` says why), the pull stops running commands and downloading files, and the connection is closed without ``QUIT``. On serial this stays in effect after the port is closed, since the relay's port keeps its state.
+#. PEAT's pull, push, and restart don't elevate to level C (``CAL``). Only programs that use the API do, with ``elevate(3)``.
+
+Passwords are replaced with ``<redacted>`` in the commands PEAT records (``all_writes`` in ``logs/selascii-protocol-data_*.json``) and aren't logged. If a relay echoes a configured password, it's replaced in the recorded output (``all_output``, ``raw_output``, and ``raw-telnet-output.json``) too. Relays echo a ``*`` for each character of a password.
+
+Default credentials
+^^^^^^^^^^^^^^^^^^^
+If credentials aren't configured, PEAT uses the factory default passwords for the relay's model family, from the tables in public SEL instruction manuals (:mod:`peat.modules.sel.sel_default_creds` has the details). The model is known from the ``ID`` command (which works at access level 0) or from the identification of the device.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Model family
+     - 1 (``ACC``)
+     - B (``BAC``)
+     - 2 (``2AC``)
+     - C (``CAL``)
+     - Source
+   * - 300 series (e.g. 311C, 351, 351S, 387, 587)
+     - ``OTTER``
+     - ``EDITH``
+     - ``TAIL``
+     - ``CLARKE``
+     - SEL-351S IM 20171023, Table 10.21. The SEL-551 (IM 20151105) has no level B.
+   * - 400 series (e.g. 411L, 421, 451, 487E)
+     - ``OTTER``
+     - ``EDITH``
+     - ``TAIL``
+     - ``Sel-1``
+     - SEL-421 IM 20130627, Table 4.4. Also P ``AMPERE``, A ``VOLTA``, O ``WATT``.
+   * - 700 series (e.g. 700G, 710, 751, 751A, 787)
+     - ``OTTER``
+     - (no level B)
+     - ``TAIL``
+     - ``CLARKE``
+     - SEL-751A IM 20130329, Table 7.34; SEL-700G IM 20150521, Table 7.37
+   * - SEL-2030 and SEL-2032
+     - ``OTTER``
+     - (no level B)
+     - ``TAIL``
+     - ``CLARKE``
+     - SEL-2032 IM 20120126, Table 3.1
+   * - Other models (e.g. SEL-2411, SEL-734 and SEL-735 meters)
+     - ``OTTER``
+     - ``EDITH``
+     - ``TAIL``
+     - ``CLARKE``
+     - PEAT's previous defaults
+
+- Configured credentials always win: ``sel.creds`` (for each level that's set), ``ftp.user`` and ``ftp.pass`` or ``ftp.creds``, and ``web.user`` and ``web.pass``, in the global ``device_options`` or the host's ``options``. They're used as they are, in the configured order. Empty values (e.g. ``creds: {}`` in the example configuration) aren't set.
+- A level in ``sel.creds`` can be a list of passwords. Since each level is tried once per connection, the next password is only tried on a new connection. PEAT's pull and restart log in on one connection and don't reconnect after a failed login, so they only use the first password of the list. The others are only tried by programs that use the API and call ``elevate()`` again on new connections.
+- ``CLARKE`` isn't documented for level C on the 400 series. ``sel.cal_clarke_fallback: true`` adds it after ``Sel-1``, for programs that elevate to level C on a new connection (PEAT's pull, push, and restart don't use level C).
+- FTP: on 300 and 700 series relays, the user is the ``FTPUSER`` port setting (``FTPUSER`` by default) and the password is the level 2 password. The SEL-351 uses ``FTP``. On 400 series relays and SEL-2701 Ethernet cards, the user is the access level command (``2AC`` or ``ACC``) with its password. If the ``FTPUSER`` setting is known from settings PEAT parsed before, it's tried first. Anonymous FTP is only tried if the settings say it's enabled (``FTPANMS``). At most 4 default logins are tried, since many relays lock out FTP after 5 failed logins (the SEL-451, SEL-411L, and SEL-487E used to get 6).
+- Web interface: ``acc`` and then ``2ac`` are tried as the user, with the level's configured or default password. PEAT only reads from the web interface. It used to also try ``bac`` and ``cal``, which made up to 4 failed logins on a relay with non-default passwords.
+- The source of each credential (configured, or the default for which family) is logged, but not the password.
+- The SEL-3620 module now has its own default web passwords (``admin`` and ``rtac``, guesses that aren't documented by SEL), which it got from the SELRTAC defaults before. The RTAC defaults aren't changed.
+
+Restarting relays
+^^^^^^^^^^^^^^^^^
+If ``sel.restart_after_push`` is enabled, PEAT restarts the relay with ``STA C`` via Telnet after a push (:meth:`~peat.modules.sel.sel_relay.SELRelay.restart_relay`). Most settings changes don't need a restart. ``STA C`` reboots the relay like a power cycle: protection is interrupted while the relay restarts, and the relay's self-test warnings and failures are cleared.
+
+#. PEAT connects (with up to 3 connection attempts), elevates to level 2 (a failed login isn't retried), checks that the relay shows the level 2 prompt (``=>>``), and records the FID (``ID``) and the relay's time (``DATE`` and ``TIME``).
+#. PEAT sends ``STA C`` and waits for the confirmation question (on the SEL-351S: "Reboot the relay and clear status" / "Are you sure (Y/N) ?"). If the relay answers with an error (e.g. "Invalid Access Level"), shows its prompt, or doesn't ask within 10 seconds, the restart failed. A question about a new hardware configuration, firmware, or defaults is answered with ``N`` (SEL-400 series relays may ask "Accept new hardware configuration (Y/N)?").
+#. PEAT answers ``Y``. The restart was initiated if the relay says it's rebooting ("Rebooting the relay"), closes the connection, doesn't respond for 10 seconds, or shows the level 0 prompt. PEAT then closes the connection without sending ``QUIT``.
+#. If ``sel.restart_verify`` is enabled (the default), PEAT waits for the relay to come back: via Telnet, it checks the Telnet port every 5 seconds until it closes (up to 60 seconds) and opens again (up to ``sel.restart_timeout`` seconds, 300 by default), then connects and checks that the FID is the same. Via serial, it waits for the prompt (a relay with ``AUTO=Y`` sends a power-up message by itself, otherwise PEAT sends a carriage return every 5 seconds) and checks the FID. If PEAT didn't see the port close (or the prompt change to level 0), the restart isn't confirmed. If the relay comes back with the SELBOOT prompt (``!>``), the restart failed, and PEAT doesn't send anything to it.
+
+The result is in ``extra.restart`` of the device: ``status`` (``initiated``, ``failed``, ``unsupported``, or ``unknown``), ``reason``, ``restart_reason``, ``initiated``, ``verified``, ``fid``, ``fid_after``, ``device_time``, ``initiated_at``, ``back_at``, ``duration_s``, ``port_went_down``, and the dialog (``transcript``). The push is only successful if the restart was initiated and, if ``sel.restart_verify`` is enabled, verified.
+
+PEAT never uses other ways to restart a relay: ``L_D`` starts the firmware loader and disables the relay, ``R_S`` restores the factory settings, and a DNP3 cold or warm restart only restarts the DNP3 port on some relays (e.g. the SEL-421 and SEL-487B). The SEL-2030 and SEL-2032 don't have a SEL ASCII command to restart them, so they aren't supported.
+
+.. note::
+   The manuals only print the ``STA C`` dialog of the 300 series. The 700 and 400 series dialogs are matched by the ``(Y/N)`` or ``(Y,N)`` question, and haven't been tested on relays yet.
 
 File output
 ^^^^^^^^^^^

@@ -1,6 +1,7 @@
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from functools import cached_property
 from pathlib import Path
 from time import sleep
@@ -8,9 +9,13 @@ from time import sleep
 import serial  # PySerial
 
 from peat import CommError, config, exit_handler
+from peat.protocols.expect import Expecter, ExpectResult, PatternLike, serial_reader
 from peat.protocols.serial import pretty_hex_bytes
 
-from .sel_ascii import SELAscii
+from .sel_ascii import READY_TO_SEND_RE, SELAscii
+
+#: Flow control characters the relay sends, which aren't part of the output
+_FLOW_CONTROL = (b"\x11", b"\x13")  # XON, XOFF
 
 
 class SELSerial(SELAscii):
@@ -34,6 +39,7 @@ class SELSerial(SELAscii):
     - ``read``: 451, 2032 (Requires Ymodem to transfer the file)
     """
 
+    # Only used with legacy_timing
     PRE_WRITE_SLEEP = 1.0
     # minor hack to cache results of the "file show" check between instances
     _SUPPORTS_SHOW_CACHE = {}  # type: dict[str, bool]
@@ -44,11 +50,19 @@ class SELSerial(SELAscii):
         baudrate: int = 9600,
         timeout: float | int = 5.0,
         force_ymodem: bool = False,
+        legacy_timing: bool = False,
+        idle_timeout: float = 30.0,
     ):
-        super().__init__(address=serial_port, timeout=timeout)
+        super().__init__(
+            address=serial_port,
+            timeout=timeout,
+            legacy_timing=legacy_timing,
+            idle_timeout=idle_timeout,
+        )
 
         self.baud = baudrate  # type: int
         self._comm = None  # type: Optional[serial.Serial]
+        self._expecter = None  # type: Optional[Expecter]
 
         # use ymodem for file transfers
         self.force_ymodem = force_ymodem  # type: bool
@@ -99,6 +113,57 @@ class SELSerial(SELAscii):
     @comm.setter
     def comm(self, obj: serial.Serial):
         self._comm = obj
+        self._expecter = None
+
+    @property
+    def expecter(self) -> Expecter:
+        """
+        :class:`~peat.protocols.expect.Expecter` reading from the serial port.
+        XON and XOFF characters are removed from the data.
+        """
+        if self._expecter is None:
+            read_port = serial_reader(self.comm)
+
+            def read_chunk(wait: float) -> bytes:
+                data = read_port(wait)
+                for char in _FLOW_CONTROL:
+                    data = data.replace(char, b"")
+                return data
+
+            self._expecter = Expecter(read_chunk, on_data=self._log_read)
+        return self._expecter
+
+    def _log_read(self, raw: bytes) -> None:
+        if config.DEBUG:
+            log_msg = f"Read {len(raw)} bytes"
+            if config.DEBUG >= 3:
+                log_msg += f"\n-- Hex bytes --\n{pretty_hex_bytes(raw)}"
+            self.log.trace(log_msg)
+
+    def _write_raw(self, data: bytes, sensitive: bool = False) -> None:
+        self.log.trace2(f"Writing: {'<redacted>' if sensitive else data!r}")
+        self.comm.write(data)
+
+    def _read_available(self) -> bytes:
+        return self.expecter.read_available()
+
+    def _expect_raw(
+        self,
+        patterns: Sequence[PatternLike],
+        timeout: float,
+        idle_timeout: float | None = None,
+        settle: float | Sequence[float] = 0.0,
+        window: int | None = None,
+        accept=None,
+    ) -> ExpectResult:
+        return self.expecter.expect(
+            patterns,
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            settle=settle,
+            window=window,
+            accept=accept,
+        )
 
     @property
     def supports_show(self) -> bool:
@@ -107,8 +172,16 @@ class SELSerial(SELAscii):
         of files without requiring the use of YMODEM.
         """
         if self._supports_show is None:
-            self.write("file show")
-            response = self.read().lower()
+            if self.legacy_timing:
+                self.write("file show")
+                response = self.read().lower()
+            else:
+                result = self.run_command("file show")
+                if not result.complete and not result.lines:
+                    # No response, check again the next time
+                    self.log.warning("No response to 'file show', assuming it's supported")
+                    return True
+                response = "\n".join(result.lines).lower()
 
             if "invalid parameter" in response:
                 self.log.warning(
@@ -171,13 +244,35 @@ class SELSerial(SELAscii):
 
     def disconnect(self) -> None:
         if self._comm:
-            # If running with elevated privs, then de-escalate them before exiting
-            if self.priv_level > 0:
-                self.write("quit")
-                self.read()
+            # If running with elevated privs, then de-escalate them before exiting.
+            # On serial, the relay keeps the access level after PEAT disconnects.
+            # If the level isn't known (e.g. a command timed out), QUIT anyway,
+            # unless it's not a SEL device (e.g. a wrong baud rate during a scan).
+            unknown_level = not self.access_level and self._seen_prompt
+            # Nothing is sent if the session is halted (refer to SELAscii.halted).
+            # That's kept after closing the port, since the relay's port keeps its state.
+            halted = self._no_exit_commands or self.halted
+            if (self.priv_level > 0 or unknown_level) and not halted:
+                try:
+                    if self.legacy_timing:
+                        self.write("quit")
+                        self.read()
+                    else:
+                        self._flush()
+                        self._send("quit")
+                        self.exit_output = self._decode(self._expect(timeout=self.timeout).data)
+                except Exception as ex:
+                    self.log.warning(f"Failed to run 'quit' before disconnecting: {ex}")
             self._comm.close()
             self._comm = None
+            self._expecter = None
             self.log.info("Disconnected")
+
+        self.priv_level = 0
+        self.access_level = ""
+        self._attempted_levels.clear()
+        self._first_command = True
+        self._no_exit_commands = False
 
     def _process_read(self, raw: bytes, strip_whitespace: bool = True) -> str:
         self.raw_output.append(raw)
@@ -185,7 +280,7 @@ class SELSerial(SELAscii):
         if config.DEBUG:
             log_msg = f"Read {len(raw)} bytes"
             if config.DEBUG >= 2:
-                log_msg += f"\n-- ASCII --\n{raw.decode('ascii')}"
+                log_msg += f"\n-- ASCII --\n{raw.decode('ascii', errors='replace')}"
             if config.DEBUG >= 3:
                 log_msg += f"\n-- Hex bytes --\n{pretty_hex_bytes(raw)}"
             self.log.debug(log_msg)
@@ -201,9 +296,8 @@ class SELSerial(SELAscii):
         if strip_whitespace:
             decoded = decoded.strip()
 
-        # See docstring in _set_level_from_prompt() below
-        if self.priv_level == 0:
-            self._set_level_from_prompt(decoded)
+        # The access level is shown by the prompt (refer to SELAscii._set_level_from_prompt)
+        self._note_prompt_in_text(decoded)
 
         return decoded
 
@@ -216,12 +310,14 @@ class SELSerial(SELAscii):
             delay = self.READ_DELAY
         sleep(delay)
 
+        # Data buffered while waiting for a prompt comes first
+        buffered = self._expecter.read_available() if self._expecter else b""
         raw = self.comm.read_all()
 
         if raw is None:
             raise CommError("None-type returned from pyserial read_all()")
 
-        return self._process_read(raw, strip_whitespace)
+        return self._process_read(buffered + raw, strip_whitespace)
 
     def read_until(
         self,
@@ -231,52 +327,21 @@ class SELSerial(SELAscii):
         if isinstance(until, str):
             until = until.encode(self.ENCODING)
 
-        raw = self.comm.read_until(terminator=until)
+        if self._expecter and self._expecter.buffered:
+            raw = self._expecter.expect([until], timeout=self.timeout).data
+        else:
+            raw = self.comm.read_until(terminator=until)
 
         # clear lingering output in the buffer, since we already have it
         self.comm.reset_input_buffer()
 
         return self._process_read(raw, strip_whitespace)
 
-    def _set_level_from_prompt(self, raw_line: str) -> bool:
-        """
-        Set privilege level from the current prompt.
-
-        If you disconnect from a serial connection without running ``quit``,
-        the privilege level is preserved when you reconnect! This means if PEAT
-        exits uncleanly, then reconnects later, the access level may be weird.
-
-        When connected via serial, the privilege levels are in the prompt.
-        Therefore, we check the prompt and set the current access level based
-        on the characters at the start of the prompt.
-
-        '='    : level 0 (no priv, can do a few basic commands)
-        '=>'   : level 1 (acc)
-        '=>>'  : level 2 (2ac)
-        '==>>' : level 3 (cal)
-
-        Returns:
-            True if the privilege level was set,
-            False if it wasn't set.
-        """
-        stripped = raw_line.replace("\u0003", "")
-        prompt_to_level = {
-            "=>": 1,
-            "=>>": 2,
-            "==>>": 3,
-        }
-
-        for prompt, level in prompt_to_level.items():
-            if stripped.endswith(prompt):
-                self.priv_level = level
-                return True
-
-        return False
-
-    def write(self, command: bytes | str | int) -> None:
-        self.comm.reset_input_buffer()
-        self.log.trace2(f"Writing: {command}")
-        super().write(command)
+    def write(self, command: bytes | str | int, sensitive: bool = False) -> None:
+        if self.legacy_timing:
+            # Before PEAT waited for prompts, unread output was discarded
+            self.comm.reset_input_buffer()
+        super().write(command, sensitive=sensitive)
 
     def ymodem_read_file(self, file_id: str) -> bytes | None:
         """
@@ -321,22 +386,34 @@ class SELSerial(SELAscii):
         if not out_dir.exists():
             out_dir.mkdir(exist_ok=True, parents=True)
 
-        self.comm.reset_output_buffer()
-        self.comm.reset_input_buffer()
+        if self.legacy_timing:
+            self.comm.reset_output_buffer()
+            self.comm.reset_input_buffer()
 
-        self.write(f"fil read {file_id}")
+            self.write(f"fil read {file_id}")
 
-        sleep(0.5)  # this is needed since sometimes it takes a bit to start
+            sleep(0.5)  # this is needed since sometimes it takes a bit to start
 
-        # If response to command has error, then exit early, don't pull file
-        # e.g. if file doesn't exist or command is malformed
-        resp = self.read()
-        if "ready to send" not in resp.lower():
+            # If response to command has error, then exit early, don't pull file
+            # e.g. if file doesn't exist or command is malformed
+            resp = self.read()
+            ready = "ready to send" in resp.lower()
+        else:
+            self._flush()
+            self._send(f"fil read {file_id}")
+            result = self._expect([READY_TO_SEND_RE], timeout=self.COMMAND_TIMEOUT)
+            resp = self._decode(result.data).strip()
+            ready = result.index == 2
+
+        if not ready:
             self.log.error(
                 f"Failed to read '{file_id}' via YMODEM: bad response from "
                 f"'file read' relay command: '{resp}'"
             )
             return None
+
+        # rz reads from and writes to the port, so drop what PEAT buffered
+        self._expecter = None
 
         # shell out to rz command for YMODEM file retrieval
         cmd = f"{self.rz_path} --ymodem --quiet > {self.address} < {self.address}"
@@ -359,6 +436,7 @@ class SELSerial(SELAscii):
 
         self.comm.reset_output_buffer()
         self.comm.reset_input_buffer()
+        self.access_level = ""  # Check the prompt again before the next command
 
         if proc.returncode != 0:
             self.log.error(f"rz failed to transfer '{file_id}'\n**stderr**\n{proc.stderr}")
@@ -454,17 +532,25 @@ class SELSerial(SELAscii):
         # TODO: change "filename" arg to "file_id", fix "SETTINGS SET_P1.TXT" being a thing here
         self.log.info(f"Reading file: {filename}")
 
-        # Push buffer and cache current priv level
-        self.write("")
-        self.read()
+        if self.legacy_timing:
+            # Push buffer and cache current priv level
+            self.write("")
+            self.read()
 
         self._ensure_priv("download_binary", level=1)
-        self.read()  # Flush any output from previous operations
+
+        if self.legacy_timing:
+            self.read()  # Flush any output from previous operations
 
         if self.force_ymodem or not self.supports_show:
             data = self.ymodem_read_file(filename)
             if data is None:
                 return None
+        elif not self.legacy_timing:
+            data = self.show_file(filename)
+            if data is None:
+                return None
+            data = data.replace("\x02", "").replace("\x03", "")
         else:
             # "show" supported: 700G, 351S, 351,
             # "read": 451, 2032 (Requires Ymodem to transfer the file?)
@@ -484,8 +570,8 @@ class SELSerial(SELAscii):
                 return None
 
             index = 0
-            while "fil show" in first_parts[index] or (
-                "=>" in first_parts[index] and index < len(first_parts)
+            while index < len(first_parts) and (
+                "fil show" in first_parts[index] or "=>" in first_parts[index]
             ):
                 index += 1
 

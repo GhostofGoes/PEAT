@@ -53,6 +53,7 @@ from .relay_parse import (
     process_port_settings,
     split_lines,
 )
+from .sel_default_creds import GENERIC_PASSWORDS
 from .sel_files import (
     SOURCE_COMMAND_OUTPUT,
     SOURCE_WEB_DOWNLOAD,
@@ -143,7 +144,7 @@ class SELHTTP(HTTP):
     def login(
         self,
         user: str = "ACC",
-        passwd: str = "OTTER",
+        passwd: str = GENERIC_PASSWORDS["acc"],
         protocol: Literal["http", "https"] = "http",
     ) -> bool:
         """
@@ -161,7 +162,8 @@ class SELHTTP(HTTP):
 
         Args:
             user: Username to use for login
-            passwd: Password to use for login
+            passwd: Password to use for login (default: the factory default
+                level 1 password, refer to :mod:`~peat.modules.sel.sel_default_creds`)
             protocol: HTTP protocol to use ('http' or 'https')
 
         Returns:
