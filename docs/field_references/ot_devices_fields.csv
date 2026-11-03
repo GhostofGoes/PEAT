@@ -54,7 +54,7 @@ host.clock.source, keyword, "irig_b", "Protocol of the active time source (same 
 host.clock.last_sync, date, "2026-10-30T12:00:00Z", "Last successful synchronization reported by the device."
 host.clock.sources, object, {...}, "Configured/active time sources."
 host.clock.sources.protocol, keyword, "sntp", "Time protocol/source type, lowercase. Allowed values (documented): ``ntp``, ``sntp``, ``ptp``, ``irig_b``, ``gps``, ``dcf77``; ``dnp3``, ``iec61850``, ``iec104``, ``modbus``, ``manual``, ``internal``. Vendor names are normalized by modules: SEL ``IRIG``/``HIRIG`` (high-accuracy IRIG) -> ``irig_b``, ``PTP`` -> ``ptp``."
-host.clock.sources.address, keyword, "192.0.2.5", "IP address or hostname of a network time server, or the port name for IRIG-B/GPS inputs."
+host.clock.sources.address, keyword, "192.0.2.5", "IP address or hostname of a network time server, the port name for IRIG-B/GPS inputs, or the name or 127.127.x.y pseudo-address of an NTP reference clock (a local driver, e.g. PPS(0) with protocol gps)."
 host.clock.sources.port, long, "123", "Network port of the time server, if not the protocol default."
 host.clock.sources.priority, long, "1", "Preference order as configured (1 = primary, 2 = backup, ...)."
 host.clock.sources.stratum, long, "2", "NTP stratum reported for the source."

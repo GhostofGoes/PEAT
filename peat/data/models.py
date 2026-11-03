@@ -3727,7 +3727,11 @@ class TimeSource(BaseModel):
     """
 
     address: constr(strip_whitespace=True) = ""
-    """IP address or hostname of a network time server, or the port name for IRIG-B/GPS inputs."""
+    """
+    IP address or hostname of a network time server, the port name for
+    IRIG-B/GPS inputs, or the name or ``127.127.x.y`` pseudo-address of an NTP
+    reference clock (a local driver, e.g. ``PPS(0)`` with protocol ``gps``).
+    """
 
     port: conint(ge=1, le=65535) | None = None
     """Network port of the time server, if not the protocol default."""
@@ -3773,7 +3777,9 @@ class TimeSource(BaseModel):
         move_out_of_range_ints(self, self.extra)
         if dev and self.address:
             if utils.is_ip(self.address):
-                dev.related.ip.add(self.address)
+                # A loopback address (e.g. an NTP reference clock 127.127.x.y) is no host
+                if not ipaddress.ip_address(self.address).is_loopback:
+                    dev.related.ip.add(self.address)
             elif self.protocol in ("ntp", "sntp"):
                 dev.related.hosts.add(self.address)
 

@@ -1,4 +1,5 @@
 import copy
+import ipaddress
 import re
 from collections.abc import Callable
 from datetime import timedelta
@@ -43,6 +44,13 @@ EXCLUDED_FROM_EXTRA = ["ssh_keys", "users", "roles", "wifihotspot", "ntp_config"
 
 # ntpq name of a reference clock (without -n), e.g. "PPS(0)", "GPS_NMEA(0)", "SHM(0)"
 NTP_REFCLOCK_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\(\d+\)$")
+
+# Pseudo-addresses of ntpd reference clocks, 127.127.<driver type>.<unit>, as
+# "ntpq -n" shows them and ntp.conf configures them
+NTP_REFCLOCK_NETWORK = ipaddress.ip_network("127.127.0.0/16")
+
+# ntpd reference clock driver type (of 127.127.<type>.<unit>) -> ntpq driver name
+NTP_REFCLOCK_TYPES = {1: "LOCAL", 6: "IRIG", 20: "GPS_NMEA", 22: "PPS", 28: "SHM", 46: "GPSD_JSON"}
 
 # ntpq "tally code" (first character of the "remote" column) -> TimeSource.state
 NTP_TALLY_STATES = {
@@ -297,37 +305,29 @@ class TotusHTTP(HTTP):
     def process_ntp_config(dev: DeviceData, ntp_config: dict) -> None:
         """
         Configured GPS/NTP servers -> ``dev.clock.sources``
-        (also added to the "related" hosts and IPs).
+        (NTP servers are also added to the "related" hosts and IPs).
         """
         for time_source in ntp_config:
             if not isinstance(time_source, str) or not time_source.strip():
                 continue
 
-            if utils.is_ip(time_source):
-                dev.related.ip.add(time_source)
-            else:
-                dev.related.hosts.add(time_source)
-
-            store_time_source(
-                dev, TimeSource(protocol="ntp", address=time_source.strip(), enabled=True)
-            )
+            source = ntp_time_source(time_source.strip())
+            source.enabled = True
+            add_related_time_server(dev, source)
+            store_time_source(dev, source)
 
     @staticmethod
     def process_ntp_status(dev: DeviceData, ntp_status: dict) -> None:
         """
         GPS/NTP peers (``ntpq -p`` style) -> ``dev.clock.sources``
-        (also added to the "related" hosts and IPs).
+        (NTP servers are also added to the "related" hosts and IPs).
         """
         for peer in ntp_status.get("status", {}).get("peers", []):
             source = ntp_peer_to_time_source(peer)
             if not source:
                 continue
 
-            if utils.is_ip(source.address):
-                dev.related.ip.add(source.address)
-            else:
-                dev.related.hosts.add(source.address)
-
+            add_related_time_server(dev, source)
             store_time_source(dev, source)
 
     @staticmethod
@@ -976,6 +976,60 @@ def unmapped_api_data(label: str, data):
     return data if data not in (None, {}, []) else None
 
 
+def ntp_refclock_protocol(address: str) -> str:
+    """
+    :attr:`~peat.data.models.TimeSource.protocol` of an ntpd reference clock
+    (a local driver, not a network NTP server), from its ``ntpq`` name (e.g.
+    ``PPS(0)``, ``GPS_NMEA(0)``, ``LOCAL(0)``) or its pseudo-address
+    ``127.127.<driver type>.<unit>`` (``ntpq -n``, ``ntp.conf``).
+
+    GPS, NMEA, PPS and SHM (e.g. gpsd) drivers -> ``gps``, DCF77 -> ``dcf77``,
+    IRIG -> ``irig_b``, the undisciplined local clock (``LOCAL``) and other
+    drivers -> ``internal``.
+
+    Returns:
+        The protocol, or an empty string if the address is not a reference clock
+    """
+    if NTP_REFCLOCK_RE.match(address):
+        driver = address.partition("(")[0].upper()
+    elif utils.is_ip(address) and ipaddress.ip_address(address) in NTP_REFCLOCK_NETWORK:
+        driver = NTP_REFCLOCK_TYPES.get(int(address.split(".")[2]), "")
+    else:
+        return ""
+    if driver.startswith(("GPS", "NMEA", "PPS", "SHM")):
+        return "gps"
+    if driver.startswith("DCF"):
+        return "dcf77"
+    if driver.startswith("IRIG"):
+        return "irig_b"
+    return "internal"
+
+
+def ntp_time_source(address: str) -> TimeSource:
+    """
+    :class:`~peat.data.models.TimeSource` of an NTP server, or of an ntpd
+    reference clock (see :func:`ntp_refclock_protocol`; its raw name is in
+    ``extra["refclock"]``).
+    """
+    protocol = ntp_refclock_protocol(address)
+    if protocol:
+        return TimeSource(protocol=protocol, address=address, extra={"refclock": address})
+    return TimeSource(protocol="ntp", address=address)
+
+
+def add_related_time_server(dev: DeviceData, source: TimeSource) -> None:
+    """
+    An NTP server -> ``dev.related.ip`` or ``dev.related.hosts`` (a reference
+    clock is not a host).
+    """
+    if source.protocol != "ntp":
+        return
+    if utils.is_ip(source.address):
+        dev.related.ip.add(source.address)
+    else:
+        dev.related.hosts.add(source.address)
+
+
 def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
     """
     Convert a NTP peer from the Totus NTP status (``ntpq -p`` columns:
@@ -985,6 +1039,8 @@ def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
     The tally code that ``ntpq`` puts before the remote (``*`` = selected
     peer, ``+`` = candidate, ...) sets ``state``/``selected``. ``ntpq`` reports
     ``offset`` in milliseconds; :attr:`TimeSource.offset` is in seconds.
+    A reference clock (e.g. ``PPS(0)``, ``LOCAL(0)``, ``127.127.22.0``) is
+    not an NTP server: see :func:`ntp_time_source`.
     """
     if not isinstance(peer, dict):
         return None
@@ -1004,7 +1060,7 @@ def ntp_peer_to_time_source(peer: dict) -> TimeSource | None:
     if not remote:
         return None
 
-    source = TimeSource(protocol="ntp", address=remote)
+    source = ntp_time_source(remote)
 
     if tally in NTP_TALLY_STATES:
         source.state = NTP_TALLY_STATES[tally]

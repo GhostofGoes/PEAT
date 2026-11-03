@@ -279,6 +279,75 @@ def test_ntp_peer_refclock_tally():
     assert (src.address, src.state, src.selected) == ("LOCAL(0)", "", None)
 
 
+def test_ntp_refclocks_are_not_network_servers(dev):
+    """
+    ntpd reference clocks (local drivers, by name or as 127.127.x.y with
+    ``ntpq -n``) are not NTP servers: no relationship, no related host or IP.
+    """
+    pps = "PPS(0)"
+    TotusHTTP.process_ntp_config(dev, ["127.127.22.0", "192.0.2.1"])
+    TotusHTTP.process_ntp_status(
+        dev,
+        {
+            "status": {
+                "peers": [
+                    {"remote": f"o{pps}", "refid": ".PPS.", "st": "0"},
+                    {"remote": " LOCAL(0)", "refid": ".LOCL.", "st": "10"},
+                    {"remote": "+192.0.2.1", "st": "2"},
+                    {"remote": "o127.127.22.0", "refid": ".PPS.", "st": "0"},
+                ]
+            }
+        },
+    )
+
+    sources = {s.address: s for s in dev.clock.sources}
+    assert {a: s.protocol for a, s in sources.items()} == {
+        "PPS(0)": "gps",
+        "LOCAL(0)": "internal",
+        "192.0.2.1": "ntp",
+        "127.127.22.0": "gps",
+    }
+    pps = sources["PPS(0)"]
+    assert (pps.selected, pps.state) == (True, "active")
+    assert pps.extra == {"refclock": "PPS(0)", "refid": ".PPS."}
+    assert sources["LOCAL(0)"].extra["refclock"] == "LOCAL(0)"
+    assert "refclock" not in sources["192.0.2.1"].extra
+    # Configured and reported (ntpq -n) refclock: one source
+    assert (sources["127.127.22.0"].enabled, sources["127.127.22.0"].selected) == (True, True)
+
+    exported = dev.export()
+    time_rels = [r for r in exported["relationships"] if r["type"] == "syncs_time_from"]
+    assert [(r["protocol"], r["remote"]) for r in time_rels] == [
+        ("ntp", {"ip": "192.0.2.1", "role": "time_server"})
+    ]
+    assert not {"PPS(0)", "LOCAL(0)"} & dev.related.hosts
+    assert "127.127.22.0" not in dev.related.ip
+    assert "192.0.2.1" in dev.related.ip
+
+
+@pytest.mark.parametrize(
+    ("address", "protocol"),
+    [
+        ("PPS(0)", "gps"),
+        ("GPS_NMEA(1)", "gps"),
+        ("SHM(0)", "gps"),
+        ("LOCAL(0)", "internal"),
+        ("IRIG(0)", "irig_b"),
+        ("DCF77(0)", "dcf77"),
+        ("GENERIC(0)", "internal"),
+        ("127.127.20.0", "gps"),
+        ("127.127.1.0", "internal"),
+        ("127.127.99.0", "internal"),
+        ("127.0.0.1", ""),
+        ("192.0.2.1", ""),
+        ("pool.ntp.org", ""),
+        ("::1", ""),
+    ],
+)
+def test_ntp_refclock_protocol(address, protocol):
+    assert totus_http.ntp_refclock_protocol(address) == protocol
+
+
 def test_timedate_clock(dev):
     dev.uptime = 3600
     TotusHTTP.process_timedate(dev, {"timezone": "UTC", "time": "2024-05-01T10:00:00Z"})
