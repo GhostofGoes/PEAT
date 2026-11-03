@@ -159,6 +159,7 @@ Notes
 - Every entry includes the :ref:`base-fields` and :ref:`agent-fields`, and the basic ``host.*`` fields of the device (identity, description, ``host.asset.*``, ``host.tags``).
 - ``event.kind`` is single-valued in this index (ECS): the most specific kind of the event, by precedence ``alert`` > ``pipeline_error`` > ``state`` > ``metric`` > ``enrichment`` > ``asset`` > ``event``. Host documents keep the full set in ``host.event.kind``.
 - ``event.severity`` is only set for numeric severities. The textual log level is ``log.level`` at the document root.
+- ``hash.*`` at the document root are the hashes of ``event.original``, computed by PEAT. ``event.hash.*`` is the hash set by the device module (``Event.hash``).
 
 Fields
 ------

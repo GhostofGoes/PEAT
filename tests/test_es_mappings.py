@@ -3,12 +3,15 @@ Consistency checks between the data models (``peat/data/models.py``), the
 Elasticsearch mappings (``peat/es_mappings.py``) and the documents PEAT generates.
 """
 
+import csv
 import json
+from pathlib import Path
 
 import pytest
 
 from peat import config, es_mappings
 from peat.data import models
+from peat.elastic import Elastic
 from peat.es_mappings import PEAT_INDICES
 from peat.settings import Configuration
 
@@ -133,6 +136,50 @@ def unmapped(doc: dict, index: str) -> list[str]:
                     missing.append(path)
                     break
                 props = spec["properties"]
+    return missing
+
+
+FIELD_REFERENCES = Path(__file__).resolve().parents[1] / "docs" / "field_references"
+
+
+def documented_fields(*names: str) -> set[str]:
+    """Field names (first column) of field reference tables in ``docs/field_references``."""
+    fields = set()
+    for name in names:
+        with (FIELD_REFERENCES / name).open(encoding="utf-8", newline="") as fh:
+            # Same dialect as the "csv-table" directives (":escape: \")
+            rows = csv.reader(fh, skipinitialspace=True, escapechar="\\")
+            header = next(rows)
+            for row in rows:
+                if row and row[0].strip():
+                    # Sphinx does not warn about rows with extra columns
+                    assert len(row) == len(header), f"{name}: {row[0]}: {len(row)} columns"
+                    fields.add(row[0].strip())
+    return fields
+
+
+def undocumented(doc: dict, index: str, fields: set[str], skip: tuple = ()) -> list[str]:
+    """Leaf paths of a generated document that have no row in the field reference."""
+    missing = []
+    for path in sorted(set(leaf_paths(json.loads(json.dumps(doc, default=str))))):
+        # Keys below a flattened field are free-form: document the field itself
+        props = PEAT_INDICES[index]["properties"]
+        parts = path.split(".")
+        for i, part in enumerate(parts):
+            spec = props.get(part, {})
+            if spec.get("type") in ("flattened", "flat_object"):
+                parts = parts[: i + 1]
+                break
+            props = spec.get("properties", {})
+        path = ".".join(parts)
+        if path.startswith(skip):
+            continue
+        while path.startswith("host.module."):  # "host.module" has the fields of host.*
+            path = "host." + path[len("host.module.") :]
+        parts = path.split(".")
+        wildcards = {".".join(parts[:i]) + ".*" for i in range(1, len(parts))}
+        if path not in fields and not wildcards & fields:
+            missing.append(path)
     return missing
 
 
@@ -325,3 +372,50 @@ def test_host_document_contents(devices):
     assert doc["event"] == {"kind": "asset", "category": ["host"], "type": ["info"]}
     assert doc["host"]["tags"] == ["feeder", "protection"]
     assert unmapped(doc, "ot-device-hosts-timeseries") == []
+
+
+def test_generated_documents_are_documented(devices):
+    """Every leaf of the generated documents has a row in ``docs/field_references``."""
+    common = documented_fields("base_fields.csv", "agent_fields.csv")
+    host_fields = common | documented_fields("ot_devices_fields.csv")
+    event_fields = common | documented_fields("event_fields.csv")
+    relationship_fields = common | documented_fields("relationships_fields.csv")
+    problems = set()
+    for device in devices.values():
+        # File.category of firmware and logic files (the example devices have none)
+        device.firmware.file.category = {"firmware"}
+        device.logic.file.category = {"settings", "configuration"}
+        device.export()
+        # The root "event.*" of host documents and the basic "host.*" fields of the
+        # other documents are described in the notes of docs/database_schema.rst
+        doc = device.gen_elastic_content()
+        problems.update(
+            undocumented(doc, "ot-device-hosts-timeseries", host_fields, skip=("event.",))
+        )
+        for rel in device.relationships:
+            doc = rel.gen_elastic_content(device)
+            problems.update(
+                undocumented(doc, "ot-device-relationships", relationship_fields, ("host.",))
+            )
+        for event in device.event:
+            doc = event.gen_elastic_content(device)
+            problems.update(undocumented(doc, "ot-device-events", event_fields, ("host.",)))
+
+    # Events with raw "original" text carry a root "hash" object
+    raw_event = models.Event(original="Jan 1 00:00:00 relay1 foo bar", severity="3")
+    doc = raw_event.gen_elastic_content()
+    problems.update(undocumented(doc, "ot-device-events", event_fields))
+
+    assert sorted(problems) == []
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in FIELD_REFERENCES.glob("*.csv")))
+def test_field_reference_tables_well_formed(name):
+    assert documented_fields(name)
+
+
+def test_field_reference_ecs_version():
+    with (FIELD_REFERENCES / "base_fields.csv").open(encoding="utf-8", newline="") as fh:
+        rows = csv.reader(fh, skipinitialspace=True, escapechar="\\")
+        examples = {row[0]: row[2] for row in rows if row}
+    assert examples["ecs.version"] == Elastic.ECS_VERSION

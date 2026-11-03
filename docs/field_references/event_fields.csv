@@ -5,10 +5,10 @@ event.code, keyword, 0100032002, "Identification code for this kind of event\, i
 event.created, date, 2016-05-23T08:05:34.853Z, When the event occurred
 event.dataset, keyword, metering_reads, What log the event came from. Especially important on devices with multiple log types.
 event.timezone, keyword, "America/Denver", "Timezone of the event. Populated when the event's timestamp does not include timezone information already (e.g. default Syslog timestamps). It's optional otherwise. Acceptable timezone formats are: a canonical ID (e.g. Europe/Amsterdam) or abbreviated (e.g. EST)."
-event.hash.md5, keyword, 75926..., MD5 hash of raw event field (event.original) to be able to demonstrate log integrity
-event.hash.sha1, keyword, 50CD3..., SHA1 hash of raw event field (event.original) to be able to demonstrate log integrity
-event.hash.sha256, keyword, 5702F..., SHA 256 hash of raw event field (event.original) to be able to demonstrate log integrity
-event.hash.sha512, keyword, B19FC..., SHA 512 hash of raw event field (event.original) to be able to demonstrate log integrity
+event.hash.md5, keyword, 75926..., "MD5 hash of the raw event as set by the device module (``Event.hash``), to be able to demonstrate log integrity."
+event.hash.sha1, keyword, 50CD3..., "SHA1 hash of the raw event as set by the device module (``Event.hash``), to be able to demonstrate log integrity."
+event.hash.sha256, keyword, 5702F..., "SHA 256 hash of the raw event as set by the device module (``Event.hash``), to be able to demonstrate log integrity."
+event.hash.sha512, keyword, B19FC..., "SHA 512 hash of the raw event as set by the device module (``Event.hash``), to be able to demonstrate log integrity."
 event.ingested, date, 2016-05-23T08:05:34.853Z, "When the event was generated, e.g. when it was parsed or pulled from a device. This should almost always differ from ``event.created`` and the two should NOT be confused."
 event.kind, keyword, alert, "Gives high-level information about what type of information the event contains\, without being specific to the contents of the event. Single-valued in the ``ot-device-events`` index: the most specific kind of the event by precedence ``alert`` > ``pipeline_error`` > ``state`` > ``metric`` > ``enrichment`` > ``asset`` > ``event``. `Further reading in the ECS documentation. <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-kind>`__"
 event.message, keyword (+ .text), "Some message", "Simplified message body\, for example a human-readable portion of the raw event. This should be set in addition to setting the original field."
@@ -22,3 +22,7 @@ event.sequence, long, 42, "Sequence number of the event. The sequence number is 
 event.severity, long, 6, "Numeric severity of the event as stored on the device. Textual severities (e.g. ``INFO``) are not exported as ``event.severity``; they are exported as ``log.level``."
 event.type, keyword, change, "List of event category 'sub-buckets' the event falls under. For example\, an event regarding a device configuration change would have ``change`` as a value. Valid values (ECS 9.5.0): access\, admin\, allowed\, change\, connection\, creation\, deletion\, denied\, device\, end\, error\, group\, indicator\, info\, installation\, protocol\, start\, user. `Further reading in the ECS documentation. <https://www.elastic.co/docs/reference/ecs/ecs-allowed-values-event-type>`__"
 log.level, keyword, "INFO, err", "Original textual log level of the event as stored on the device (``Event.log_level``\, or a deprecated textual ``Event.severity``). At the root of the document (ECS ``log.level``)."
+hash.md5, keyword, 75926..., "MD5 hash of ``event.original``, computed by PEAT when the event is exported (at the root of the document)."
+hash.sha1, keyword, 50CD3..., "SHA1 hash of ``event.original``, computed by PEAT when the event is exported (at the root of the document)."
+hash.sha256, keyword, 5702F..., "SHA 256 hash of ``event.original``, computed by PEAT when the event is exported (at the root of the document)."
+hash.sha512, keyword, B19FC..., "SHA 512 hash of ``event.original``, computed by PEAT when the event is exported (at the root of the document)."
