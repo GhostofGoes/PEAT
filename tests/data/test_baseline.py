@@ -13,6 +13,7 @@ from peat.data.models import (
     BaselineSelector,
     DeviceData,
     File,
+    HostProcess,
     Relationship,
     RelationshipEndpoint,
     Service,
@@ -417,6 +418,46 @@ def test_known_defaults_findings():
     assert bl.compare_device(dev, SEL_FACTORY, include_passed=False) == []
 
 
+def test_rules_without_id_on_one_path_keep_their_own_findings():
+    """
+    Findings of id-less rules that check different values of the same path are
+    not merged by export(), and their ids are stable (R5-4).
+    """
+    dev = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+    dev.store("service", Service(protocol="telnet", port=23, status="open"))
+    dev.store("service", Service(protocol="ftp", port=21, status="open"))
+    baseline = Baseline(
+        id="site-hardening",
+        kind="engineer_provided",
+        rules=[
+            BaselineRule(path="service[*].port", operator="not_in", value=[21], severity="medium"),
+            BaselineRule(path="service[*].port", operator="not_in", value=[23], severity="high"),
+        ],
+    )
+    findings = bl.compare_device(dev, baseline)
+    bl.store_findings(dev, findings)
+    exported = dev.export()["baseline_findings"]
+    assert sorted((f["result"], f["severity"]) for f in exported) == [
+        ("fail", "high"),
+        ("fail", "medium"),
+    ]
+    assert [f.rule_id for f in findings] == [
+        "service[*].port:not_in:[21]",
+        "service[*].port:not_in:[23]",
+    ]
+    assert [f.rule_id for f in bl.compare_device(dev, baseline)] == [f.rule_id for f in findings]
+
+    # values of any length give a bounded, stable id
+    long_rule = BaselineRule(
+        path="users[*].name", operator="in", value=[f"u{i}" for i in range(99)]
+    )
+    long_id = bl.rule_id(long_rule)
+    assert long_id.startswith("users[*].name:in:sha256:")
+    assert len(long_id) == len("users[*].name:in:sha256:") + 16
+    assert bl.rule_id(long_rule.copy(deep=True)) == long_id
+    assert bl.rule_id(BaselineRule(id="x.y", path="name", value=1)) == "x.y"
+
+
 def test_disabled_rules_are_skipped():
     baseline = Baseline(
         id="b",
@@ -510,6 +551,39 @@ def test_snapshot_custom_ignore():
     assert _diffs(bl.compare_device(cur, _snapshot(dev))) == {("change", "firmware.version")}
     assert bl.compare_device(cur, _snapshot(dev, ignore=["firmware.version"])) == []
     assert bl.compare_device(cur, _snapshot(dev, ignore=["firm*"])) == []
+
+
+def test_same_named_list_items_are_aligned_by_their_values():
+    """
+    Items with the same identity (two "python3" processes) are aligned by their
+    compared values, not by their position, which follows the volatile PIDs (R5-3).
+    """
+
+    def pull(pids: tuple[int, int]) -> DeviceData:
+        dev = DeviceData(id="192.0.2.10", ip="192.0.2.10")
+        for pid, script in zip(pids, ["/opt/hmi_gw.py", "/opt/historian.py"], strict=True):
+            dev.store(
+                "processes",
+                HostProcess(
+                    type="process",
+                    pid=pid,
+                    name="python3",
+                    command_line=f"python3 {script}",
+                    args=["python3", script],
+                ),
+            )
+        return _exported(dev)
+
+    baseline = _snapshot(pull((100, 200)))
+    # After a reboot the same daemons run with other PIDs (exported in the other order)
+    now = pull((310, 150))
+    assert [p.command_line for p in now.processes] != [
+        p.command_line for p in baseline.expected.processes
+    ]
+    assert bl.compare_device(now, baseline, include_passed=False) == []
+    # a changed process is still reported
+    now.processes[0].command_line = "python3 /tmp/x.py"
+    assert bl.compare_device(now, baseline, include_passed=False) != []
 
 
 def test_snapshot_observed_vs_partial_kinds():

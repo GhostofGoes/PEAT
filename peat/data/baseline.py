@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import fnmatch
 import functools
+import hashlib
 import ipaddress
 import json
 import re
@@ -517,16 +518,24 @@ def index_items(list_name: str, items: list, ignore: tuple[str, ...] = (), path:
 
     The keys are computed without the values that ``ignore`` matches (patterns for
     the items of the list at ``path``), so items without key fields are aligned by
-    the values that are compared, never by e.g. their ``statistics``.
+    the values that are compared, never by e.g. their ``statistics``. Items that
+    share a key are numbered in the order of these compared values, not in list
+    order, which follows volatile values (e.g. processes are sorted by ``pid``).
     """
-    seen: dict = {}
-    counts: dict = {}
+    entries = []  # (key, compared values, item) in list order
     for item in items:
-        key = item_key(list_name, strip_paths(item, ignore, path) if ignore else item)
-        n = counts.get(key, 0)
-        counts[key] = n + 1
-        seen[(key, n)] = item
-    return seen
+        compared = strip_paths(item, ignore, path) if ignore else item
+        entries.append((item_key(list_name, compared), compared, item))
+    groups: dict = {}
+    for pos, (key, _, _) in enumerate(entries):
+        groups.setdefault(key, []).append(pos)
+    numbers = [0] * len(entries)
+    for positions in groups.values():
+        if len(positions) > 1:
+            positions.sort(key=lambda p: json.dumps(entries[p][1], sort_keys=True, default=str))
+        for n, pos in enumerate(positions):
+            numbers[pos] = n
+    return {(key, numbers[pos]): item for pos, (key, _, item) in enumerate(entries)}
 
 
 def item_label(list_name: str, item: Any) -> str:
@@ -578,6 +587,27 @@ def _render(template: str, **kw: Any) -> str:
 # --------------------------------------------------------------------------- #
 # Rules
 # --------------------------------------------------------------------------- #
+def rule_id(rule: BaselineRule) -> str:
+    """
+    ``rule_id`` of the findings of ``rule``: :attr:`BaselineRule.id
+    <peat.data.models.BaselineRule.id>`, else ``<path>:<operator>``, plus
+    ``:<value as JSON>`` if the rule has a ``value`` (``sha256:`` and the first 16
+    hex digits of its SHA-256 if the JSON is longer than 256 characters). Rules
+    without an ``id`` that check the same path with different values (e.g.
+    ``not_in`` ``[21]`` and ``[23]``) get different IDs, so their findings are
+    never merged, and a rule gets the same ID in every run.
+    """
+    if rule.id:
+        return rule.id
+    fallback = f"{rule.path}:{rule.operator}"
+    if rule.value is not None:
+        value = json.dumps(rule.value, sort_keys=True, default=str)
+        if len(value) > 256:
+            value = "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+        fallback += f":{value}"
+    return fallback
+
+
 def evaluate_rule(doc: dict, rule: BaselineRule) -> tuple[str, Any]:
     """Return ``(result, offending_or_actual_value)`` for one rule."""
     values = [v for _, v in resolve_path(doc, rule.path)]
@@ -997,7 +1027,7 @@ def compare_device(
         findings.append(
             BaselineFinding(
                 **common,
-                rule_id=rule.id or f"{rule.path}:{rule.operator}",
+                rule_id=rule_id(rule),
                 rule_name=rule.name,
                 path=rule.path,
                 category=rule.category or _category(rule.path)[0],
@@ -1093,6 +1123,7 @@ __all__ = [
     "posix_path",
     "reports_new_values",
     "resolve_path",
+    "rule_id",
     "split_path",
     "store_findings",
     "strip_paths",

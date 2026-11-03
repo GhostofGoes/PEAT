@@ -5210,7 +5210,12 @@ class BaselineFinding(BaseModel):
     """:attr:`Baseline.version`."""
 
     rule_id: constr(strip_whitespace=True) = ""
-    """:attr:`BaselineRule.id` (empty for snapshot differences)."""
+    """
+    :attr:`BaselineRule.id` (empty for snapshot differences). For a rule without
+    an ``id``: ``<path>:<operator>``, plus ``:<value as JSON>`` if the rule has a
+    ``value`` (:func:`peat.data.baseline.rule_id`), e.g.
+    ``service[*].port:not_in:[23]``.
+    """
 
     rule_name: constr(strip_whitespace=True) = ""
     """:attr:`BaselineRule.name`."""
@@ -7477,7 +7482,12 @@ class BaselineRule(BaseModel):
     """
 
     id: constr(strip_whitespace=True) = ""
-    """Stable rule ID (ECS ``rule.id``), e.g. ``sel.service.ftp.disabled``."""
+    """
+    Stable rule ID (ECS ``rule.id``), e.g. ``sel.service.ftp.disabled``. The
+    findings of a rule without an ID get ``<path>:<operator>``, plus
+    ``:<value as JSON>`` if the rule has a ``value``, as their ``rule_id``
+    (:func:`peat.data.baseline.rule_id`).
+    """
 
     name: constr(strip_whitespace=True) = ""
     """Short rule name (ECS ``rule.name``)."""
