@@ -164,13 +164,18 @@ class IEC61850SCL(DeviceModule):
                     devices[name].store("event", event.copy(deep=True))
 
         # The returned device is annotated and exported by DeviceModule.parse()
-        for ied_dev in {id(d): d for d in devices.values()}.values():
-            if ied_dev is main_dev:
-                continue
+        other_devices = [
+            d for d in {id(d): d for d in devices.values()}.values() if d is not main_dev
+        ]
+        for ied_dev in other_devices:
             cls.update_dev(ied_dev)
             ied_dev.purge_duplicates(force=True)
             if config.DEVICE_DIR:
                 ied_dev.export_to_files()
+        # The other devices of the file, also existing devices (e.g. the placeholder
+        # of a "hosts" entry of the PEAT config file): "peat parse" pushes and
+        # summarizes them with the returned device
+        main_dev._cache["parse_devices"] = other_devices
 
         cls.log.info(
             f"Parsed {len(devices)} of {len(ieds)} IEDs from SCL file '{file.name}': "

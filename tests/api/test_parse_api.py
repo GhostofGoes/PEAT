@@ -1,3 +1,5 @@
+import pytest
+
 from peat import DeviceData, __version__, config, datastore, state
 from peat.api.parse_api import parse
 
@@ -233,3 +235,46 @@ def test_parse_api_does_not_push_device_of_failed_sel_cid_parse(tmp_path, mocker
     assert summary["num_parse_failures"] == 1
     assert [d.get_id() for d in datastore.objects] == ["selrelay_set_61850"]
     assert pushed == []
+
+
+@pytest.mark.parametrize("placeholder", ["name", "ip"])
+def test_parse_api_pushes_ied_that_reused_a_config_placeholder(
+    placeholder, test_dir, tmp_path, mocker
+):
+    """
+    An IED of an SCD file (not the first one) that reuses the placeholder device of
+    a "hosts" entry of the PEAT config file (by IED name or IP address) is pushed
+    and in the parse results, like the IEDs the parse created (R6-4).
+    """
+    pushed = _push_config(tmp_path, mocker)
+    scd = test_dir / "parsing" / "data_files" / "scl" / "synthetic_substation.scd"
+    if placeholder == "name":
+        identifiers = {"name": "MU1"}
+        mu1_id = "MU1"
+    else:  # MU1 with an IP address of its own
+        data = scd.read_bytes().replace(
+            b'<ConnectedAP iedName="MU1" apName="P1">',
+            b'<ConnectedAP iedName="MU1" apName="P1">'
+            b'<Address><P type="IP">192.0.2.11</P></Address>',
+        )
+        assert b"192.0.2.11" in data
+        scd = tmp_path / "in" / "r6_4_placeholder_ip.scd"
+        scd.parent.mkdir()
+        scd.write_bytes(data)
+        identifiers = {"ip": "192.0.2.11"}
+        mu1_id = "192.0.2.11"
+    # added before the parse, like peat.init does for each "hosts" entry
+    placeholder_dev = DeviceData(**identifiers)
+    datastore.objects.append(placeholder_dev)
+
+    summary = parse([scd], ["IEC61850SCL"])
+
+    assert summary["num_parse_successes"] == 1
+    mu1 = next(d for d in datastore.objects if d.iec61850.ied_name == "MU1")
+    assert mu1 is placeholder_dev  # the IED reused the placeholder
+    assert sorted(d.get_id() for d in datastore.objects) == sorted(["192.0.2.10", mu1_id])
+    assert sorted(pushed) == sorted(["192.0.2.10", mu1_id])
+    results = summary["parse_results"]
+    assert sorted(r["results"]["id"] for r in results) == sorted(["192.0.2.10", mu1_id])
+    assert {r["name"] for r in results} == {scd.name}
+    assert not any("parse_devices" in d._cache for d in datastore.objects)

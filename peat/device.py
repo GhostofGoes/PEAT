@@ -457,6 +457,16 @@ class DeviceModule:
         """
         Implemented by modules. Subclass :class:`~peat.device.DeviceModule`
         and override this method.
+
+        .. note::
+           A file may describe several devices (e.g. the IEDs of an IEC 61850 SCD
+           file): return one of them and add the others to the
+           :class:`~peat.data.store.Datastore`. ``peat parse`` pushes the devices
+           the parse added with the returned device and lists them in the
+           :ref:`parse-summary`. If the parse filled devices that were already in
+           the datastore (e.g. the placeholder of a ``hosts`` entry of the PEAT
+           configuration file), list them (or all the other devices) in
+           ``dev._cache["parse_devices"]`` of the returned device.
         """
         pass
 

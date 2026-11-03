@@ -101,17 +101,20 @@ def parse(
     parse_results = []
     parsed_devices = []
 
-    # Devices created by a successful parse of a file besides the device it returned
-    # (e.g. one device per IED in an IEC 61850 SCD file) are pushed to Elasticsearch
-    # and are in the parse results as well. Devices left behind by a failed parse are
-    # not: their files are not exported either.
-    # (parse result of the file, devices created by the parse)
+    # Devices that a successful parse of a file filled besides the device it returned
+    # (e.g. one device per IED in an IEC 61850 SCD file): the devices it created, and
+    # the existing devices the module lists in dev._cache["parse_devices"] (e.g. the
+    # placeholder of a "hosts" entry of the PEAT config file that an IED reused).
+    # They are pushed to Elasticsearch and are in the parse results as well. Devices
+    # left behind by a failed parse are not: their files are not exported either.
+    # (parse result of the file, devices filled by the parse)
     created: list[tuple[dict, list[DeviceData]]] = []
 
     def _parse_file(source: Path | str, dev_cls: type[DeviceModule]) -> None:
         before = list(datastore.objects)  # references keep their id() unique
         before_ids = {id(d) for d in before}
         dev = parse_data(source, dev_cls)
+        filled = dev._cache.pop("parse_devices", []) if dev is not None else []
 
         parsed_devices.append(dev)
         result = {
@@ -122,7 +125,9 @@ def parse(
         }
         parse_results.append(result)
         if dev is not None:
-            created.append((result, [d for d in datastore.objects if id(d) not in before_ids]))
+            new = [d for d in datastore.objects if id(d) not in before_ids]
+            new.extend(d for d in filled if id(d) in before_ids)  # existing devices
+            created.append((result, new))
 
     # Iterate over the user-provided path arguments
     # TODO: breakup this logic a bit
@@ -173,25 +178,23 @@ def parse(
     # * Deduplicate *
     datastore.deduplicate(prune_inactive=False)
 
-    # Devices that successful parses created besides the devices they returned and
+    # Devices that successful parses filled besides the devices they returned and
     # that are still in the datastore (not merged into another device)
     current = {id(d) for d in datastore.objects}
-    returned = {id(d) for d in parsed_devices if d is not None}
+    parse_ids = {id(d) for d in parsed_devices if d is not None}  # devices of this parse
     other_devices: dict[int, list[DeviceData]] = {}  # id(parse result) -> devices
     for result, devices in created:
         for c_dev in devices:
-            if id(c_dev) in current and id(c_dev) not in returned:
-                returned.add(id(c_dev))  # each device once
+            if id(c_dev) in current and id(c_dev) not in parse_ids:
+                parse_ids.add(id(c_dev))  # each device once
                 other_devices.setdefault(id(result), []).append(c_dev)
-    created_ids = {id(d) for devices in other_devices.values() for d in devices}
+    # Devices that are not part of this parse (neither parsed nor filled by it) are
+    # not pushed
+    parse_devices = [d for d in datastore.objects if id(d) in parse_ids]
 
     # * Push results to Elasticsearch *
     if state.elastic:
-        for d_dev in datastore.objects:
-            # skip any not part of this parse (neither parsed nor created by it)
-            if d_dev not in parsed_devices and id(d_dev) not in created_ids:
-                log.trace(f"Skipping device not part of parse: {d_dev.get_id()}")
-                continue
+        for d_dev in parse_devices:
             d_dev.export_to_elastic()
 
     # * Construct the parse results summary *
