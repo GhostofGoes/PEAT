@@ -135,6 +135,46 @@ def test_parse_api_pushes_devices_created_during_parse(test_dir, tmp_path, mocke
     assert summary["num_parse_successes"] == 1
     assert sorted(pushed) == ["192.0.2.10", "192.0.2.11"]
     assert old_dev.ip not in pushed
+    # each device is in the parse results, with the file it was parsed from (R4-19)
+    assert [(r["name"], r["results"]["ip"]) for r in summary["parse_results"]] == [
+        ("dnp3-client.xml", "192.0.2.10"),
+        ("dnp3-client.xml", "192.0.2.11"),
+    ]
+    assert summary["files_parsed"] == [path.as_posix()]
+    assert summary["num_files_parsed"] == 1
+
+
+def test_parse_summary_has_every_ied_of_an_scd_file(test_dir, tmp_path, mocker):
+    """
+    The parse summary (a baseline input) has a result per IED of an SCD file, not
+    only the IED the parse returned (R4-19).
+    """
+    from peat.api.baseline_api import load_device_data
+
+    mocker.patch.dict(
+        config["CONFIG"],
+        {
+            "RUN_DIR": tmp_path,
+            "DEVICE_DIR": tmp_path / "devices",
+            "SUMMARIES_DIR": tmp_path / "summaries",
+            "TEMP_DIR": tmp_path / "temp",
+        },
+    )
+    mocker.patch.object(datastore, "objects", [])
+    scd = test_dir / "parsing" / "data_files" / "scl" / "synthetic_substation.scd"
+
+    summary = parse([scd], ["IEC61850SCL"])
+    ieds = {d.get_id() for d in datastore.objects}
+    assert len(ieds) > 1
+    assert summary["files_parsed"] == [scd.as_posix()]
+    assert summary["num_files_parsed"] == 1
+    assert (summary["num_parse_successes"], summary["num_parse_failures"]) == (1, 0)
+    results = summary["parse_results"]
+    assert {(r["name"], r["path"], r["module"]) for r in results} == {
+        (scd.name, scd.as_posix(), "IEC61850SCL")
+    }
+    assert sorted(r["results"]["id"] for r in results) == sorted(ieds)
+    assert sorted(d.get_id() for d in load_device_data(summary)) == sorted(ieds)
 
 
 def _push_config(tmp_path, mocker) -> list[str]:

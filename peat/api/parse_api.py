@@ -103,16 +103,26 @@ def parse(
 
     # Devices created by a successful parse of a file besides the device it returned
     # (e.g. one device per IED in an IEC 61850 SCD file) are pushed to Elasticsearch
-    # as well. Devices left behind by a failed parse are not: their files are not
-    # exported either.
-    created: set[int] = set()
+    # and are in the parse results as well. Devices left behind by a failed parse are
+    # not: their files are not exported either.
+    # (parse result of the file, devices created by the parse)
+    created: list[tuple[dict, list[DeviceData]]] = []
 
-    def _parse_file(source: Path | str, dev_cls: type[DeviceModule]) -> DeviceData | None:
-        before = {id(d) for d in datastore.objects}
-        parsed = parse_data(source, dev_cls)
-        if parsed is not None:
-            created.update(id(d) for d in datastore.objects if id(d) not in before)
-        return parsed
+    def _parse_file(source: Path | str, dev_cls: type[DeviceModule]) -> None:
+        before = list(datastore.objects)  # references keep their id() unique
+        before_ids = {id(d) for d in before}
+        dev = parse_data(source, dev_cls)
+
+        parsed_devices.append(dev)
+        result = {
+            "name": source.name if isinstance(source, Path) else "stdin",
+            "path": source.as_posix() if isinstance(source, Path) else "stdin",
+            "module": dev_cls.__name__,
+            "results": dev.elastic() if dev else {},
+        }
+        parse_results.append(result)
+        if dev is not None:
+            created.append((result, [d for d in datastore.objects if id(d) not in before_ids]))
 
     # Iterate over the user-provided path arguments
     # TODO: breakup this logic a bit
@@ -133,17 +143,7 @@ def parse(
             or Path(path).is_file()
             or (Path(path).is_dir() and resolved_types[0].can_parse_dir)
         ):
-            dev = _parse_file(path, resolved_types[0])
-
-            parsed_devices.append(dev)
-            parse_results.append(
-                {
-                    "name": path.name if isinstance(path, Path) else "stdin",
-                    "path": path.as_posix() if isinstance(path, Path) else "stdin",
-                    "module": resolved_types[0].__name__,
-                    "results": dev.elastic() if dev else {},
-                }
-            )
+            _parse_file(path, resolved_types[0])
 
         # Cases:
         # - single module + directory + module isn't directory-aware
@@ -168,41 +168,51 @@ def parse(
 
             for dev_cls in resolved_types:
                 for file_path in find_parsable_files(all_files, dev_cls):
-                    dev = _parse_file(file_path, dev_cls)
-
-                    parsed_devices.append(dev)
-                    parse_results.append(
-                        {
-                            "name": file_path.name,
-                            "path": file_path.as_posix(),
-                            "module": dev_cls.__name__,
-                            "results": dev.elastic() if dev else {},
-                        }
-                    )
+                    _parse_file(file_path, dev_cls)
 
     # * Deduplicate *
     datastore.deduplicate(prune_inactive=False)
+
+    # Devices that successful parses created besides the devices they returned and
+    # that are still in the datastore (not merged into another device)
+    current = {id(d) for d in datastore.objects}
+    returned = {id(d) for d in parsed_devices if d is not None}
+    other_devices: dict[int, list[DeviceData]] = {}  # id(parse result) -> devices
+    for result, devices in created:
+        for c_dev in devices:
+            if id(c_dev) in current and id(c_dev) not in returned:
+                returned.add(id(c_dev))  # each device once
+                other_devices.setdefault(id(result), []).append(c_dev)
+    created_ids = {id(d) for devices in other_devices.values() for d in devices}
 
     # * Push results to Elasticsearch *
     if state.elastic:
         for d_dev in datastore.objects:
             # skip any not part of this parse (neither parsed nor created by it)
-            if d_dev not in parsed_devices and id(d_dev) not in created:
+            if d_dev not in parsed_devices and id(d_dev) not in created_ids:
                 log.trace(f"Skipping device not part of parse: {d_dev.get_id()}")
                 continue
             d_dev.export_to_elastic()
 
     # * Construct the parse results summary *
     parse_results.sort(key=itemgetter("module"))  # sort by device module
+    files_parsed = [r["path"] for r in parse_results]
 
     parse_successes = []
     parse_failures = []
     for result in parse_results:
         if result["results"]:
             parse_successes.append(result)
+            # one result per device: the other devices created by the parse of the
+            # file (e.g. the other IEDs of an SCD file) follow the device it returned
+            for o_dev in other_devices.get(id(result), []):
+                o_results = o_dev.elastic()
+                if o_results:
+                    parse_successes.append({**result, "results": o_results})
         else:
             del result["results"]
             parse_failures.append(result)
+    num_parse_successes = len(parse_results) - len(parse_failures)
 
     parse_duration = timeit.default_timer() - start_time
 
@@ -212,9 +222,9 @@ def parse(
         "parse_duration": parse_duration,
         "parse_modules": module_api.lookup_names(device_types),
         "input_paths": filepaths,
-        "files_parsed": [r["path"] for r in parse_results],
-        "num_files_parsed": len(parse_results),
-        "num_parse_successes": len(parse_successes),
+        "files_parsed": files_parsed,
+        "num_files_parsed": len(files_parsed),
+        "num_parse_successes": num_parse_successes,
         "num_parse_failures": len(parse_failures),
         "parse_failures": parse_failures,
         "parse_results": parse_successes,

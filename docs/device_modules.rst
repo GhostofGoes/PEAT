@@ -108,7 +108,8 @@ IEC 61850 SCL files
 The :class:`~peat.modules.iec61850.iec61850_scl.IEC61850SCL` module parses
 IEC 61850-6 System Configuration description Language (SCL) files exported by
 substation engineering tools: ``SCD``, ``ICD``, ``IID``, ``CID`` (plain XML),
-``SED`` and ``SSD``. It produces one device per IED in the file, with:
+``SED`` and ``SSD``. It produces one device per IED in the file (each with its
+own ``parse_results`` entry in the :ref:`parse-summary`), with:
 
 - :attr:`~peat.data.models.DeviceData.iec61850`: SCL header and change history,
   IED identity (``manufacturer``, ``type``, ``configVersion``), access points
