@@ -55,7 +55,7 @@ Snapshots and rules
 - ``missing``: an expected value or list item (e.g. a service) is absent;
 - ``unexpected``: a list item (e.g. a new service or user) is present but not expected. For ``first_observed`` and ``previous_observed`` baselines, which captured the complete device state, new values (e.g. a new ``os.version``) are also ``unexpected``. Other kinds only check the values they specify, so a partial "golden" snapshot can hold just the settings that matter.
 
-List items are aligned by their identity, e.g. services by protocol and port, users by name, files by path (``LIST_KEYS`` in :mod:`peat.data.baseline`), so the order of items never matters.
+List items are aligned by their identity, e.g. services by protocol and port, users by name, files by path (``LIST_KEYS`` in :mod:`peat.data.baseline`), so the order of items never matters. Items without identity values (e.g. an interface with neither name nor address) are aligned by the values that are compared, never by ignored values such as their ``statistics``.
 
 **Rules** (``rules``, :class:`~peat.data.models.BaselineRule`): constraints a snapshot cannot express, such as absence, negation, membership, patterns or ranges. Every enabled rule produces one finding with ``result`` ``pass``, ``fail``, ``unknown`` (no value to check) or ``error`` (e.g. a non-numeric value for ``min``), and ``difference: mismatch`` when it fails. A rule has a ``path``, an ``operator`` and a ``value``, plus ``id``, ``name``, ``category``, ``severity`` (default ``medium``), ``alert``, ``reason``, ``reference`` and ``standards``. ``reason`` may use ``{expected}``, ``{actual}`` and ``{path}``.
 
@@ -112,9 +112,9 @@ Ignored values
 --------------
 Snapshot comparisons never compare values that are set by PEAT or the user instead of the device, that are stored in their own indices, or that change on every pull. The full list is ``DEFAULT_IGNORE`` in :mod:`peat.data.baseline`, including:
 
-- ``label``, ``comment``, ``asset``, ``id``, ``related``, ``successful_pulls``, MAC vendors;
+- ``label``, ``comment``, ``asset``, ``id``, ``related``, ``successful_pulls``, MAC vendors, and ``iec61850.scl_file`` (where PEAT read the SCL file, e.g. a path on the PEAT host for ``peat parse``);
 - ``extra`` (unstructured), ``event``, ``memory``, UEFI data, ``baseline_findings``, raw ``original`` data and ``logic.formats``;
-- volatile values: uptimes, ``start_time``, all ``statistics``, live clock values (``clock.time``, ``clock.offset``, ...), live indicator states, process IDs and resource usage, relationship counters and times, PLC task scan times, file times, ``interface.connected``, and the ``status`` and ``process_pid`` of services (also those listed on interfaces).
+- volatile values: uptimes, ``start_time``, all ``statistics``, live clock values (``clock.time``, ``clock.offset``, ...), live indicator states, process IDs and resource usage, relationship counters, times and ports (``local.port`` and ``remote.port``: the client port of a connection changes with every connection, and the server port is part of the relationship ``id``, so a new server port is reported as a missing and an unexpected relationship), PLC task scan times, file times, ``interface.connected``, and the ``status`` and ``process_pid`` of services (also those listed on interfaces).
 
 These patterns also apply to the modules of a device (``module.*``), e.g. ``module.indicators.timestamp``.
 
@@ -124,12 +124,13 @@ To reduce noise:
 
 - files in the categories ``log``, ``event_record``, ``diagnostic`` and ``report`` change and appear on every pull: only their disappearance is reported, not changes or new files;
 - relationships learned only from ARP, socket tables or logs come and go: a missing relationship is only reported if it was configured (``evidence`` ``config``, ``scl`` or ``user``). A *new* peer is always reported;
+- the input files of ``peat parse`` (``files`` items whose ``path`` is their ``local_path``, e.g. an SCD file) are files on the PEAT host, not on the device: they are never reported as missing or unexpected, so the same SCD file parsed from another folder or under another name compares equal (an input file at the same path is still compared, e.g. its hash);
 - routes of the type ``cache`` (transient route cache entries, one per recently used destination, e.g. from the FortiGate ``diagnose ip rtcache list``) are not compared (``VOLATILE_ROUTE_TYPES`` in :mod:`peat.data.baseline`): they are never reported as missing, new or changed, and a route table with only such entries is compared like an empty one (a new gateway they use is still reported as a new ``routes_via`` peer);
 - a change of ``key_switch`` or ``run_mode`` has severity ``high`` (a strong tampering indicator).
 
 Device type profiles
 --------------------
-A ``device_type`` baseline ("typical SEL-2032") describes every device of a type. It is built from one or more devices of ONE vendor and model, without per-unit identity (``DEVICE_TYPE_IGNORE`` in :mod:`peat.data.baseline`: addresses (also service listen addresses and module interface addresses), names, serial numbers, file hashes, certificates, relationships, routes, IEC 61850 addressing, ...). With several devices, the profile keeps only what all of them share, and the values that differ between them are added to ``ignore``. Its selector matches the vendor ID and model. Comparisons remove the same identity values from both sides.
+A ``device_type`` baseline ("typical SEL-2032") describes every device of a type. It is built from one or more devices of ONE vendor and model, without per-unit identity (``DEVICE_TYPE_IGNORE`` in :mod:`peat.data.baseline`: addresses (also module interface addresses), names, serial numbers, file hashes, certificates, relationships, routes, IEC 61850 addressing, ...), the service listen addresses that are an address of the unit itself, and the input files of ``peat parse``. A wildcard (``0.0.0.0``, ``::``) or loopback listen address is part of the profile, so a service that moves from the loopback address to all addresses is reported. With several devices, the profile keeps only what all of them share, and the values that differ between them are added to ``ignore``. Its selector matches the vendor ID and model. Comparisons remove the same identity values from both sides.
 
 Severity and categories
 -----------------------
@@ -160,7 +161,7 @@ Command line
 ============
 Three commands work with baselines. Inputs are PEAT device data: ``device-data-full.json`` (or ``device-data-summary.json``) files, parse summaries (``parse-summary.json``), directories containing them (searched recursively, e.g. a run directory or ``peat_results/``), or ``-`` (JSON from standard input). The inputs can be given before or after the options, but not on both sides. If any file or device in an input fails to load (e.g. a truncated ``device-data-full.json`` in a directory), the command fails with exit code ``1``.
 
-Parse summaries and ``device-data-summary.json`` files do not have all device data: parse summaries have no ``relationships``, and device summaries also no ``files``, ``registers``, ``tag``, ``io``, ``event`` and ``memory``. These keys are not compared for such inputs, and a baseline created from them adds them to its ``ignore`` list (with a warning). Use ``device-data-full.json`` files for complete comparisons.
+Parse summaries and ``device-data-summary.json`` files do not have all device data: parse summaries have no ``relationships``, and device summaries also no ``files``, ``registers``, ``tag``, ``io``, ``event`` and ``memory``. These keys are not compared for such inputs, and a baseline created from them adds them to its ``ignore`` list (with a warning). The format of other inputs (``-``, files with other names) is not known, and empty lists are absent from every format: a device that has none of these lists is treated like a device summary, and a device without ``relationships`` like a parse summary (e.g. the host documents printed by ``peat pull -P``). Lists such an input has are compared. Use ``device-data-full.json`` files for complete comparisons: only they report the disappearance of all items of these lists.
 
 ``peat baseline-create``
 ------------------------

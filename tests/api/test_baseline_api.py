@@ -230,6 +230,61 @@ def test_lossy_inputs_are_not_compared_as_complete(tmp_path, caplog):
     assert api.compare_to_baseline(full_dev, from_summary, store=False) == []
 
 
+def test_lossy_inputs_of_unknown_format(tmp_path, mocker):
+    full = write_pull(tmp_path, sel_relay())
+    baseline = api.create_baseline(api.load_device_data(full)[0], "previous_observed")
+    assert not baseline.ignore
+    summary_text = full.with_name("device-data-summary.json").read_text()
+
+    # a device summary from standard input, or in a file with another name
+    mocker.patch("sys.stdin", io.StringIO(summary_text))
+    (stdin_summary,) = api.load_device_data("-")
+    renamed = tmp_path / "relay-1.json"
+    renamed.write_text(summary_text)
+    (file_summary,) = api.load_device_data(renamed)
+    for summary in (stdin_summary, file_summary):
+        assert api.compare_to_baseline(summary, baseline, store=False) == []
+        assert {"files", "relationships", "event"} <= set(summary._cache["omitted_keys"])
+
+    # host documents (DeviceData.elastic(), e.g. printed by 'peat pull -P') have no
+    # relationships; the lists they have are still compared
+    (host,) = api.load_device_data([consts.convert(sel_relay().elastic())])
+    assert api.compare_to_baseline(host, baseline, store=False) == []
+    assert host._cache["omitted_keys"] == ("relationships",)
+    changed = sel_relay()
+    changed.files = changed.files[:1]
+    (host,) = api.load_device_data([consts.convert(changed.elastic())])
+    assert {(f.difference, f.path) for f in api.compare_to_baseline(host, baseline)} == {
+        ("missing", "files[path=/SETTINGS/SET_61850.CID]")
+    }
+
+    # a complete export with all these lists has no omitted keys, whatever its source
+    (exported,) = api.load_device_data(sel_relay().export())
+    assert "omitted_keys" not in exported._cache
+
+
+@pytest.mark.usefixtures("run_dirs")
+def test_parse_input_files_compare_equal(tmp_path, mocker):
+    """The same SCD file parsed from another folder and name has no findings."""
+    from peat import IEC61850SCL, datastore
+
+    scd = Path(__file__).parents[1] / "parsing" / "data_files" / "scl" / "synthetic_substation.scd"
+    mocker.patch.object(datastore, "objects", [])
+    first = tmp_path / "v1" / "substation.scd"
+    first.parent.mkdir()
+    first.write_bytes(scd.read_bytes())
+    (dev,) = api.load_device_data(IEC61850SCL.parse(first).export())
+    for kind in ("first_observed", "engineer_provided"):
+        baseline = api.create_baseline(dev, kind)
+        datastore.objects.clear()
+        second = tmp_path / "v2" / "substation_v2.scd"
+        second.parent.mkdir(exist_ok=True)
+        second.write_bytes(scd.read_bytes())
+        (cur,) = api.load_device_data(IEC61850SCL.parse(second).export())
+        assert cur.iec61850.scl_file != dev.iec61850.scl_file
+        assert api.compare_to_baseline(cur, baseline, store=False) == [], kind
+
+
 # --------------------------------------------------------------------------- #
 # Creating, saving and loading baselines
 # --------------------------------------------------------------------------- #

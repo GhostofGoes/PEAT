@@ -103,6 +103,11 @@ def load_device_data(
     Parse summaries and ``device-data-summary.json`` files do not contain all
     device data (e.g. no ``relationships``; summaries also no ``files``): the
     missing keys are kept as ``dev._cache["omitted_keys"]`` and are not compared.
+    The format of other inputs (standard input, other file names, a :class:`dict`
+    or :class:`list`) is not known: a device without any of the lists a summary
+    omits, or without ``relationships`` (e.g. a host document from ``peat pull -P``),
+    is treated the same way, so the disappearance of all items of such a list is
+    only detected with ``device-data-full.json`` files.
 
     .. note::
        This does not call :meth:`~peat.data.models.DeviceData.populate_fields`
@@ -196,15 +201,14 @@ def _devices_from_json(
             errors.append(label)
         return devices
 
-    omitted = ()
-    if origin and Path(origin).name == "device-data-summary.json":
-        omitted = _DEVICE_SUMMARY_OMITTED
+    name = Path(origin).name if origin else ""
 
     if isinstance(data, dict):
         dev = _device_from_dict(data, origin)
         if dev is None:
             errors.append(label)
             return []
+        omitted = _omitted_keys(data, name)
         if omitted:
             dev._cache["omitted_keys"] = omitted
         return [dev]
@@ -216,12 +220,12 @@ def _devices_from_json(
                 log.error(f"Invalid device data{where}: expected objects in the list")
                 errors.append(label)
                 return []
-            item_omitted = omitted
             if isinstance(item.get("results"), dict) and "module" in item:  # parse result
                 dev = _device_from_dict(item["results"], origin, item["module"])
                 item_omitted = _PARSE_SUMMARY_OMITTED
             else:
                 dev = _device_from_dict(item, origin)
+                item_omitted = _omitted_keys(item, name)
             if dev is None:
                 errors.append(f"{label}: [{n}]")
                 continue
@@ -233,6 +237,30 @@ def _devices_from_json(
     log.error(f"Invalid device data{where}: expected a JSON object or list")
     errors.append(label)
     return []
+
+
+def _omitted_keys(data: dict, file_name: str) -> tuple[str, ...]:
+    """
+    Keys of the device document ``data`` that are not compared because its format
+    may not contain them. ``device-data-full.json`` files have all keys, and
+    ``device-data-summary.json`` files none of :data:`_DEVICE_SUMMARY_OMITTED`.
+    For other inputs (standard input, other file names, Python objects) the format
+    is guessed from the keys, since empty lists are absent from every format: a
+    document without any of these lists may be a device summary, and one without
+    ``relationships`` may be a host document (``DeviceData.elastic()``, e.g. the
+    output of ``peat pull -P``). A list such a document has is still compared.
+    """
+    if file_name == "device-data-full.json":
+        return ()
+    if file_name == "device-data-summary.json":
+        return _DEVICE_SUMMARY_OMITTED
+    # (baseline_findings are never compared)
+    lists = tuple(key for key in _DEVICE_SUMMARY_OMITTED if key != "baseline_findings")
+    if not any(key in data for key in lists):
+        return lists  # maybe a device summary
+    if "relationships" not in data:
+        return ("relationships",)  # maybe a host document
+    return ()
 
 
 def _device_from_dict(data: dict, origin: str, module_name: str = "") -> DeviceData | None:
@@ -355,9 +383,9 @@ def create_baseline(
     omitted = sorted({k for d in devices for k in d._cache.get("omitted_keys", ())})
     if omitted:
         log.warning(
-            f"The device data is a summary without {', '.join(omitted)}: they are "
-            f"added to the baseline's 'ignore' list. Use device-data-full.json "
-            f"files to include them."
+            f"The device data may be a summary without {', '.join(omitted)} (or "
+            f"has none of them): they are added to the baseline's 'ignore' list. "
+            f"Use device-data-full.json files to include them."
         )
         ignore.extend(k for k in omitted if k not in ignore)
     provenance = BaselineProvenance(

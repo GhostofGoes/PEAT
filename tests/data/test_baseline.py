@@ -626,6 +626,164 @@ def test_device_type_profile_ignores_per_unit_service_and_module_addresses():
     assert bl.compare_device(unit("192.0.2.11"), profile) == []
 
 
+def test_device_type_profile_compares_wildcard_and_loopback_listen_addresses():
+    def unit(n: int, listen: str) -> DeviceData:
+        """Unit n with SSH and a module web server listening on ``listen`` (own IP if "")."""
+        ip = f"192.0.2.{n}"
+        dev = DeviceData(ip=ip, id=ip, serial_number=f"SN{n}")
+        dev.description.vendor.id = "X"
+        dev.description.model = "Y"
+        dev.store(
+            "service",
+            Service(protocol="ssh", port=22, transport="tcp", listen_address=listen or ip),
+        )
+        mod = DeviceData(slot="1")
+        mod.store("service", Service(protocol="http", port=80, listen_address=listen or ip))
+        dev.module.append(mod)
+        return _exported(dev)
+
+    loopback = [unit(1, "127.0.0.1"), unit(2, "127.0.0.1")]
+    assert bl.varying_paths(loopback) == []
+    profile = Baseline(
+        id="x-y-typical",
+        kind="approved",
+        scope="device_type",
+        selector=BaselineSelector(vendor_id="X", model="Y"),
+        expected=bl.device_type_profile(loopback),
+    )
+    assert bl.compare_device(unit(3, "127.0.0.1"), profile) == []
+    ssh = "service[protocol=ssh,port=22].listen_address"
+    http = "module[slot=1].service[protocol=http,port=80].listen_address"
+    # loopback -> all addresses: the services are now exposed on the network
+    assert _diffs(bl.compare_device(unit(3, "0.0.0.0"), profile)) == {
+        ("change", ssh),
+        ("change", http),
+    }
+    # loopback -> the address of the unit itself
+    assert _diffs(bl.compare_device(unit(3, ""), profile)) == {("missing", ssh), ("missing", http)}
+
+    # the address of each unit itself is per-unit identity, a wildcard address is not
+    own = bl.device_type_profile([unit(1, ""), unit(2, "")])
+    assert "listen_address" not in bl.device_to_doc(own)["service"][0]
+    wildcard = bl.device_type_profile([unit(1, "::")])
+    assert bl.device_to_doc(wildcard)["service"][0]["listen_address"] == "::"
+
+
+def test_snapshot_ignores_relationship_client_ports():
+    def session(direction: str, client_port: int, server_port: int = 20000) -> DeviceData:
+        """A DNP3 session: the device is the server (ingress) or the client (egress)."""
+        dev = DeviceData(ip="192.0.2.10", id="192.0.2.10")
+        ingress = direction == "ingress"
+        dev.store(
+            "relationships",
+            Relationship(
+                protocol="dnp3",
+                transport="tcp",
+                direction=direction,
+                local=RelationshipEndpoint(
+                    ip="192.0.2.10", port=server_port if ingress else client_port
+                ),
+                remote=RelationshipEndpoint(
+                    ip="192.0.2.50", port=client_port if ingress else server_port
+                ),
+                evidence={"config", "netstat"},
+            ),
+        )
+        return _exported(dev)
+
+    for direction in ("ingress", "egress"):
+        baseline = _snapshot(session(direction, 51234), kind="previous_observed")
+        # a new ephemeral client port: the same relationship
+        assert bl.compare_device(session(direction, 51987), baseline) == [], direction
+        # a new server port: another relationship
+        diffs = _diffs(bl.compare_device(session(direction, 51987, 20001), baseline))
+        assert sorted(d for d, _ in diffs) == ["missing", "unexpected"], direction
+
+
+def test_snapshot_aligns_list_items_without_ignored_values():
+    from peat.data.models import Interface, NetworkStatistics, NetworkTraffic
+
+    def unit(ip: str, mac: str, packets: int, connected: bool) -> DeviceData:
+        dev = DeviceData(ip=ip, id=ip)
+        dev.description.vendor.id = "X"
+        dev.description.model = "Y"
+        # no name: aligned by the values that are compared
+        dev.interface.append(
+            Interface(
+                type="ethernet",
+                ip=ip,
+                mac=mac,
+                connected=connected,
+                statistics=NetworkStatistics(ingress=NetworkTraffic(packets=packets)),
+            )
+        )
+        return _exported(dev)
+
+    first = unit("10.0.0.1", "00:11:22:33:44:55", 100, True)
+    profile = Baseline(
+        id="x-y-typical",
+        kind="first_observed",
+        scope="device_type",
+        selector=BaselineSelector(vendor_id="X", model="Y"),
+        expected=bl.device_type_profile([first]),
+    )
+    assert bl.compare_device(first, profile) == []
+    assert bl.compare_device(unit("10.0.0.2", "00:11:22:33:44:66", 999, False), profile) == []
+
+    def serial(packets: int) -> DeviceData:
+        dev = DeviceData(ip="10.0.0.9", id="10.0.0.9")
+        dev.interface.append(
+            Interface(
+                type="serial",
+                baudrate=9600,
+                statistics=NetworkStatistics(ingress=NetworkTraffic(packets=packets)),
+            )
+        )
+        return _exported(dev)
+
+    baseline = _snapshot(serial(1))
+    assert bl.compare_device(serial(2), baseline) == []
+    changed = serial(2)
+    changed.interface[0].baudrate = 19200
+    assert {d for d, _ in _diffs(bl.compare_device(changed, baseline))} == {
+        "missing",
+        "unexpected",
+    }
+
+
+def test_snapshot_parse_input_files_are_not_device_files(tmp_path):
+    def parsed(scd: str, content: bytes = b"<SCL/>") -> DeviceData:
+        """Device from 'peat parse' of an SCL file (IEC61850SCL stores it like this)."""
+        path = tmp_path / scd
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        dev = DeviceData(ip="192.0.2.60", id="192.0.2.60", name="PROT1")
+        dev.iec61850.ied_name = "PROT1"
+        dev.iec61850.scl_file = path.as_posix()
+        dev.store("files", File(local_path=path, category={"configuration", "iec61850"}))
+        dev.store("files", File(path="/SETTINGS/SET_61850.CID", category={"configuration"}))
+        return _exported(dev)
+
+    baseline = _snapshot(parsed("v1/substation.scd"), kind="engineer_provided")
+    # the same SCD file parsed from another folder and under another name
+    assert bl.compare_device(parsed("v2/substation_v2.scd"), baseline) == []
+    observed = _snapshot(parsed("v1/substation.scd"))
+    assert bl.compare_device(parsed("v2/substation_v2.scd"), observed) == []
+
+    # an input file at the same path is still compared ...
+    diffs = _diffs(bl.compare_device(parsed("v1/substation.scd", b"<SCL></SCL>"), observed))
+    scd = f"files[path={(tmp_path / 'v1/substation.scd').resolve().as_posix()}]"
+    assert ("change", f"{scd}.hash.sha256") in diffs
+    assert {d for d, _ in diffs} == {"change"}
+    assert all(p.startswith(scd) for _, p in diffs)
+    # ... and so are the device files
+    cur = parsed("v3/substation.scd")
+    cur.files = [f for f in cur.files if f.local_path]
+    assert _diffs(bl.compare_device(cur, baseline)) == {
+        ("missing", "files[path=/SETTINGS/SET_61850.CID]")
+    }
+
+
 def test_snapshot_operating_mode_change_is_high():
     dev = sel_relay()
     dev.key_switch = "RUN"

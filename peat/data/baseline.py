@@ -23,6 +23,8 @@ converted to JSON-friendly values): ``segment(.segment)*``, where a segment is
 from __future__ import annotations
 
 import fnmatch
+import functools
+import ipaddress
 import json
 import re
 from datetime import UTC, datetime
@@ -61,6 +63,9 @@ _IDENTITY_IGNORE: tuple[str, ...] = (
     "*.local_path",
     "*.peat_module",
     "*.device",
+    # where PEAT read the SCL file: a path on the PEAT host for "peat parse"
+    # (the device CID file of a pull is also in "files")
+    "iec61850.scl_file",
 )
 
 # Volatile values of a device
@@ -102,6 +107,10 @@ _VOLATILE_IGNORE: tuple[str, ...] = (
     "relationships.last_seen",
     "relationships.count",
     "relationships.state",
+    # the ephemeral client port changes with every connection; the server port is
+    # part of the relationship id (a new server port is a new relationship)
+    "relationships.local.port",
+    "relationships.remote.port",
     "logic.tasks.scan_count",
     "logic.tasks.scan_time_*",
     "logic.tasks.overruns",
@@ -160,7 +169,6 @@ DEVICE_TYPE_IGNORE: tuple[str, ...] = (
     "routes",
     "clock.sources.address",
     "iec61850.ied_name",
-    "iec61850.scl_file",
     "iec61850.access_points.ip",
     "iec61850.access_points.subnet_mask",
     "iec61850.access_points.gateway",
@@ -176,8 +184,6 @@ DEVICE_TYPE_IGNORE: tuple[str, ...] = (
     "ssh_keys",
     "logic.hash",
     "logic.name",
-    "service.listen_address",
-    "interface.services.listen_address",
     "module.serial_number",
     "module.mac",
     "module.ip",
@@ -188,14 +194,16 @@ DEVICE_TYPE_IGNORE: tuple[str, ...] = (
     "module.interface.subnet_mask",
     "module.interface.gateway",
     "module.interface.id",
-    "module.service.listen_address",
-    "module.interface.services.listen_address",
 )
 """
 Paths additionally ignored for ``scope="device_type"`` baselines ("typical device"
 profiles): per-unit identity (addresses, names, serial numbers, file hashes,
 certificates) and site-specific data (relationships, routes, IEC 61850 addressing).
-They are removed from both documents before list items are aligned.
+They are removed from both documents before list items are aligned, together with
+the service ``listen_address`` values that are an address of the unit itself (a
+wildcard ``0.0.0.0``/``::`` or loopback listen address is a property of the device
+type and is compared) and the input files of ``peat parse`` (``files`` items whose
+``local_path`` is their ``path``, a location on the PEAT host).
 """
 
 # Files in these categories change on every pull (logs, SER/event records): only
@@ -374,12 +382,18 @@ def item_key(list_name: str, item: Any) -> tuple:
     return tuple((f, str(item.get(f, ""))) for f in fields if item.get(f) not in (None, ""))
 
 
-def index_items(list_name: str, items: list) -> dict:
-    """``{(item_key, n): item}``; ``n`` numbers items that share a key (``#n`` in paths)."""
+def index_items(list_name: str, items: list, ignore: tuple[str, ...] = (), path: str = "") -> dict:
+    """
+    ``{(item_key, n): item}``; ``n`` numbers items that share a key (``#n`` in paths).
+
+    The keys are computed without the values that ``ignore`` matches (patterns for
+    the items of the list at ``path``), so items without key fields are aligned by
+    the values that are compared, never by e.g. their ``statistics``.
+    """
     seen: dict = {}
     counts: dict = {}
     for item in items:
-        key = item_key(list_name, item)
+        key = item_key(list_name, strip_paths(item, ignore, path) if ignore else item)
         n = counts.get(key, 0)
         counts[key] = n + 1
         seen[(key, n)] = item
@@ -393,9 +407,14 @@ def item_label(list_name: str, item: Any) -> str:
 
 def is_ignored(path: str, patterns: tuple[str, ...] | list[str]) -> bool:
     """If ``path`` (selectors removed) or one of its parents matches one of ``patterns``."""
-    p = plain_path(path)
+    return _is_ignored_plain(plain_path(path), tuple(patterns))
+
+
+@functools.lru_cache(maxsize=4096)
+def _is_ignored_plain(path: str, patterns: tuple[str, ...]) -> bool:
+    # cached: every item of a list has the same selector-free paths
     return any(
-        fnmatch.fnmatchcase(p, pat) or fnmatch.fnmatchcase(p, f"{pat}.*") for pat in patterns
+        fnmatch.fnmatchcase(path, pat) or fnmatch.fnmatchcase(path, f"{pat}.*") for pat in patterns
     )
 
 
@@ -510,7 +529,8 @@ def diff_docs(
         and isinstance(actual, list)
         and any(isinstance(x, dict) for x in expected + actual)
     ):
-        exp_idx, act_idx = index_items(list_name, expected), index_items(list_name, actual)
+        exp_idx = index_items(list_name, expected, ignore, path)
+        act_idx = index_items(list_name, actual, ignore, path)
         for k in sorted(set(exp_idx) | set(act_idx), key=str):
             label = ",".join(f"{a}={b}" for a, b in k[0]) + (f"#{k[1]}" if k[1] else "")
             sub = f"{path}[{label}]"
@@ -522,16 +542,24 @@ def diff_docs(
                     and not set(item.get("evidence", [])) & STABLE_RELATIONSHIP_EVIDENCE
                 ):
                     continue  # observed-only peer not seen this time: not a deviation
-                out.append(("missing", sub, item, None))
+                if list_name == "files" and _is_input_file(item):
+                    continue  # a "peat parse" input file (PEAT host path), not a device file
+                value = _without_ignored(item, sub, ignore)
+                if value is not None:
+                    out.append(("missing", sub, value, None))
             elif k not in exp_idx:
                 item = act_idx[k]
-                if (
-                    list_name == "files"
-                    and isinstance(item, dict)
-                    and set(item.get("category", [])) & VOLATILE_FILE_CATEGORIES
+                if list_name == "files" and (
+                    _is_input_file(item)
+                    or (
+                        isinstance(item, dict)
+                        and set(item.get("category", [])) & VOLATILE_FILE_CATEGORIES
+                    )
                 ):
-                    continue  # new log/event-record files appear on every pull
-                out.append(("unexpected", sub, None, item))
+                    continue  # parse input file, or a new log/event-record file
+                value = _without_ignored(item, sub, ignore)
+                if value is not None:
+                    out.append(("unexpected", sub, None, value))
             elif (
                 list_name == "files"
                 and isinstance(exp_idx[k], dict)
@@ -570,6 +598,58 @@ def _without_volatile_routes(doc: dict) -> dict:
     if kept:
         out["routes"] = kept
     return out
+
+
+def _is_input_file(item: Any) -> bool:
+    """
+    If a ``files`` item is a file PEAT read on its own host (a ``peat parse`` input,
+    e.g. an SCD file): its ``path`` is its ``local_path``, not a path on the device.
+    """
+    return (
+        isinstance(item, dict)
+        and bool(item.get("local_path"))
+        and item.get("local_path") == item.get("path")
+    )
+
+
+def _is_unit_address(value: Any) -> bool:
+    """If a listen address is an address of the unit itself (not a wildcard or loopback)."""
+    try:
+        address = ipaddress.ip_address(str(value))
+    except ValueError:
+        return True
+    return not (address.is_unspecified or address.is_loopback)
+
+
+def _without_unit_identity(doc: Any) -> Any:
+    """
+    Copy of ``doc`` (a device document) without the per-unit values that
+    :data:`DEVICE_TYPE_IGNORE` patterns can't express: service ``listen_address``
+    values that are an address of the unit (wildcard and loopback addresses stay,
+    so a service that moves from loopback to all addresses is reported), and the
+    ``peat parse`` input files (:func:`_is_input_file`) of the device and its modules.
+    Objects and list items that only contained removed values are removed as well.
+    """
+    if isinstance(doc, dict):
+        out = {}
+        for key, value in doc.items():
+            if key == "listen_address" and _is_unit_address(value):
+                continue
+            if key == "files" and isinstance(value, list):
+                value = [item for item in value if not _is_input_file(item)]
+            stripped = _without_unit_identity(value)
+            if not _emptied(doc[key], stripped):
+                out[key] = stripped
+        return out
+    if isinstance(doc, list):
+        items = [(v, _without_unit_identity(v)) for v in doc]
+        return [stripped for v, stripped in items if not _emptied(v, stripped)]
+    return doc
+
+
+def _device_type_doc(doc: dict, patterns: tuple[str, ...]) -> dict:
+    """``doc`` without per-unit identity (:data:`DEVICE_TYPE_IGNORE`) and ``patterns``."""
+    return strip_paths(_without_unit_identity(doc), patterns)
 
 
 def _without_ignored(value: Any, path: str, ignore: tuple[str, ...]) -> Any:
@@ -676,7 +756,7 @@ def varying_paths(devices: list[DeviceData]) -> list[str]:
     if len(devices) < 2:
         return []
     patterns = tuple(DEFAULT_IGNORE) + DEVICE_TYPE_IGNORE
-    docs = [strip_paths(device_to_doc(d), patterns) for d in devices]
+    docs = [_device_type_doc(device_to_doc(d), patterns) for d in devices]
     common = intersect_docs(docs) or {}
     diffs: list[tuple[str, str, Any, Any]] = []
     for doc in docs:
@@ -703,11 +783,12 @@ def device_type_profile(devices: list[DeviceData]) -> DeviceData:
     """
     ``expected`` snapshot of a ``scope="device_type"`` baseline built from one or
     more pulls of devices of the same type: per-unit identity removed
-    (``DEVICE_TYPE_IGNORE`` + ``DEFAULT_IGNORE``), and with 2+ devices only
-    what all of them share.
+    (``DEVICE_TYPE_IGNORE`` + ``DEFAULT_IGNORE``, listen addresses of the unit
+    itself and ``peat parse`` input files), and with 2+ devices only what all of
+    them share.
     """
     patterns = tuple(DEFAULT_IGNORE) + DEVICE_TYPE_IGNORE
-    docs = [strip_paths(device_to_doc(d), patterns) for d in devices]
+    docs = [_device_type_doc(device_to_doc(d), patterns) for d in devices]
     common = docs[0] if len(docs) == 1 else (intersect_docs(docs) or {})
     return DeviceData.parse_obj(common)
 
@@ -792,8 +873,8 @@ def compare_device(
             # strip per-unit identity BEFORE aligning list items, so list keys that use
             # an identity field (e.g. clock.sources address) align on the rest (OT-2)
             ignore += DEVICE_TYPE_IGNORE
-            expected_doc = strip_paths(expected_doc, DEVICE_TYPE_IGNORE)
-            actual_doc = strip_paths(actual_doc, DEVICE_TYPE_IGNORE)
+            expected_doc = _device_type_doc(expected_doc, DEVICE_TYPE_IGNORE)
+            actual_doc = _device_type_doc(actual_doc, DEVICE_TYPE_IGNORE)
         diff_docs(
             expected_doc,
             actual_doc,
