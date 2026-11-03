@@ -176,18 +176,46 @@ def parse(
                     _parse_file(file_path, dev_cls)
 
     # * Deduplicate *
+    before_dedupe = list(datastore.objects)  # references keep their id() unique
     datastore.deduplicate(prune_inactive=False)
 
     # Devices that successful parses filled besides the devices they returned and
     # that are still in the datastore (not merged into another device)
     current = {id(d) for d in datastore.objects}
-    parse_ids = {id(d) for d in parsed_devices if d is not None}  # devices of this parse
+    returned = [d for d in parsed_devices if d is not None]
+    parse_ids = {id(d) for d in returned}  # devices of this parse
     other_devices: dict[int, list[DeviceData]] = {}  # id(parse result) -> devices
     for result, devices in created:
         for c_dev in devices:
             if id(c_dev) in current and id(c_dev) not in parse_ids:
                 parse_ids.add(id(c_dev))  # each device once
                 other_devices.setdefault(id(result), []).append(c_dev)
+
+    # A device of this parse that de-duplication merged into another device (e.g. into
+    # the placeholder of a "hosts" entry of the PEAT config file, with the label and
+    # asset context of the entry) is replaced by the device that has its data now.
+    # That device writes its files to the output directory of the merged device, which
+    # has the earlier exports of the device, unless it has an output directory already.
+    # The parse result of a merged device that a parse returned stays its state after
+    # the file; a merged device that a parse created or filled is replaced in the
+    # parse results too (each device once).
+    of_parse = parse_ids | {id(d) for _, devices in created for d in devices}
+    survivors: dict[int, DeviceData] = {}  # id(merged device) -> device it is in
+    for m_dev in before_dedupe:
+        if id(m_dev) in of_parse and id(m_dev) not in current:
+            survivor = next((s for s in datastore.objects if s.is_duplicate(m_dev)), None)
+            if survivor is not None:
+                survivors[id(m_dev)] = survivor
+                if not survivor._out_dir and m_dev._out_dir:
+                    survivor._out_dir = m_dev._out_dir
+    parse_ids.update(id(survivors[id(d)]) for d in returned if id(d) in survivors)
+    for result, devices in created:
+        for c_dev in devices:
+            survivor = survivors.get(id(c_dev))
+            if survivor is not None and id(survivor) not in parse_ids:
+                parse_ids.add(id(survivor))
+                other_devices.setdefault(id(result), []).append(survivor)
+
     # Devices that are not part of this parse (neither parsed nor filled by it) are
     # neither exported nor pushed
     parse_devices = [d for d in datastore.objects if id(d) in parse_ids]

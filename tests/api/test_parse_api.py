@@ -335,3 +335,79 @@ def test_parse_api_exports_final_state_of_device_parsed_from_several_files(
     for dev in from_run + from_summary:
         findings = baseline_api.compare_to_baseline(dev, baseline, include_passed=False)
         assert findings == []
+
+
+def test_parse_api_exports_and_pushes_config_host_a_parsed_device_was_merged_into(
+    tmp_path, mocker
+):
+    """
+    A parsed device (a FortiGate configuration) that de-duplication merges into the
+    placeholder of a "hosts" entry of the PEAT config file (same IP) is exported and
+    pushed as that device, with the label and asset context of the entry, to the
+    output directory of the parsed device (R7-1).
+    """
+    from tests.modules.fortinet.test_fortigate_conf import SYNTHETIC_CONF
+
+    pushed = _push_config(tmp_path, mocker)
+    host = {
+        "label": "fw1",
+        "identifiers": {"ip": "192.0.2.1"},
+        "asset": {"criticality": "high_impact"},
+    }
+    mocker.patch.dict(config["CONFIG"], {"HOSTS": [host]})
+    placeholder = DeviceData(**host["identifiers"])  # like peat.init for each "hosts" entry
+    assert placeholder.label == "fw1"
+    datastore.objects.append(placeholder)
+    conf = tmp_path / "in" / "r7_1_fortigate.conf"
+    conf.parent.mkdir()
+    conf.write_text(SYNTHETIC_CONF, encoding="utf-8")
+
+    summary = parse([conf], ["Fortigate"])
+
+    assert summary["num_parse_successes"] == 1
+    assert len(datastore.objects) == 1
+    assert datastore.objects[0] is placeholder  # the parsed device was merged into it
+    assert placeholder.hostname == "fg-sub1"
+    assert pushed == ["fw1"]
+    out_dir = tmp_path / "devices" / "192.0.2.1"
+    assert [p.name for p in (tmp_path / "devices").iterdir()] == [out_dir.name]
+    assert [p.name for p in out_dir.glob("device-data-full.json*")] == ["device-data-full.json"]
+    full = json.loads((out_dir / "device-data-full.json").read_text(encoding="utf-8"))
+    assert (full["label"], full["hostname"]) == ("fw1", "fg-sub1")
+    assert full["asset"]["criticality"] == "high_impact"
+    # the parse result of the returned device stays its state after the file
+    assert [r["results"]["id"] for r in summary["parse_results"]] == ["192.0.2.1"]
+
+
+def test_parse_api_pushes_config_host_a_created_device_was_merged_into(test_dir, tmp_path, mocker):
+    """
+    A device that a parse created and that de-duplication merges into the placeholder
+    of a "hosts" entry of the PEAT config file is replaced by the placeholder in the
+    pushed devices and the parse results (R7-1).
+    """
+    pushed = _push_config(tmp_path, mocker)
+    host = {"label": "mu1", "identifiers": {"ip": "192.0.2.11"}}
+    mocker.patch.dict(config["CONFIG"], {"HOSTS": [host]})
+    placeholder = DeviceData(**host["identifiers"])
+    datastore.objects.append(placeholder)
+
+    def fake_parse_data(source, dev_cls):  # noqa: ARG001
+        extra = DeviceData()  # created without the datastore lookup that finds mu1
+        extra.ip = "192.0.2.11"
+        extra.name = "MU1"
+        datastore.objects.append(extra)
+        return datastore.get("192.0.2.10")
+
+    mocker.patch("peat.api.parse_api.parse_data", side_effect=fake_parse_data)
+    path = test_dir / "modules" / "sandia" / "data_files" / "bp" / "dnp3-client.xml"
+    summary = parse([path], ["SCEPTRE"])
+
+    assert [d.get_id() for d in datastore.objects] == ["mu1", "192.0.2.10"]
+    assert placeholder.name == "MU1"
+    assert sorted(pushed) == ["192.0.2.10", "mu1"]
+    assert [(r["results"]["ip"], r["results"].get("label")) for r in summary["parse_results"]] == [
+        ("192.0.2.10", None),
+        ("192.0.2.11", "mu1"),
+    ]
+    full = tmp_path / "devices" / "mu1" / "device-data-full.json"
+    assert json.loads(full.read_text(encoding="utf-8"))["name"] == "MU1"
