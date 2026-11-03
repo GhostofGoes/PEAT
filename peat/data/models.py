@@ -3708,7 +3708,13 @@ class Route(BaseModel):
 
     def annotate(self, dev: DeviceData | None = None) -> None:
         move_out_of_range_ints(self, self.extra)  # e.g. a corrupted metric
-        if dev and self.gateway and self.gateway not in ("0.0.0.0", "::"):
+        # A loopback next hop (e.g. a lo0 route via 127.0.0.1) is no related host
+        if (
+            dev
+            and self.gateway
+            and self.gateway not in ("0.0.0.0", "::")
+            and not ipaddress.ip_address(self.gateway).is_loopback
+        ):
             dev.related.ip.add(self.gateway)
         mac = self.extra.get("gateway_mac", "")
         if dev and mac and _is_unicast_mac(mac):

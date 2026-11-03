@@ -679,10 +679,11 @@ def test_no_derived_relationships_to_the_device_itself():
     }
     assert len(dev.routes) == 7
     assert len(dev.clock.sources) == 5
-    # A loopback time source address (e.g. an NTP reference clock) is no related host
+    # A loopback time source address (e.g. an NTP reference clock) or route next
+    # hop (e.g. the GE UR lo0 route) is no related host
     related_ips = set(dev.export()["related"]["ip"])
-    assert not {"127.127.1.0", "127.127.22.0"} & related_ips
-    assert "192.0.2.5" in related_ips
+    assert not {"127.127.1.0", "127.127.22.0", "127.0.0.1", "127.0.0.2", "::1"} & related_ips
+    assert {"192.0.2.5", "192.0.2.1"} <= related_ips
 
 
 def _ints_outside_es_long(doc, path: str = "") -> list[str]:
