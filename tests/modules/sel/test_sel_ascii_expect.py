@@ -423,11 +423,16 @@ def test_unframed_prompts(relay_server, mocker):
 
 
 def test_legacy_timing_uses_fixed_delays(relay_server, mocker):
-    sleep = mocker.patch.object(sel_ascii, "sleep")
-    # The fixed delays are skipped, so give the relay time to answer before the
-    # read (slow CI runners take longer than the 0.15 s default)
-    mocker.patch.object(Telnet, "READ_DELAY", 1.0)
     server = relay_server(lambda: FakeSELRelay(level="1"))
+
+    def fixed_delay(seconds: float) -> None:
+        # Instead of the 5 second delay after ID, wait until the relay has sent
+        # its answer, so the test doesn't depend on how fast the machine is
+        if seconds == 5.0:
+            assert _wait_until(lambda: bool(server.servers) and b"FID=" in server.servers[0].sent)
+            time.sleep(0.2)
+
+    sleep = mocker.patch.object(sel_ascii, "sleep", side_effect=fixed_delay)
     tn = _telnet(server, legacy_timing=True)
     info = tn.get_id()
     assert info["FID"]
