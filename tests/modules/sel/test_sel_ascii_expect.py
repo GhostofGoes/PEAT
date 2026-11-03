@@ -78,6 +78,16 @@ def _telnet(server: TCPRelayServer, **kwargs) -> SELTelnet:
     return SELTelnet("127.0.0.1", server.port, timeout=2.0, **kwargs)
 
 
+def _wait_until(condition, timeout: float = 5.0) -> bool:
+    """Wait for the fake relay's thread to catch up (slow CI runners)."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Prompts and access levels
 # ---------------------------------------------------------------------------
@@ -446,7 +456,7 @@ def test_elevate_with_default_passwords(relay_server):
     assert relay.password_attempts == {"acc": ["OTTER"], "2ac": ["TAIL"]}
     assert tn.elevate(1) is True  # Already above level 1
     tn.disconnect()
-    assert relay.lines[-2:] == [b"quit", b"exit"]
+    assert _wait_until(lambda: relay.lines[-2:] == [b"quit", b"exit"])
 
 
 def test_elevate_to_calibration(relay_server):
@@ -497,15 +507,16 @@ def test_no_answer_to_password_is_cancelled(relay_server):
             self.password_attempts.setdefault("acc", []).append(text)
 
     server = relay_server(SilentRelay)
+    # The default 2 s timeout, so the password prompt arrives in time on slow CI
+    # runners and only the wait for an answer to the password times out
     tn = _telnet(server)
-    tn.timeout = 0.3
     assert tn.elevate(1) is False
     relay = server.relays[0]
     assert relay.password_attempts == {"acc": ["OTTER"]}
     # CAN ends the password dialog, so QUIT isn't taken as another password
     assert relay.cancels == 1
     tn.disconnect()
-    assert relay.lines[-2:] == [b"quit", b"exit"]
+    assert _wait_until(lambda: relay.lines[-2:] == [b"quit", b"exit"])
     assert relay.password_attempts == {"acc": ["OTTER"]}
 
 
