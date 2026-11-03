@@ -274,7 +274,8 @@ Example KQL queries:
    event.action : baseline-changed-from-default
 
    # Units that differ from a "typical SEL-2032" profile (baseline.id is case-sensitive:
-   # the default ID <vendor>-<model>-typical keeps the case of the vendor ID and model)
+   # the default ID <vendor>-<model>-typical keeps the case of the vendor ID, or vendor
+   # name, and model)
    baseline.id : "SEL-2032-typical" and baseline.finding.result : fail
 
 
