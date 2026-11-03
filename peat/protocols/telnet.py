@@ -115,15 +115,17 @@ class Telnet:
                 except Exception as ex:
                     self.log.warning(f"Failed to write raw output to file: {ex}")
 
-    def write(self, command: bytes | str | int, flush: bool = False) -> None:
+    def write(self, command: bytes | str | int, flush: bool = False, secret: bool = False) -> None:
         """
         Send a Telnet command to the device.
 
         Args:
             command: Command to send (this will be automatically encoded)
             flush: If the responses to the command should be dropped
+            secret: If the command is a secret (e.g. a password), which is
+                never logged
         """
-        self.log.debug(f"Writing command: {command}")
+        self.log.debug(f"Writing command: {'<redacted>' if secret else command}")
 
         # If it's an int, first convert to a string, which will then be encoded
         if isinstance(command, int):
@@ -141,7 +143,7 @@ class Telnet:
         # worked in the REPL, but not the script...well, it was the pauses
         # between sending and reading commands. JustTelnetThings.
         sleep(self.PRE_WRITE_SLEEP)
-        self.comm.write(command)
+        self.comm.write(command, secret=secret)
         sleep(self.POST_WRITE_SLEEP)
 
         if flush:

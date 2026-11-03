@@ -18,6 +18,7 @@ import pytest
 from peat import DeviceData, Sage, config, datastore
 from peat.data.baseline import compare_device, split_path
 from peat.modules.schneider.sage import sage_commands, sage_parse
+from peat.modules.schneider.sage.sage_telnet import SageTelnet
 
 CHECK_STACK = """\
 NAME         ENTRY        TID        SIZE   CUR  HIGH  MARGIN
@@ -238,6 +239,26 @@ def test_parse_archive_never_writes_keys_or_bootline_password(out_config):
     parsed = next(p for p in written if p.name == "parsed-config.json").read_text()
     assert '"server_private_key_present": true' in parsed
     assert '"privkey_present": true' in parsed
+
+
+def test_telnet_login_never_logs_password(caplog, mocker):
+    """Bug fix: the Telnet login password was logged (and saved in telnet.log)."""
+    caplog.set_level(0)
+    tn = SageTelnet("192.0.2.72")
+    tn.PRE_WRITE_SLEEP = tn.POST_WRITE_SLEEP = 0
+    sock = mocker.MagicMock()
+    tn._comm.sock = sock
+    tn.connected = True
+    mocker.patch.object(tn, "read_until", return_value="")
+    mocker.patch.object(tn, "read", return_value="->")
+    try:
+        assert tn.login("Admin", "SageTelnetCanary9")
+    finally:
+        tn.connected = False
+
+    assert b"SageTelnetCanary9\r\n" in [c.args[0] for c in sock.sendall.call_args_list]
+    assert "<redacted>" in caplog.text
+    assert "SageTelnetCanary9" not in caplog.text
 
 
 def test_bootline_password_redacted():

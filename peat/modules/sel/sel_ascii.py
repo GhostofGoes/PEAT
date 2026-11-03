@@ -174,12 +174,14 @@ class SELAscii(ABC):
     def read(self, delay: float | None = None, strip_whitespace: bool = True) -> str:
         pass
 
-    def write(self, command: bytes | str | int) -> None:
+    def write(self, command: bytes | str | int, secret: bool = False) -> None:
         """
         Send a command to the device.
 
         Args:
             command: Command to send (this will be automatically encoded)
+            secret: If the command is a secret (e.g. a password), which is
+                never logged or saved (``<redacted>`` in ``all_writes``)
         """
         # If it's an int, first convert to a string, which will then be encoded
         if isinstance(command, int):
@@ -190,8 +192,9 @@ class SELAscii(ABC):
             command = command.encode(self.ENCODING)
 
         # Append the line terminator (encode here to ensure proper encoding)
-        command += self.LINE_TERMINATOR.encode(self.ENCODING)
-        self.all_writes.append(command)
+        terminator = self.LINE_TERMINATOR.encode(self.ENCODING)
+        command += terminator
+        self.all_writes.append(b"<redacted>" + terminator if secret else command)
 
         # If we don't sleep, errors can occur.
         if self.PRE_WRITE_SLEEP:
@@ -200,7 +203,7 @@ class SELAscii(ABC):
         # NOTE: calling telnetlib object directly is a bit of a hack,
         #   the peat.protocols.Telnet wrapper mostly duplicates what we do.
         if isinstance(self.comm, Telnet):
-            self.comm.comm.write(command)
+            self.comm.comm.write(command, secret=secret)
         else:
             self.comm.write(command)
 
@@ -339,7 +342,7 @@ class SELAscii(ABC):
                     self.log.debug("Elevating to level 1 (acc)")
                     self.write("acc")
                     self.read()
-                    self.write(creds["acc"])
+                    self.write(creds["acc"], secret=True)
                     if "invalid" in self.read().lower():
                         self.log.error("Invalid level 1 (acc) password")
                         return False
@@ -350,7 +353,7 @@ class SELAscii(ABC):
                     self.log.debug("Elevating to level 2 (2ac)")
                     self.write("2ac")
                     self.read()
-                    self.write(creds["2ac"])
+                    self.write(creds["2ac"], secret=True)
                     if "invalid" in self.read().lower():
                         self.log.error("Invalid level 2 (2ac) password")
                         return False
@@ -360,7 +363,7 @@ class SELAscii(ABC):
                 elif self.priv_level == 2:
                     self.log.debug("Elevating to level 3 (cal)")
                     self.write("cal")
-                    self.write(creds["cal"])
+                    self.write(creds["cal"], secret=True)
                     if "invalid" in self.read().lower():
                         self.log.error("Invalid level 3 (cal) password")
                         return False

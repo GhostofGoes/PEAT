@@ -181,6 +181,17 @@ def test_wifi_password_not_stored(dev, mocker):
     assert "hunter2" not in json.dumps(dev.export(), default=str)
 
 
+def test_login_never_logs_password(mocker, caplog):
+    """Bug fix: the web password was logged at TRACE level with -V (config.DEBUG)."""
+    caplog.set_level(0)
+    mocker.patch.dict(config["CONFIG"], {"DEBUG": 4})
+    http = TotusHTTP("192.0.2.30", 80, 1.0)
+    mocker.patch.object(http, "get", return_value=None)
+    assert not http.login("totusadmin", "TotusCanaryPw5")
+    assert "totusadmin" in caplog.text
+    assert "TotusCanaryPw5" not in caplog.text
+
+
 def test_ntp_sources(dev):
     TotusHTTP.process_ntp_config(dev, ["192.0.2.1", "pool.ntp.org"])
     TotusHTTP.process_ntp_status(
