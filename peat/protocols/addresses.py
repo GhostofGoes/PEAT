@@ -490,11 +490,20 @@ def network_is_local(net: IPv4Network) -> bool:
     return any(net.subnet_of(local) for local in state.local_networks)
 
 
+def _ip_sort_key(value: str) -> tuple[int, int, str]:
+    try:
+        addr = ip_address(value)
+        return (addr.version, int(addr), str(value))
+    except ValueError:
+        return (99, 0, str(value))
+
+
 def sort_ips(ip_list: list[str] | set[str]) -> list[str]:
     """
-    Sort IPv4 address strings in ascending order by integer IPs.
+    Sort IP address strings: IPv4 first, then IPv6, each in ascending order by
+    integer IP. Values that are not IP addresses come last. Never raises.
     """
-    return sorted(ip_list, key=lambda x: socket.inet_pton(socket.AF_INET, x))
+    return sorted(ip_list, key=_ip_sort_key)
 
 
 @lru_cache

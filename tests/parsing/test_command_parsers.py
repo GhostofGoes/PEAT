@@ -792,3 +792,32 @@ def test_sshd_config_parser(text_data, json_data, assert_no_errors):
     results = command_parsers.SshdConfigParser.parse(text_data("sshd_config"))
     assert results == json_data("expected_sshd_config.json")
     assert_no_errors()
+
+
+def test_netstat_linux_ipv4_mapped_and_ipv6_sockets(assert_no_errors):
+    """R2-44/R2-43: dual-stack (::ffff:a.b.c.d) and IPv6 sockets keep the whole table."""
+    data = (
+        "Proto Recv-Q Send-Q Local Address  Foreign Address    State       PID/Program name\n"
+        "tcp        0      0 0.0.0.0:22     0.0.0.0:*          LISTEN      612/dropbear\n"
+        "tcp6       0      0 ::ffff:127.0.0.1:8005 :::*        LISTEN      700/java\n"
+        "tcp        0      0 0.0.0.0:443    0.0.0.0:*          LISTEN      640/lighttpd\n"
+        "tcp6       0      0 ::ffff:192.0.2.20:502 :::*        LISTEN      650/modbusd\n"
+        "tcp6  0  0 ::ffff:192.0.2.20:443 ::ffff:192.0.2.60:40000 ESTABLISHED 640/lighttpd\n"
+        "tcp6  0  0 ::ffff:192.0.2.20:502 ::ffff:192.0.2.20:50000 ESTABLISHED 650/modbusd\n"
+        "tcp6       0      0 2001:db8::10:443 2001:db8::50:51235 ESTABLISHED 640/lighttpd\n"
+    )
+    dev = DeviceData(id="test_netstat_mapped")
+    dev.store("interface", Interface(name="eth0", ip="192.0.2.20"))
+    command_parsers.NetstatLinuxParser.process(command_parsers.NetstatLinuxParser.parse(data), dev)
+
+    assert {s.port for s in dev.service} == {22, 443, 502, 8005}
+    assert {s.listen_address for s in dev.service if s.port == 8005} == {"127.0.0.1"}
+    # the mapped listen address matches the IPv4 interface
+    assert [(s.port, s.listen_address) for s in dev.interface[0].services] == [(502, "192.0.2.20")]
+    # the mapped session with the device itself is skipped
+    assert {r.remote.ip for r in dev.relationships} == {"192.0.2.60", "2001:db8::50"}
+    # mixed IPv4/IPv6 related.ip must not break the exports
+    related_ip = dev.export()["related"]["ip"]
+    assert related_ip.index("192.0.2.60") < related_ip.index("2001:db8::50")
+    assert "2001:db8::50" in dev.elastic()["related"]["ip"]
+    assert_no_errors()

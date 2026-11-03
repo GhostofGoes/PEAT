@@ -18,6 +18,7 @@ from peat.protocols import (
     network_is_local,
     resolve_hostname_to_ip,
     resolve_ip_to_hostname,
+    sort_ips,
     split_ipv4_cidr,
 )
 
@@ -327,3 +328,14 @@ def test_clean_mac():
     assert clean_mac("00-A0-A9-8-12-1") == "00:A0:A9:08:12:01"
     assert clean_mac("  00-A0-A9-8-12-1   ") == "00:A0:A9:08:12:01"
     assert clean_mac("00:b0:b9:08:12:01") == "00:B0:B9:08:12:01"
+
+
+def test_sort_ips_mixed_families_never_raises():
+    """IPv6 addresses (e.g. in related.ip) must not crash export() and elastic()."""
+    assert sort_ips({"2001:db8::50", "192.0.2.20", "2001:db8::10", "192.0.2.9", "x"}) == [
+        "192.0.2.9",
+        "192.0.2.20",
+        "2001:db8::10",
+        "2001:db8::50",
+        "x",
+    ]

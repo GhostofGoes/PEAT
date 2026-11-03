@@ -102,11 +102,17 @@ def validate_ip(v: str) -> str:
         return ""
 
     v = v.strip().replace(" ", "")
-    if "." in v:
+    if "." in v and ":" not in v:
         v = clean_ipv4(v)  # strip leading zeros
 
     # NOTE: this will raise ValueError if not valid IPv4 or IPv6 address
-    return str(ipaddress.ip_address(v))
+    addr = ipaddress.ip_address(v)
+
+    # IPv4-mapped IPv6 address of a dual-stack socket (::ffff:192.0.2.1)
+    if addr.version == 6 and addr.ipv4_mapped:
+        return str(addr.ipv4_mapped)
+
+    return str(addr)
 
 
 def validate_mac(v: str) -> str:

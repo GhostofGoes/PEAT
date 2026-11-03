@@ -1517,3 +1517,15 @@ def test_elastic_host_doc_has_annotated_values_without_export():
     assert host["clock"]["source"] == "sntp"
     assert "192.0.2.1" in host["related"]["ip"]
 
+
+def test_mixed_ip_versions_export():
+    """R2-43/R2-44: IPv6 in related.ip and IPv4-mapped addresses do not break exports."""
+    dev = DeviceData(ip="192.0.2.20")
+    dev.store("interface", Interface(name="eth0", ip="::ffff:192.0.2.20"))
+    dev.related.ip.update({"2001:db8::50", "192.0.2.9", "2001:db8::10"})
+    assert dev.interface[0].ip == "192.0.2.20"
+    assert RelationshipEndpoint(ip="::FFFF:198.51.100.7").ip == "198.51.100.7"
+    assert RelationshipEndpoint(ip="2001:DB8::1").ip == "2001:db8::1"
+    expected = ["192.0.2.9", "192.0.2.20", "2001:db8::10", "2001:db8::50"]
+    assert dev.export()["related"]["ip"] == expected
+    assert dev.elastic()["related"]["ip"] == expected

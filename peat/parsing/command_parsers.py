@@ -1508,38 +1508,42 @@ class NetstatLinuxParser(NixParserBase):
             if not skt["local_port"].isdigit():
                 continue
 
-            if skt["state"].upper() == "LISTEN" or (
-                transport == "udp" and skt["foreign_port"] == "*"
-            ):
-                svc = Service(
-                    port=int(skt["local_port"]),
-                    transport=transport,
-                    status="open",
-                    listen_address=local_ip,
-                    process_pid=skt["pid"],
-                    process_name=skt["program"],
-                )
-
-                if local_ip and local_ip not in ("0.0.0.0", "::"):
-                    store_listening_service(dev, svc, interface_lookup={"ip": local_ip})
-                else:
-                    store_listening_service(dev, svc)
-            elif skt["foreign_port"].isdigit() and utils.is_ip(skt["foreign_address"]):
-                connections.append(
-                    Relationship(
+            try:
+                if skt["state"].upper() == "LISTEN" or (
+                    transport == "udp" and skt["foreign_port"] == "*"
+                ):
+                    svc = Service(
+                        port=int(skt["local_port"]),
                         transport=transport,
-                        local=RelationshipEndpoint(
-                            ip=local_ip if local_ip not in ("0.0.0.0", "::") else "",
-                            port=int(skt["local_port"]),
-                        ),
-                        remote=RelationshipEndpoint(
-                            ip=skt["foreign_address"],
-                            port=int(skt["foreign_port"]),
-                        ),
-                        state=skt["state"].lower(),
-                        evidence={"netstat"},
+                        status="open",
+                        listen_address=local_ip,
+                        process_pid=skt["pid"],
+                        process_name=skt["program"],
                     )
-                )
+
+                    if local_ip and local_ip not in ("0.0.0.0", "::"):
+                        store_listening_service(dev, svc, interface_lookup={"ip": local_ip})
+                    else:
+                        store_listening_service(dev, svc)
+                elif skt["foreign_port"].isdigit() and utils.is_ip(skt["foreign_address"]):
+                    connections.append(
+                        Relationship(
+                            transport=transport,
+                            local=RelationshipEndpoint(
+                                ip=local_ip if local_ip not in ("0.0.0.0", "::") else "",
+                                port=int(skt["local_port"]),
+                            ),
+                            remote=RelationshipEndpoint(
+                                ip=skt["foreign_address"],
+                                port=int(skt["foreign_port"]),
+                            ),
+                            state=skt["state"].lower(),
+                            evidence={"netstat"},
+                        )
+                    )
+            except ValueError as ex:
+                # One unexpected line must not drop the rest of the socket table
+                log.warning(f"{cls.__name__}: skipping socket {skt}: {ex}")
 
         store_relationships(dev, connections)
 
@@ -1875,11 +1879,16 @@ def _process_name(dev: DeviceData, process_type: str, pid: int | None) -> str:
 
 
 def _clean_listen_address(address: str) -> str:
-    """Listening address from netstat (``*`` and non-IP values become ``""``)."""
+    """
+    Listening address from netstat (``*`` and non-IP values become ``""``).
+    An IPv4-mapped IPv6 address of a dual-stack socket (``::ffff:192.0.2.1``)
+    becomes the IPv4 address, as in the model fields.
+    """
     address = address.strip("[]")
-    if address in ("", "*"):
+    if address in ("", "*") or not utils.is_ip(address):
         return ""
-    return address if utils.is_ip(address) else ""
+    mapped = getattr(ipaddress.ip_address(address), "ipv4_mapped", None)
+    return str(mapped) if mapped else address
 
 
 def _extract_lines(data: str, exclude: str = "") -> list[str]:
