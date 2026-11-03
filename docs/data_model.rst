@@ -61,7 +61,7 @@ Times reported by a device without a timezone ("naive" datetimes) are device-loc
 
 Secrets
 -------
-Never store secrets (passwords, SNMP community strings, keys) in any field. Credential facts are recorded as booleans in :class:`~peat.data.models.ServiceSecurity`: ``default_credentials`` is ``True`` only when a login with a vendor factory-default credential succeeded (:meth:`~peat.device.DeviceModule.is_factory_default_credential`), ``False`` only when the factory defaults were tried and rejected, and unset otherwise. Anonymous logins set ``anonymous_access=True`` and ``authentication_required=False``.
+Never store secrets (passwords, SNMP community strings, keys) in any field. Credential facts are recorded as booleans in :class:`~peat.data.models.ServiceSecurity`: ``default_credentials`` is ``True`` only when a login with a vendor factory-default credential succeeded (:meth:`~peat.device.DeviceModule.is_factory_default_credential`) or the device configuration shows a factory-default credential in use (e.g. an M340 SNMP community ``public``/``private``), ``False`` only when the factory defaults were tried and rejected or the configured credentials are known and none is a factory default, and unset otherwise. Anonymous logins set ``anonymous_access=True`` and ``authentication_required=False``.
 
 Lists of objects in Elasticsearch
 ---------------------------------

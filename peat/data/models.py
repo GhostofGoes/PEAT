@@ -1738,10 +1738,13 @@ class ServiceSecurity(BaseModel):
     default_credentials: bool | None = None
     """
     ``True`` only if a login with a vendor **factory-default** credential
-    succeeded (``DeviceModule.is_factory_default_credential()``). ``False`` only
-    if the factory defaults were tried and rejected. ``None`` (default) if PEAT
-    did not test them (e.g. site credentials were configured). Anonymous logins
-    are ``anonymous_access``, not default credentials.
+    succeeded (``DeviceModule.is_factory_default_credential()``), or if the
+    device configuration shows a factory-default credential in use (e.g. an
+    M340 SNMP community ``public``/``private``). ``False`` only if the factory
+    defaults were tried and rejected, or if the configured credentials are known
+    and none is a factory default. ``None`` (default) if PEAT did not test them
+    (e.g. site credentials were configured). Anonymous logins are
+    ``anonymous_access``, not default credentials.
     """
 
     encrypted: bool | None = None

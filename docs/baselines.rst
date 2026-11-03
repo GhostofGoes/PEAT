@@ -154,7 +154,7 @@ PEAT modules declare the factory defaults and vendor hardening recommendations o
 
    ":class:`~peat.modules.sel.sel_relay.SELRelay`", "``sel-relay-factory-defaults``, ``sel-relay-vendor-recommended``", "Factory Telnet/FTP ports, relay ID (RID) and terminal ID (TID); FTP disabled, Telnet absent, no factory default password accepted, RID/TID changed from the factory values, GOOSE signed (``info``)"
    ":class:`~peat.modules.schneider.sage.sage.Sage`", "vendor recommended", "Telnet, FTP and HTTP absent, no factory default password accepted, no RTU setup placeholders"
-   ":class:`~peat.modules.schneider.m340.m340.M340`", "vendor recommended", "No factory default FTP password accepted, web server requires a password"
+   ":class:`~peat.modules.schneider.m340.m340.M340`", "vendor recommended", "No factory default FTP password accepted or SNMP ``public``/``private`` community configured, web server requires a password"
    ":class:`~peat.modules.rockwell.controllogix.ControlLogix`", "vendor recommended", "Key switch in RUN, no factory default password accepted"
 
 Other modules declare no known defaults, e.g. :class:`~peat.modules.sel.sel_rtac.SELRTAC`: no factory default credential is known for RTACs, so a "no factory default password accepted" rule could never fail.
