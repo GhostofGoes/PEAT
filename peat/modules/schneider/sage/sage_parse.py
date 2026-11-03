@@ -606,14 +606,62 @@ def parse_isagraf(f_handle: IO[bytes], device_info: dict) -> None:
     device_info["isagraf"]["note"] = "Soft Logic Controller, including runtime, and dev tools"
 
 
+# VxWorks shell calls whose arguments after the first one (the user name) are
+# a password or a password hash, e.g. 'loginUserAdd "user","hash"'
+_SCRIPT_CREDENTIAL_CALL_RE: Final[re.Pattern] = re.compile(
+    r"""(?P<head>\b(?:loginUserAdd|iam|remCurIdSet)\b[ \t]*\(?[ \t]*"""
+    r"""(?:"[^"\r\n]*"|[^\s,()"]+)[ \t]*,)(?P<rest>[^\r\n]*)""",
+    re.IGNORECASE,
+)
+
+# Settings whose values are secrets, e.g. 'pre_shared_key "..."' or 'psk = ...'
+_SCRIPT_SECRET_SETTING_RE: Final[re.Pattern] = re.compile(
+    r"(?P<name>[\w.-]*(?:passw|pwd|psk|pre[_-]?shared|secret|community)[\w.-]*"
+    r"|[\w.-]*key\b)(?P<sep>[ \t=:,(]*)(?P<value>[^\r\n]*)",
+    re.IGNORECASE,
+)
+
+
+def _end_punctuation(text: str) -> str:
+    """Closing parentheses, semicolons and whitespace at the end of ``text``."""
+    return re.search(r"[\s);]*$", text).group()
+
+
+def _redact_credential_call(match: re.Match) -> str:
+    return f"{match['head']} <redacted>{_end_punctuation(match['rest'])}"
+
+
+def _redact_secret_setting(match: re.Match) -> str:
+    if not re.search(r"[^\W_]", match["value"]):  # no value, e.g. "pre_shared_key;"
+        return match.group()
+    return f"{match['name']}{match['sep']}<redacted>{_end_punctuation(match['value'])}"
+
+
+def redact_script_secrets(text: str) -> str:
+    """
+    Script or configuration text (VxWorks startup scripts, ``ike.cfg``) with
+    the secret values replaced by ``<redacted>``: the password (hash) arguments
+    of ``loginUserAdd``, ``iam`` and ``remCurIdSet``, the values of settings
+    named like a password, pre-shared key, key, secret or community, and boot
+    line passwords (``pw=``). The rest of the text is kept.
+    """
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        redacted = _SCRIPT_CREDENTIAL_CALL_RE.sub(_redact_credential_call, line, count=1)
+        if redacted == line:
+            redacted = _SCRIPT_SECRET_SETTING_RE.sub(_redact_secret_setting, line, count=1)
+        lines[i] = redact_bootline(redacted)
+    return "".join(lines)
+
+
 def parse_startup_script(f_handle: IO[bytes], device_info: dict) -> None:
     script_data = f_handle.read().decode("utf-8")
-    device_info["startup_script"] = script_data
+    device_info["startup_script"] = redact_script_secrets(script_data)
 
 
 def parse_vxworks_script(f_handle: IO[bytes], device_info: dict) -> None:
     script_data = f_handle.read().decode("utf-8")
-    device_info["vxworks_script"] = script_data
+    device_info["vxworks_script"] = redact_script_secrets(script_data)
 
 
 def parse_private_key(f_handle: IO[bytes], device_info: dict) -> None:
@@ -632,7 +680,7 @@ def parse_ike_config(f_handle: IO[bytes], device_info: dict) -> None:
         device_info["ike"] = {}
 
     ike_data = ""
-    lines = f_handle.read().decode("utf-8")
+    lines = redact_script_secrets(f_handle.read().decode("utf-8"))
 
     for line in lines.split("\n"):
         # Remove comments from firewall rules

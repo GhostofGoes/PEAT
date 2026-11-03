@@ -508,6 +508,10 @@ class EtcPasswdParser(NixParserBase):
     """
     Parse ``/etc/passwd`` and return the extracted user data.
 
+    The password field (it may hold a password hash) is never stored, only
+    what it holds: ``password_in_shadow`` (``x``), ``password_set`` (a hash)
+    and ``password_empty`` (no password is needed to log in).
+
     Process adds the users to ``dev.users`` in the device data model.
     """
 
@@ -517,14 +521,15 @@ class EtcPasswdParser(NixParserBase):
     def parse(cls, to_parse: str) -> list[str]:
         users = []
 
-        for line in to_parse.splitlines():
+        for line_number, line in enumerate(to_parse.splitlines(), start=1):
             # To read manpage: "man 5 passwd"
 
             # /etc/passwd contains one line for each user account,
             # with seven fields delimited by colons (“:”)
             sections = line.split(":")
             if len(sections) != 7:
-                log.warning(f"Bad /etc/passwd line: {line}")
+                # Never log the line, it may have a password hash
+                log.warning(f"Bad /etc/passwd line {line_number}: {len(sections)} fields, not 7")
                 continue
 
             # login name
@@ -535,9 +540,16 @@ class EtcPasswdParser(NixParserBase):
             # user home directory
             # optional user command interpreter
             #   If this field is empty, it defaults to the value /bin/sh
+            # The password (hash) is a secret: only record what kind of value it is
+            password = sections[1]
             user = {
                 "login_name": sections[0],
-                "password": sections[1] if sections[1] != "x" else "",
+                # The password is in /etc/shadow
+                "password_in_shadow": password == "x",
+                # A password hash (not a lock marker such as "*" or "!") is in the field
+                "password_set": password not in ("", "x") and not password.startswith(("*", "!")),
+                # No password is needed to log in
+                "password_empty": password == "",
                 "user_id": sections[2],
                 "group_id": sections[3],
                 "comment": sections[4],

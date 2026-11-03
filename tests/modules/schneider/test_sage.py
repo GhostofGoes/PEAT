@@ -241,6 +241,51 @@ def test_parse_archive_never_writes_keys_or_bootline_password(out_config):
     assert '"privkey_present": true' in parsed
 
 
+def test_parse_archive_never_writes_script_or_ike_secrets(out_config):
+    """The passwords and keys in the startup scripts and ike.cfg never reach any output."""
+    tar_path = out_config / "in" / "scripts.tar.gz"
+    tar_path.parent.mkdir()
+    _write_tar(
+        tar_path,
+        {
+            "scripts/vxworks_start.scp": b'cd "/ata0a"\r\nloginUserAdd "Admin","VxHashCanary"\r\n'
+            b'iam "target", "VxIamCanary"\r\nhostAdd "rtu2", "192.0.2.20"\r\n',
+            "scripts/startup.scp": b'remCurIdSet("ftpuser", "StRemCanary");\n'
+            b"bootParams pw=StBootCanary tn=sage\n",
+            "ike/ike.cfg": b"# IKE configuration\nauthentication_method pre_shared_key;\n"
+            b'pre_shared_key "IkePskCanary";\nsecret = IkeSecretCanary\nlifetime 3600\n',
+        },
+    )
+    dev = Sage.parse(tar_path)
+
+    script = dev.extra["vxworks_startup_script"]
+    assert 'loginUserAdd "Admin", <redacted>' in script
+    assert 'iam "target", <redacted>' in script
+    assert 'hostAdd "rtu2", "192.0.2.20"' in script  # the rest of the script is kept
+
+    secrets = (
+        "VxHashCanary",
+        "VxIamCanary",
+        "StRemCanary",
+        "StBootCanary",
+        "IkePskCanary",
+        "IkeSecretCanary",
+    )
+    exported = str(dev.export()) + str(dev.elastic())
+    written = list((out_config / "devices").rglob("*.json"))
+    written += [p for p in (out_config / "temp").rglob("*") if p.is_file()]
+    parsed = next(p for p in written if p.name == "parsed-config.json")
+    parsed = parsed.read_text(encoding="utf-8")
+    assert "authentication_method pre_shared_key;" in parsed
+    assert "lifetime 3600" in parsed
+    assert 'remCurIdSet(\\"ftpuser\\", <redacted>);' in parsed
+    for secret in secrets:
+        assert secret not in exported, secret
+        for path in written:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            assert secret not in text, (secret, path)
+
+
 def test_telnet_login_never_logs_password(caplog, mocker):
     """Bug fix: the Telnet login password was logged (and saved in telnet.log)."""
     caplog.set_level(0)

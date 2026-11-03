@@ -776,6 +776,39 @@ def test_process_etc_passwd(json_data, mocker, tmp_path, assert_no_errors):
     assert_no_errors()
 
 
+def test_etc_passwd_password_hash_never_stored(mocker, tmp_path, caplog):
+    """Bug fix: a password hash in /etc/passwd was stored in dev.extra and parsed/passwd.json."""
+    mocker.patch.dict(config["CONFIG"], {"DEVICE_DIR": tmp_path})
+    dev = DeviceData(id="etc_passwd_hash")
+    text = (
+        "root:$1$ab$PasswdHashCanary:0:0:root:/root:/bin/sh\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "guest::100:100:Guest:/home/guest:/bin/sh\n"
+        "locked:!:101:101::/home/locked:/bin/sh\n"
+        "bad:BadLineCanary:5\n"
+    )
+    assert command_parsers.EtcPasswdParser.parse_and_process(text, dev)
+
+    users = dev.extra["/etc/passwd"]
+    assert [
+        (u["login_name"], u["password_in_shadow"], u["password_set"], u["password_empty"])
+        for u in users
+    ] == [
+        ("root", False, True, False),
+        ("daemon", True, False, False),
+        ("guest", False, False, True),
+        ("locked", False, False, False),
+    ]
+    assert all("password" not in u for u in users)
+    assert sorted(u.name for u in dev.users) == ["daemon", "guest", "locked", "root"]
+    assert "line 5: 3 fields" in caplog.text
+    assert "BadLineCanary" not in caplog.text
+
+    assert "PasswdHashCanary" not in str(dev.export())
+    parsed = tmp_path / "etc_passwd_hash" / "parsed" / "passwd.json"
+    assert "PasswdHashCanary" not in parsed.read_text(encoding="utf-8")
+
+
 # TODO: WIP on IpAddrParser
 # def test_parse_ipaddr(text_data, json_data, assert_no_errors):
 #     assert command_parsers.IpAddrParser.parse("") == {}
